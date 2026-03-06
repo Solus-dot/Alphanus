@@ -95,6 +95,7 @@ def test_agent_tool_call_loop(mocker, runtime: SkillRuntime):
             "enable_thinking": True,
             "tls_verify": True,
             "max_tokens": 256,
+            "fast_tool_finalize": False,
         }
     }
     agent = Agent(cfg, runtime)
@@ -142,6 +143,54 @@ def test_agent_tool_call_loop(mocker, runtime: SkillRuntime):
     assert body["stream"] is True
     assert body["messages"][0]["role"] == "system"
     assert sum(1 for m in body["messages"] if m.get("role") == "system") == 1
+
+
+def test_agent_fast_finalize_for_write_tools(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+            "fast_tool_finalize": True,
+            "fast_finalize_tools": ["create_file"],
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    completion_calls = 0
+
+    def fake_urlopen(req, timeout=None, context=None):
+        nonlocal completion_calls
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        completion_calls += 1
+        if completion_calls == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\\"a.txt\\\", \\\"content\\\": \\\"hello\\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        raise AssertionError("Unexpected second completion call")
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "write a file"}],
+        user_input="write a file",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert "Created `" in result.content
+    assert completion_calls == 1
+    assert any(msg.get("role") == "tool" for msg in result.skill_exchanges)
 
 
 def test_agent_transport_error_marks_error(mocker, runtime: SkillRuntime):

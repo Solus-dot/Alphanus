@@ -87,6 +87,12 @@ class SkillRuntime:
         self.memory = memory
         self.config = config or {}
         self.debug = debug
+        self.skills_cfg = self.config.get("skills", {})
+        self.selection_mode = str(self.skills_cfg.get("selection_mode", "all_enabled"))
+        self.max_active_skills = int(self.skills_cfg.get("max_active_skills", 6))
+        self.strict_capability_policy = bool(
+            self.skills_cfg.get("strict_capability_policy", False)
+        )
 
         self.skills: Dict[str, SkillManifest] = {}
         self._tool_registry: Dict[str, RegisteredTool] = {}
@@ -238,8 +244,17 @@ class SkillRuntime:
         return scored
 
     def select_skills(self, ctx: SkillContext, top_n: int = 3) -> List[SkillManifest]:
+        enabled = [s for s in self.skills.values() if s.enabled]
+        enabled.sort(key=lambda s: (-s.priority, s.id))
+
+        if self.selection_mode == "all_enabled":
+            if self.max_active_skills <= 0:
+                return enabled
+            return enabled[: self.max_active_skills]
+
         scored = self.score_skills(ctx)
-        return [skill for _, skill in scored[: max(1, top_n)]]
+        limit = self.max_active_skills if self.max_active_skills > 0 else top_n
+        return [skill for _, skill in scored[: max(1, limit)]]
 
     def compose_skill_block(
         self,
@@ -299,7 +314,7 @@ class SkillRuntime:
             skill = selected_map.get(reg.skill_id)
             if not skill:
                 continue
-            if reg.capability not in skill.triggers.get("capabilities", []):
+            if self.strict_capability_policy and reg.capability not in skill.triggers.get("capabilities", []):
                 continue
             allowed.append(tool_name)
         return sorted(allowed)
@@ -366,7 +381,7 @@ class SkillRuntime:
         owner = selected_map.get(reg.skill_id)
         if not owner:
             return _err("E_POLICY", f"Tool '{tool_name}' not allowed by active skills", int((time.perf_counter() - start) * 1000))
-        if reg.capability not in owner.triggers.get("capabilities", []):
+        if self.strict_capability_policy and reg.capability not in owner.triggers.get("capabilities", []):
             return _err("E_POLICY", f"Capability '{reg.capability}' not enabled for skill '{owner.id}'", int((time.perf_counter() - start) * 1000))
 
         allowed, reason = self._run_pre_action_hooks(selected, ctx, tool_name, args)

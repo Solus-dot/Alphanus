@@ -323,7 +323,8 @@ The central class. Manages endpoint communication, skill orchestration, conversa
 4. POST to `/v1/chat/completions` with `stream=true`
 5. Stream reasoning/content tokens to the interface
 6. If a skill action is required, execute via skill runtime and append results to history
-7. Continue until assistant emits a final answer, then complete turn
+7. If the action batch is write-only and successful (`create_file`/`edit_file`/`delete_file`), fast-finalize locally to avoid an extra model pass
+8. Otherwise continue until assistant emits a final answer, then complete turn
 
 **Execution guardrails:**
 - Maximum skill action depth per turn (default: 10)
@@ -627,8 +628,8 @@ capabilities = ["workspace_edit", "run_shell_command"]
 ### 5.4 Selection and Prompt Injection
 
 1. Discover enabled skills from `skills/`
-2. Score by trigger match and priority
-3. Pick top N (default 3)
+2. Default personal mode: activate all enabled skills up to `skills.max_active_skills`
+3. Optional scored mode: score by trigger match and priority, then pick top N
 4. Build deterministic skill instruction block
 5. Discover tools from selected skills' `tools.py`
 6. Apply prompt budget caps before injection:
@@ -636,7 +637,7 @@ capabilities = ["workspace_edit", "run_shell_command"]
    - hard cap: max 3 skill prompts per turn
    - overflow policy: keep highest-score skills; truncate lowest-score prompt tails first
 7. Inject bounded skill block into system/context message before completion call
-8. Expose only selected-skill tools whose declared capability is allowed by that skill manifest
+8. Expose selected-skill tools; capability filtering is strict only when `skills.strict_capability_policy=true`
 
 ### 5.5 Safety Rules
 
@@ -855,6 +856,16 @@ agent
   readiness_timeout_s - Endpoint readiness timeout seconds (default: 30)
   readiness_poll_s    - Readiness poll interval seconds (default: 0.5)
   enable_thinking     - Default thinking state at startup (default: true)
+  max_tokens          - Optional max output tokens (null disables cap)
+  max_action_depth    - Max tool/action depth per turn (default: 10)
+  fast_tool_finalize  - Skip extra completion after successful write-only tool batches (default: true)
+  fast_finalize_tools - Tool names eligible for fast finalize
+                        (default: ["create_file","edit_file","delete_file"])
+
+context
+  context_limit       - Approx context window size used for pruning
+  keep_last_n         - Minimum recent messages retained
+  safety_margin       - Reserved token margin before hard limit
 
 workspace
   path                - Absolute or ~ path to workspace
@@ -868,6 +879,11 @@ capabilities
   shell_require_confirmation - bool, must always be true (default: true)
   email_enabled              - bool (default: false)
   email_imap_server          - IMAP host (default: imap.gmail.com)
+
+skills
+  selection_mode             - "all_enabled" (default) or scored mode
+  max_active_skills          - Active skill cap (0 => no cap)
+  strict_capability_policy   - Enforce capability matching fail-closed (default: false)
 
 whatsapp
   enabled             - bool (default: false)
@@ -1189,7 +1205,8 @@ Alphanus uses a hybrid model:
 
 1. Skills select policy/instructions/capabilities for the turn.
 2. The model invokes executable actions through native OpenAI-compatible `tool_calls`.
-3. Alphanus executes only calls declared by active skills' `tools.py`, and only when capability-allowed by those skills.
+3. Alphanus executes only calls declared by active skills' `tools.py`.
+4. Capability matching is enforced fail-closed when `skills.strict_capability_policy=true` (default personal mode is relaxed).
 
 Required loop behavior:
 
@@ -1197,7 +1214,8 @@ Required loop behavior:
 2. Parse streaming chunks and assemble fragmented `tool_calls` by `index`.
 3. When `finish_reason == "tool_calls"`, execute calls in order.
 4. Append assistant `tool_calls` message + `role:"tool"` results to history.
-5. Continue until `finish_reason == "stop"`.
+5. If all executed calls are successful write-only actions and `agent.fast_tool_finalize=true`, return a local completion summary and stop.
+6. Otherwise continue until `finish_reason == "stop"`.
 
 Safety invariant: if skills permit an action but no adapter exists, fail closed with structured error.
 

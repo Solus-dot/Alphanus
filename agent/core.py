@@ -16,6 +16,7 @@ from core.streaming import build_ssl_context, should_retry, stream_chat_completi
 
 @dataclass
 class ToolCall:
+    index: int
     id: str
     name: str
     arguments: Dict[str, Any]
@@ -42,7 +43,8 @@ class ToolCallAccumulator:
     def __init__(self) -> None:
         self._items: Dict[int, Dict[str, Any]] = {}
 
-    def ingest(self, deltas: List[Dict[str, Any]]) -> None:
+    def ingest(self, deltas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        updates: List[Dict[str, Any]] = []
         for delta in deltas:
             index = int(delta.get("index", 0))
             item = self._items.setdefault(
@@ -62,6 +64,15 @@ class ToolCallAccumulator:
                 item["function"]["name"] += fn_delta["name"]
             if fn_delta.get("arguments"):
                 item["function"]["arguments"] += fn_delta["arguments"]
+            updates.append(
+                {
+                    "index": index,
+                    "id": item.get("id", ""),
+                    "name": item["function"].get("name", "").strip(),
+                    "raw_arguments": item["function"].get("arguments", ""),
+                }
+            )
+        return updates
 
     def finalize(self) -> List[ToolCall]:
         calls: List[ToolCall] = []
@@ -74,6 +85,7 @@ class ToolCallAccumulator:
                 args = {"_raw": raw_args}
             calls.append(
                 ToolCall(
+                    index=index,
                     id=item.get("id") or f"call_{index}",
                     name=item["function"].get("name", "").strip(),
                     arguments=args,
@@ -124,6 +136,15 @@ class Agent:
         )
 
         self.max_action_depth = int(agent_cfg.get("max_action_depth", 10))
+        self.fast_tool_finalize = bool(agent_cfg.get("fast_tool_finalize", True))
+        raw_fast_tools = agent_cfg.get(
+            "fast_finalize_tools",
+            ["create_file", "edit_file", "delete_file"],
+        )
+        if isinstance(raw_fast_tools, list):
+            self.fast_finalize_tools = {str(name).strip() for name in raw_fast_tools if str(name).strip()}
+        else:
+            self.fast_finalize_tools = {"create_file", "edit_file", "delete_file"}
         self.system_prompt = build_system_prompt(self.skill_runtime.workspace.workspace_root)
 
         context_cfg = config.get("context", {})
@@ -191,6 +212,41 @@ class Agent:
             memory_hits=hits,
         )
 
+    def _build_fast_finalize_response(self, calls: List[ToolCall], results: List[Dict[str, Any]]) -> Optional[str]:
+        if not self.fast_tool_finalize:
+            return None
+        if not calls or len(calls) != len(results):
+            return None
+
+        lines: List[str] = []
+        for call, result in zip(calls, results):
+            if call.name not in self.fast_finalize_tools:
+                return None
+            if not result.get("ok"):
+                return None
+
+            filepath = ""
+            if isinstance(result.get("data"), dict):
+                filepath = str(result["data"].get("filepath", "") or "")
+
+            if call.name == "create_file":
+                verb = "Created"
+            elif call.name == "edit_file":
+                verb = "Updated"
+            elif call.name == "delete_file":
+                verb = "Deleted"
+            else:
+                verb = "Completed"
+
+            if filepath:
+                lines.append(f"{verb} `{filepath}`.")
+            else:
+                lines.append(f"{verb} via `{call.name}`.")
+
+        if len(lines) == 1:
+            return lines[0]
+        return "Applied requested file changes:\n" + "\n".join(f"- {line}" for line in lines)
+
     def _stream_one_pass(
         self,
         payload: Dict[str, Any],
@@ -201,6 +257,7 @@ class Agent:
         reasoning_parts: List[str] = []
         finish_reason = "stop"
         tool_acc = ToolCallAccumulator()
+        tool_phase_started = False
 
         for chunk in stream_chat_completions(
             endpoint=self.model_endpoint,
@@ -230,7 +287,21 @@ class Agent:
 
             tool_deltas = delta.get("tool_calls") or []
             if tool_deltas:
-                tool_acc.ingest(tool_deltas)
+                if not tool_phase_started:
+                    tool_phase_started = True
+                    self._emit(on_event, {"type": "tool_phase_started"})
+                updates = tool_acc.ingest(tool_deltas)
+                for update in updates:
+                    self._emit(
+                        on_event,
+                        {
+                            "type": "tool_call_delta",
+                            "stream_id": f"call_{update['index']}",
+                            "id": update.get("id") or "",
+                            "name": update.get("name") or "",
+                            "raw_arguments": update.get("raw_arguments") or "",
+                        },
+                    )
 
             if choice.get("finish_reason"):
                 finish_reason = str(choice["finish_reason"])
@@ -382,12 +453,13 @@ class Agent:
 
                 assistant_msg = {
                     "role": "assistant",
-                    "content": stream_result.content or "",
+                    "content": "",
                     "tool_calls": assistant_tool_calls,
                 }
                 dynamic_history.append(assistant_msg)
                 skill_exchanges.append(assistant_msg)
 
+                batch_results: List[Dict[str, Any]] = []
                 for call in stream_result.tool_calls:
                     action_depth += 1
                     if action_depth > self.max_action_depth:
@@ -403,6 +475,7 @@ class Agent:
                         on_event,
                         {
                             "type": "tool_call",
+                            "stream_id": f"call_{call.index}",
                             "name": call.name,
                             "arguments": call.arguments,
                             "id": call.id,
@@ -426,6 +499,7 @@ class Agent:
                             "result": result,
                         },
                     )
+                    batch_results.append(result)
 
                     tool_message = {
                         "role": "tool",
@@ -435,6 +509,16 @@ class Agent:
                     }
                     dynamic_history.append(tool_message)
                     skill_exchanges.append(tool_message)
+
+                fast_reply = self._build_fast_finalize_response(stream_result.tool_calls, batch_results)
+                if fast_reply is not None:
+                    self.skill_runtime.post_response(selected, ctx, fast_reply)
+                    return AgentTurnResult(
+                        status="done",
+                        content=fast_reply,
+                        reasoning=full_reasoning,
+                        skill_exchanges=skill_exchanges,
+                    )
 
                 continue
 

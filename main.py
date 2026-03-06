@@ -39,6 +39,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_tokens": None,
         "context_budget_max_tokens": 1024,
         "max_action_depth": 10,
+        "fast_tool_finalize": True,
+        "fast_finalize_tools": ["create_file", "edit_file", "delete_file"],
     },
     "workspace": {
         "path": "~/Desktop/Alphanus-Workspace",
@@ -55,6 +57,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "shell_require_confirmation": True,
         "email_enabled": False,
         "email_imap_server": "imap.gmail.com",
+    },
+    "skills": {
+        "selection_mode": "all_enabled",
+        "max_active_skills": 6,
+        "strict_capability_policy": False
     },
     "whatsapp": {
         "enabled": False,

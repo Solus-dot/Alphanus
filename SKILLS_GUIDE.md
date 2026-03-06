@@ -128,32 +128,39 @@ Where in code:
 Field-by-field behavior:
 
 1. `schema_version`
-- Used for compatibility checks.
-- Major-version mismatch is rejected.
+  - Used for compatibility checks.
+  - Major-version mismatch is rejected.
 
 2. `id`
-- Unique skill ID.
-- Should match folder name.
+  - Unique skill ID.
+  - Should match folder name.
 
 3. `enabled`
-- If `false`, skill is ignored.
-- Can be toggled at runtime via `/skill on|off <id>`.
+  - If `false`, skill is ignored.
+  - Can be toggled at runtime via `/skill on|off <id>`.
 
 4. `priority`
-- Base score for selection.
-- Higher priority means more likely to be selected.
+  - Base score for selection.
+  - Higher priority means more likely to be selected.
 
 5. `[triggers].keywords`
-- If user input contains these, score gets boosted.
+  - If user input contains these, score gets boosted.
 
 6. `[triggers].file_ext`
-- If input/attachments mention these extensions, score gets boosted.
+  - If input/attachments mention these extensions, score gets boosted.
 
 7. `[triggers].capabilities`
-- Policy gate for tools.
-- A tool is only allowed if its `TOOL_SPECS[tool].capability` is listed here.
+  - Policy gate for tools when strict mode is enabled.
+  - In strict mode, a tool is only allowed if its `TOOL_SPECS[tool].capability` is listed here.
 
-Important: capability mismatch causes fail-closed policy errors (`E_POLICY`).
+Default behavior (personal-friendly):
+
+- `skills.selection_mode = "all_enabled"` -> all enabled skills are active (up to `max_active_skills`).
+- `skills.strict_capability_policy = false` -> capability mismatches are tolerated.
+
+If you want stricter fail-closed behavior, set:
+
+- `skills.strict_capability_policy = true`
 
 ---
 
@@ -231,12 +238,13 @@ Common error codes:
 
 1. Runtime loads enabled skills from `skills/*/skill.toml`.
 2. Runtime loads each skill's `prompt.md` and optional `tools.py`.
-3. For a user turn, runtime scores and selects top skills.
+3. For a user turn, runtime selects skills (default: all enabled, capped by `max_active_skills`).
 4. Agent composes one system message + selected skill guidance.
-5. Agent exposes only tools from selected skills that pass capability policy.
+5. Agent exposes tools from selected skills (and applies strict capability filtering only if enabled).
 6. Model emits `tool_calls`.
 7. Runtime dispatches tool call to the owning skill's `tools.py::execute`.
-8. Tool result is appended to history and model continues.
+8. Tool result is appended to history.
+9. For write-only batches (`create_file`/`edit_file`/`delete_file`), agent can fast-finalize without a second model call.
 
 ---
 
@@ -251,7 +259,7 @@ Tool not visible:
 
 Tool called but denied:
 
-1. Capability mismatch (`skill.toml` vs `TOOL_SPECS`).
+1. Capability mismatch (`skill.toml` vs `TOOL_SPECS`) with strict capability mode enabled.
 2. Skill not selected for that prompt.
 3. Hook `pre_action` denied it.
 

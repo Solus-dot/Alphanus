@@ -232,6 +232,7 @@ class AlphanusTUI(App):
         self._active_turn_id: Optional[str] = None
         self._reply_acc: List[str] = []
         self._tool_activity_seen = False
+        self._live_tool_streams: Dict[str, Dict[str, Any]] = {}
 
         self._reasoning_open = False
         self._content_open = False
@@ -333,6 +334,173 @@ class AlphanusTUI(App):
     def _write_error(self, text: str) -> None:
         self._write(f"[bold red]  ✖ {esc(text)}[/bold red]")
 
+    def _compact_tool_args(self, tool_name: str, args: Any) -> str:
+        if not isinstance(args, dict):
+            return str(args)
+
+        if tool_name in {"create_file", "edit_file"}:
+            filepath = str(args.get("filepath", ""))
+            content = args.get("content", "")
+            n_chars = len(content) if isinstance(content, str) else 0
+            return f'filepath="{filepath}", content={n_chars} chars'
+
+        parts = []
+        for key in sorted(args.keys()):
+            value = args[key]
+            text = str(value)
+            if len(text) > 60:
+                text = text[:57] + "..."
+            parts.append(f"{key}={text}")
+        return ", ".join(parts)
+
+    def _is_tool_trace_line(self, line: str) -> bool:
+        s = line.strip().lower()
+        return s.startswith("tool call:") or s.startswith(". tool call:")
+
+    def _extract_partial_json_string_field(self, raw: str, key: str) -> Tuple[Optional[str], bool]:
+        marker = f'"{key}"'
+        start = raw.find(marker)
+        if start < 0:
+            return None, False
+        colon = raw.find(":", start + len(marker))
+        if colon < 0:
+            return None, False
+        i = colon + 1
+        while i < len(raw) and raw[i].isspace():
+            i += 1
+        if i >= len(raw) or raw[i] != '"':
+            return None, False
+        i += 1
+        out: List[str] = []
+        escaped = False
+        while i < len(raw):
+            ch = raw[i]
+            if escaped:
+                if ch == "n":
+                    out.append("\n")
+                elif ch == "r":
+                    out.append("\r")
+                elif ch == "t":
+                    out.append("\t")
+                elif ch in {'"', "\\", "/"}:
+                    out.append(ch)
+                elif ch == "b":
+                    out.append("\b")
+                elif ch == "f":
+                    out.append("\f")
+                elif ch == "u":
+                    if i + 4 < len(raw):
+                        hex_part = raw[i + 1 : i + 5]
+                        try:
+                            out.append(chr(int(hex_part, 16)))
+                            i += 4
+                        except ValueError:
+                            out.append("u")
+                    else:
+                        return "".join(out), False
+                else:
+                    out.append(ch)
+                escaped = False
+            else:
+                if ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    return "".join(out), True
+                else:
+                    out.append(ch)
+            i += 1
+        return "".join(out), False
+
+    def _update_live_tool_preview(self, stream_id: str, name: str, raw_arguments: str) -> None:
+        if name not in {"create_file", "edit_file"}:
+            return
+        if not raw_arguments:
+            return
+
+        state = self._live_tool_streams.setdefault(
+            stream_id,
+            {
+                "name": name,
+                "filepath": "",
+                "opened": False,
+                "closed": False,
+                "printed_len": 0,
+                "line_buf": "",
+            },
+        )
+        filepath, _ = self._extract_partial_json_string_field(raw_arguments, "filepath")
+        if filepath:
+            state["filepath"] = filepath
+
+        content, complete = self._extract_partial_json_string_field(raw_arguments, "content")
+        if content is None:
+            return
+
+        if not state["opened"]:
+            state["opened"] = True
+            path_label = state.get("filepath") or "(pending filepath)"
+            self._write(f"[dim]  · file draft: {esc(path_label)}[/dim]")
+            self._write_indented("[dim]```[/dim]", indent=2)
+
+        prev_len = int(state.get("printed_len", 0))
+        if len(content) < prev_len:
+            prev_len = 0
+            state["line_buf"] = ""
+        delta = content[prev_len:]
+        state["printed_len"] = len(content)
+
+        if delta:
+            state["line_buf"] = str(state.get("line_buf", "")) + delta
+            while "\n" in state["line_buf"]:
+                line, state["line_buf"] = state["line_buf"].split("\n", 1)
+                self._write_indented(esc(line), indent=2)
+
+        if complete and not state["closed"]:
+            tail = str(state.get("line_buf", ""))
+            if tail:
+                self._write_indented(esc(tail), indent=2)
+                state["line_buf"] = ""
+            self._write_indented("[dim]```[/dim]", indent=2)
+            state["closed"] = True
+
+    def _close_live_tool_preview(self, stream_id: str) -> bool:
+        state = self._live_tool_streams.get(stream_id)
+        if not state or not state.get("opened"):
+            return False
+        if not state.get("closed"):
+            tail = str(state.get("line_buf", ""))
+            if tail:
+                self._write_indented(esc(tail), indent=2)
+                state["line_buf"] = ""
+            self._write_indented("[dim]```[/dim]", indent=2)
+            state["closed"] = True
+        return True
+
+    def _write_tool_content_preview(self, tool_name: str, args: Any) -> None:
+        if tool_name not in {"create_file", "edit_file"}:
+            return
+        if not isinstance(args, dict):
+            return
+        content = args.get("content")
+        filepath = str(args.get("filepath", ""))
+        if not isinstance(content, str) or not content.strip():
+            return
+
+        max_chars = 8000
+        max_lines = 140
+        clipped = content[:max_chars]
+        lines = clipped.splitlines()
+        truncated = len(content) > max_chars or len(lines) > max_lines
+        lines = lines[:max_lines]
+
+        self._write(f"[dim]  · file draft: {esc(filepath)}[/dim]")
+        self._write_indented("[dim]```[/dim]", indent=2)
+        for line in lines:
+            self._write_indented(esc(line), indent=2)
+        if truncated:
+            self._write_indented("[dim]... (preview truncated) ...[/dim]", indent=2)
+        self._write_indented("[dim]```[/dim]", indent=2)
+
     def _update_status1(self) -> None:
         parts = []
         if self.thinking:
@@ -422,8 +590,15 @@ class AlphanusTUI(App):
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 for call in msg["tool_calls"]:
                     name = call.get("function", {}).get("name", "unknown")
-                    args = call.get("function", {}).get("arguments", "{}")
-                    self._write(f"[dim]  · tool call: {esc(name)}({esc(args)})[/dim]")
+                    raw_args = call.get("function", {}).get("arguments", "{}")
+                    try:
+                        args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    except Exception:
+                        args = raw_args
+                    self._write(
+                        f"[dim]  · tool call: {esc(name)}({esc(self._compact_tool_args(name, args))})[/dim]"
+                    )
+                    self._write_tool_content_preview(name, args)
             elif msg.get("role") == "tool":
                 name = msg.get("name", "tool")
                 try:
@@ -470,6 +645,7 @@ class AlphanusTUI(App):
         self._active_turn_id = turn.id
         self._reply_acc = []
         self._tool_activity_seen = False
+        self._live_tool_streams = {}
         self._reasoning_open = False
         self._content_open = False
         self._buf_r = ""
@@ -515,9 +691,20 @@ class AlphanusTUI(App):
         if not self._buf_r:
             self._partial().update("")
             return
+        if self._is_tool_trace_line(self._buf_r):
+            self._buf_r = ""
+            self._partial().update("")
+            return
         rendered, _ = _render_md(self._buf_r, False)
         self._write_indented(f"[dim]{rendered}[/dim]", indent=4)
         self._buf_r = ""
+        self._partial().update("")
+
+    def _reset_provisional_content(self) -> None:
+        """Drop pre-tool provisional content from the current pass."""
+        self._buf_c = ""
+        self._reply_acc = []
+        self._content_open = False
         self._partial().update("")
 
     def _handle_content_token(self, token: str) -> None:
@@ -531,6 +718,8 @@ class AlphanusTUI(App):
         self._reply_acc.append(token)
         while "\n" in self._buf_c:
             line, self._buf_c = self._buf_c.split("\n", 1)
+            if self._is_tool_trace_line(line):
+                continue
             rendered, self._in_fence = _render_md(line, self._in_fence)
             indent = 2 if self._in_fence else max(2, _hanging_indent(line))
             self._write_indented(rendered, indent=indent)
@@ -555,20 +744,43 @@ class AlphanusTUI(App):
             self._buf_r += token
             while "\n" in self._buf_r:
                 line, self._buf_r = self._buf_r.split("\n", 1)
+                if self._is_tool_trace_line(line):
+                    continue
                 rendered, _ = _render_md(line, False)
                 self._write_indented(f"[dim]{rendered}[/dim]", indent=4)
-            partial.update(f"[dim]  {esc(self._buf_r)}[/dim]" if self._buf_r else "")
+            if self._is_tool_trace_line(self._buf_r):
+                partial.update("")
+            else:
+                partial.update(f"[dim]  {esc(self._buf_r)}[/dim]" if self._buf_r else "")
 
         elif etype == "content_token":
             token = event.get("text", "")
             self._handle_content_token(token)
 
+        elif etype == "tool_phase_started":
+            self._tool_activity_seen = True
+            self._reset_provisional_content()
+
+        elif etype == "tool_call_delta":
+            self._tool_activity_seen = True
+            stream_id = str(event.get("stream_id") or "")
+            name = str(event.get("name") or "")
+            raw_arguments = str(event.get("raw_arguments") or "")
+            if stream_id and name:
+                self._update_live_tool_preview(stream_id, name, raw_arguments)
+
         elif etype == "tool_call":
             self._tool_activity_seen = True
             self._flush_reasoning_buffer()
             name = event.get("name", "tool")
-            args = json.dumps(event.get("arguments", {}), ensure_ascii=False)
-            self._write(f"[dim]  · tool call: {esc(name)}({esc(args)})[/dim]")
+            args = event.get("arguments", {})
+            stream_id = str(event.get("stream_id") or "")
+            self._write(
+                f"[dim]  · tool call: {esc(name)}({esc(self._compact_tool_args(name, args))})[/dim]"
+            )
+            streamed = self._close_live_tool_preview(stream_id) if stream_id else False
+            if not streamed:
+                self._write_tool_content_preview(name, args)
 
         elif etype == "tool_result":
             self._tool_activity_seen = True
@@ -598,8 +810,9 @@ class AlphanusTUI(App):
         partial.display = False
 
         if self._buf_r and not self._content_open:
-            rendered, _ = _render_md(self._buf_r, False)
-            self._write_indented(f"[dim]{rendered}[/dim]", indent=4)
+            if not self._is_tool_trace_line(self._buf_r):
+                rendered, _ = _render_md(self._buf_r, False)
+                self._write_indented(f"[dim]{rendered}[/dim]", indent=4)
             self._buf_r = ""
 
         if self._reasoning_open and not self._content_open:
@@ -607,9 +820,10 @@ class AlphanusTUI(App):
             self._write("")
 
         if self._buf_c:
-            rendered, _ = _render_md(self._buf_c, self._in_fence)
-            indent = 2 if self._in_fence else max(2, _hanging_indent(self._buf_c))
-            self._write_indented(rendered, indent=indent)
+            if not self._is_tool_trace_line(self._buf_c):
+                rendered, _ = _render_md(self._buf_c, self._in_fence)
+                indent = 2 if self._in_fence else max(2, _hanging_indent(self._buf_c))
+                self._write_indented(rendered, indent=indent)
             self._buf_c = ""
 
         reply = result.content if result.content else "".join(self._reply_acc)
@@ -629,6 +843,7 @@ class AlphanusTUI(App):
         self._write("")
         self._scroll().scroll_end(animate=False)
         self.streaming = False
+        self._live_tool_streams = {}
         self._active_turn_id = None
         self._esc_pending = False
         self._update_status1()

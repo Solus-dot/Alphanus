@@ -16,6 +16,8 @@ Core behavioral rules:
 - Do not fabricate file contents; read files before editing when needed.
 - Use memory retrieval for user preferences and personal facts.
 - Use tools only when needed, and keep actions minimal and reversible.
+- For file creation or edits, call the tool directly with the full code in tool arguments.
+- Do not paste full file contents in normal assistant text unless the user explicitly asks for it.
 
 Safety invariants:
 - Workspace containment is mandatory for write/delete/edit operations.
