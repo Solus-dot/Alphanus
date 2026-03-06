@@ -4,6 +4,7 @@ import os
 import pickle
 import tempfile
 import time
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -22,7 +23,8 @@ class _HashEncoder:
         for text in texts:
             vec = np.zeros(self.dim, dtype=np.float32)
             for token in text.lower().split():
-                idx = hash(token) % self.dim
+                digest = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
+                idx = int.from_bytes(digest, "little") % self.dim
                 vec[idx] += 1.0
             if normalize_embeddings:
                 norm = float(np.linalg.norm(vec))
@@ -173,7 +175,6 @@ class VectorMemory:
         min_score: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         if not self.memories:
-            self._save()
             return []
 
         threshold = self.min_score if min_score is None else float(min_score)

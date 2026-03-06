@@ -3,9 +3,9 @@ from __future__ import annotations
 import imaplib
 import json
 import os
-import subprocess
 import urllib.parse
 import urllib.request
+import webbrowser
 from pathlib import Path
 from typing import Any, Dict
 
@@ -138,7 +138,9 @@ def execute(tool_name: str, args: Dict[str, Any], env) -> Dict[str, Any]:
                 "meta": {},
             }
         try:
-            subprocess.Popen(["open", url])
+            opened = webbrowser.open(url, new=2)
+            if not opened:
+                raise RuntimeError("No browser handler")
         except Exception:
             return {
                 "ok": False,
@@ -152,7 +154,9 @@ def execute(tool_name: str, args: Dict[str, Any], env) -> Dict[str, Any]:
         topic = args["topic"].strip()
         url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(topic)
         try:
-            subprocess.Popen(["open", url])
+            opened = webbrowser.open(url, new=2)
+            if not opened:
+                raise RuntimeError("No browser handler")
         except Exception:
             return {
                 "ok": False,

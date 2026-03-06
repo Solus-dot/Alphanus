@@ -37,10 +37,6 @@ class ContextWindowManager:
 
         head = messages[:1]
         tail = messages[-keep_tail:]
-        pruned = [
-            {
-                "role": "system",
-                "content": "[...Earlier conversation history pruned for length...]",
-            }
-        ]
-        return head + pruned + tail
+        # Keep a single system message at index 0 to avoid server-side template
+        # failures on backends that require exactly one leading system role.
+        return head + tail

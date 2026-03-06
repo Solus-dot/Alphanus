@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import pickle
 import time
 from pathlib import Path
 
 import numpy as np
 
-from core.memory import VectorMemory
+from core.memory import VectorMemory, _HashEncoder
 
 
 def _fake_encode(self, text: str):
@@ -52,3 +53,21 @@ def test_scale_scan_under_500ms(monkeypatch, tmp_path: Path):
     mem.search("item 123", top_k=5, min_score=0.0)
     dt_ms = (time.perf_counter() - t0) * 1000
     assert dt_ms < 500
+
+
+def test_hash_encoder_uses_stable_digest_indices():
+    enc = _HashEncoder(dim=64)
+    vec = enc.encode(["coffee tea coffee"], normalize_embeddings=False)[0]
+
+    coffee_idx = int.from_bytes(hashlib.blake2b(b"coffee", digest_size=8).digest(), "little") % 64
+    tea_idx = int.from_bytes(hashlib.blake2b(b"tea", digest_size=8).digest(), "little") % 64
+
+    assert vec[coffee_idx] >= 2.0
+    assert vec[tea_idx] >= 1.0
+
+
+def test_empty_search_does_not_force_disk_write(tmp_path: Path):
+    path = tmp_path / "mem.pkl"
+    mem = VectorMemory(storage_path=str(path))
+    assert mem.search("anything") == []
+    assert not path.exists()

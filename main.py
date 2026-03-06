@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 from pathlib import Path
@@ -70,12 +71,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
 
 def deep_merge(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
-    out = dict(base)
+    out = copy.deepcopy(base)
     for key, value in updates.items():
         if isinstance(value, dict) and isinstance(out.get(key), dict):
             out[key] = deep_merge(out[key], value)
         else:
-            out[key] = value
+            out[key] = copy.deepcopy(value)
     return out
 
 
@@ -83,7 +84,7 @@ def load_or_create_global_config(path: Path) -> Dict[str, Any]:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         path.write_text(json.dumps(DEFAULT_CONFIG, indent=2), encoding="utf-8")
-        return dict(DEFAULT_CONFIG)
+        return copy.deepcopy(DEFAULT_CONFIG)
 
     raw = json.loads(path.read_text(encoding="utf-8"))
     schema = raw.get("schema_version", "1.0.0")

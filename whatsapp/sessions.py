@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,12 +54,28 @@ class SessionStore:
         path = self._path(chat_id)
         if not path.exists():
             return None
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return ChatSession.from_dict(data)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return ChatSession.from_dict(data)
+        except Exception:
+            broken = path.with_suffix(path.suffix + ".corrupted")
+            try:
+                path.replace(broken)
+            except Exception:
+                return None
+            return None
 
     def save(self, session: ChatSession) -> None:
         path = self._path(session.chat_id)
-        path.write_text(json.dumps(session.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        payload = json.dumps(session.to_dict(), ensure_ascii=False, indent=2)
+        fd, tmp_path = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+            os.replace(tmp_path, path)
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
     def cleanup(self) -> int:
         now = time.time()
