@@ -2,9 +2,6 @@
   "default": {
     "endpoint": "http://127.0.0.1:8080/v1/chat/completions",
     "models_endpoint": "http://127.0.0.1:8080/v1/models",
-    "temperature": 0.0,
-    "top_p": 1.0,
-    "top_k": 0,
     "max_tokens": 512
   }
 }

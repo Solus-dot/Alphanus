@@ -120,11 +120,6 @@ class Agent:
         self.per_turn_retries = 1
         self.retry_backoff_s = 0.5
 
-        self.default_temperature = float(agent_cfg.get("temperature", 0.0))
-        self.default_top_p = float(agent_cfg.get("top_p", 1.0))
-        self.default_top_k = int(agent_cfg.get("top_k", 0))
-        self.default_min_p = float(agent_cfg.get("min_p", 0.0))
-        self.default_repetition_penalty = float(agent_cfg.get("repetition_penalty", 1.0))
         raw_max_tokens = agent_cfg.get("max_tokens")
         if raw_max_tokens in (None, "", 0):
             self.default_max_tokens: Optional[int] = None
@@ -390,11 +385,6 @@ class Agent:
 
             payload = {
                 "messages": model_messages,
-                "temperature": self.default_temperature,
-                "top_p": self.default_top_p,
-                "top_k": self.default_top_k,
-                "min_p": self.default_min_p,
-                "repetition_penalty": self.default_repetition_penalty,
                 "stream": True,
                 "chat_template_kwargs": {"enable_thinking": bool(thinking)},
             }

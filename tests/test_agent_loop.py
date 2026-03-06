@@ -143,6 +143,11 @@ def test_agent_tool_call_loop(mocker, runtime: SkillRuntime):
     assert body["stream"] is True
     assert body["messages"][0]["role"] == "system"
     assert sum(1 for m in body["messages"] if m.get("role") == "system") == 1
+    assert "temperature" not in body
+    assert "top_p" not in body
+    assert "top_k" not in body
+    assert "min_p" not in body
+    assert "repetition_penalty" not in body
 
 
 def test_agent_fast_finalize_for_write_tools(mocker, runtime: SkillRuntime):
