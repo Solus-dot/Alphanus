@@ -1,0 +1,12 @@
+schema_version = "1.0.0"
+id = "memory-rag"
+name = "Memory RAG"
+version = "1.0.0"
+description = "Store and recall durable user facts/preferences"
+enabled = true
+priority = 55
+
+[triggers]
+keywords = ["remember", "preference", "my", "I like", "recall", "memory"]
+file_ext = []
+capabilities = ["memory_store", "memory_recall", "memory_list", "memory_forget", "memory_stats", "memory_export"]

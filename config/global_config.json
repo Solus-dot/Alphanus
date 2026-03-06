@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0.0",
+  "agent": {
+    "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+    "models_endpoint": "http://127.0.0.1:8080/v1/models",
+    "request_timeout_s": 180,
+    "readiness_timeout_s": 30,
+    "readiness_poll_s": 0.5,
+    "enable_thinking": true,
+    "auth_header": "",
+    "tls_verify": true,
+    "ca_bundle_path": "",
+    "allow_cross_host_endpoints": false,
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "top_k": 0,
+    "min_p": 0.0,
+    "repetition_penalty": 1.0,
+    "max_tokens": null,
+    "context_budget_max_tokens": 1024,
+    "max_action_depth": 10
+  },
+  "workspace": {
+    "path": "~/Desktop/Alphanus-Workspace"
+  },
+  "memory": {
+    "path": "./memories/memory.pkl"
+  },
+  "context": {
+    "context_limit": 8192,
+    "keep_last_n": 10,
+    "safety_margin": 500
+  },
+  "capabilities": {
+    "shell_require_confirmation": true,
+    "email_enabled": false,
+    "email_imap_server": "imap.gmail.com"
+  },
+  "whatsapp": {
+    "enabled": false
+  }
+}

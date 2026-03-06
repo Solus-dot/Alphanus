@@ -1,0 +1,12 @@
+schema_version = "1.0.0"
+id = "workspace-ops"
+name = "Workspace Operations"
+version = "1.0.0"
+description = "Read, write, edit, and inspect workspace files safely"
+enabled = true
+priority = 80
+
+[triggers]
+keywords = ["file", "write", "edit", "read", "workspace", "code"]
+file_ext = [".py", ".js", ".ts", ".md", ".json", ".toml"]
+capabilities = ["workspace_read", "workspace_write", "workspace_edit", "workspace_delete", "workspace_tree"]

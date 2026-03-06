@@ -1,0 +1,12 @@
+schema_version = "1.0.0"
+id = "shell-ops"
+name = "Shell Operations"
+version = "1.0.0"
+description = "Run workspace shell commands with confirmation"
+enabled = true
+priority = 60
+
+[triggers]
+keywords = ["run", "shell", "command", "terminal", "ls", "git"]
+file_ext = []
+capabilities = ["run_shell_command"]

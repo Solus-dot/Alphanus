@@ -1,0 +1,25 @@
+[project]
+name = "alphanus"
+version = "0.1.0"
+description = "Personal on-device AI coding assistant with Textual TUI"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "textual>=0.60",
+  "sentence-transformers>=5.2.0",
+  "numpy>=2.4.2",
+  "python-dotenv>=1.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9.0.2",
+  "pytest-mock>=3.15.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.uv]
+package = false

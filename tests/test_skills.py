@@ -1,0 +1,162 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from core.memory import VectorMemory
+from core.skills import SkillContext, SkillRuntime
+from core.workspace import WorkspaceManager
+
+
+def test_skill_load_select_and_execute(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "s1").mkdir(parents=True)
+
+    (skills / "s1" / "skill.toml").write_text(
+        """
+schema_version = "1.0.0"
+id = "s1"
+name = "S1"
+version = "1.0.0"
+description = "test"
+enabled = true
+priority = 99
+
+[triggers]
+keywords = ["write"]
+file_ext = [".py"]
+capabilities = ["workspace_write", "workspace_read"]
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "s1" / "prompt.md").write_text("Use carefully", encoding="utf-8")
+    (skills / "s1" / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "create_file": {
+    "capability": "workspace_write",
+    "description": "Create file",
+    "parameters": {
+      "type": "object",
+      "properties": {"filepath": {"type": "string"}, "content": {"type": "string"}},
+      "required": ["filepath", "content"]
+    }
+  },
+  "read_file": {
+    "capability": "workspace_read",
+    "description": "Read file",
+    "parameters": {
+      "type": "object",
+      "properties": {"filepath": {"type": "string"}},
+      "required": ["filepath"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    if tool_name == "create_file":
+        path = env.workspace.create_file(args["filepath"], args["content"])
+        return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
+    if tool_name == "read_file":
+        content = env.workspace.read_file(args["filepath"])
+        return {"ok": True, "data": {"content": content}, "error": None, "meta": {}}
+    return {"ok": False, "data": None, "error": {"code": "E_UNSUPPORTED", "message": "nope"}, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        debug=True,
+    )
+
+    ctx = SkillContext(
+        user_input="write a file",
+        branch_labels=[],
+        attachments=["main.py"],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    selected = runtime.select_skills(ctx)
+    assert selected
+    assert selected[0].id == "s1"
+
+    out = runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "hello.txt", "content": "hi"},
+        selected=selected,
+        ctx=ctx,
+    )
+    assert out["ok"] is True
+
+
+def test_fail_closed_when_tool_not_allowed(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "s1").mkdir(parents=True)
+
+    (skills / "s1" / "skill.toml").write_text(
+        """
+schema_version = "1.0.0"
+id = "s1"
+name = "S1"
+version = "1.0.0"
+description = "test"
+enabled = true
+priority = 99
+
+[triggers]
+keywords = ["memory"]
+file_ext = []
+capabilities = ["memory_recall"]
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "s1" / "prompt.md").write_text("Memory only", encoding="utf-8")
+    (skills / "s1" / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "read_file": {
+    "capability": "workspace_read",
+    "description": "Read file",
+    "parameters": {
+      "type": "object",
+      "properties": {"filepath": {"type": "string"}},
+      "required": ["filepath"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    content = env.workspace.read_file(args["filepath"])
+    return {"ok": True, "data": {"content": content}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    ctx = SkillContext(
+        user_input="read a file",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+    selected = runtime.select_skills(ctx)
+    out = runtime.execute_tool_call("read_file", {"filepath": "a.txt"}, selected=selected, ctx=ctx)
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_POLICY"

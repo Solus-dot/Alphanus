@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+
+# Tool caches
+.uv-cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment secrets
+.env
+
+# Runtime / local artifacts
+*.log
+llamachat_tree.json
+
+# Optional local memory/workspace data
+memories/*.pkl
+memories/*.corrupted
