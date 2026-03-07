@@ -16,6 +16,7 @@ from core.streaming import build_ssl_context, should_retry, stream_chat_completi
 
 @dataclass
 class ToolCall:
+    stream_id: str
     index: int
     id: str
     name: str
@@ -40,7 +41,8 @@ class AgentTurnResult:
 
 
 class ToolCallAccumulator:
-    def __init__(self) -> None:
+    def __init__(self, pass_id: str) -> None:
+        self._pass_id = pass_id
         self._items: Dict[int, Dict[str, Any]] = {}
 
     def ingest(self, deltas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -50,6 +52,7 @@ class ToolCallAccumulator:
             item = self._items.setdefault(
                 index,
                 {
+                    "stream_id": f"{self._pass_id}_call_{index}",
                     "id": "",
                     "type": "function",
                     "function": {"name": "", "arguments": ""},
@@ -67,6 +70,7 @@ class ToolCallAccumulator:
             updates.append(
                 {
                     "index": index,
+                    "stream_id": item.get("stream_id", f"{self._pass_id}_call_{index}"),
                     "id": item.get("id", ""),
                     "name": item["function"].get("name", "").strip(),
                     "raw_arguments": item["function"].get("arguments", ""),
@@ -85,6 +89,7 @@ class ToolCallAccumulator:
                 args = {"_raw": raw_args}
             calls.append(
                 ToolCall(
+                    stream_id=item.get("stream_id", f"{self._pass_id}_call_{index}"),
                     index=index,
                     id=item.get("id") or f"call_{index}",
                     name=item["function"].get("name", "").strip(),
@@ -131,6 +136,14 @@ class Agent:
         )
 
         self.max_action_depth = int(agent_cfg.get("max_action_depth", 10))
+        self.max_tool_result_chars = int(agent_cfg.get("max_tool_result_chars", 12000))
+        self.max_reasoning_chars = max(0, int(agent_cfg.get("max_reasoning_chars", 20000)))
+        self.compact_tool_results_in_history = bool(agent_cfg.get("compact_tool_results_in_history", False))
+        compact_tools = agent_cfg.get("compact_tool_result_tools", [])
+        if isinstance(compact_tools, list):
+            self.compact_tool_result_tools = {str(name).strip() for name in compact_tools if str(name).strip()}
+        else:
+            self.compact_tool_result_tools = set()
         self.system_prompt = build_system_prompt(self.skill_runtime.workspace.workspace_root)
 
         context_cfg = config.get("context", {})
@@ -226,16 +239,78 @@ class Agent:
             payload["tool_choice"] = "auto"
         return payload
 
+    @staticmethod
+    def _safe_json_dumps(value: Any) -> str:
+        return json.dumps(value, ensure_ascii=False, default=str)
+
+    @staticmethod
+    def _truncate_text(text: str, limit: int) -> str:
+        if limit <= 0 or len(text) <= limit:
+            return text
+        clipped = text[:limit]
+        remaining = len(text) - limit
+        return f"{clipped}\n...[truncated {remaining} chars]"
+
+    def _compact_jsonish(self, value: Any, depth: int = 0) -> Any:
+        if depth >= 4:
+            return "[truncated]"
+        if isinstance(value, str):
+            return self._truncate_text(value, self.max_tool_result_chars)
+        if isinstance(value, list):
+            max_items = 80
+            out = [self._compact_jsonish(item, depth + 1) for item in value[:max_items]]
+            if len(value) > max_items:
+                out.append(f"... [{len(value) - max_items} more items truncated]")
+            return out
+        if isinstance(value, dict):
+            max_keys = 120
+            out: Dict[str, Any] = {}
+            items = list(value.items())
+            for key, item in items[:max_keys]:
+                out[str(key)] = self._compact_jsonish(item, depth + 1)
+            if len(items) > max_keys:
+                out["__truncated_keys__"] = len(items) - max_keys
+            return out
+        return value
+
+    def _compact_tool_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        if self.max_tool_result_chars <= 0:
+            return result
+        compacted = self._compact_jsonish(result)
+        if isinstance(compacted, dict):
+            return compacted
+        return {"value": compacted}
+
+    def _tool_result_for_history(self, tool_name: str, result: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.compact_tool_results_in_history:
+            return result
+        if self.compact_tool_result_tools and tool_name not in self.compact_tool_result_tools:
+            return result
+        return self._compact_tool_result(result)
+
+    def _append_reasoning(self, full_reasoning: str, delta_reasoning: str) -> str:
+        if not delta_reasoning:
+            return full_reasoning
+        if self.max_reasoning_chars <= 0:
+            return ""
+        if len(full_reasoning) >= self.max_reasoning_chars:
+            return full_reasoning
+        remaining = self.max_reasoning_chars - len(full_reasoning)
+        if len(delta_reasoning) <= remaining:
+            return full_reasoning + delta_reasoning
+        return full_reasoning + delta_reasoning[:remaining]
+
     def _stream_one_pass(
         self,
         payload: Dict[str, Any],
         stop_event,
         on_event: Optional[Callable[[Dict[str, Any]], None]],
+        pass_id: str,
     ) -> StreamPassResult:
         content_parts: List[str] = []
         reasoning_parts: List[str] = []
         finish_reason = "stop"
-        tool_acc = ToolCallAccumulator()
+        tool_acc = ToolCallAccumulator(pass_id=pass_id)
         tool_phase_started = False
 
         for chunk in stream_chat_completions(
@@ -275,7 +350,7 @@ class Agent:
                         on_event,
                         {
                             "type": "tool_call_delta",
-                            "stream_id": f"call_{update['index']}",
+                            "stream_id": update["stream_id"],
                             "id": update.get("id") or "",
                             "name": update.get("name") or "",
                             "raw_arguments": update.get("raw_arguments") or "",
@@ -285,18 +360,22 @@ class Agent:
             if choice.get("finish_reason"):
                 finish_reason = str(choice["finish_reason"])
 
+        tool_calls = tool_acc.finalize()
+        if tool_calls and finish_reason not in {"tool_calls", "cancelled"}:
+            finish_reason = "tool_calls"
+
         return StreamPassResult(
             finish_reason=finish_reason,
             content="".join(content_parts),
             reasoning="".join(reasoning_parts),
-            tool_calls=tool_acc.finalize(),
+            tool_calls=tool_calls,
         )
 
-    def _call_with_retry(self, payload: Dict[str, Any], stop_event, on_event):
+    def _call_with_retry(self, payload: Dict[str, Any], stop_event, on_event, pass_id: str):
         attempt = 0
         while True:
             try:
-                return self._stream_one_pass(payload, stop_event, on_event)
+                return self._stream_one_pass(payload, stop_event, on_event, pass_id=pass_id)
             except Exception as exc:
                 retryable = should_retry(exc)
                 if retryable and attempt < self.per_turn_retries:
@@ -340,8 +419,11 @@ class Agent:
         skill_exchanges: List[Dict[str, Any]] = []
         action_depth = 0
         full_reasoning = ""
+        pass_index = 0
 
         while True:
+            pass_index += 1
+            pass_id = f"pass_{pass_index}"
             if stop_event is not None and stop_event.is_set():
                 return AgentTurnResult(
                     status="cancelled",
@@ -359,7 +441,7 @@ class Agent:
             payload = self._build_payload(model_messages, thinking=thinking, tools=tools or None)
 
             try:
-                stream_result = self._call_with_retry(payload, stop_event, on_event)
+                stream_result = self._call_with_retry(payload, stop_event, on_event, pass_id=pass_id)
             except Exception as exc:
                 message = str(exc)
                 self._emit(on_event, {"type": "error", "text": message})
@@ -375,15 +457,16 @@ class Agent:
                 return AgentTurnResult(
                     status="cancelled",
                     content=stream_result.content,
-                    reasoning=full_reasoning + stream_result.reasoning,
+                    reasoning=self._append_reasoning(full_reasoning, stream_result.reasoning),
                     skill_exchanges=skill_exchanges,
                 )
 
-            full_reasoning += stream_result.reasoning
+            full_reasoning = self._append_reasoning(full_reasoning, stream_result.reasoning)
             self._emit(
                 on_event,
                 {
                     "type": "pass_end",
+                    "pass_id": pass_id,
                     "finish_reason": stream_result.finish_reason,
                     "has_content": bool(stream_result.content.strip()),
                     "has_tool_calls": bool(stream_result.tool_calls),
@@ -406,7 +489,7 @@ class Agent:
                         "type": "function",
                         "function": {
                             "name": call.name,
-                            "arguments": json.dumps(call.arguments, ensure_ascii=False),
+                            "arguments": self._safe_json_dumps(call.arguments),
                         },
                     }
                     for call in stream_result.tool_calls
@@ -435,7 +518,7 @@ class Agent:
                         on_event,
                         {
                             "type": "tool_call",
-                            "stream_id": f"call_{call.index}",
+                            "stream_id": call.stream_id,
                             "name": call.name,
                             "arguments": call.arguments,
                             "id": call.id,
@@ -460,11 +543,12 @@ class Agent:
                         },
                     )
 
+                    history_result = self._tool_result_for_history(call.name, result)
                     tool_message = {
                         "role": "tool",
                         "tool_call_id": call.id,
                         "name": call.name,
-                        "content": json.dumps(result, ensure_ascii=False),
+                        "content": self._safe_json_dumps(history_result),
                     }
                     dynamic_history.append(tool_message)
                     skill_exchanges.append(tool_message)
@@ -485,7 +569,12 @@ class Agent:
                 finalize_messages = self.context_mgr.prune(finalize_messages, self.context_budget_max_tokens)
                 finalize_payload = self._build_payload(finalize_messages, thinking=False, tools=None)
                 try:
-                    finalize_result = self._call_with_retry(finalize_payload, stop_event, on_event)
+                    finalize_result = self._call_with_retry(
+                        finalize_payload,
+                        stop_event,
+                        on_event,
+                        pass_id=f"{pass_id}_final",
+                    )
                 except Exception as exc:
                     message = str(exc)
                     self._emit(on_event, {"type": "error", "text": message})
@@ -501,18 +590,18 @@ class Agent:
                     return AgentTurnResult(
                         status="cancelled",
                         content="",
-                        reasoning=full_reasoning + finalize_result.reasoning,
+                        reasoning=self._append_reasoning(full_reasoning, finalize_result.reasoning),
                         skill_exchanges=skill_exchanges,
                     )
                 if finalize_result.finish_reason == "tool_calls":
                     return AgentTurnResult(
                         status="error",
                         content="",
-                        reasoning=full_reasoning + finalize_result.reasoning,
+                        reasoning=self._append_reasoning(full_reasoning, finalize_result.reasoning),
                         skill_exchanges=skill_exchanges,
                         error="Finalization pass unexpectedly returned tool calls",
                     )
-                full_reasoning += finalize_result.reasoning
+                full_reasoning = self._append_reasoning(full_reasoning, finalize_result.reasoning)
                 final = finalize_result.content
 
             self.skill_runtime.post_response(selected, ctx, final)

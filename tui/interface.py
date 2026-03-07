@@ -21,6 +21,10 @@ from core.attachments import build_content, classify_attachment
 from core.conv_tree import ConvTree, Turn
 
 DEFAULT_SAVE = "llamachat_tree.json"
+STREAMED_FILE_TOOLS = {"create_file", "edit_file"}
+MAX_LIVE_PREVIEW_CHARS = 12000
+MAX_LIVE_PREVIEW_LINES = 180
+MAX_REPLY_ACC_CHARS = 24000
 
 HELP_SECTIONS = [
     (
@@ -230,7 +234,7 @@ class AlphanusTUI(App):
 
         self._stop_event = threading.Event()
         self._active_turn_id: Optional[str] = None
-        self._reply_acc: List[str] = []
+        self._reply_acc = ""
         self._tool_activity_seen = False
         self._live_tool_streams: Dict[str, Dict[str, Any]] = {}
 
@@ -335,11 +339,19 @@ class AlphanusTUI(App):
     def _write_error(self, text: str) -> None:
         self._write(f"[bold red]  ✖ {esc(text)}[/bold red]")
 
+    def _append_reply_token(self, token: str) -> None:
+        if not token:
+            return
+        if len(self._reply_acc) >= MAX_REPLY_ACC_CHARS:
+            return
+        remaining = MAX_REPLY_ACC_CHARS - len(self._reply_acc)
+        self._reply_acc += token[:remaining]
+
     def _compact_tool_args(self, tool_name: str, args: Any) -> str:
         if not isinstance(args, dict):
             return str(args)
 
-        if tool_name in {"create_file", "edit_file"}:
+        if tool_name in STREAMED_FILE_TOOLS:
             filepath = str(args.get("filepath", ""))
             content = args.get("content", "")
             n_chars = len(content) if isinstance(content, str) else 0
@@ -413,7 +425,7 @@ class AlphanusTUI(App):
         return "".join(out), False
 
     def _update_live_tool_preview(self, stream_id: str, name: str, raw_arguments: str) -> None:
-        if name not in {"create_file", "edit_file"}:
+        if name not in STREAMED_FILE_TOOLS:
             return
         if not raw_arguments:
             return
@@ -427,8 +439,13 @@ class AlphanusTUI(App):
                 "closed": False,
                 "printed_len": 0,
                 "line_buf": "",
+                "rendered_chars": 0,
+                "rendered_lines": 0,
+                "truncated": False,
             },
         )
+        if state.get("name") != name:
+            state["name"] = name
         filepath, _ = self._extract_partial_json_string_field(raw_arguments, "filepath")
         if filepath:
             state["filepath"] = filepath
@@ -450,17 +467,38 @@ class AlphanusTUI(App):
         delta = content[prev_len:]
         state["printed_len"] = len(content)
 
-        if delta:
+        if delta and not state.get("truncated"):
             state["line_buf"] = str(state.get("line_buf", "")) + delta
             while "\n" in state["line_buf"]:
                 line, state["line_buf"] = state["line_buf"].split("\n", 1)
-                self._write_indented(esc(line), indent=2)
+                rendered_lines = int(state.get("rendered_lines", 0))
+                rendered_chars = int(state.get("rendered_chars", 0))
+                if rendered_lines >= MAX_LIVE_PREVIEW_LINES or rendered_chars >= MAX_LIVE_PREVIEW_CHARS:
+                    state["truncated"] = True
+                    state["line_buf"] = ""
+                    break
+                remaining_chars = MAX_LIVE_PREVIEW_CHARS - rendered_chars
+                out_line = line[:remaining_chars]
+                self._write_indented(esc(out_line), indent=2)
+                state["rendered_chars"] = rendered_chars + len(out_line) + 1
+                state["rendered_lines"] = rendered_lines + 1
+                if len(line) > remaining_chars:
+                    state["truncated"] = True
+                    state["line_buf"] = ""
+                    break
 
         if complete and not state["closed"]:
             tail = str(state.get("line_buf", ""))
-            if tail:
-                self._write_indented(esc(tail), indent=2)
+            if tail and not state.get("truncated"):
+                remaining_chars = MAX_LIVE_PREVIEW_CHARS - int(state.get("rendered_chars", 0))
+                if remaining_chars > 0:
+                    self._write_indented(esc(tail[:remaining_chars]), indent=2)
+                    state["rendered_chars"] = int(state.get("rendered_chars", 0)) + min(len(tail), remaining_chars)
+                if len(tail) > remaining_chars:
+                    state["truncated"] = True
                 state["line_buf"] = ""
+            if state.get("truncated"):
+                self._write_indented("[dim]... (live preview truncated) ...[/dim]", indent=2)
             self._write_indented("[dim]```[/dim]", indent=2)
             state["closed"] = True
 
@@ -470,15 +508,26 @@ class AlphanusTUI(App):
             return False
         if not state.get("closed"):
             tail = str(state.get("line_buf", ""))
-            if tail:
-                self._write_indented(esc(tail), indent=2)
+            if tail and not state.get("truncated"):
+                remaining_chars = MAX_LIVE_PREVIEW_CHARS - int(state.get("rendered_chars", 0))
+                if remaining_chars > 0:
+                    self._write_indented(esc(tail[:remaining_chars]), indent=2)
+                if len(tail) > remaining_chars:
+                    state["truncated"] = True
                 state["line_buf"] = ""
+            if state.get("truncated"):
+                self._write_indented("[dim]... (live preview truncated) ...[/dim]", indent=2)
             self._write_indented("[dim]```[/dim]", indent=2)
             state["closed"] = True
+        self._live_tool_streams.pop(stream_id, None)
         return True
 
+    def _close_all_live_tool_previews(self) -> None:
+        for stream_id in list(self._live_tool_streams.keys()):
+            self._close_live_tool_preview(stream_id)
+
     def _write_tool_content_preview(self, tool_name: str, args: Any) -> None:
-        if tool_name not in {"create_file", "edit_file"}:
+        if tool_name not in STREAMED_FILE_TOOLS:
             return
         if not isinstance(args, dict):
             return
@@ -644,7 +693,7 @@ class AlphanusTUI(App):
     def _start_stream(self, turn: Turn, user_input: str, attachment_paths: List[str]) -> None:
         self.streaming = True
         self._active_turn_id = turn.id
-        self._reply_acc = []
+        self._reply_acc = ""
         self._tool_activity_seen = False
         self._live_tool_streams = {}
         self._reasoning_open = False
@@ -732,7 +781,7 @@ class AlphanusTUI(App):
                     self._write("")
                     self._done_thinking_rendered = True
         self._buf_c += token
-        self._reply_acc.append(token)
+        self._append_reply_token(token)
         self._flush_content_buffer(include_partial=False)
 
     def _on_agent_event(self, event: Dict[str, Any]) -> None:
@@ -824,6 +873,8 @@ class AlphanusTUI(App):
         partial.update("")
         partial.display = False
 
+        self._close_all_live_tool_previews()
+
         if self._buf_r and not self._content_open:
             if not self._is_tool_trace_line(self._buf_r):
                 rendered, _ = _render_md(self._buf_r, False)
@@ -838,7 +889,7 @@ class AlphanusTUI(App):
 
         self._flush_content_buffer(include_partial=True)
 
-        reply = result.content if result.content else "".join(self._reply_acc)
+        reply = result.content if result.content else self._reply_acc
         if result.status == "done" and not self._content_open and reply.strip():
             in_fence = False
             for line in reply.splitlines() or [""]:

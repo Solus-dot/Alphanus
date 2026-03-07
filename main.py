@@ -35,6 +35,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_tokens": None,
         "context_budget_max_tokens": 1024,
         "max_action_depth": 10,
+        "max_tool_result_chars": 12000,
+        "max_reasoning_chars": 20000,
+        "compact_tool_results_in_history": False,
+        "compact_tool_result_tools": [],
     },
     "workspace": {
         "path": "~/Desktop/Alphanus-Workspace",

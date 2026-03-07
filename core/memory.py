@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 import pickle
 import tempfile
-import time
 import hashlib
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -34,7 +34,7 @@ class _HashEncoder:
         return np.asarray(vectors, dtype=np.float32)
 
 
-@dataclass
+@dataclass(slots=True)
 class MemoryItem:
     id: int
     text: str
@@ -52,13 +52,24 @@ class VectorMemory:
         storage_path: str,
         model_name: str = "all-MiniLM-L6-v2",
         min_score: float = 0.3,
+        persist_access_updates: bool = False,
+        autosave_interval_s: float = 2.0,
+        autosave_every: int = 24,
     ) -> None:
         self.storage_path = Path(os.path.expanduser(storage_path)).resolve()
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.model_name = model_name
         self.min_score = float(min_score)
+        self.persist_access_updates = bool(persist_access_updates)
+        self.autosave_interval_s = max(0.0, float(autosave_interval_s))
+        self.autosave_every = max(1, int(autosave_every))
+
         self.memories: List[MemoryItem] = []
         self._next_id = 1
+        self._dirty = False
+        self._pending_writes = 0
+        self._last_save_ts = 0.0
+
         self.encoder = self._load_encoder(model_name)
         self.dimension = int(getattr(self.encoder, "dim", 384))
         self._load()
@@ -86,7 +97,7 @@ class VectorMemory:
         try:
             with self.storage_path.open("rb") as handle:
                 payload = pickle.load(handle)
-        except (EOFError, pickle.UnpicklingError, AttributeError, ValueError) as exc:
+        except (EOFError, pickle.UnpicklingError, AttributeError, ValueError):
             broken = self.storage_path.with_suffix(self.storage_path.suffix + ".corrupted")
             self.storage_path.replace(broken)
             self.memories = []
@@ -111,6 +122,9 @@ class VectorMemory:
 
         self.memories = loaded
         self._next_id = max((m.id for m in loaded), default=0) + 1
+        self._dirty = False
+        self._pending_writes = 0
+        self._last_save_ts = time.time()
 
     def _save(self) -> None:
         payload = {
@@ -134,11 +148,30 @@ class VectorMemory:
         fd, tmp = tempfile.mkstemp(prefix=self.storage_path.name + ".", dir=str(self.storage_path.parent))
         try:
             with os.fdopen(fd, "wb") as handle:
-                pickle.dump(payload, handle)
+                pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
             os.replace(tmp, self.storage_path)
+            self._dirty = False
+            self._pending_writes = 0
+            self._last_save_ts = time.time()
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)
+
+    def _mark_dirty(self, force: bool = False) -> None:
+        self._dirty = True
+        self._pending_writes += 1
+        if force:
+            self._save()
+            return
+        if self._pending_writes >= self.autosave_every:
+            self._save()
+            return
+        if self.autosave_interval_s > 0 and (time.time() - self._last_save_ts) >= self.autosave_interval_s:
+            self._save()
+
+    def flush(self) -> None:
+        if self._dirty:
+            self._save()
 
     def add_memory(
         self,
@@ -164,7 +197,7 @@ class VectorMemory:
         )
         self._next_id += 1
         self.memories.append(item)
-        self._save()
+        self._mark_dirty(force=True)
         return self._to_public(item)
 
     def search(
@@ -182,6 +215,7 @@ class VectorMemory:
 
         scored = []
         now = time.time()
+        touched = False
         for item in self.memories:
             if memory_type and item.type != memory_type:
                 continue
@@ -199,11 +233,13 @@ class VectorMemory:
         for score, item in scored[: max(1, top_k)]:
             item.access_count += 1
             item.last_accessed = now
+            touched = True
             record = self._to_public(item)
             record["score"] = round(score, 4)
             out.append(record)
 
-        self._save()
+        if touched and self.persist_access_updates:
+            self._mark_dirty(force=False)
         return out
 
     def list_recent(self, count: int = 5) -> List[Dict[str, Any]]:
@@ -215,7 +251,7 @@ class VectorMemory:
         self.memories = [m for m in self.memories if m.id != int(memory_id)]
         changed = len(self.memories) != before
         if changed:
-            self._save()
+            self._mark_dirty(force=True)
         return changed
 
     def stats(self) -> Dict[str, Any]:
@@ -257,3 +293,9 @@ class VectorMemory:
             "access_count": item.access_count,
             "last_accessed": item.last_accessed,
         }
+
+    def __del__(self) -> None:
+        try:
+            self.flush()
+        except Exception:
+            pass

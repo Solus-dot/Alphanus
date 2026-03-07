@@ -253,3 +253,241 @@ def test_agent_transport_error_marks_error(mocker, runtime: SkillRuntime):
     )
 
     assert result.status == "error"
+
+
+def test_agent_infers_tool_calls_when_finish_reason_missing(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    chat_reqs = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
+            # Backend bug: emits tool_calls but final reason is "stop".
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\\"a.txt\\\", \\\"content\\\": \\\"hello\\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        if len(chat_reqs) == 2:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"Done"}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        raise AssertionError("Unexpected extra completion call")
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "write a file"}],
+        user_input="write a file",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert any(msg.get("role") == "tool" for msg in result.skill_exchanges)
+
+
+def test_agent_emits_unique_tool_stream_ids_per_pass(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    chat_reqs = []
+    events = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\\"a.txt\\\", \\\"content\\\": \\\"hello\\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        if len(chat_reqs) == 2:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\\"b.txt\\\", \\\"content\\\": \\\"world\\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        if len(chat_reqs) == 3:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"Done"}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        raise AssertionError("Unexpected extra completion call")
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "write files"}],
+        user_input="write files",
+        thinking=True,
+        on_event=events.append,
+    )
+
+    assert result.status == "done"
+    stream_ids = [evt.get("stream_id") for evt in events if evt.get("type") == "tool_call"]
+    assert len(stream_ids) == 2
+    assert len(set(stream_ids)) == 2
+
+
+def test_tool_result_history_not_compacted_by_default(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+    huge_text = "x" * 24000
+
+    chat_reqs = []
+
+    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None):
+        return {"ok": True, "data": {"blob": huge_text}, "error": None, "meta": {}}
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\\"a.txt\\\", \\\"content\\\": \\\"hello\\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        if len(chat_reqs) == 2:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"Done"}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        raise AssertionError("Unexpected extra completion call")
+
+    mocker.patch.object(runtime, "execute_tool_call", side_effect=fake_execute_tool_call)
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "write"}],
+        user_input="write",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    second_payload = json.loads(chat_reqs[1].data.decode("utf-8"))
+    tool_msgs = [msg for msg in second_payload["messages"] if msg.get("role") == "tool"]
+    assert tool_msgs
+    assert huge_text in tool_msgs[-1]["content"]
+
+
+def test_tool_result_history_compaction_can_be_gated_by_tool_name(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+            "compact_tool_results_in_history": True,
+            "compact_tool_result_tools": ["create_file"],
+            "max_tool_result_chars": 200,
+        }
+    }
+    agent = Agent(cfg, runtime)
+    huge_text = "y" * 6000
+
+    chat_reqs = []
+
+    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None):
+        return {"ok": True, "data": {"blob": huge_text}, "error": None, "meta": {}}
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\\"a.txt\\\", \\\"content\\\": \\\"hello\\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        if len(chat_reqs) == 2:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"Done"}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        raise AssertionError("Unexpected extra completion call")
+
+    mocker.patch.object(runtime, "execute_tool_call", side_effect=fake_execute_tool_call)
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "write"}],
+        user_input="write",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    second_payload = json.loads(chat_reqs[1].data.decode("utf-8"))
+    tool_msgs = [msg for msg in second_payload["messages"] if msg.get("role") == "tool"]
+    assert tool_msgs
+    tool_content = tool_msgs[-1]["content"]
+    assert "truncated" in tool_content
+    assert huge_text not in tool_content
