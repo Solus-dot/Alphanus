@@ -131,15 +131,6 @@ class Agent:
         )
 
         self.max_action_depth = int(agent_cfg.get("max_action_depth", 10))
-        self.fast_tool_finalize = bool(agent_cfg.get("fast_tool_finalize", True))
-        raw_fast_tools = agent_cfg.get(
-            "fast_finalize_tools",
-            ["create_file", "edit_file", "delete_file"],
-        )
-        if isinstance(raw_fast_tools, list):
-            self.fast_finalize_tools = {str(name).strip() for name in raw_fast_tools if str(name).strip()}
-        else:
-            self.fast_finalize_tools = {"create_file", "edit_file", "delete_file"}
         self.system_prompt = build_system_prompt(self.skill_runtime.workspace.workspace_root)
 
         context_cfg = config.get("context", {})
@@ -206,41 +197,6 @@ class Agent:
             workspace_root=str(self.skill_runtime.workspace.workspace_root),
             memory_hits=hits,
         )
-
-    def _build_fast_finalize_response(self, calls: List[ToolCall], results: List[Dict[str, Any]]) -> Optional[str]:
-        if not self.fast_tool_finalize:
-            return None
-        if not calls or len(calls) != len(results):
-            return None
-
-        lines: List[str] = []
-        for call, result in zip(calls, results):
-            if call.name not in self.fast_finalize_tools:
-                return None
-            if not result.get("ok"):
-                return None
-
-            filepath = ""
-            if isinstance(result.get("data"), dict):
-                filepath = str(result["data"].get("filepath", "") or "")
-
-            if call.name == "create_file":
-                verb = "Created"
-            elif call.name == "edit_file":
-                verb = "Updated"
-            elif call.name == "delete_file":
-                verb = "Deleted"
-            else:
-                verb = "Completed"
-
-            if filepath:
-                lines.append(f"{verb} `{filepath}`.")
-            else:
-                lines.append(f"{verb} via `{call.name}`.")
-
-        if len(lines) == 1:
-            return lines[0]
-        return "Applied requested file changes:\n" + "\n".join(f"- {line}" for line in lines)
 
     def _stream_one_pass(
         self,
@@ -449,7 +405,6 @@ class Agent:
                 dynamic_history.append(assistant_msg)
                 skill_exchanges.append(assistant_msg)
 
-                batch_results: List[Dict[str, Any]] = []
                 for call in stream_result.tool_calls:
                     action_depth += 1
                     if action_depth > self.max_action_depth:
@@ -489,7 +444,6 @@ class Agent:
                             "result": result,
                         },
                     )
-                    batch_results.append(result)
 
                     tool_message = {
                         "role": "tool",
@@ -499,16 +453,6 @@ class Agent:
                     }
                     dynamic_history.append(tool_message)
                     skill_exchanges.append(tool_message)
-
-                fast_reply = self._build_fast_finalize_response(stream_result.tool_calls, batch_results)
-                if fast_reply is not None:
-                    self.skill_runtime.post_response(selected, ctx, fast_reply)
-                    return AgentTurnResult(
-                        status="done",
-                        content=fast_reply,
-                        reasoning=full_reasoning,
-                        skill_exchanges=skill_exchanges,
-                    )
 
                 continue
 

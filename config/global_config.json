@@ -13,13 +13,7 @@
     "allow_cross_host_endpoints": false,
     "max_tokens": null,
     "context_budget_max_tokens": 1024,
-    "max_action_depth": 10,
-    "fast_tool_finalize": true,
-    "fast_finalize_tools": [
-      "create_file",
-      "edit_file",
-      "delete_file"
-    ]
+    "max_action_depth": 10
   },
   "workspace": {
     "path": "~/Desktop/Alphanus-Workspace"

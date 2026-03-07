@@ -858,9 +858,6 @@ agent
   enable_thinking     - Default thinking state at startup (default: true)
   max_tokens          - Optional max output tokens (null disables cap)
   max_action_depth    - Max tool/action depth per turn (default: 10)
-  fast_tool_finalize  - Skip extra completion after successful write-only tool batches (default: true)
-  fast_finalize_tools - Tool names eligible for fast finalize
-                        (default: ["create_file","edit_file","delete_file"])
 
 context
   context_limit       - Approx context window size used for pruning
@@ -1214,8 +1211,7 @@ Required loop behavior:
 2. Parse streaming chunks and assemble fragmented `tool_calls` by `index`.
 3. When `finish_reason == "tool_calls"`, execute calls in order.
 4. Append assistant `tool_calls` message + `role:"tool"` results to history.
-5. If all executed calls are successful write-only actions and `agent.fast_tool_finalize=true`, return a local completion summary and stop.
-6. Otherwise continue until `finish_reason == "stop"`.
+5. Continue until `finish_reason == "stop"`.
 
 Safety invariant: if skills permit an action but no adapter exists, fail closed with structured error.
 

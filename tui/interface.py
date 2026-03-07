@@ -233,9 +233,12 @@ class AlphanusTUI(App):
         self._reply_acc: List[str] = []
         self._tool_activity_seen = False
         self._live_tool_streams: Dict[str, Dict[str, Any]] = {}
+        self._tool_result_seen = False
+        self._reasoning_as_content_mode = False
 
         self._reasoning_open = False
         self._content_open = False
+        self._done_thinking_rendered = False
         self._buf_r = ""
         self._buf_c = ""
         self._in_fence = False
@@ -355,7 +358,7 @@ class AlphanusTUI(App):
 
     def _is_tool_trace_line(self, line: str) -> bool:
         s = line.strip().lower()
-        return s.startswith("tool call:") or s.startswith(". tool call:")
+        return "tool call:" in s
 
     def _extract_partial_json_string_field(self, raw: str, key: str) -> Tuple[Optional[str], bool]:
         marker = f'"{key}"'
@@ -646,8 +649,11 @@ class AlphanusTUI(App):
         self._reply_acc = []
         self._tool_activity_seen = False
         self._live_tool_streams = {}
+        self._tool_result_seen = False
+        self._reasoning_as_content_mode = False
         self._reasoning_open = False
         self._content_open = False
+        self._done_thinking_rendered = False
         self._buf_r = ""
         self._buf_c = ""
         self._in_fence = False
@@ -712,8 +718,10 @@ class AlphanusTUI(App):
             self._content_open = True
             if self._reasoning_open:
                 self._flush_reasoning_buffer()
-                self._write("[bold #5f87d7]· done thinking[/bold #5f87d7]")
-                self._write("")
+                if not self._done_thinking_rendered:
+                    self._write("[bold #5f87d7]· done thinking[/bold #5f87d7]")
+                    self._write("")
+                    self._done_thinking_rendered = True
         self._buf_c += token
         self._reply_acc.append(token)
         while "\n" in self._buf_c:
@@ -731,7 +739,15 @@ class AlphanusTUI(App):
 
         if etype == "reasoning_token":
             token = event.get("text", "")
-            if self._tool_activity_seen and not self._content_open:
+            if self._reasoning_as_content_mode:
+                self._handle_content_token(token)
+                now = time.monotonic()
+                if now - self._last_scroll >= self._scroll_interval:
+                    self._scroll().scroll_end(animate=False)
+                    self._last_scroll = now
+                return
+            if self._tool_result_seen and not self._content_open:
+                self._reasoning_as_content_mode = True
                 self._handle_content_token(token)
                 now = time.monotonic()
                 if now - self._last_scroll >= self._scroll_interval:
@@ -759,6 +775,11 @@ class AlphanusTUI(App):
 
         elif etype == "tool_phase_started":
             self._tool_activity_seen = True
+            self._reasoning_as_content_mode = False
+            # Preserve and commit any in-progress reasoning line before we clear
+            # provisional state for tool activity.
+            if self._reasoning_open:
+                self._flush_reasoning_buffer()
             self._reset_provisional_content()
 
         elif etype == "tool_call_delta":
@@ -784,6 +805,7 @@ class AlphanusTUI(App):
 
         elif etype == "tool_result":
             self._tool_activity_seen = True
+            self._tool_result_seen = True
             self._flush_reasoning_buffer()
             name = event.get("name", "tool")
             result = event.get("result", {})
@@ -816,8 +838,10 @@ class AlphanusTUI(App):
             self._buf_r = ""
 
         if self._reasoning_open and not self._content_open:
-            self._write("[bold #5f87d7]· done thinking[/bold #5f87d7]")
-            self._write("")
+            if not self._done_thinking_rendered:
+                self._write("[bold #5f87d7]· done thinking[/bold #5f87d7]")
+                self._write("")
+                self._done_thinking_rendered = True
 
         if self._buf_c:
             if not self._is_tool_trace_line(self._buf_c):
@@ -827,6 +851,13 @@ class AlphanusTUI(App):
             self._buf_c = ""
 
         reply = result.content if result.content else "".join(self._reply_acc)
+        if result.status == "done" and not self._content_open and reply.strip():
+            in_fence = False
+            for line in reply.splitlines() or [""]:
+                rendered, in_fence = _render_md(line, in_fence)
+                indent = 2 if in_fence else max(2, _hanging_indent(line))
+                self._write_indented(rendered, indent=indent)
+
         if turn_id in self.conv_tree.nodes:
             for msg in result.skill_exchanges:
                 self.conv_tree.append_skill_exchange(turn_id, msg)
