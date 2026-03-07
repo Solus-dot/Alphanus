@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import pickle
 import time
 from pathlib import Path
@@ -18,6 +19,16 @@ def _fake_encode(self, text: str):
     if norm > 0:
         vec /= norm
     return vec
+
+
+def _load_memory_tools_module():
+    root = Path(__file__).resolve().parent.parent
+    tools_path = root / "skills" / "memory-rag" / "tools.py"
+    spec = importlib.util.spec_from_file_location("memory_rag_tools", tools_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_add_search_forget(monkeypatch, tmp_path: Path):
@@ -71,3 +82,72 @@ def test_empty_search_does_not_force_disk_write(tmp_path: Path):
     mem = VectorMemory(storage_path=str(path))
     assert mem.search("anything") == []
     assert not path.exists()
+
+
+def test_store_memory_auto_replaces_conflicting_user_name(monkeypatch, tmp_path: Path):
+    tools = _load_memory_tools_module()
+    mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"))
+    monkeypatch.setattr(VectorMemory, "_encode", _fake_encode, raising=False)
+
+    class Env:
+        memory = mem
+
+    first = tools.execute("store_memory", {"text": "User's name is Sohom"}, Env())
+    assert first["ok"] is True
+    old_id = int(first["data"]["id"])
+
+    second = tools.execute("store_memory", {"text": "User's name is Solus"}, Env())
+    assert second["ok"] is True
+    assert old_id in second["meta"].get("forgotten_ids", [])
+
+    texts = [m["text"] for m in mem.list_recent(10)]
+    assert "User's name is Sohom" not in texts
+    assert "User's name is Solus" in texts
+
+
+def test_store_memory_auto_replaces_conflicting_attribute(monkeypatch, tmp_path: Path):
+    tools = _load_memory_tools_module()
+    mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"))
+    monkeypatch.setattr(VectorMemory, "_encode", _fake_encode, raising=False)
+
+    class Env:
+        memory = mem
+
+    first = tools.execute("store_memory", {"text": "My favorite editor is Vim"}, Env())
+    assert first["ok"] is True
+    old_id = int(first["data"]["id"])
+
+    second = tools.execute("store_memory", {"text": "My favorite editor is Neovim"}, Env())
+    assert second["ok"] is True
+    assert old_id in second["meta"].get("forgotten_ids", [])
+    assert second["meta"].get("auto_resolution") == "user.favorite_editor"
+
+    texts = [m["text"] for m in mem.list_recent(10)]
+    assert "My favorite editor is Vim" not in texts
+    assert "My favorite editor is Neovim" in texts
+
+
+def test_store_memory_replace_query_can_replace_non_fact(monkeypatch, tmp_path: Path):
+    tools = _load_memory_tools_module()
+    mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"))
+    monkeypatch.setattr(VectorMemory, "_encode", _fake_encode, raising=False)
+
+    class Env:
+        memory = mem
+
+    first = tools.execute("store_memory", {"text": "My go-to stack: Flask + SQLite"}, Env())
+    assert first["ok"] is True
+    old_id = int(first["data"]["id"])
+
+    second = tools.execute(
+        "store_memory",
+        {
+            "text": "My go-to stack: FastAPI + Postgres",
+            "replace_query": "go-to stack",
+            "replace_min_score": 0.0,
+        },
+        Env(),
+    )
+    assert second["ok"] is True
+    assert old_id in second["meta"].get("forgotten_ids", [])
+    assert second["meta"].get("auto_resolution") == "replace_query"

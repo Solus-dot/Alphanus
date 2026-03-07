@@ -148,6 +148,82 @@ def test_agent_tool_call_loop(mocker, runtime: SkillRuntime):
     assert "min_p" not in body
     assert "repetition_penalty" not in body
 
+
+def test_agent_requests_final_answer_if_post_tool_content_empty(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    chat_reqs = []
+    events = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\\"a.txt\\\", \\\"content\\\": \\\"hello\\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        if len(chat_reqs) == 2:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"reasoning_content":"I should now answer the user."}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        if len(chat_reqs) == 3:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"Done"}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        raise AssertionError("Unexpected extra completion call")
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "write a file"}],
+        user_input="write a file",
+        thinking=True,
+        on_event=events.append,
+    )
+
+    assert result.status == "done"
+    assert result.content == "Done"
+    assert len(chat_reqs) == 3
+
+    finalize_payload = json.loads(chat_reqs[2].data.decode("utf-8"))
+    assert finalize_payload.get("chat_template_kwargs", {}).get("enable_thinking") is False
+    assert "tools" not in finalize_payload
+    assert "tool_choice" not in finalize_payload
+    assert any(evt.get("type") == "reasoning_token" for evt in events)
+    assert any(
+        evt.get("type") == "pass_end"
+        and evt.get("finish_reason") == "stop"
+        and not evt.get("has_content")
+        and not evt.get("has_tool_calls")
+        for evt in events
+    )
+
+
 def test_agent_transport_error_marks_error(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {

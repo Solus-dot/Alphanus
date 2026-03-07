@@ -233,8 +233,6 @@ class AlphanusTUI(App):
         self._reply_acc: List[str] = []
         self._tool_activity_seen = False
         self._live_tool_streams: Dict[str, Dict[str, Any]] = {}
-        self._tool_result_seen = False
-        self._reasoning_as_content_mode = False
 
         self._reasoning_open = False
         self._content_open = False
@@ -649,8 +647,6 @@ class AlphanusTUI(App):
         self._reply_acc = []
         self._tool_activity_seen = False
         self._live_tool_streams = {}
-        self._tool_result_seen = False
-        self._reasoning_as_content_mode = False
         self._reasoning_open = False
         self._content_open = False
         self._done_thinking_rendered = False
@@ -697,21 +693,34 @@ class AlphanusTUI(App):
         if not self._buf_r:
             self._partial().update("")
             return
-        if self._is_tool_trace_line(self._buf_r):
-            self._buf_r = ""
-            self._partial().update("")
-            return
-        rendered, _ = _render_md(self._buf_r, False)
-        self._write_indented(f"[dim]{rendered}[/dim]", indent=4)
+        text = self._buf_r
         self._buf_r = ""
         self._partial().update("")
+        for line in text.splitlines():
+            if self._is_tool_trace_line(line):
+                continue
+            rendered, _ = _render_md(line, False)
+            self._write_indented(f"[dim]{rendered}[/dim]", indent=4)
 
-    def _reset_provisional_content(self) -> None:
-        """Drop pre-tool provisional content from the current pass."""
-        self._buf_c = ""
-        self._reply_acc = []
-        self._content_open = False
-        self._partial().update("")
+    def _flush_content_buffer(self, include_partial: bool = False) -> None:
+        while "\n" in self._buf_c:
+            line, self._buf_c = self._buf_c.split("\n", 1)
+            if self._is_tool_trace_line(line):
+                continue
+            rendered, self._in_fence = _render_md(line, self._in_fence)
+            indent = 2 if self._in_fence else max(2, _hanging_indent(line))
+            self._write_indented(rendered, indent=indent)
+
+        if include_partial and self._buf_c:
+            if not self._is_tool_trace_line(self._buf_c):
+                rendered, self._in_fence = _render_md(self._buf_c, self._in_fence)
+                indent = 2 if self._in_fence else max(2, _hanging_indent(self._buf_c))
+                self._write_indented(rendered, indent=indent)
+            self._buf_c = ""
+            self._partial().update("")
+            return
+
+        self._partial().update(f"  {esc(self._buf_c)}" if self._buf_c else "")
 
     def _handle_content_token(self, token: str) -> None:
         if not self._content_open:
@@ -724,14 +733,7 @@ class AlphanusTUI(App):
                     self._done_thinking_rendered = True
         self._buf_c += token
         self._reply_acc.append(token)
-        while "\n" in self._buf_c:
-            line, self._buf_c = self._buf_c.split("\n", 1)
-            if self._is_tool_trace_line(line):
-                continue
-            rendered, self._in_fence = _render_md(line, self._in_fence)
-            indent = 2 if self._in_fence else max(2, _hanging_indent(line))
-            self._write_indented(rendered, indent=indent)
-        self._partial().update(f"  {esc(self._buf_c)}" if self._buf_c else "")
+        self._flush_content_buffer(include_partial=False)
 
     def _on_agent_event(self, event: Dict[str, Any]) -> None:
         partial = self._partial()
@@ -739,35 +741,18 @@ class AlphanusTUI(App):
 
         if etype == "reasoning_token":
             token = event.get("text", "")
-            if self._reasoning_as_content_mode:
-                self._handle_content_token(token)
-                now = time.monotonic()
-                if now - self._last_scroll >= self._scroll_interval:
-                    self._scroll().scroll_end(animate=False)
-                    self._last_scroll = now
-                return
-            if self._tool_result_seen and not self._content_open:
-                self._reasoning_as_content_mode = True
-                self._handle_content_token(token)
-                now = time.monotonic()
-                if now - self._last_scroll >= self._scroll_interval:
-                    self._scroll().scroll_end(animate=False)
-                    self._last_scroll = now
-                return
             if not self._reasoning_open:
                 self._reasoning_open = True
                 self._write("[bold #5f87d7]· thinking[/bold #5f87d7]")
             self._buf_r += token
-            while "\n" in self._buf_r:
-                line, self._buf_r = self._buf_r.split("\n", 1)
-                if self._is_tool_trace_line(line):
-                    continue
-                rendered, _ = _render_md(line, False)
-                self._write_indented(f"[dim]{rendered}[/dim]", indent=4)
-            if self._is_tool_trace_line(self._buf_r):
-                partial.update("")
-            else:
-                partial.update(f"[dim]  {esc(self._buf_r)}[/dim]" if self._buf_r else "")
+            display = self._buf_r
+            if "\n" in display:
+                prefix, last = display.rsplit("\n", 1)
+                if self._is_tool_trace_line(last):
+                    display = prefix + ("\n" if prefix else "")
+            elif self._is_tool_trace_line(display):
+                display = ""
+            partial.update(f"[dim]  {esc(display)}[/dim]" if display else "")
 
         elif etype == "content_token":
             token = event.get("text", "")
@@ -775,12 +760,11 @@ class AlphanusTUI(App):
 
         elif etype == "tool_phase_started":
             self._tool_activity_seen = True
-            self._reasoning_as_content_mode = False
-            # Preserve and commit any in-progress reasoning line before we clear
-            # provisional state for tool activity.
+            # Preserve in-progress text before tool call deltas start.
             if self._reasoning_open:
                 self._flush_reasoning_buffer()
-            self._reset_provisional_content()
+            self._flush_content_buffer(include_partial=True)
+            self._content_open = False
 
         elif etype == "tool_call_delta":
             self._tool_activity_seen = True
@@ -805,7 +789,6 @@ class AlphanusTUI(App):
 
         elif etype == "tool_result":
             self._tool_activity_seen = True
-            self._tool_result_seen = True
             self._flush_reasoning_buffer()
             name = event.get("name", "tool")
             result = event.get("result", {})
@@ -820,6 +803,16 @@ class AlphanusTUI(App):
 
         elif etype == "info":
             self._write_info(str(event.get("text", "")))
+
+        elif etype == "pass_end":
+            finish_reason = str(event.get("finish_reason") or "")
+            has_content = bool(event.get("has_content"))
+            has_tool_calls = bool(event.get("has_tool_calls"))
+            # Some llama-server/model passes end with reasoning-only stop and no
+            # visible output. Drop that provisional reasoning so it doesn't leak.
+            if finish_reason in {"stop", "length"} and not has_content and not has_tool_calls:
+                self._buf_r = ""
+                partial.update("")
 
         now = time.monotonic()
         if now - self._last_scroll >= self._scroll_interval:
@@ -843,12 +836,7 @@ class AlphanusTUI(App):
                 self._write("")
                 self._done_thinking_rendered = True
 
-        if self._buf_c:
-            if not self._is_tool_trace_line(self._buf_c):
-                rendered, _ = _render_md(self._buf_c, self._in_fence)
-                indent = 2 if self._in_fence else max(2, _hanging_indent(self._buf_c))
-                self._write_indented(rendered, indent=indent)
-            self._buf_c = ""
+        self._flush_content_buffer(include_partial=True)
 
         reply = result.content if result.content else "".join(self._reply_acc)
         if result.status == "done" and not self._content_open and reply.strip():

@@ -198,6 +198,34 @@ class Agent:
             memory_hits=hits,
         )
 
+    def _compose_system_content(self, selected: List[Any], ctx: SkillContext) -> str:
+        skill_block = self.skill_runtime.compose_skill_block(
+            selected,
+            ctx,
+            context_limit=self.context_mgr.context_limit,
+        )
+        if not skill_block:
+            return self.system_prompt
+        return f"{self.system_prompt}\n\nActive skill guidance:\n\n{skill_block}"
+
+    def _build_payload(
+        self,
+        model_messages: List[Dict[str, Any]],
+        thinking: bool,
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "messages": model_messages,
+            "stream": True,
+            "chat_template_kwargs": {"enable_thinking": bool(thinking)},
+        }
+        if self.default_max_tokens is not None:
+            payload["max_tokens"] = self.default_max_tokens
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        return payload
+
     def _stream_one_pass(
         self,
         payload: Dict[str, Any],
@@ -322,35 +350,13 @@ class Agent:
                     skill_exchanges=skill_exchanges,
                 )
 
-            skill_block = self.skill_runtime.compose_skill_block(
-                selected,
-                ctx,
-                context_limit=self.context_mgr.context_limit,
-            )
-
-            system_content = self.system_prompt
-            if skill_block:
-                system_content = (
-                    f"{self.system_prompt}\n\n"
-                    f"Active skill guidance:\n\n{skill_block}"
-                )
+            system_content = self._compose_system_content(selected, ctx)
             system_messages = [{"role": "system", "content": system_content}]
 
             model_messages = system_messages + dynamic_history
             model_messages = self.context_mgr.prune(model_messages, self.context_budget_max_tokens)
-
-            payload = {
-                "messages": model_messages,
-                "stream": True,
-                "chat_template_kwargs": {"enable_thinking": bool(thinking)},
-            }
-            if self.default_max_tokens is not None:
-                payload["max_tokens"] = self.default_max_tokens
-
             tools = self.skill_runtime.tools_for_skills(selected)
-            if tools:
-                payload["tools"] = tools
-                payload["tool_choice"] = "auto"
+            payload = self._build_payload(model_messages, thinking=thinking, tools=tools or None)
 
             try:
                 stream_result = self._call_with_retry(payload, stop_event, on_event)
@@ -374,6 +380,15 @@ class Agent:
                 )
 
             full_reasoning += stream_result.reasoning
+            self._emit(
+                on_event,
+                {
+                    "type": "pass_end",
+                    "finish_reason": stream_result.finish_reason,
+                    "has_content": bool(stream_result.content.strip()),
+                    "has_tool_calls": bool(stream_result.tool_calls),
+                },
+            )
 
             if stream_result.finish_reason == "tool_calls":
                 if not stream_result.tool_calls:
@@ -458,6 +473,48 @@ class Agent:
 
             # stop or length: final answer produced
             final = stream_result.content
+            if not final.strip():
+                finalize_system = (
+                    system_content
+                    + "\n\nFinalization rule:\n"
+                    + "- Provide only the final user-facing answer using prior tool results.\n"
+                    + "- Do not call tools.\n"
+                    + "- Do not include hidden reasoning."
+                )
+                finalize_messages = [{"role": "system", "content": finalize_system}] + dynamic_history
+                finalize_messages = self.context_mgr.prune(finalize_messages, self.context_budget_max_tokens)
+                finalize_payload = self._build_payload(finalize_messages, thinking=False, tools=None)
+                try:
+                    finalize_result = self._call_with_retry(finalize_payload, stop_event, on_event)
+                except Exception as exc:
+                    message = str(exc)
+                    self._emit(on_event, {"type": "error", "text": message})
+                    return AgentTurnResult(
+                        status="error",
+                        content="",
+                        reasoning=full_reasoning,
+                        skill_exchanges=skill_exchanges,
+                        error=message,
+                    )
+
+                if finalize_result.finish_reason == "cancelled":
+                    return AgentTurnResult(
+                        status="cancelled",
+                        content="",
+                        reasoning=full_reasoning + finalize_result.reasoning,
+                        skill_exchanges=skill_exchanges,
+                    )
+                if finalize_result.finish_reason == "tool_calls":
+                    return AgentTurnResult(
+                        status="error",
+                        content="",
+                        reasoning=full_reasoning + finalize_result.reasoning,
+                        skill_exchanges=skill_exchanges,
+                        error="Finalization pass unexpectedly returned tool calls",
+                    )
+                full_reasoning += finalize_result.reasoning
+                final = finalize_result.content
+
             self.skill_runtime.post_response(selected, ctx, final)
             return AgentTurnResult(
                 status="done",
