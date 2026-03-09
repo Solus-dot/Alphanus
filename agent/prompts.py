@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 
 def build_system_prompt(workspace_root: str) -> str:
     ws = str(Path(workspace_root).resolve())
+    current_date = datetime.now().astimezone().date().isoformat()
     return f"""
 You are Alphanus, a personal on-device coding assistant.
 
 Identity and workspace context:
+- Current date: {current_date}
 - Primary workspace: {ws}
 - You should prefer writing concrete files in the workspace when asked for code.
 

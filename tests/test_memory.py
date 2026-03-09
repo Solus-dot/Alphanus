@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import pickle
 import time
 from pathlib import Path
@@ -9,6 +8,8 @@ from pathlib import Path
 import numpy as np
 
 from core.memory import VectorMemory, _HashEncoder
+from core.skills import SkillContext, SkillRuntime
+from core.workspace import WorkspaceManager
 
 
 def _fake_encode(self, text: str):
@@ -21,14 +22,19 @@ def _fake_encode(self, text: str):
     return vec
 
 
-def _load_memory_tools_module():
-    root = Path(__file__).resolve().parent.parent
-    tools_path = root / "skills" / "memory-rag" / "scripts" / "ops.py"
-    spec = importlib.util.spec_from_file_location("memory_rag_tools", tools_path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def _memory_runtime(tmp_path: Path) -> tuple[SkillRuntime, str]:
+    repo_root = Path(__file__).resolve().parents[1]
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+    runtime = SkillRuntime(
+        skills_dir=str(repo_root / "skills"),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={},
+    )
+    return runtime, str(ws)
 
 
 def test_add_search_forget(monkeypatch, tmp_path: Path):
@@ -84,60 +90,66 @@ def test_empty_search_does_not_force_disk_write(tmp_path: Path):
     assert not path.exists()
 
 
-def test_store_memory_auto_replaces_conflicting_user_name(monkeypatch, tmp_path: Path):
-    tools = _load_memory_tools_module()
-    mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"))
-    monkeypatch.setattr(VectorMemory, "_encode", _fake_encode, raising=False)
+def test_store_memory_auto_replaces_conflicting_user_name(tmp_path: Path):
+    runtime, ws = _memory_runtime(tmp_path)
+    skill = runtime.get_skill("memory-rag")
+    assert skill is not None
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
 
-    first = tools._run("store_memory", {"text": "User's name is Sohom"}, mem)
+    first = runtime.execute_tool_call("store_memory", {"text": "User's name is Sohom"}, selected=[skill], ctx=ctx)
     assert first["ok"] is True
     old_id = int(first["data"]["id"])
 
-    second = tools._run("store_memory", {"text": "User's name is Solus"}, mem)
+    second = runtime.execute_tool_call("store_memory", {"text": "User's name is Solus"}, selected=[skill], ctx=ctx)
     assert second["ok"] is True
     assert old_id in second["meta"].get("forgotten_ids", [])
 
+    mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"))
     texts = [m["text"] for m in mem.list_recent(10)]
     assert "User's name is Sohom" not in texts
     assert "User's name is Solus" in texts
 
 
-def test_store_memory_auto_replaces_conflicting_attribute(monkeypatch, tmp_path: Path):
-    tools = _load_memory_tools_module()
-    mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"))
-    monkeypatch.setattr(VectorMemory, "_encode", _fake_encode, raising=False)
+def test_store_memory_auto_replaces_conflicting_attribute(tmp_path: Path):
+    runtime, ws = _memory_runtime(tmp_path)
+    skill = runtime.get_skill("memory-rag")
+    assert skill is not None
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
 
-    first = tools._run("store_memory", {"text": "My favorite editor is Vim"}, mem)
+    first = runtime.execute_tool_call("store_memory", {"text": "My favorite editor is Vim"}, selected=[skill], ctx=ctx)
     assert first["ok"] is True
     old_id = int(first["data"]["id"])
 
-    second = tools._run("store_memory", {"text": "My favorite editor is Neovim"}, mem)
+    second = runtime.execute_tool_call("store_memory", {"text": "My favorite editor is Neovim"}, selected=[skill], ctx=ctx)
     assert second["ok"] is True
     assert old_id in second["meta"].get("forgotten_ids", [])
     assert second["meta"].get("auto_resolution") == "user.favorite_editor"
 
+    mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"))
     texts = [m["text"] for m in mem.list_recent(10)]
     assert "My favorite editor is Vim" not in texts
     assert "My favorite editor is Neovim" in texts
 
 
-def test_store_memory_replace_query_can_replace_non_fact(monkeypatch, tmp_path: Path):
-    tools = _load_memory_tools_module()
-    mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"))
-    monkeypatch.setattr(VectorMemory, "_encode", _fake_encode, raising=False)
+def test_store_memory_replace_query_can_replace_non_fact(tmp_path: Path):
+    runtime, ws = _memory_runtime(tmp_path)
+    skill = runtime.get_skill("memory-rag")
+    assert skill is not None
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
 
-    first = tools._run("store_memory", {"text": "My go-to stack: Flask + SQLite"}, mem)
+    first = runtime.execute_tool_call("store_memory", {"text": "My go-to stack: Flask + SQLite"}, selected=[skill], ctx=ctx)
     assert first["ok"] is True
     old_id = int(first["data"]["id"])
 
-    second = tools._run(
+    second = runtime.execute_tool_call(
         "store_memory",
         {
             "text": "My go-to stack: FastAPI + Postgres",
             "replace_query": "go-to stack",
             "replace_min_score": 0.0,
         },
-        mem,
+        selected=[skill],
+        ctx=ctx,
     )
     assert second["ok"] is True
     assert old_id in second["meta"].get("forgotten_ids", [])

@@ -92,3 +92,27 @@ def test_shell_command_skips_confirmation_when_dangerous_mode_enabled(tmp_path: 
     assert out["ok"] is True
     assert out["data"]["returncode"] == 0
     assert out["data"]["stdout"].strip() == "hi"
+
+
+def test_shell_command_recovers_from_raw_argument_payload(tmp_path: Path):
+    runtime = _runtime(
+        tmp_path,
+        {
+            "capabilities": {
+                "shell_require_confirmation": False,
+                "dangerously_skip_permissions": True,
+            }
+        },
+    )
+    shell_skill = runtime.get_skill("shell-ops")
+    assert shell_skill is not None
+
+    out = runtime.execute_tool_call(
+        "shell_command",
+        {"_raw": '{"command":"echo hi"}'},
+        selected=[shell_skill],
+        ctx=_ctx(str(runtime.workspace.workspace_root)),
+    )
+    assert out["ok"] is True
+    assert out["data"]["returncode"] == 0
+    assert out["data"]["stdout"].strip() == "hi"

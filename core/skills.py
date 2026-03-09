@@ -19,19 +19,6 @@ except Exception:
     yaml = None
 
 _SKILL_DOC = "SKILL.md"
-_ALLOWED_CATEGORIES = {
-    "coding",
-    "data-science",
-    "devops",
-    "system",
-    "productivity",
-    "communication",
-    "business",
-    "education",
-    "creative",
-    "security",
-    "custom",
-}
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 _INT_RE = re.compile(r"^-?\d+$")
 _FLOAT_RE = re.compile(r"^-?(?:\d+\.\d+|\d+\.\d*|\d*\.\d+)(?:[eE][+-]?\d+)?$")
@@ -88,6 +75,26 @@ def _as_str_list(value: Any) -> List[str]:
     return [str(value).strip()] if str(value).strip() else []
 
 
+def _as_tool_name_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return _dedupe([str(item) for item in value])
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = _parse_yaml_inline_list(text)
+                if isinstance(parsed, list):
+                    return _dedupe([str(item) for item in parsed])
+            except Exception:
+                pass
+        return _dedupe([part for part in re.split(r"[\s,]+", text) if part])
+    return [str(value).strip()] if str(value).strip() else []
+
+
 def _coerce_bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value
@@ -98,6 +105,39 @@ def _coerce_bool(value: Any, default: bool) -> bool:
         if lowered in {"false", "no", "0", "off"}:
             return False
     return default
+
+
+def _recover_tool_args(raw_args: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(raw_args, dict):
+        return {}
+    out = dict(raw_args)
+    raw = out.get("_raw")
+    if not isinstance(raw, str) or not raw.strip():
+        return out
+    text = raw.strip()
+
+    parsed: Optional[Dict[str, Any]] = None
+    try:
+        value = json.loads(text)
+        if isinstance(value, dict):
+            parsed = value
+    except Exception:
+        parsed = None
+
+    if parsed is None:
+        m = re.search(r'"command"\s*:\s*"((?:\\.|[^"\\])*)"', text)
+        if m:
+            try:
+                command = bytes(m.group(1), "utf-8").decode("unicode_escape")
+            except Exception:
+                command = m.group(1)
+            parsed = {"command": command}
+
+    if parsed:
+        for key, value in parsed.items():
+            if key not in out:
+                out[key] = value
+    return out
 
 
 def _split_kv(line: str) -> Optional[Tuple[str, str]]:
@@ -428,27 +468,51 @@ class SkillRuntime:
         if not description:
             raise ValueError("SKILL.md frontmatter requires 'description'")
 
-        version = str(frontmatter.get("version", "0.1.0")).strip()
+        metadata_raw = frontmatter.get("metadata", {})
+        if metadata_raw is None:
+            metadata_raw = {}
+        if not isinstance(metadata_raw, dict):
+            raise ValueError("SKILL.md 'metadata' must be a mapping")
+
+        version_raw = metadata_raw.get("version", frontmatter.get("version", "0.1.0"))
+        version = str(version_raw).strip()
         if version and not _SEMVER_RE.match(version):
             raise ValueError(f"Invalid semantic version: '{version}'")
 
-        categories = _as_str_list(frontmatter.get("categories"))
-        invalid_categories = [cat for cat in categories if cat not in _ALLOWED_CATEGORIES]
-        if invalid_categories:
-            joined = ", ".join(sorted(set(invalid_categories)))
-            raise ValueError(f"Invalid categories: {joined}")
+        categories = _as_str_list(frontmatter.get("categories") or metadata_raw.get("categories"))
+        # Keep categories permissive to support user-defined values.
+        categories = _dedupe(categories)
 
-        tags = _as_str_list(frontmatter.get("tags"))
+        tags = _as_str_list(frontmatter.get("tags") or metadata_raw.get("tags"))
 
         tools_cfg_raw = frontmatter.get("tools", {})
         if tools_cfg_raw is None:
             tools_cfg_raw = {}
         if not isinstance(tools_cfg_raw, dict):
             raise ValueError("SKILL.md 'tools' must be a mapping")
+        metadata_tools_raw = metadata_raw.get("tools", {})
+        if metadata_tools_raw is None:
+            metadata_tools_raw = {}
+        if not isinstance(metadata_tools_raw, dict):
+            raise ValueError("SKILL.md metadata.tools must be a mapping")
 
-        allowed_tools = _as_str_list(tools_cfg_raw.get("allowed-tools"))
-        required_tools = _as_str_list(tools_cfg_raw.get("required-tools"))
-        raw_defs = tools_cfg_raw.get("definitions") or []
+        allowed_tools = _as_tool_name_list(
+            frontmatter.get("allowed-tools")
+            or metadata_raw.get("allowed-tools")
+            or metadata_tools_raw.get("allowed-tools")
+            or tools_cfg_raw.get("allowed-tools")
+        )
+        required_tools = _as_tool_name_list(
+            frontmatter.get("required-tools")
+            or metadata_raw.get("required-tools")
+            or metadata_tools_raw.get("required-tools")
+            or tools_cfg_raw.get("required-tools")
+        )
+        raw_defs = (
+            metadata_tools_raw.get("definitions")
+            or tools_cfg_raw.get("definitions")
+            or []
+        )
         if raw_defs and not isinstance(raw_defs, list):
             raise ValueError("SKILL.md tools.definitions must be a list")
         command_tools: List[ToolCommandDef] = []
@@ -489,23 +553,17 @@ class SkillRuntime:
                 )
             )
         disable_model_invocation = _coerce_bool(
-            tools_cfg_raw.get("disable-model-invocation"),
+            metadata_tools_raw.get("disable-model-invocation", tools_cfg_raw.get("disable-model-invocation")),
             False,
         )
 
-        ext_cfg_raw = frontmatter.get("x-alphanus", {})
-        if ext_cfg_raw is None:
-            ext_cfg_raw = {}
-        if not isinstance(ext_cfg_raw, dict):
-            raise ValueError("SKILL.md 'x-alphanus' must be a mapping")
-
-        trigger_cfg = ext_cfg_raw.get("triggers", {})
+        trigger_cfg = metadata_raw.get("triggers", frontmatter.get("triggers", {}))
         if trigger_cfg is None:
             trigger_cfg = {}
         if not isinstance(trigger_cfg, dict):
-            raise ValueError("SKILL.md x-alphanus.triggers must be a mapping")
+            raise ValueError("SKILL.md triggers must be a mapping")
 
-        enabled = _coerce_bool(ext_cfg_raw.get("enabled"), True)
+        enabled = _coerce_bool(metadata_raw.get("enabled", frontmatter.get("enabled")), True)
         keywords = _as_str_list(trigger_cfg.get("keywords")) or list(tags)
         file_ext = _as_str_list(trigger_cfg.get("file_ext"))
 
@@ -845,6 +903,7 @@ class SkillRuntime:
         if owner.allowed_tools and tool_name not in owner.allowed_tools:
             return _err("E_POLICY", f"Tool '{tool_name}' not allowed by skill policy", int((time.perf_counter() - start) * 1000))
 
+        args = _recover_tool_args(args)
         allowed, reason = self._run_pre_action_hooks(selected, ctx, tool_name, args)
         if not allowed:
             return _err("E_POLICY", reason, int((time.perf_counter() - start) * 1000))
@@ -921,9 +980,22 @@ class SkillRuntime:
             env=proc_env,
         )
 
+        if proc.returncode != 0:
+            stderr = (proc.stderr or "").strip()
+            stdout = (proc.stdout or "").strip()
+            msg = stderr or stdout or f"Tool command failed with exit code {proc.returncode}"
+            lowered = msg.lower()
+            if "permissionerror" in lowered or "operation not permitted" in lowered:
+                raise PermissionError(msg)
+            if "filenotfounderror" in lowered or "no such file or directory" in lowered:
+                raise FileNotFoundError(msg)
+            if "timeouterror" in lowered or "timed out" in lowered:
+                raise TimeoutError(msg)
+            raise RuntimeError(msg)
+
         out = (proc.stdout or "").strip()
         if not out:
-            raise RuntimeError("Tool command produced no JSON output")
+            return {}
         # Allow scripts to print diagnostics as long as the last line is the JSON result.
         candidate = out.splitlines()[-1].strip()
 
@@ -936,15 +1008,7 @@ class SkillRuntime:
             ) from exc
 
         if not isinstance(parsed, dict):
-            raise RuntimeError("Tool command must return a JSON object result")
-
-        if proc.returncode != 0 and not parsed.get("ok"):
-            error = parsed.get("error") if isinstance(parsed.get("error"), dict) else {}
-            if not error:
-                parsed["error"] = {
-                    "code": "E_IO",
-                    "message": f"Tool command failed with exit code {proc.returncode}",
-                }
+            return {"value": parsed}
         return parsed
 
     @staticmethod

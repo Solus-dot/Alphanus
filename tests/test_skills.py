@@ -25,13 +25,11 @@ tools:
   allowed-tools:
     - create_file
     - read_file
-x-alphanus:
-  enabled: true
-  triggers:
-    keywords:
-      - write
-    file_ext:
-      - .py
+triggers:
+  keywords:
+    - write
+  file_ext:
+    - .py
 ---
 Use carefully
 """.strip(),
@@ -294,7 +292,7 @@ tools:
     - name: echo_text
       capability: utility_echo
       description: Echo text.
-      command: python3 scripts/ops.py echo_text
+      command: python3 scripts/echo_text.py
       parameters:
         type: object
         properties:
@@ -307,7 +305,7 @@ Echo
 """.strip(),
         encoding="utf-8",
     )
-    (skills / "echo-skill" / "scripts" / "ops.py").write_text(
+    (skills / "echo-skill" / "scripts" / "echo_text.py").write_text(
         """
 import json
 import os
@@ -332,6 +330,85 @@ if __name__ == "__main__":
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("echo-skill")
+    assert skill is not None
+
+    ctx = SkillContext(
+        user_input="echo this",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+    out = runtime.execute_tool_call("echo_text", {"text": "hello"}, selected=[skill], ctx=ctx)
+    assert out["ok"] is True
+    assert out["data"]["text"] == "hello"
+
+
+def test_frontmatter_metadata_format_executes(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "meta-skill" / "scripts").mkdir(parents=True)
+
+    (skills / "meta-skill" / "SKILL.md").write_text(
+        """
+---
+name: meta-skill
+description: metadata format
+allowed-tools: echo_text
+metadata:
+  version: "1.0.0"
+  categories:
+    - custom
+  tags:
+    - echo
+  triggers:
+    keywords:
+      - echo
+  tools:
+    definitions:
+      - name: echo_text
+        capability: utility_echo
+        description: Echo text.
+        command: python3 scripts/echo_text.py
+        parameters:
+          type: object
+          properties:
+            text:
+              type: string
+          required:
+            - text
+---
+Echo
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "meta-skill" / "scripts" / "echo_text.py").write_text(
+        """
+import json
+import os
+import sys
+
+def main():
+    raw = os.getenv("ALPHANUS_TOOL_ARGS_JSON") or sys.stdin.read() or "{}"
+    args = json.loads(raw)
+    print(json.dumps({"text": args["text"]}))
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("meta-skill")
     assert skill is not None
 
     ctx = SkillContext(

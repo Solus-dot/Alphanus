@@ -20,38 +20,37 @@ Only `SKILL.md` is required. Legacy `skill.toml` / `prompt.md` is not loaded.
 ---
 name: notes-skill
 description: Save short notes in the workspace.
-version: 1.0.0
-categories:
-  - coding
-tags:
-  - note
-  - save
-tools:
-  allowed-tools:
-    - save_note
-  definitions:
-    - name: save_note
-      capability: workspace_write
-      description: Save a note.
-      command: python3 scripts/ops.py save_note
-      timeout-s: 30
-      parameters:
-        type: object
-        properties:
-          filename:
-            type: string
-          content:
-            type: string
-        required:
-          - filename
-          - content
-x-alphanus:
+allowed-tools: save_note
+metadata:
+  version: "1.0.0"
+  categories:
+    - coding
+  tags:
+    - note
+    - save
   triggers:
     keywords:
       - note
       - save note
     file_ext:
       - .md
+  tools:
+    definitions:
+      - name: save_note
+        capability: workspace_write
+        description: Save a note.
+        command: python3 scripts/save_note.py
+        timeout-s: 30
+        parameters:
+          type: object
+          properties:
+            filename:
+              type: string
+            content:
+              type: string
+          required:
+            - filename
+            - content
 ---
 Use this skill when the user asks to save short notes.
 ```
@@ -62,17 +61,22 @@ Standard fields:
 
 - `name` (required): must match directory name
 - `description` (required)
+- `license` (optional)
+- `compatibility` (optional)
+- `allowed-tools` (optional; list or space-delimited string)
+- `metadata` (optional mapping)
+
+`metadata` supports:
+
 - `version` (optional semver)
-- `categories` (optional)
-- `tags` (optional)
-- `tools` (optional)
-
-`tools` supports:
-
-- `allowed-tools`: expose only these tool names
-- `required-tools`: fail skill load if any required tool is missing
-- `disable-model-invocation`: keep skill loaded but hide tools from the model
-- `definitions`: command-backed tool definitions (preferred)
+- `categories` (optional list)
+- `tags` (optional list)
+- `enabled` (optional bool, default `true`)
+- `triggers.keywords` (optional)
+- `triggers.file_ext` (optional)
+- `tools.required-tools` (optional)
+- `tools.disable-model-invocation` (optional)
+- `tools.definitions` (optional; command-backed tool definitions)
 
 Command definition fields:
 
@@ -83,12 +87,6 @@ Command definition fields:
 - `command` bash command string (required)
 - `timeout-s` integer seconds (optional, default `30`)
 - `confirm-arg` argument key requiring interactive approval (optional)
-
-Alphanus extension (`x-alphanus`) supports lightweight selection hints:
-
-- `enabled` (optional bool, default `true`)
-- `triggers.keywords` (optional)
-- `triggers.file_ext` (optional)
 
 No per-skill priority or capability gate is used.
 
@@ -127,7 +125,7 @@ Use this only when command-backed tools are not practical.
 
 1. Runtime loads `skills/*/SKILL.md`.
 2. Runtime validates required fields and name/directory match.
-3. Runtime loads command definitions (`tools.definitions`) first.
+3. Runtime loads command definitions (`metadata.tools.definitions`) first.
 4. Runtime optionally loads legacy `tools.py` and merges non-duplicate tools.
 5. Runtime enforces allowlist/required tool rules.
 6. Skill selection uses keyword and file-extension trigger matches.
@@ -148,9 +146,9 @@ Skill not loading:
 1. Confirm `SKILL.md` exists and frontmatter starts/ends with `---`.
 2. Confirm `name` and `description` are present.
 3. Confirm `name` equals directory name.
-4. Confirm categories are valid enum values.
+4. Confirm optional `metadata` is a mapping if present.
 5. If `required-tools` is set, confirm each tool is present.
-6. If using command tools, confirm each `definitions` item has all required fields.
+6. If using command tools, confirm each `metadata.tools.definitions` item has required fields.
 
 Tool not visible:
 
