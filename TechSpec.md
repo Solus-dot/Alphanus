@@ -40,7 +40,6 @@ A personal AI assistant that:
 - Executes shell commands (`ls`, `mkdir`, `cd`, `cat`, `grep`, `git`, etc.) with user confirmation before every run
 - Has basic utility tools: web search, weather, email reading, home-directory file search
 - Is operated via an interactive Textual TUI as the primary interface
-- Optionally receives messages from a phone via WhatsApp
 
 ### 1.2 What We're NOT Building
 
@@ -63,7 +62,6 @@ Simple. Fast. Useful. Under 5,000 lines. No over-engineering. Every component do
 +-----------------------------------------------------------+
 | Entry Points                                              |
 |  - Textual TUI (primary)                                  |
-|  - WhatsApp Bridge (optional)                             |
 +------------------------------+----------------------------+
                                |
                                v
@@ -882,7 +880,6 @@ skills
   max_active_skills          - Active skill cap (0 => no cap)
   strict_capability_policy   - Enforce capability matching fail-closed (default: false)
 
-whatsapp
   enabled             - bool (default: false)
 ```
 
@@ -912,7 +909,6 @@ EMAIL_PASSWORD=your_app_password
 
 ## 10. Architectural Changes and Optimizations
 
-These changes keep the original design (RAG memory, workspace isolation, WhatsApp optional path) and make implementation more modular and testable.
 
 ### 10.1 Module Split
 
@@ -949,11 +945,7 @@ Canonical conversation-tree import path: `from core.conv_tree import ConvTree, T
 - Keep shell confirmation gate by default
 - Add explicit allowlist/denylist per skill and per capability action
 
-### 10.5 WhatsApp Integration Path
 
-- Keep WhatsApp as optional entrypoint feeding same agent core
-- Normalize incoming WhatsApp message events into the same turn schema
-- Preserve branch semantics with fixed WhatsApp branch label format: `wa:<chat_id>:<YYYYMMDD>`
 
 ---
 
@@ -998,9 +990,7 @@ Alphanus/
 │   ├── __init__.py
 │   └── interface.py            # Textual app, widgets, slash commands
 │
-├── whatsapp/                   # Optional
 │   ├── __init__.py
-│   ├── bridge.py               # Receive WhatsApp message -> agent.run() -> send reply
 │   └── sessions.py             # ChatSession by chat id
 │
 ├── tests/
@@ -1144,11 +1134,7 @@ No `requests`, no `httpx`, no `openai`, no `ollama`, no `mcp`, no `fastapi`. All
 - [ ] Tune skill prompts if action-selection compliance is poor on chosen model
 - [ ] Write README with setup instructions
 
-### Week 4 (optional) — WhatsApp
 
-- [ ] `whatsapp/bridge.py` — receive message, call `agent.run()`, send reply
-- [ ] `whatsapp/sessions.py` — ChatSession per chat_id, 24-hour TTL
-- [ ] Session file format: `whatsapp_sessions/{chat_id}.json`
 - [ ] Cleanup task for sessions older than 24 hours
 - [ ] Test: send message from phone, receive response
 
@@ -1168,7 +1154,6 @@ No `requests`, no `httpx`, no `openai`, no `ollama`, no `mcp`, no `fastapi`. All
 | sentence-transformers on CPU | Memory search adds ~100ms per query | Acceptable for personal use; model is small (90 MB) |
 | Linear memory scan O(n) | Degrades beyond ~10K memories | Document scale limits; suggest FAISS or pgvector migration at that threshold |
 | Conversation tree in memory | Tree grows unbounded across very long sessions | `save()`/`load()` lets the user checkpoint and start fresh without losing history |
-| No WhatsApp context persistence | Multi-turn conversations lose prior turns | Store last N history messages in a session file keyed to the WhatsApp chat ID |
 | Workspace-only shell | Cannot run commands outside workspace | By design — prevents accidental system modifications |
 
 ---
@@ -1222,7 +1207,6 @@ All persisted or exchanged internal documents must carry `schema_version`:
 - Conversation tree JSON: `schema_version` (e.g., `1.0.0`)
 - Skill manifest TOML: `schema_version` (e.g., `1.0.0`)
 - Global config JSON: `schema_version` (e.g., `1.0.0`)
-- WhatsApp session JSON: `schema_version` (e.g., `1.0.0`)
 
 Upgrade policy:
 
@@ -1314,7 +1298,6 @@ Required tests:
 - Command injection/shell metacharacter policy tests.
 - Secret-file access denial tests.
 
-### 17.7 WhatsApp Message and State Model
 
 Message identity:
 
@@ -1330,7 +1313,6 @@ Processing guarantees:
 
 Branch label format (fixed):
 
-- `wa:<chat_id>:<YYYYMMDD>`
 
 Session schema keys:
 

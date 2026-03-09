@@ -51,18 +51,25 @@ class VectorMemory:
         self,
         storage_path: str,
         model_name: str = "all-MiniLM-L6-v2",
+        embedding_backend: str = "hash",
         min_score: float = 0.3,
         persist_access_updates: bool = False,
         autosave_interval_s: float = 2.0,
         autosave_every: int = 24,
+        eager_load_encoder: bool = False,
     ) -> None:
         self.storage_path = Path(os.path.expanduser(storage_path)).resolve()
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.model_name = model_name
+        backend = str(embedding_backend or "hash").strip().lower()
+        if backend not in {"hash", "transformer", "auto"}:
+            backend = "hash"
+        self.embedding_backend = backend
         self.min_score = float(min_score)
         self.persist_access_updates = bool(persist_access_updates)
         self.autosave_interval_s = max(0.0, float(autosave_interval_s))
         self.autosave_every = max(1, int(autosave_every))
+        self.eager_load_encoder = bool(eager_load_encoder)
 
         self.memories: List[MemoryItem] = []
         self._next_id = 1
@@ -70,11 +77,13 @@ class VectorMemory:
         self._pending_writes = 0
         self._last_save_ts = 0.0
 
-        self.encoder = self._load_encoder(model_name)
-        self.dimension = int(getattr(self.encoder, "dim", 384))
+        self.encoder = None
+        self.dimension = 384
         self._load()
+        if self.eager_load_encoder:
+            self._ensure_encoder()
 
-    def _load_encoder(self, model_name: str):
+    def _load_transformer_encoder(self, model_name: str):
         try:
             from sentence_transformers import SentenceTransformer  # type: ignore
 
@@ -87,8 +96,22 @@ class VectorMemory:
         except Exception:
             return _HashEncoder(dim=384)
 
+    def _ensure_encoder(self):
+        if self.encoder is not None:
+            return self.encoder
+        if self.embedding_backend == "hash":
+            self.encoder = _HashEncoder(dim=384)
+        elif self.embedding_backend == "transformer":
+            self.encoder = self._load_transformer_encoder(self.model_name)
+        else:
+            # "auto" preserves prior behavior while still lazily loading.
+            self.encoder = self._load_transformer_encoder(self.model_name)
+        self.dimension = int(getattr(self.encoder, "dim", 384))
+        return self.encoder
+
     def _encode(self, text: str) -> np.ndarray:
-        emb = self.encoder.encode([text], normalize_embeddings=True)
+        encoder = self._ensure_encoder()
+        emb = encoder.encode([text], normalize_embeddings=True)
         return np.asarray(emb[0], dtype=np.float32)
 
     def _load(self) -> None:
@@ -130,6 +153,7 @@ class VectorMemory:
         payload = {
             "schema_version": "1.0.0",
             "model_name": self.model_name,
+            "embedding_backend": self.embedding_backend,
             "memories": [
                 {
                     "id": m.id,
@@ -266,6 +290,7 @@ class VectorMemory:
             "latest_timestamp": latest,
             "dimension": self.dimension,
             "model_name": self.model_name,
+            "embedding_backend": self.embedding_backend,
         }
 
     def export_txt(self, path: str) -> str:
