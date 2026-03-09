@@ -1201,9 +1201,13 @@ class AlphanusTUI(App):
             self._write("")
             self._write(f"[bold]{esc(skill.name)}[/bold] [dim]({esc(skill.id)})[/dim]")
             self._write(f"[dim]{esc(skill.description)}[/dim]")
-            self._write(f"[dim]priority={skill.priority} enabled={skill.enabled}[/dim]")
-            caps = ", ".join(skill.triggers.get("capabilities", [])) or "none"
-            self._write(f"[dim]capabilities: {esc(caps)}[/dim]")
+            self._write(f"[dim]enabled={skill.enabled}[/dim]")
+            keywords = ", ".join(skill.triggers.get("keywords", [])) or "none"
+            file_ext = ", ".join(skill.triggers.get("file_ext", [])) or "none"
+            tools = ", ".join(skill.allowed_tools) or "all"
+            self._write(f"[dim]keywords: {esc(keywords)}[/dim]")
+            self._write(f"[dim]file_ext: {esc(file_ext)}[/dim]")
+            self._write(f"[dim]tools: {esc(tools)}[/dim]")
             return True
 
         self._write_error("Usage: /skill on|off|reload|info <id>")

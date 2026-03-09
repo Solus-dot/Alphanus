@@ -36,24 +36,20 @@ def runtime(tmp_path: Path) -> SkillRuntime:
     ws.mkdir()
     (skills / "workspace-ops").mkdir(parents=True)
 
-    (skills / "workspace-ops" / "skill.toml").write_text(
+    (skills / "workspace-ops" / "SKILL.md").write_text(
         """
-schema_version = "1.0.0"
-id = "workspace-ops"
-name = "Workspace"
-version = "1.0.0"
-description = "workspace"
-enabled = true
-priority = 90
-
-[triggers]
-keywords = ["write"]
-file_ext = [".py"]
-capabilities = ["workspace_write", "workspace_read"]
+---
+name: workspace-ops
+description: workspace
+version: 1.0.0
+tools:
+  allowed-tools:
+    - create_file
+---
+workspace
 """.strip(),
         encoding="utf-8",
     )
-    (skills / "workspace-ops" / "prompt.md").write_text("workspace", encoding="utf-8")
     (skills / "workspace-ops" / "tools.py").write_text(
         """
 TOOL_SPECS = {

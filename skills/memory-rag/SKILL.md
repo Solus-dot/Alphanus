@@ -1,3 +1,32 @@
+---
+name: memory-rag
+description: Store and recall durable user facts/preferences.
+version: 1.0.0
+categories:
+  - productivity
+tags:
+  - remember
+  - preference
+  - recall
+  - memory
+tools:
+  allowed-tools:
+    - store_memory
+    - recall_memory
+    - list_memories
+    - forget_memory
+    - get_memory_stats
+    - export_memories
+x-alphanus:
+  triggers:
+    keywords:
+      - remember
+      - preference
+      - my
+      - "I like"
+      - recall
+      - memory
+---
 Use memory tools for user-specific information that should persist.
 
 Rules:

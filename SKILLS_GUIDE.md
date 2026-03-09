@@ -1,71 +1,81 @@
-# Alphanus Skill Guide (Simple Version)
+# Alphanus Skill Guide
 
-This guide shows the easiest way to add a new skill in Alphanus.
+Alphanus follows the `agentskills.io` skill format.
 
-The key idea:
-
-- `skill.toml` controls **when** a skill is active and **what capabilities** it is allowed to use.
-- `tools.py` defines **what tools exist** and **how each tool executes**.
-
-You usually do **not** edit `core/skills.py` when adding normal new skills/tools.
-
----
-
-## 1. Minimal Skill Structure
-
-Create:
+## 1. Required Layout
 
 ```text
 skills/<skill-id>/
-  skill.toml
-  prompt.md
-  tools.py
+  SKILL.md
+  tools.py      # optional unless required-tools is set
+  hooks.py      # optional
 ```
 
-Optional:
+Only `SKILL.md` is supported. Legacy `skill.toml` / `prompt.md` is no longer loaded.
 
-- `hooks.py` for policy checks or prompt augmentation
-
----
-
-## 2. Basic Example Skill (Notes Skill)
-
-We will create a basic skill that saves a note to a file in the workspace.
-
-## Step 1: Create the folder
-
-```bash
-mkdir -p skills/notes-skill
-```
-
-## Step 2: Add `skill.toml`
-
-```toml
-schema_version = "1.0.0"
-id = "notes-skill"
-name = "Notes Skill"
-version = "1.0.0"
-description = "Save short notes into workspace files"
-enabled = true
-priority = 50
-
-[triggers]
-keywords = ["note", "remember this", "save note"]
-file_ext = []
-capabilities = ["workspace_write"]
-```
-
-## Step 3: Add `prompt.md`
+## 2. Minimal `SKILL.md`
 
 ```md
-Use this skill when the user asks to save a short note.
+---
+name: notes-skill
+description: Save short notes in the workspace.
+version: 1.0.0
+categories:
+  - coding
+tags:
+  - note
+  - save
+tools:
+  allowed-tools:
+    - save_note
+x-alphanus:
+  triggers:
+    keywords:
+      - note
+      - save note
+    file_ext:
+      - .md
+---
+Use this skill when the user asks to save short notes.
 
 Rules:
 - Keep note content concise.
-- Store notes under `notes/` in the workspace.
+- Store notes under `notes/`.
 ```
 
-## Step 4: Add `tools.py`
+## 3. Frontmatter Fields
+
+Standard fields used:
+
+- `name` (required): must match directory name.
+- `description` (required)
+- `version` (optional semver)
+- `categories` (optional)
+- `tags` (optional)
+- `tools` (optional)
+
+`tools` supports:
+
+- `allowed-tools`: expose only these tools from `tools.py`
+- `required-tools`: fail skill load if any are missing in `TOOL_SPECS`
+- `disable-model-invocation`: keep skill loaded but hide tools from model
+
+Alphanus extension (`x-alphanus`) supports lightweight selection hints only:
+
+- `enabled` (optional bool, default `true`)
+- `triggers.keywords` (optional)
+- `triggers.file_ext` (optional)
+
+No per-skill priority or capability gate is used.
+
+## 4. `tools.py` Contract
+
+`tools.py` must export:
+
+- `TOOL_SPECS: Dict[str, Dict[str, Any]]`
+- `execute(tool_name: str, args: Dict[str, Any], env) -> Dict[str, Any]`
+
+Minimal shape:
 
 ```python
 from typing import Any, Dict
@@ -73,203 +83,61 @@ from typing import Any, Dict
 TOOL_SPECS: Dict[str, Dict[str, Any]] = {
     "save_note": {
         "capability": "workspace_write",
-        "description": "Save a note to notes/<filename>.txt in workspace",
+        "description": "Save a note",
         "parameters": {
             "type": "object",
             "properties": {
                 "filename": {"type": "string"},
-                "content": {"type": "string"}
+                "content": {"type": "string"},
             },
-            "required": ["filename", "content"]
-        }
+            "required": ["filename", "content"],
+        },
     }
 }
 
 
 def execute(tool_name: str, args: Dict[str, Any], env) -> Dict[str, Any]:
-    if tool_name == "save_note":
-        filename = args["filename"].strip().replace("/", "_")
-        path = f"notes/{filename}.txt"
-        written = env.workspace.create_file(path, args["content"])
+    if tool_name != "save_note":
         return {
-            "ok": True,
-            "data": {"filepath": written},
-            "error": None,
+            "ok": False,
+            "data": None,
+            "error": {"code": "E_UNSUPPORTED", "message": f"Unsupported tool: {tool_name}"},
             "meta": {},
         }
 
-    return {
-        "ok": False,
-        "data": None,
-        "error": {"code": "E_UNSUPPORTED", "message": f"Unsupported tool: {tool_name}"},
-        "meta": {},
-    }
+    path = env.workspace.create_file(f"notes/{args['filename']}.txt", args["content"])
+    return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
 ```
 
-## Step 5: Reload in TUI
+## 5. Runtime Behavior
 
-```text
-/skill reload
-/skills
-/skill info notes-skill
-```
+1. Runtime loads `skills/*/SKILL.md`.
+2. Runtime validates required fields and name/directory match.
+3. Runtime loads `tools.py` and enforces allowlist/required tool rules.
+4. Skill selection uses keyword and file-extension trigger matches.
+5. Selected tools are exposed and dispatched for tool calls.
 
----
+## 6. TUI Commands
 
-## 3. How `skill.toml` Works
+- `/skills`
+- `/skill reload`
+- `/skill on <id>`
+- `/skill off <id>`
+- `/skill info <id>`
 
-`skill.toml` is parsed by the runtime and turned into a `SkillManifest`.
+## 7. Troubleshooting
 
-Where in code:
+Skill not loading:
 
-- Loader: `core/skills.py` (`load_skills`)
-- Selection/scoring: `core/skills.py` (`score_skills`, `select_skills`)
-
-Field-by-field behavior:
-
-1. `schema_version`
-  - Used for compatibility checks.
-  - Major-version mismatch is rejected.
-
-2. `id`
-  - Unique skill ID.
-  - Should match folder name.
-
-3. `enabled`
-  - If `false`, skill is ignored.
-  - Can be toggled at runtime via `/skill on|off <id>`.
-
-4. `priority`
-  - Base score for selection.
-  - Higher priority means more likely to be selected.
-
-5. `[triggers].keywords`
-  - If user input contains these, score gets boosted.
-
-6. `[triggers].file_ext`
-  - If input/attachments mention these extensions, score gets boosted.
-
-7. `[triggers].capabilities`
-  - Policy gate for tools when strict mode is enabled.
-  - In strict mode, a tool is only allowed if its `TOOL_SPECS[tool].capability` is listed here.
-
-Default behavior (personal-friendly):
-
-- `skills.selection_mode = "all_enabled"` -> all enabled skills are active (up to `max_active_skills`).
-- `skills.strict_capability_policy = false` -> capability mismatches are tolerated.
-
-If you want stricter fail-closed behavior, set:
-
-- `skills.strict_capability_policy = true`
-
----
-
-## 4. How `tools.py` Works
-
-`tools.py` is loaded dynamically per skill.
-
-It must provide:
-
-1. `TOOL_SPECS`
-2. `execute(tool_name, args, env)`
-
-### 4.1 `TOOL_SPECS`
-
-`TOOL_SPECS` is what the model sees in the OpenAI-compatible `tools` array.
-
-For each tool, you define:
-
-- `capability`: policy capability required
-- `description`: what the tool does
-- `parameters`: JSON Schema object for tool arguments
-
-### 4.2 `execute(...)`
-
-`execute(...)` runs when the model calls the tool.
-
-Arguments:
-
-- `tool_name`: selected tool name
-- `args`: parsed JSON arguments from tool call
-- `env`: execution environment
-
-`env` contains:
-
-- `env.workspace`: workspace adapter (`create_file`, `read_file`, `run_shell_command`, etc.)
-- `env.memory`: memory adapter (`add_memory`, `search`, etc.)
-- `env.config`: global config dict
-- `env.confirm_shell`: callback for shell confirmation (if needed)
-- `env.debug`: debug mode boolean
-
-Return must be a normalized envelope:
-
-```json
-{
-  "ok": true,
-  "data": {},
-  "error": null,
-  "meta": {"duration_ms": 12}
-}
-```
-
-On failure:
-
-```json
-{
-  "ok": false,
-  "data": null,
-  "error": {"code": "E_POLICY", "message": "..."},
-  "meta": {"duration_ms": 4}
-}
-```
-
-Common error codes:
-
-- `E_POLICY`
-- `E_VALIDATION`
-- `E_TIMEOUT`
-- `E_IO`
-- `E_NOT_FOUND`
-- `E_UNSUPPORTED`
-
----
-
-## 5. Runtime Flow (What Actually Happens)
-
-1. Runtime loads enabled skills from `skills/*/skill.toml`.
-2. Runtime loads each skill's `prompt.md` and optional `tools.py`.
-3. For a user turn, runtime selects skills (default: all enabled, capped by `max_active_skills`).
-4. Agent composes one system message + selected skill guidance.
-5. Agent exposes tools from selected skills (and applies strict capability filtering only if enabled).
-6. Model emits `tool_calls`.
-7. Runtime dispatches tool call to the owning skill's `tools.py::execute`.
-8. Tool result is appended to history.
-9. For write-only batches (`create_file`/`edit_file`/`delete_file`), agent can fast-finalize without a second model call.
-
----
-
-## 6. Troubleshooting
+1. Confirm `SKILL.md` exists and starts/ends frontmatter with `---`.
+2. Confirm `name` and `description` are present.
+3. Confirm `name` equals directory name.
+4. Confirm categories are valid enum values.
+5. If `required-tools` is set, confirm each tool exists in `TOOL_SPECS`.
 
 Tool not visible:
 
-1. Confirm `tools.py` has valid `TOOL_SPECS` and callable `execute`.
-2. Confirm skill is enabled.
-3. Confirm `/skill reload` was run.
-4. Confirm capability in `skill.toml` matches tool capability.
-
-Tool called but denied:
-
-1. Capability mismatch (`skill.toml` vs `TOOL_SPECS`) with strict capability mode enabled.
-2. Skill not selected for that prompt.
-3. Hook `pre_action` denied it.
-
----
-
-## 7. Quick Checklist
-
-1. Create `skills/<id>/skill.toml`.
-2. Create `skills/<id>/prompt.md`.
-3. Create `skills/<id>/tools.py`.
-4. Ensure capability alignment (`skill.toml` <-> `TOOL_SPECS`).
-5. Reload skills in TUI.
-6. Test with a real prompt.
+1. Confirm skill is enabled.
+2. Confirm tool exists in `TOOL_SPECS`.
+3. If `allowed-tools` is set, confirm the tool is listed.
+4. Run `/skill reload`.
