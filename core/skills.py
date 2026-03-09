@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 import re
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -333,6 +336,7 @@ class SkillManifest:
     categories: List[str] = field(default_factory=list)
     allowed_tools: List[str] = field(default_factory=list)
     required_tools: List[str] = field(default_factory=list)
+    command_tools: List["ToolCommandDef"] = field(default_factory=list)
     disable_model_invocation: bool = False
     format: str = "agentskills"
 
@@ -362,7 +366,22 @@ class RegisteredTool:
     capability: str
     description: str
     parameters: Dict[str, Any]
-    module: object
+    module: Optional[object] = None
+    command: str = ""
+    timeout_s: int = 30
+    confirm_arg: str = ""
+    cwd: str = ""
+
+
+@dataclass(slots=True)
+class ToolCommandDef:
+    name: str
+    capability: str
+    description: str
+    parameters: Dict[str, Any]
+    command: str
+    timeout_s: int = 30
+    confirm_arg: str = ""
 
 
 class SkillRuntime:
@@ -429,6 +448,46 @@ class SkillRuntime:
 
         allowed_tools = _as_str_list(tools_cfg_raw.get("allowed-tools"))
         required_tools = _as_str_list(tools_cfg_raw.get("required-tools"))
+        raw_defs = tools_cfg_raw.get("definitions") or []
+        if raw_defs and not isinstance(raw_defs, list):
+            raise ValueError("SKILL.md tools.definitions must be a list")
+        command_tools: List[ToolCommandDef] = []
+        for idx, raw in enumerate(raw_defs):
+            if not isinstance(raw, dict):
+                raise ValueError(f"SKILL.md tools.definitions[{idx}] must be a mapping")
+
+            name = str(raw.get("name", "")).strip()
+            capability = str(raw.get("capability", "")).strip()
+            description = str(raw.get("description", "")).strip()
+            command = str(raw.get("command", "")).strip()
+            parameters = raw.get("parameters")
+            timeout_s = int(raw.get("timeout-s", 30))
+            confirm_arg = str(raw.get("confirm-arg", "")).strip()
+
+            if not name:
+                raise ValueError(f"SKILL.md tools.definitions[{idx}] missing name")
+            if not capability:
+                raise ValueError(f"SKILL.md tools.definitions[{idx}] missing capability")
+            if not description:
+                raise ValueError(f"SKILL.md tools.definitions[{idx}] missing description")
+            if not command:
+                raise ValueError(f"SKILL.md tools.definitions[{idx}] missing command")
+            if not isinstance(parameters, dict):
+                raise ValueError(f"SKILL.md tools.definitions[{idx}] parameters must be a mapping")
+            if timeout_s <= 0:
+                raise ValueError(f"SKILL.md tools.definitions[{idx}] timeout-s must be > 0")
+
+            command_tools.append(
+                ToolCommandDef(
+                    name=name,
+                    capability=capability,
+                    description=description,
+                    parameters=parameters,
+                    command=command,
+                    timeout_s=timeout_s,
+                    confirm_arg=confirm_arg,
+                )
+            )
         disable_model_invocation = _coerce_bool(
             tools_cfg_raw.get("disable-model-invocation"),
             False,
@@ -466,6 +525,7 @@ class SkillRuntime:
             categories=categories,
             allowed_tools=allowed_tools,
             required_tools=required_tools,
+            command_tools=command_tools,
             disable_model_invocation=disable_model_invocation,
             format="agentskills",
         )
@@ -522,59 +582,74 @@ class SkillRuntime:
         if not manifest.path:
             return not manifest.required_tools
 
-        tools_path = manifest.path / "tools.py"
-        if not tools_path.exists():
-            if manifest.required_tools:
-                if self.debug:
-                    missing = ", ".join(manifest.required_tools)
-                    print(f"[skill] {manifest.id} missing tools.py; required tools: {missing}")
-                return False
-            return True
-
-        module = self._load_module(
-            tools_path,
-            f"alphanus_tools_{manifest.id.replace('-', '_')}",
-        )
-        if module is None:
-            return False
-
-        specs = getattr(module, "TOOL_SPECS", None)
-        executor = getattr(module, "execute", None)
-        if not isinstance(specs, dict) or not callable(executor):
-            if self.debug:
-                print(f"[skill] {manifest.id} tools.py missing TOOL_SPECS dict or execute()")
-            return False
-
         allowed_tools = set(manifest.allowed_tools)
         local_registered: List[str] = []
 
-        for tool_name, spec in specs.items():
-            if allowed_tools and tool_name not in allowed_tools:
+        for spec in manifest.command_tools:
+            if allowed_tools and spec.name not in allowed_tools:
                 continue
-            if tool_name in self._tool_registry:
+            if spec.name in self._tool_registry:
                 if self.debug:
-                    prev = self._tool_registry[tool_name]
-                    print(f"[skill] duplicate tool '{tool_name}' in {manifest.id}; already registered by {prev.skill_id}")
+                    prev = self._tool_registry[spec.name]
+                    print(f"[skill] duplicate tool '{spec.name}' in {manifest.id}; already registered by {prev.skill_id}")
                 continue
-
-            capability = str(spec.get("capability", "")).strip()
-            description = str(spec.get("description", "")).strip()
-            parameters = spec.get("parameters")
-
-            if not capability or not description or not isinstance(parameters, dict):
-                if self.debug:
-                    print(f"[skill] invalid tool spec '{tool_name}' in {manifest.id}")
-                continue
-
-            self._tool_registry[tool_name] = RegisteredTool(
-                name=tool_name,
+            self._tool_registry[spec.name] = RegisteredTool(
+                name=spec.name,
                 skill_id=manifest.id,
-                capability=capability,
-                description=description,
-                parameters=parameters,
-                module=module,
+                capability=spec.capability,
+                description=spec.description,
+                parameters=spec.parameters,
+                command=spec.command,
+                timeout_s=spec.timeout_s,
+                confirm_arg=spec.confirm_arg,
+                cwd=str(manifest.path),
             )
-            local_registered.append(tool_name)
+            local_registered.append(spec.name)
+
+        tools_path = manifest.path / "tools.py"
+        if tools_path.exists():
+            module = self._load_module(
+                tools_path,
+                f"alphanus_tools_{manifest.id.replace('-', '_')}",
+            )
+            if module is None:
+                return False
+
+            specs = getattr(module, "TOOL_SPECS", None)
+            executor = getattr(module, "execute", None)
+            if not isinstance(specs, dict) or not callable(executor):
+                if self.debug:
+                    print(f"[skill] {manifest.id} tools.py missing TOOL_SPECS dict or execute()")
+                return False
+
+            for tool_name, spec in specs.items():
+                if allowed_tools and tool_name not in allowed_tools:
+                    continue
+                if tool_name in self._tool_registry:
+                    if self.debug:
+                        prev = self._tool_registry[tool_name]
+                        print(f"[skill] duplicate tool '{tool_name}' in {manifest.id}; already registered by {prev.skill_id}")
+                    continue
+
+                capability = str(spec.get("capability", "")).strip()
+                description = str(spec.get("description", "")).strip()
+                parameters = spec.get("parameters")
+
+                if not capability or not description or not isinstance(parameters, dict):
+                    if self.debug:
+                        print(f"[skill] invalid tool spec '{tool_name}' in {manifest.id}")
+                    continue
+
+                self._tool_registry[tool_name] = RegisteredTool(
+                    name=tool_name,
+                    skill_id=manifest.id,
+                    capability=capability,
+                    description=description,
+                    parameters=parameters,
+                    module=module,
+                    cwd=str(manifest.path),
+                )
+                local_registered.append(tool_name)
 
         if manifest.required_tools:
             local_set = set(local_registered)
@@ -783,7 +858,12 @@ class SkillRuntime:
         )
 
         try:
-            result = reg.module.execute(tool_name, args, env)
+            if reg.command:
+                result = self._execute_command_tool(reg, args, env)
+            else:
+                if reg.module is None:
+                    raise RuntimeError(f"Tool '{tool_name}' has no module or command executor")
+                result = reg.module.execute(tool_name, args, env)
             duration = int((time.perf_counter() - start) * 1000)
             return self._normalize_result(result, duration)
         except ValueError as exc:
@@ -797,6 +877,75 @@ class SkillRuntime:
         except Exception as exc:
             message = str(exc) if self.debug else "Action failed"
             return _err("E_IO", message, int((time.perf_counter() - start) * 1000))
+
+    def _execute_command_tool(
+        self,
+        reg: RegisteredTool,
+        args: Dict[str, Any],
+        env: ToolExecutionEnv,
+    ) -> Dict[str, Any]:
+        caps = env.config.get("capabilities", {})
+        dangerously_skip_permissions = bool(caps.get("dangerously_skip_permissions", False))
+        shell_require_confirmation = bool(caps.get("shell_require_confirmation", True))
+        require_confirmation = bool(reg.confirm_arg) and shell_require_confirmation and not dangerously_skip_permissions
+
+        if require_confirmation:
+            raw = args.get(reg.confirm_arg)
+            command = str(raw).strip() if raw is not None else ""
+            if not command:
+                raise ValueError(f"Missing required confirmation argument: {reg.confirm_arg}")
+            if not env.confirm_shell:
+                raise PermissionError("Shell confirmation callback is required")
+            if not env.confirm_shell(command):
+                raise PermissionError("Shell command rejected by user")
+
+        proc_env = os.environ.copy()
+        proc_env["ALPHANUS_TOOL_NAME"] = reg.name
+        proc_env["ALPHANUS_TOOL_ARGS_JSON"] = json.dumps(args, ensure_ascii=False)
+        proc_env["ALPHANUS_WORKSPACE_ROOT"] = str(env.workspace.workspace_root)
+        proc_env["ALPHANUS_HOME_ROOT"] = str(env.workspace.home_root)
+        proc_env["ALPHANUS_MEMORY_PATH"] = str(env.memory.storage_path)
+        proc_env["ALPHANUS_MEMORY_MODEL"] = str(env.memory.model_name)
+        proc_env["ALPHANUS_MEMORY_BACKEND"] = str(env.memory.embedding_backend)
+        proc_env["ALPHANUS_MEMORY_EAGER_LOAD"] = "1" if bool(getattr(env.memory, "eager_load_encoder", False)) else "0"
+        proc_env["ALPHANUS_CONFIG_JSON"] = json.dumps(env.config, ensure_ascii=False)
+
+        proc = subprocess.run(
+            reg.command,
+            shell=True,
+            cwd=reg.cwd or str(self.skills_dir),
+            capture_output=True,
+            text=True,
+            input=json.dumps(args, ensure_ascii=False),
+            timeout=max(1, int(reg.timeout_s)),
+            env=proc_env,
+        )
+
+        out = (proc.stdout or "").strip()
+        if not out:
+            raise RuntimeError("Tool command produced no JSON output")
+        # Allow scripts to print diagnostics as long as the last line is the JSON result.
+        candidate = out.splitlines()[-1].strip()
+
+        try:
+            parsed = json.loads(candidate)
+        except Exception as exc:
+            raise RuntimeError(
+                "Tool command output is not valid JSON"
+                + (f": {exc}" if self.debug else "")
+            ) from exc
+
+        if not isinstance(parsed, dict):
+            raise RuntimeError("Tool command must return a JSON object result")
+
+        if proc.returncode != 0 and not parsed.get("ok"):
+            error = parsed.get("error") if isinstance(parsed.get("error"), dict) else {}
+            if not error:
+                parsed["error"] = {
+                    "code": "E_IO",
+                    "message": f"Tool command failed with exit code {proc.returncode}",
+                }
+        return parsed
 
     @staticmethod
     def _normalize_result(result: Any, duration_ms: int) -> Dict[str, Any]:

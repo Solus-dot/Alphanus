@@ -19,7 +19,10 @@
     "path": "~/Desktop/Alphanus-Workspace"
   },
   "memory": {
-    "path": "./memories/memory.pkl"
+    "path": "./memories/memory.pkl",
+    "embedding_backend": "hash",
+    "model_name": "all-MiniLM-L6-v2",
+    "eager_load_encoder": false
   },
   "context": {
     "context_limit": 8192,
@@ -28,6 +31,7 @@
   },
   "capabilities": {
     "shell_require_confirmation": true,
+    "dangerously_skip_permissions": false,
     "email_enabled": false,
     "email_imap_server": "imap.gmail.com"
   },
@@ -35,8 +39,5 @@
     "selection_mode": "all_enabled",
     "max_active_skills": 6,
     "strict_capability_policy": false
-  },
-  "whatsapp": {
-    "enabled": false
   }
 }

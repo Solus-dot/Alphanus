@@ -23,7 +23,7 @@ def _fake_encode(self, text: str):
 
 def _load_memory_tools_module():
     root = Path(__file__).resolve().parent.parent
-    tools_path = root / "skills" / "memory-rag" / "tools.py"
+    tools_path = root / "skills" / "memory-rag" / "scripts" / "ops.py"
     spec = importlib.util.spec_from_file_location("memory_rag_tools", tools_path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -89,14 +89,11 @@ def test_store_memory_auto_replaces_conflicting_user_name(monkeypatch, tmp_path:
     mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"))
     monkeypatch.setattr(VectorMemory, "_encode", _fake_encode, raising=False)
 
-    class Env:
-        memory = mem
-
-    first = tools.execute("store_memory", {"text": "User's name is Sohom"}, Env())
+    first = tools._run("store_memory", {"text": "User's name is Sohom"}, mem)
     assert first["ok"] is True
     old_id = int(first["data"]["id"])
 
-    second = tools.execute("store_memory", {"text": "User's name is Solus"}, Env())
+    second = tools._run("store_memory", {"text": "User's name is Solus"}, mem)
     assert second["ok"] is True
     assert old_id in second["meta"].get("forgotten_ids", [])
 
@@ -110,14 +107,11 @@ def test_store_memory_auto_replaces_conflicting_attribute(monkeypatch, tmp_path:
     mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"))
     monkeypatch.setattr(VectorMemory, "_encode", _fake_encode, raising=False)
 
-    class Env:
-        memory = mem
-
-    first = tools.execute("store_memory", {"text": "My favorite editor is Vim"}, Env())
+    first = tools._run("store_memory", {"text": "My favorite editor is Vim"}, mem)
     assert first["ok"] is True
     old_id = int(first["data"]["id"])
 
-    second = tools.execute("store_memory", {"text": "My favorite editor is Neovim"}, Env())
+    second = tools._run("store_memory", {"text": "My favorite editor is Neovim"}, mem)
     assert second["ok"] is True
     assert old_id in second["meta"].get("forgotten_ids", [])
     assert second["meta"].get("auto_resolution") == "user.favorite_editor"
@@ -132,22 +126,46 @@ def test_store_memory_replace_query_can_replace_non_fact(monkeypatch, tmp_path: 
     mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"))
     monkeypatch.setattr(VectorMemory, "_encode", _fake_encode, raising=False)
 
-    class Env:
-        memory = mem
-
-    first = tools.execute("store_memory", {"text": "My go-to stack: Flask + SQLite"}, Env())
+    first = tools._run("store_memory", {"text": "My go-to stack: Flask + SQLite"}, mem)
     assert first["ok"] is True
     old_id = int(first["data"]["id"])
 
-    second = tools.execute(
+    second = tools._run(
         "store_memory",
         {
             "text": "My go-to stack: FastAPI + Postgres",
             "replace_query": "go-to stack",
             "replace_min_score": 0.0,
         },
-        Env(),
+        mem,
     )
     assert second["ok"] is True
     assert old_id in second["meta"].get("forgotten_ids", [])
     assert second["meta"].get("auto_resolution") == "replace_query"
+
+
+def test_default_hash_backend_never_attempts_transformer(monkeypatch, tmp_path: Path):
+    called = {"count": 0}
+
+    def _never(self, model_name):
+        called["count"] += 1
+        raise AssertionError("transformer loader should not be called for hash backend")
+
+    monkeypatch.setattr(VectorMemory, "_load_transformer_encoder", _never, raising=True)
+    mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"), embedding_backend="hash")
+    mem.add_memory("hash backend only")
+    assert called["count"] == 0
+
+
+def test_transformer_backend_is_lazy(monkeypatch, tmp_path: Path):
+    called = {"count": 0}
+
+    def _counted(self, model_name):
+        called["count"] += 1
+        return _HashEncoder(dim=384)
+
+    monkeypatch.setattr(VectorMemory, "_load_transformer_encoder", _counted, raising=True)
+    mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"), embedding_backend="transformer")
+    assert called["count"] == 0
+    mem.add_memory("trigger encoder load")
+    assert called["count"] == 1

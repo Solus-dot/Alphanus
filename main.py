@@ -45,6 +45,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "memory": {
         "path": "./memories/memory.pkl",
+        "embedding_backend": "hash",
+        "model_name": "all-MiniLM-L6-v2",
+        "eager_load_encoder": False,
     },
     "context": {
         "context_limit": 8192,
@@ -53,6 +56,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "capabilities": {
         "shell_require_confirmation": True,
+        "dangerously_skip_permissions": False,
         "email_enabled": False,
         "email_imap_server": "imap.gmail.com",
     },
@@ -60,9 +64,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "selection_mode": "all_enabled",
         "max_active_skills": 6,
         "strict_capability_policy": False
-    },
-    "whatsapp": {
-        "enabled": False,
     },
 }
 
@@ -115,6 +116,11 @@ def validate_endpoint_policy(config: Dict[str, Any]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Alphanus")
     parser.add_argument("--debug", action="store_true", help="Enable verbose debug logs")
+    parser.add_argument(
+        "--dangerously-skip-permissions",
+        action="store_true",
+        help="Disable interactive shell permission prompts (unsafe).",
+    )
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent
@@ -122,6 +128,10 @@ def main() -> int:
 
     config_path = project_root / "config" / "global_config.json"
     config = load_or_create_global_config(config_path)
+    if args.dangerously_skip_permissions:
+        caps = config.setdefault("capabilities", {})
+        caps["dangerously_skip_permissions"] = True
+        caps["shell_require_confirmation"] = False
 
     validate_endpoint_policy(config)
 
@@ -129,7 +139,13 @@ def main() -> int:
     memory_path = resolve_path(config["memory"]["path"], project_root)
 
     workspace = WorkspaceManager(workspace_root=workspace_root)
-    memory = VectorMemory(storage_path=memory_path)
+    memory_cfg = config.get("memory", {})
+    memory = VectorMemory(
+        storage_path=memory_path,
+        model_name=str(memory_cfg.get("model_name", "all-MiniLM-L6-v2")),
+        embedding_backend=str(memory_cfg.get("embedding_backend", "hash")),
+        eager_load_encoder=bool(memory_cfg.get("eager_load_encoder", False)),
+    )
     runtime = SkillRuntime(
         skills_dir=str(project_root / "skills"),
         workspace=workspace,
@@ -145,8 +161,11 @@ def main() -> int:
 
     # Readiness is validated before first generation too; this startup check
     # keeps failure visible early while still letting TUI boot.
+    print(f"[info] waiting for endpoint {agent.models_endpoint} handshake...")
     if not agent.ensure_ready():
         print(f"[warning] Model endpoint not ready at {agent.models_endpoint}; you can still open the TUI.")
+    else:
+        print(f"[info] endpoint {agent.models_endpoint} handshake complete.")
 
     app = AlphanusTUI(agent=agent, debug=args.debug)
     app.run()

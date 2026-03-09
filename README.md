@@ -9,7 +9,6 @@ Alphanus is a local-first coding assistant that talks to an external `llama-serv
 - Skill runtime with capability-scoped tool calls
 - Workspace-safe file and shell operations
 - Persistent vector memory with semantic recall
-- Optional WhatsApp session scaffolding
 
 ## Setup
 
@@ -49,6 +48,7 @@ uv run pytest
 
 ## Notes
 
-- Shell commands always require confirmation from within the TUI.
+- Shell commands require confirmation by default; override with `--dangerously-skip-permissions`.
 - Write/delete operations are constrained to the configured workspace root.
 - Memory is persisted at `memories/memory.pkl` by default.
+- For lower RAM usage, keep `memory.embedding_backend` set to `hash` in `config/global_config.json`.

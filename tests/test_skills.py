@@ -271,3 +271,76 @@ priority = 50
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     assert runtime.list_skills() == []
+
+
+def test_command_definition_tool_executes(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "echo-skill" / "scripts").mkdir(parents=True)
+
+    (skills / "echo-skill" / "SKILL.md").write_text(
+        """
+---
+name: echo-skill
+description: echo
+version: 1.0.0
+tools:
+  allowed-tools:
+    - echo_text
+  definitions:
+    - name: echo_text
+      capability: utility_echo
+      description: Echo text.
+      command: python3 scripts/ops.py echo_text
+      parameters:
+        type: object
+        properties:
+          text:
+            type: string
+        required:
+          - text
+---
+Echo
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "echo-skill" / "scripts" / "ops.py").write_text(
+        """
+import json
+import os
+import sys
+
+def main():
+    raw = os.getenv("ALPHANUS_TOOL_ARGS_JSON") or sys.stdin.read() or "{}"
+    args = json.loads(raw)
+    out = {"ok": True, "data": {"text": args["text"]}, "error": None, "meta": {}}
+    print(json.dumps(out))
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("echo-skill")
+    assert skill is not None
+
+    ctx = SkillContext(
+        user_input="echo this",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+    out = runtime.execute_tool_call("echo_text", {"text": "hello"}, selected=[skill], ctx=ctx)
+    assert out["ok"] is True
+    assert out["data"]["text"] == "hello"
