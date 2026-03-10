@@ -6,6 +6,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.context import ContextWindowManager
@@ -144,6 +146,7 @@ class Agent:
             self.compact_tool_result_tools = {str(name).strip() for name in compact_tools if str(name).strip()}
         else:
             self.compact_tool_result_tools = set()
+        self.debug_log_path = str(agent_cfg.get("debug_log_path", "")).strip()
         self.system_prompt = build_system_prompt(self.skill_runtime.workspace.workspace_root)
 
         context_cfg = config.get("context", {})
@@ -172,21 +175,69 @@ class Agent:
         except Exception:
             return
 
+    @staticmethod
+    def _debug_compact(value: Any, depth: int = 0) -> Any:
+        if depth >= 4:
+            return "[truncated]"
+        if isinstance(value, str):
+            if len(value) <= 1000:
+                return value
+            return value[:1000] + f"...[truncated {len(value) - 1000} chars]"
+        if isinstance(value, list):
+            items = [Agent._debug_compact(item, depth + 1) for item in value[:20]]
+            if len(value) > 20:
+                items.append(f"...[{len(value) - 20} more items]")
+            return items
+        if isinstance(value, dict):
+            items = list(value.items())
+            out: Dict[str, Any] = {}
+            for key, item in items[:40]:
+                out[str(key)] = Agent._debug_compact(item, depth + 1)
+            if len(items) > 40:
+                out["__truncated_keys__"] = len(items) - 40
+            return out
+        return value
+
+    def _debug_log(self, event_type: str, **payload: Any) -> None:
+        if not self.debug or not self.debug_log_path:
+            return
+        try:
+            path = Path(self.debug_log_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            record = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "event": event_type,
+                "payload": self._debug_compact(payload),
+            }
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        except Exception:
+            return
+
     def ensure_ready(self) -> bool:
         deadline = time.monotonic() + self.readiness_timeout_s
         headers = self._headers()
         req = urllib.request.Request(self.models_endpoint, headers=headers, method="GET")
+        self._debug_log(
+            "readiness_start",
+            endpoint=self.models_endpoint,
+            timeout_s=self.readiness_timeout_s,
+            header_keys=sorted(headers.keys()),
+        )
 
         while time.monotonic() < deadline:
             try:
                 with urllib.request.urlopen(req, timeout=self.connect_timeout_s, context=self.ssl_context) as resp:
                     if 200 <= resp.status < 300:
                         self._ready_checked = True
+                        self._debug_log("readiness_ok", endpoint=self.models_endpoint, status=resp.status)
                         return True
-            except Exception:
+            except Exception as exc:
+                self._debug_log("readiness_retry", endpoint=self.models_endpoint, error=str(exc))
                 time.sleep(self.readiness_poll_s)
                 continue
         self._ready_checked = False
+        self._debug_log("readiness_failed", endpoint=self.models_endpoint)
         return False
 
     def _validate_endpoints(self) -> Optional[str]:
@@ -312,6 +363,7 @@ class Agent:
         finish_reason = "stop"
         tool_acc = ToolCallAccumulator(pass_id=pass_id)
         tool_phase_started = False
+        self._debug_log("chat_pass_start", pass_id=pass_id, endpoint=self.model_endpoint, payload=payload)
 
         for chunk in stream_chat_completions(
             endpoint=self.model_endpoint,
@@ -320,8 +372,10 @@ class Agent:
             headers=self._headers(),
             ssl_context=self.ssl_context,
             stop_event=stop_event,
+            on_debug_event=lambda event: self._debug_log("http_stream", pass_id=pass_id, **event),
         ):
             if stop_event is not None and stop_event.is_set():
+                self._debug_log("chat_pass_cancelled", pass_id=pass_id)
                 return StreamPassResult(finish_reason="cancelled")
             choices = chunk.get("choices", [])
             if not choices:
@@ -364,6 +418,14 @@ class Agent:
         if tool_calls and finish_reason not in {"tool_calls", "cancelled"}:
             finish_reason = "tool_calls"
 
+        self._debug_log(
+            "chat_pass_end",
+            pass_id=pass_id,
+            finish_reason=finish_reason,
+            content_chars=len("".join(content_parts)),
+            reasoning_chars=len("".join(reasoning_parts)),
+            tool_call_count=len(tool_calls),
+        )
         return StreamPassResult(
             finish_reason=finish_reason,
             content="".join(content_parts),

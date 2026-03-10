@@ -137,6 +137,11 @@ def main() -> int:
 
     config_path = project_root / "config" / "global_config.json"
     config = load_or_create_global_config(config_path)
+    if args.debug:
+        debug_dir = project_root / "logs"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        agent_cfg = config.setdefault("agent", {})
+        agent_cfg["debug_log_path"] = str(debug_dir / "http-debug.jsonl")
     if args.dangerously_skip_permissions:
         caps = config.setdefault("capabilities", {})
         caps["dangerously_skip_permissions"] = True
@@ -164,6 +169,8 @@ def main() -> int:
     )
 
     agent = Agent(config=config, skill_runtime=runtime, debug=args.debug)
+    if args.debug:
+        print(f"[info] debug HTTP log: {config['agent']['debug_log_path']}")
 
     if not config.get("agent", {}).get("tls_verify", True):
         print("[warning] TLS verification is disabled (agent.tls_verify=false)")

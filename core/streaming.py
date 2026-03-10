@@ -4,7 +4,7 @@ import json
 import ssl
 import urllib.error
 import urllib.request
-from typing import Dict, Generator, Optional, Tuple
+from typing import Callable, Dict, Generator, Optional, Tuple
 
 
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
@@ -49,6 +49,7 @@ def stream_chat_completions(
     headers: Optional[Dict[str, str]] = None,
     ssl_context: Optional[ssl.SSLContext] = None,
     stop_event=None,
+    on_debug_event: Optional[Callable[[Dict], None]] = None,
 ) -> Generator[Dict, None, None]:
     body = json.dumps(payload).encode("utf-8")
     req_headers = {"Content-Type": "application/json"}
@@ -57,7 +58,27 @@ def stream_chat_completions(
     req = urllib.request.Request(endpoint, data=body, headers=req_headers, method="POST")
 
     try:
+        if on_debug_event:
+            on_debug_event(
+                {
+                    "type": "http_request",
+                    "endpoint": endpoint,
+                    "method": "POST",
+                    "timeout_s": timeout_s,
+                    "payload_bytes": len(body),
+                    "header_keys": sorted(req_headers.keys()),
+                }
+            )
         with urllib.request.urlopen(req, timeout=timeout_s, context=ssl_context) as resp:
+            if on_debug_event:
+                on_debug_event(
+                    {
+                        "type": "http_response",
+                        "endpoint": endpoint,
+                        "status": getattr(resp, "status", None),
+                        "reason": getattr(resp, "reason", ""),
+                    }
+                )
             for raw in resp:
                 if stop_event is not None and stop_event.is_set():
                     return
@@ -66,13 +87,35 @@ def stream_chat_completions(
                     continue
                 payload_str = line[5:].strip()
                 if payload_str == "[DONE]":
+                    if on_debug_event:
+                        on_debug_event({"type": "http_done", "endpoint": endpoint})
                     return
                 try:
-                    yield json.loads(payload_str)
+                    chunk = json.loads(payload_str)
+                    if on_debug_event:
+                        on_debug_event({"type": "http_chunk", "endpoint": endpoint, "chunk": chunk})
+                    yield chunk
                 except json.JSONDecodeError:
+                    if on_debug_event:
+                        on_debug_event(
+                            {
+                                "type": "http_chunk_decode_error",
+                                "endpoint": endpoint,
+                                "payload_preview": payload_str[:500],
+                            }
+                        )
                     continue
     except urllib.error.HTTPError as exc:
         message = exc.read().decode(errors="replace") if hasattr(exc, "read") else str(exc)
+        if on_debug_event:
+            on_debug_event(
+                {
+                    "type": "http_error",
+                    "endpoint": endpoint,
+                    "status": exc.code,
+                    "message": message[:1000],
+                }
+            )
         raise StreamError(
             f"HTTP {exc.code}: {message[:400]}",
             status_code=exc.code,
@@ -81,4 +124,13 @@ def stream_chat_completions(
     except urllib.error.URLError as exc:
         reason = str(exc.reason)
         retryable = should_retry(exc)
+        if on_debug_event:
+            on_debug_event(
+                {
+                    "type": "network_error",
+                    "endpoint": endpoint,
+                    "reason": reason,
+                    "retryable": retryable,
+                }
+            )
         raise StreamError(f"Network error: {reason}", retryable=retryable) from exc
