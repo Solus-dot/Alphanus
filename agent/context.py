@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 
 class ContextWindowManager:
@@ -22,6 +22,39 @@ class ContextWindowManager:
             if msg.get("tool_calls"):
                 chars += len(str(msg["tool_calls"]))
         return max(1, chars // 4)
+
+    @staticmethod
+    def _last_role_index(messages: List[Dict], role: str) -> Optional[int]:
+        for idx in range(len(messages) - 1, -1, -1):
+            if messages[idx].get("role") == role:
+                return idx
+        return None
+
+    @staticmethod
+    def _content_to_user_text(content: Any) -> str:
+        if isinstance(content, str):
+            text = content.strip()
+            return text if text else "[user message omitted]"
+        if isinstance(content, list):
+            chunks: List[str] = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") != "text":
+                    continue
+                text = str(part.get("text", "")).strip()
+                if text:
+                    chunks.append(text)
+            if chunks:
+                return "\n".join(chunks)
+        return "[user message omitted]"
+
+    @classmethod
+    def _compact_user_message(cls, message: Dict, keep_chars: int) -> Dict:
+        text = cls._content_to_user_text(message.get("content"))
+        if keep_chars > 0:
+            text = cls._truncate_text(text, keep_chars)
+        return {"role": "user", "content": text or "[user message omitted]"}
 
     @staticmethod
     def _tool_call_ids(message: Dict) -> Set[str]:
@@ -180,6 +213,9 @@ class ContextWindowManager:
 
         while cls.estimate_tokens(out) > max_prompt_tokens and len(out) > 1:
             required = required_indexes()
+            last_user = cls._last_role_index(out, "user")
+            if last_user is not None:
+                required.add(last_user)
 
             drop_idx = None
             for msg_idx in range(1, len(out)):
@@ -223,7 +259,21 @@ class ContextWindowManager:
                 out[0]["content"] = cls._truncate_text(sys_content, keep_chars)
 
         if cls.estimate_tokens(out) > max_prompt_tokens:
-            return out[:1]
+            last_user = cls._last_role_index(out, "user")
+            if last_user is None:
+                return out[:1]
+
+            compact_user = cls._compact_user_message(
+                out[last_user],
+                keep_chars=max(16, min(256, max_prompt_tokens * 2)),
+            )
+            minimal = [out[0], compact_user]
+            if cls.estimate_tokens(minimal) <= max_prompt_tokens:
+                return minimal
+
+            compact_user["content"] = cls._truncate_text(str(compact_user.get("content", "")), 16)
+            minimal = [out[0], compact_user]
+            return minimal
         return out
 
     def prune(self, messages: List[Dict], max_tokens: int) -> List[Dict]:
@@ -245,6 +295,9 @@ class ContextWindowManager:
         start_idx = max(0, len(body) - keep_tail)
         kept_indices: Set[int] = set(range(start_idx, len(body)))
         kept_indices = self._expand_tool_dependencies(body, kept_indices)
+        last_user_idx = self._last_role_index(body, "user")
+        if last_user_idx is not None:
+            kept_indices.add(last_user_idx)
 
         selected = [body[idx] for idx in sorted(kept_indices)]
 
@@ -272,6 +325,8 @@ class ContextWindowManager:
         required_idxs = {
             idx for idx in kept_indices if body[idx].get("role") == "tool"
         } | required_assistant_idxs
+        if last_user_idx is not None:
+            required_idxs.add(last_user_idx)
 
         mutable = [idx for idx in sorted(kept_indices)]
         drop_cursor = 0

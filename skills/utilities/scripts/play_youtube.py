@@ -17,7 +17,10 @@ def main() -> int:
     args = read_args()
     topic = str(args["topic"]).strip()
     url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(topic)
-    opened = webbrowser.open(url, new=2)
+    try:
+        opened = webbrowser.open(url, new=2)
+    except Exception as exc:
+        raise RuntimeError(f"Browser launch failed: {exc}") from exc
     if not opened:
         raise RuntimeError("Unable to open browser in this environment")
     emit({"url": url, "topic": topic})

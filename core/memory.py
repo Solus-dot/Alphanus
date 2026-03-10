@@ -236,25 +236,48 @@ class VectorMemory:
 
         threshold = self.min_score if min_score is None else float(min_score)
         q = self._encode(query)
+        q_norm = float(np.linalg.norm(q))
+        if q_norm == 0:
+            return []
 
-        scored = []
+        candidate_indexes = [
+            idx for idx, item in enumerate(self.memories) if not memory_type or item.type == memory_type
+        ]
+        if not candidate_indexes:
+            return []
+
+        # Vectorized cosine similarity over one contiguous matrix is faster and
+        # avoids per-item Python-loop overhead for medium/large stores.
+        matrix = np.asarray([self.memories[idx].vector for idx in candidate_indexes], dtype=np.float32)
+        vec_norms = np.linalg.norm(matrix, axis=1)
+        denom = vec_norms * q_norm
+        dots = matrix @ q
+        scores = np.divide(
+            dots,
+            denom,
+            out=np.zeros_like(dots, dtype=np.float32),
+            where=denom > 0,
+        )
+
+        passing = np.flatnonzero(scores >= threshold)
+        if passing.size == 0:
+            return []
+
+        k = max(1, int(top_k))
+        if passing.size > k:
+            passing_scores = scores[passing]
+            top_local = np.argpartition(passing_scores, -k)[-k:]
+            ordered_local = top_local[np.argsort(passing_scores[top_local])[::-1]]
+            selected = passing[ordered_local]
+        else:
+            selected = passing[np.argsort(scores[passing])[::-1]]
+
         now = time.time()
         touched = False
-        for item in self.memories:
-            if memory_type and item.type != memory_type:
-                continue
-            denom = float(np.linalg.norm(item.vector) * np.linalg.norm(q))
-            if denom == 0:
-                score = 0.0
-            else:
-                score = float(np.dot(item.vector, q) / denom)
-            if score < threshold:
-                continue
-            scored.append((score, item))
-
-        scored.sort(key=lambda pair: pair[0], reverse=True)
         out = []
-        for score, item in scored[: max(1, top_k)]:
+        for local_idx in selected:
+            item = self.memories[candidate_indexes[int(local_idx)]]
+            score = float(scores[int(local_idx)])
             item.access_count += 1
             item.last_accessed = now
             touched = True

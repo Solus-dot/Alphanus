@@ -5,6 +5,7 @@ import json
 import sys
 import urllib.parse
 import urllib.request
+import urllib.error
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -19,8 +20,15 @@ def main() -> int:
     city = str(args["city"]).strip()
     query = urllib.parse.quote(city)
     url = f"https://wttr.in/{query}?format=j1"
-    with urllib.request.urlopen(url, timeout=10) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"Weather service returned HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Weather service unreachable: {exc.reason}") from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Weather service returned invalid JSON") from exc
     current = payload.get("current_condition", [{}])[0]
     emit(
         {

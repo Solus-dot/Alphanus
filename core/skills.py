@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import subprocess
 import time
 from dataclasses import dataclass
@@ -113,7 +114,37 @@ class SkillRuntime:
 
         self.skills: Dict[str, SkillManifest] = {}
         self._tool_registry: Dict[str, RegisteredTool] = {}
+        self._proc_env_base = self._build_proc_env_base()
         self.load_skills()
+
+    def _build_proc_env_base(self) -> Dict[str, str]:
+        env = os.environ.copy()
+        env["ALPHANUS_WORKSPACE_ROOT"] = str(self.workspace.workspace_root)
+        env["ALPHANUS_HOME_ROOT"] = str(self.workspace.home_root)
+        env["ALPHANUS_MEMORY_PATH"] = str(self.memory.storage_path)
+        env["ALPHANUS_MEMORY_MODEL"] = str(self.memory.model_name)
+        env["ALPHANUS_MEMORY_BACKEND"] = str(self.memory.embedding_backend)
+        env["ALPHANUS_MEMORY_EAGER_LOAD"] = "1" if bool(getattr(self.memory, "eager_load_encoder", False)) else "0"
+        env["ALPHANUS_CONFIG_JSON"] = json.dumps(self.config, ensure_ascii=False)
+
+        # Let skill scripts import project modules without per-script sys.path hacks.
+        repo_root = str(self.skills_dir.parent)
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = repo_root if not existing else repo_root + os.pathsep + existing
+        return env
+
+    @staticmethod
+    def _prepare_command(command: str) -> Tuple[object, bool]:
+        # Use shell=False for simple commands (safer + lower process overhead).
+        if re.search(r"[|&;<>`$()]", command):
+            return command, True
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            return command, True
+        if not parts:
+            return command, True
+        return parts, False
 
     @staticmethod
     def _load_module(path: Path, module_name: str):
@@ -494,20 +525,14 @@ class SkillRuntime:
             if not env.confirm_shell(command):
                 raise PermissionError("Shell command rejected by user")
 
-        proc_env = os.environ.copy()
+        proc_env = dict(self._proc_env_base)
         proc_env["ALPHANUS_TOOL_NAME"] = reg.name
         proc_env["ALPHANUS_TOOL_ARGS_JSON"] = json.dumps(args, ensure_ascii=False)
-        proc_env["ALPHANUS_WORKSPACE_ROOT"] = str(env.workspace.workspace_root)
-        proc_env["ALPHANUS_HOME_ROOT"] = str(env.workspace.home_root)
-        proc_env["ALPHANUS_MEMORY_PATH"] = str(env.memory.storage_path)
-        proc_env["ALPHANUS_MEMORY_MODEL"] = str(env.memory.model_name)
-        proc_env["ALPHANUS_MEMORY_BACKEND"] = str(env.memory.embedding_backend)
-        proc_env["ALPHANUS_MEMORY_EAGER_LOAD"] = "1" if bool(getattr(env.memory, "eager_load_encoder", False)) else "0"
-        proc_env["ALPHANUS_CONFIG_JSON"] = json.dumps(env.config, ensure_ascii=False)
+        prepared_command, use_shell = self._prepare_command(reg.command)
 
         proc = subprocess.run(
-            reg.command,
-            shell=True,
+            prepared_command,
+            shell=use_shell,
             cwd=reg.cwd or str(self.skills_dir),
             capture_output=True,
             text=True,

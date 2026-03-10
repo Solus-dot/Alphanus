@@ -86,3 +86,44 @@ def test_default_config_includes_tui_memory_limits():
     assert int(tui.get("chat_log_max_lines", 0)) > 0
     tree = tui.get("tree_compaction", {})
     assert bool(tree.get("enabled", False))
+
+
+def test_prune_keeps_at_least_one_user_message_when_tool_bundle_is_large():
+    mgr = ContextWindowManager(context_limit=900, keep_last_n=10, safety_margin=0)
+    messages = [{"role": "system", "content": "base prompt"}]
+    messages.append(
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + ("A" * 2000)}},
+                {"type": "text", "text": "animate gradient with mouse tracking"},
+            ],
+        }
+    )
+
+    for idx in range(6):
+        call_id = f"call_{idx}"
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": "edit_file", "arguments": '{"content":"' + ("x" * 2000) + '"}'},
+                    }
+                ],
+            }
+        )
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "name": "edit_file",
+                "content": "y" * 4000,
+            }
+        )
+
+    pruned = mgr.prune(messages, max_tokens=200)
+    assert any(msg.get("role") == "user" for msg in pruned)
