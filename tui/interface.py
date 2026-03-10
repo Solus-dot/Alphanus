@@ -19,11 +19,10 @@ from textual.widgets import Input, RichLog, Static
 from agent.core import Agent, AgentTurnResult
 from core.attachments import build_content, classify_attachment
 from core.conv_tree import ConvTree, Turn
+from tui.live_tool_preview import LiveToolPreviewManager
+from tui.markdown_utils import hanging_indent, render_md
 
 DEFAULT_SAVE = "llamachat_tree.json"
-STREAMED_FILE_TOOLS = {"create_file", "edit_file"}
-MAX_LIVE_PREVIEW_CHARS = 12000
-MAX_LIVE_PREVIEW_LINES = 180
 MAX_REPLY_ACC_CHARS = 24000
 
 HELP_SECTIONS = [
@@ -67,53 +66,6 @@ HELP_SECTIONS = [
         ],
     ),
 ]
-
-
-def _hanging_indent(line: str) -> int:
-    stripped = line.lstrip(" ")
-    lead = len(line) - len(stripped)
-    if stripped.startswith(("- ", "* ", "+ ")):
-        return lead + 2
-    if ". " in stripped[:5] and stripped[0].isdigit():
-        idx = stripped.find(". ")
-        if idx > 0:
-            return lead + idx + 2
-    return lead
-
-
-def _render_md(line: str, in_fence: bool) -> Tuple[str, bool]:
-    stripped = line.strip()
-    if stripped.startswith("```") or stripped.startswith("~~~"):
-        return f"[dim]{esc(line)}[/dim]", not in_fence
-    if in_fence:
-        return esc(line), in_fence
-
-    out = []
-    i = 0
-    n = len(line)
-    while i < n:
-        if line[i] == "`":
-            j = i + 1
-            while j < n and line[j] != "`":
-                j += 1
-            if j < n:
-                out.append(f"[bold yellow]{esc(line[i:j+1])}[/bold yellow]")
-                i = j + 1
-            else:
-                out.append(esc(line[i:]))
-                break
-            continue
-        if i + 1 < n and line[i : i + 2] == "**":
-            j = line.find("**", i + 2)
-            if j != -1:
-                out.append(f"[bold]{esc(line[i+2:j])}[/bold]")
-                i = j + 2
-                continue
-        out.append(esc(line[i]))
-        i += 1
-    return "".join(out), in_fence
-
-
 class ChatInput(Input):
     BINDINGS = [
         Binding("ctrl+u", "clear_all", show=False),
@@ -229,14 +181,23 @@ class AlphanusTUI(App):
         self.agent = agent
         self._debug_mode = debug
 
-        self.conv_tree = ConvTree()
+        tui_cfg = self.agent.config.get("tui", {})
+        tree_cfg = tui_cfg.get("tree_compaction", {})
+        chat_log_max_lines = int(tui_cfg.get("chat_log_max_lines", 5000))
+        self._chat_log_max_lines = chat_log_max_lines if chat_log_max_lines > 0 else None
+        self._tree_compaction_enabled = bool(tree_cfg.get("enabled", True))
+        self._inactive_assistant_char_limit = int(tree_cfg.get("inactive_assistant_char_limit", 12000))
+        self._inactive_tool_argument_char_limit = int(tree_cfg.get("inactive_tool_argument_char_limit", 5000))
+        self._inactive_tool_content_char_limit = int(tree_cfg.get("inactive_tool_content_char_limit", 8000))
+
+        self.conv_tree = self._new_conv_tree()
         self.pending: List[Tuple[str, str]] = []
 
         self._stop_event = threading.Event()
         self._active_turn_id: Optional[str] = None
         self._reply_acc = ""
         self._tool_activity_seen = False
-        self._live_tool_streams: Dict[str, Dict[str, Any]] = {}
+        self._live_preview = LiveToolPreviewManager()
 
         self._reasoning_open = False
         self._content_open = False
@@ -262,7 +223,13 @@ class AlphanusTUI(App):
     def compose(self) -> ComposeResult:
         with Horizontal(id="main-area"):
             with ScrollableContainer(id="chat-scroll"):
-                yield RichLog(id="chat-log", markup=True, highlight=False, wrap=True)
+                yield RichLog(
+                    id="chat-log",
+                    markup=True,
+                    highlight=False,
+                    wrap=True,
+                    max_lines=self._chat_log_max_lines,
+                )
                 yield Static("", id="partial", markup=True)
             with ScrollableContainer(id="sidebar"):
                 yield Static("", id="sidebar-content", markup=True)
@@ -287,6 +254,23 @@ class AlphanusTUI(App):
         sidebar = self.query_one("#sidebar", ScrollableContainer)
         sidebar.display = event.size.width >= 120
         self._update_sidebar()
+
+    def _new_conv_tree(self) -> ConvTree:
+        return ConvTree(
+            compact_inactive_branches=self._tree_compaction_enabled,
+            inactive_assistant_char_limit=self._inactive_assistant_char_limit,
+            inactive_tool_argument_char_limit=self._inactive_tool_argument_char_limit,
+            inactive_tool_content_char_limit=self._inactive_tool_content_char_limit,
+        )
+
+    def _apply_tree_compaction_policy(self, tree: ConvTree) -> ConvTree:
+        tree.set_compaction_policy(
+            enabled=self._tree_compaction_enabled,
+            inactive_assistant_char_limit=self._inactive_assistant_char_limit,
+            inactive_tool_argument_char_limit=self._inactive_tool_argument_char_limit,
+            inactive_tool_content_char_limit=self._inactive_tool_content_char_limit,
+        )
+        return tree
 
     def on_key(self, event) -> None:
         if not self._await_shell_confirm:
@@ -347,209 +331,9 @@ class AlphanusTUI(App):
         remaining = MAX_REPLY_ACC_CHARS - len(self._reply_acc)
         self._reply_acc += token[:remaining]
 
-    def _compact_tool_args(self, tool_name: str, args: Any) -> str:
-        if not isinstance(args, dict):
-            return str(args)
-
-        if tool_name in STREAMED_FILE_TOOLS:
-            filepath = str(args.get("filepath", ""))
-            content = args.get("content", "")
-            n_chars = len(content) if isinstance(content, str) else 0
-            return f'filepath="{filepath}", content={n_chars} chars'
-
-        parts = []
-        for key in sorted(args.keys()):
-            value = args[key]
-            text = str(value)
-            if len(text) > 60:
-                text = text[:57] + "..."
-            parts.append(f"{key}={text}")
-        return ", ".join(parts)
-
     def _is_tool_trace_line(self, line: str) -> bool:
         s = line.strip().lower()
         return "tool call:" in s
-
-    def _extract_partial_json_string_field(self, raw: str, key: str) -> Tuple[Optional[str], bool]:
-        marker = f'"{key}"'
-        start = raw.find(marker)
-        if start < 0:
-            return None, False
-        colon = raw.find(":", start + len(marker))
-        if colon < 0:
-            return None, False
-        i = colon + 1
-        while i < len(raw) and raw[i].isspace():
-            i += 1
-        if i >= len(raw) or raw[i] != '"':
-            return None, False
-        i += 1
-        out: List[str] = []
-        escaped = False
-        while i < len(raw):
-            ch = raw[i]
-            if escaped:
-                if ch == "n":
-                    out.append("\n")
-                elif ch == "r":
-                    out.append("\r")
-                elif ch == "t":
-                    out.append("\t")
-                elif ch in {'"', "\\", "/"}:
-                    out.append(ch)
-                elif ch == "b":
-                    out.append("\b")
-                elif ch == "f":
-                    out.append("\f")
-                elif ch == "u":
-                    if i + 4 < len(raw):
-                        hex_part = raw[i + 1 : i + 5]
-                        try:
-                            out.append(chr(int(hex_part, 16)))
-                            i += 4
-                        except ValueError:
-                            out.append("u")
-                    else:
-                        return "".join(out), False
-                else:
-                    out.append(ch)
-                escaped = False
-            else:
-                if ch == "\\":
-                    escaped = True
-                elif ch == '"':
-                    return "".join(out), True
-                else:
-                    out.append(ch)
-            i += 1
-        return "".join(out), False
-
-    def _update_live_tool_preview(self, stream_id: str, name: str, raw_arguments: str) -> None:
-        if name not in STREAMED_FILE_TOOLS:
-            return
-        if not raw_arguments:
-            return
-
-        state = self._live_tool_streams.setdefault(
-            stream_id,
-            {
-                "name": name,
-                "filepath": "",
-                "opened": False,
-                "closed": False,
-                "printed_len": 0,
-                "line_buf": "",
-                "rendered_chars": 0,
-                "rendered_lines": 0,
-                "truncated": False,
-            },
-        )
-        if state.get("name") != name:
-            state["name"] = name
-        filepath, _ = self._extract_partial_json_string_field(raw_arguments, "filepath")
-        if filepath:
-            state["filepath"] = filepath
-
-        content, complete = self._extract_partial_json_string_field(raw_arguments, "content")
-        if content is None:
-            return
-
-        if not state["opened"]:
-            state["opened"] = True
-            path_label = state.get("filepath") or "(pending filepath)"
-            self._write(f"[dim]  · file draft: {esc(path_label)}[/dim]")
-            self._write_indented("[dim]```[/dim]", indent=2)
-
-        prev_len = int(state.get("printed_len", 0))
-        if len(content) < prev_len:
-            prev_len = 0
-            state["line_buf"] = ""
-        delta = content[prev_len:]
-        state["printed_len"] = len(content)
-
-        if delta and not state.get("truncated"):
-            state["line_buf"] = str(state.get("line_buf", "")) + delta
-            while "\n" in state["line_buf"]:
-                line, state["line_buf"] = state["line_buf"].split("\n", 1)
-                rendered_lines = int(state.get("rendered_lines", 0))
-                rendered_chars = int(state.get("rendered_chars", 0))
-                if rendered_lines >= MAX_LIVE_PREVIEW_LINES or rendered_chars >= MAX_LIVE_PREVIEW_CHARS:
-                    state["truncated"] = True
-                    state["line_buf"] = ""
-                    break
-                remaining_chars = MAX_LIVE_PREVIEW_CHARS - rendered_chars
-                out_line = line[:remaining_chars]
-                self._write_indented(esc(out_line), indent=2)
-                state["rendered_chars"] = rendered_chars + len(out_line) + 1
-                state["rendered_lines"] = rendered_lines + 1
-                if len(line) > remaining_chars:
-                    state["truncated"] = True
-                    state["line_buf"] = ""
-                    break
-
-        if complete and not state["closed"]:
-            tail = str(state.get("line_buf", ""))
-            if tail and not state.get("truncated"):
-                remaining_chars = MAX_LIVE_PREVIEW_CHARS - int(state.get("rendered_chars", 0))
-                if remaining_chars > 0:
-                    self._write_indented(esc(tail[:remaining_chars]), indent=2)
-                    state["rendered_chars"] = int(state.get("rendered_chars", 0)) + min(len(tail), remaining_chars)
-                if len(tail) > remaining_chars:
-                    state["truncated"] = True
-                state["line_buf"] = ""
-            if state.get("truncated"):
-                self._write_indented("[dim]... (live preview truncated) ...[/dim]", indent=2)
-            self._write_indented("[dim]```[/dim]", indent=2)
-            state["closed"] = True
-
-    def _close_live_tool_preview(self, stream_id: str) -> bool:
-        state = self._live_tool_streams.get(stream_id)
-        if not state or not state.get("opened"):
-            return False
-        if not state.get("closed"):
-            tail = str(state.get("line_buf", ""))
-            if tail and not state.get("truncated"):
-                remaining_chars = MAX_LIVE_PREVIEW_CHARS - int(state.get("rendered_chars", 0))
-                if remaining_chars > 0:
-                    self._write_indented(esc(tail[:remaining_chars]), indent=2)
-                if len(tail) > remaining_chars:
-                    state["truncated"] = True
-                state["line_buf"] = ""
-            if state.get("truncated"):
-                self._write_indented("[dim]... (live preview truncated) ...[/dim]", indent=2)
-            self._write_indented("[dim]```[/dim]", indent=2)
-            state["closed"] = True
-        self._live_tool_streams.pop(stream_id, None)
-        return True
-
-    def _close_all_live_tool_previews(self) -> None:
-        for stream_id in list(self._live_tool_streams.keys()):
-            self._close_live_tool_preview(stream_id)
-
-    def _write_tool_content_preview(self, tool_name: str, args: Any) -> None:
-        if tool_name not in STREAMED_FILE_TOOLS:
-            return
-        if not isinstance(args, dict):
-            return
-        content = args.get("content")
-        filepath = str(args.get("filepath", ""))
-        if not isinstance(content, str) or not content.strip():
-            return
-
-        max_chars = 8000
-        max_lines = 140
-        clipped = content[:max_chars]
-        lines = clipped.splitlines()
-        truncated = len(content) > max_chars or len(lines) > max_lines
-        lines = lines[:max_lines]
-
-        self._write(f"[dim]  · file draft: {esc(filepath)}[/dim]")
-        self._write_indented("[dim]```[/dim]", indent=2)
-        for line in lines:
-            self._write_indented(esc(line), indent=2)
-        if truncated:
-            self._write_indented("[dim]... (preview truncated) ...[/dim]", indent=2)
-        self._write_indented("[dim]```[/dim]", indent=2)
 
     def _update_status1(self) -> None:
         parts = []
@@ -646,9 +430,9 @@ class AlphanusTUI(App):
                     except Exception:
                         args = raw_args
                     self._write(
-                        f"[dim]  · tool call: {esc(name)}({esc(self._compact_tool_args(name, args))})[/dim]"
+                        f"[dim]  · tool call: {esc(name)}({esc(self._live_preview.compact_tool_args(name, args))})[/dim]"
                     )
-                    self._write_tool_content_preview(name, args)
+                    self._live_preview.write_static_preview(name, args, self._write, self._write_indented)
             elif msg.get("role") == "tool":
                 name = msg.get("name", "tool")
                 try:
@@ -672,8 +456,8 @@ class AlphanusTUI(App):
 
         in_fence = False
         for line in display.splitlines() or [""]:
-            rendered, in_fence = _render_md(line, in_fence)
-            indent = 2 if in_fence else max(2, _hanging_indent(line))
+            rendered, in_fence = render_md(line, in_fence)
+            indent = 2 if in_fence else max(2, hanging_indent(line))
             self._write_indented(rendered, indent=indent)
 
         if interrupted:
@@ -695,7 +479,7 @@ class AlphanusTUI(App):
         self._active_turn_id = turn.id
         self._reply_acc = ""
         self._tool_activity_seen = False
-        self._live_tool_streams = {}
+        self._live_preview.reset()
         self._reasoning_open = False
         self._content_open = False
         self._done_thinking_rendered = False
@@ -748,7 +532,7 @@ class AlphanusTUI(App):
         for line in text.splitlines():
             if self._is_tool_trace_line(line):
                 continue
-            rendered, _ = _render_md(line, False)
+            rendered, _ = render_md(line, False)
             self._write_indented(f"[dim]{rendered}[/dim]", indent=4)
 
     def _flush_content_buffer(self, include_partial: bool = False) -> None:
@@ -756,14 +540,14 @@ class AlphanusTUI(App):
             line, self._buf_c = self._buf_c.split("\n", 1)
             if self._is_tool_trace_line(line):
                 continue
-            rendered, self._in_fence = _render_md(line, self._in_fence)
-            indent = 2 if self._in_fence else max(2, _hanging_indent(line))
+            rendered, self._in_fence = render_md(line, self._in_fence)
+            indent = 2 if self._in_fence else max(2, hanging_indent(line))
             self._write_indented(rendered, indent=indent)
 
         if include_partial and self._buf_c:
             if not self._is_tool_trace_line(self._buf_c):
-                rendered, self._in_fence = _render_md(self._buf_c, self._in_fence)
-                indent = 2 if self._in_fence else max(2, _hanging_indent(self._buf_c))
+                rendered, self._in_fence = render_md(self._buf_c, self._in_fence)
+                indent = 2 if self._in_fence else max(2, hanging_indent(self._buf_c))
                 self._write_indented(rendered, indent=indent)
             self._buf_c = ""
             self._partial().update("")
@@ -821,7 +605,7 @@ class AlphanusTUI(App):
             name = str(event.get("name") or "")
             raw_arguments = str(event.get("raw_arguments") or "")
             if stream_id and name:
-                self._update_live_tool_preview(stream_id, name, raw_arguments)
+                self._live_preview.update(stream_id, name, raw_arguments, self._write, self._write_indented)
 
         elif etype == "tool_call":
             self._tool_activity_seen = True
@@ -830,11 +614,11 @@ class AlphanusTUI(App):
             args = event.get("arguments", {})
             stream_id = str(event.get("stream_id") or "")
             self._write(
-                f"[dim]  · tool call: {esc(name)}({esc(self._compact_tool_args(name, args))})[/dim]"
+                f"[dim]  · tool call: {esc(name)}({esc(self._live_preview.compact_tool_args(name, args))})[/dim]"
             )
-            streamed = self._close_live_tool_preview(stream_id) if stream_id else False
+            streamed = self._live_preview.close(stream_id, self._write_indented) if stream_id else False
             if not streamed:
-                self._write_tool_content_preview(name, args)
+                self._live_preview.write_static_preview(name, args, self._write, self._write_indented)
 
         elif etype == "tool_result":
             self._tool_activity_seen = True
@@ -873,11 +657,11 @@ class AlphanusTUI(App):
         partial.update("")
         partial.display = False
 
-        self._close_all_live_tool_previews()
+        self._live_preview.close_all(self._write_indented)
 
         if self._buf_r and not self._content_open:
             if not self._is_tool_trace_line(self._buf_r):
-                rendered, _ = _render_md(self._buf_r, False)
+                rendered, _ = render_md(self._buf_r, False)
                 self._write_indented(f"[dim]{rendered}[/dim]", indent=4)
             self._buf_r = ""
 
@@ -893,8 +677,8 @@ class AlphanusTUI(App):
         if result.status == "done" and not self._content_open and reply.strip():
             in_fence = False
             for line in reply.splitlines() or [""]:
-                rendered, in_fence = _render_md(line, in_fence)
-                indent = 2 if in_fence else max(2, _hanging_indent(line))
+                rendered, in_fence = render_md(line, in_fence)
+                indent = 2 if in_fence else max(2, hanging_indent(line))
                 self._write_indented(rendered, indent=indent)
 
         if turn_id in self.conv_tree.nodes:
@@ -913,7 +697,7 @@ class AlphanusTUI(App):
         self._write("")
         self._scroll().scroll_end(animate=False)
         self.streaming = False
-        self._live_tool_streams = {}
+        self._live_preview.reset()
         self._active_turn_id = None
         self._esc_pending = False
         self._update_status1()
@@ -1079,7 +863,8 @@ class AlphanusTUI(App):
                 self._write_error(f"File not found: {path}")
                 return True
             try:
-                self.conv_tree = ConvTree.load(path)
+                loaded = ConvTree.load(path)
+                self.conv_tree = self._apply_tree_compaction_policy(loaded)
                 self._rebuild_viewport()
                 self._update_sidebar()
                 self._update_status1()
@@ -1089,7 +874,7 @@ class AlphanusTUI(App):
             return True
 
         if cmd == "/clear":
-            self.conv_tree = ConvTree()
+            self.conv_tree = self._new_conv_tree()
             self.pending.clear()
             self._log().clear()
             self._partial().update("")

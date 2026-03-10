@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 SCHEMA_VERSION = "1.0.0"
+_COMPACTED_MARKER = "\n...[compacted]"
 
 
 def _major(version: str) -> int:
@@ -102,7 +103,13 @@ class Turn:
 
 
 class ConvTree:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        compact_inactive_branches: bool = True,
+        inactive_assistant_char_limit: int = 12000,
+        inactive_tool_argument_char_limit: int = 5000,
+        inactive_tool_content_char_limit: int = 8000,
+    ) -> None:
         self.nodes: Dict[str, Turn] = {
             "root": Turn(
                 id="root",
@@ -115,6 +122,24 @@ class ConvTree:
         self.current_id = "root"
         self._pending_branch = False
         self._pending_branch_label = ""
+        self._compact_inactive_branches = bool(compact_inactive_branches)
+        self._inactive_assistant_char_limit = max(0, int(inactive_assistant_char_limit))
+        self._inactive_tool_argument_char_limit = max(0, int(inactive_tool_argument_char_limit))
+        self._inactive_tool_content_char_limit = max(0, int(inactive_tool_content_char_limit))
+
+    def set_compaction_policy(
+        self,
+        *,
+        enabled: bool,
+        inactive_assistant_char_limit: int,
+        inactive_tool_argument_char_limit: int,
+        inactive_tool_content_char_limit: int,
+    ) -> None:
+        self._compact_inactive_branches = bool(enabled)
+        self._inactive_assistant_char_limit = max(0, int(inactive_assistant_char_limit))
+        self._inactive_tool_argument_char_limit = max(0, int(inactive_tool_argument_char_limit))
+        self._inactive_tool_content_char_limit = max(0, int(inactive_tool_content_char_limit))
+        self.compact_inactive_branches()
 
     @property
     def current(self) -> Turn:
@@ -168,6 +193,7 @@ class ConvTree:
     def complete_turn(self, turn_id: str, reply: str) -> None:
         if turn_id in self.nodes:
             self.nodes[turn_id].assistant_content = reply
+            self.compact_inactive_branches()
 
     def cancel_turn(self, turn_id: str, partial: str) -> None:
         if turn_id not in self.nodes:
@@ -176,6 +202,7 @@ class ConvTree:
         self.nodes[turn_id].assistant_content = (
             f"{partial}\n[interrupted]" if partial else "[interrupted]"
         )
+        self.compact_inactive_branches()
 
     def append_skill_exchange(self, turn_id: str, message: dict) -> None:
         if turn_id in self.nodes:
@@ -197,6 +224,7 @@ class ConvTree:
         while node.parent is not None:
             if node.branch_root:
                 self.current_id = node.parent
+                self.compact_inactive_branches()
                 return self.current_id
             node = self.nodes[node.parent]
         return None
@@ -206,6 +234,7 @@ class ConvTree:
         if idx < 0 or idx >= len(children):
             return None
         self.current_id = children[idx]
+        self.compact_inactive_branches()
         return self.current
 
     def _status_marker(self, node: Turn) -> str:
@@ -272,7 +301,74 @@ class ConvTree:
         tree.current_id = data["current_id"]
         tree._pending_branch = False
         tree._pending_branch_label = ""
+        tree._compact_inactive_branches = True
+        tree._inactive_assistant_char_limit = 12000
+        tree._inactive_tool_argument_char_limit = 5000
+        tree._inactive_tool_content_char_limit = 8000
+        tree.compact_inactive_branches()
         return tree
+
+    @staticmethod
+    def _truncate_text(text: str, limit: int) -> str:
+        if not isinstance(text, str):
+            return text
+        if limit <= 0:
+            return _COMPACTED_MARKER.lstrip("\n")
+        if len(text) <= limit or text.endswith(_COMPACTED_MARKER):
+            return text
+        keep = max(0, limit - len(_COMPACTED_MARKER))
+        return text[:keep] + _COMPACTED_MARKER
+
+    def _compact_skill_message(self, message: dict) -> dict:
+        compacted = dict(message)
+        role = str(compacted.get("role", ""))
+
+        if role == "assistant":
+            tool_calls = compacted.get("tool_calls")
+            if isinstance(tool_calls, list):
+                compacted_calls = []
+                for call in tool_calls:
+                    if not isinstance(call, dict):
+                        compacted_calls.append(call)
+                        continue
+                    compacted_call = dict(call)
+                    fn = compacted_call.get("function")
+                    if isinstance(fn, dict):
+                        compacted_fn = dict(fn)
+                        args = compacted_fn.get("arguments")
+                        if isinstance(args, str):
+                            compacted_fn["arguments"] = self._truncate_text(
+                                args,
+                                self._inactive_tool_argument_char_limit,
+                            )
+                        compacted_call["function"] = compacted_fn
+                    compacted_calls.append(compacted_call)
+                compacted["tool_calls"] = compacted_calls
+
+        if role == "tool":
+            content = compacted.get("content")
+            if isinstance(content, str):
+                compacted["content"] = self._truncate_text(
+                    content,
+                    self._inactive_tool_content_char_limit,
+                )
+
+        return compacted
+
+    def compact_inactive_branches(self) -> None:
+        if not self._compact_inactive_branches:
+            return
+        active_ids = {turn.id for turn in self.active_path}
+        for node_id, node in self.nodes.items():
+            if node_id == "root" or node_id in active_ids:
+                continue
+            if isinstance(node.assistant_content, str):
+                node.assistant_content = self._truncate_text(
+                    node.assistant_content,
+                    self._inactive_assistant_char_limit,
+                )
+            if node.skill_exchanges:
+                node.skill_exchanges = [self._compact_skill_message(msg) for msg in node.skill_exchanges]
 
     def save(self, path: str) -> None:
         target = Path(path)

@@ -65,6 +65,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_active_skills": 6,
         "strict_capability_policy": False
     },
+    "tui": {
+        "chat_log_max_lines": 5000,
+        "tree_compaction": {
+            "enabled": True,
+            "inactive_assistant_char_limit": 12000,
+            "inactive_tool_argument_char_limit": 5000,
+            "inactive_tool_content_char_limit": 8000,
+        },
+    },
 }
 
 

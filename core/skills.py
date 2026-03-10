@@ -6,22 +6,13 @@ import os
 import re
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.memory import VectorMemory
+from core.skill_parser import SKILL_DOC, SkillManifest, ToolCommandDef, parse_agentskill_manifest
 from core.workspace import WorkspaceManager
-
-try:
-    import yaml  # type: ignore[import-not-found]
-except Exception:
-    yaml = None
-
-_SKILL_DOC = "SKILL.md"
-_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
-_INT_RE = re.compile(r"^-?\d+$")
-_FLOAT_RE = re.compile(r"^-?(?:\d+\.\d+|\d+\.\d*|\d*\.\d+)(?:[eE][+-]?\d+)?$")
 
 
 def _ok(data: Any, duration_ms: int) -> Dict[str, Any]:
@@ -35,76 +26,6 @@ def _err(code: str, message: str, duration_ms: int) -> Dict[str, Any]:
         "error": {"code": code, "message": message},
         "meta": {"duration_ms": duration_ms},
     }
-
-
-def _dedupe(items: List[str]) -> List[str]:
-    seen = set()
-    out: List[str] = []
-    for raw in items:
-        item = str(raw).strip()
-        if not item or item in seen:
-            continue
-        seen.add(item)
-        out.append(item)
-    return out
-
-
-def _split_csv(value: str) -> List[str]:
-    return [part.strip() for part in value.split(",") if part.strip()]
-
-
-def _as_str_list(value: Any) -> List[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return _dedupe([str(item) for item in value])
-    if isinstance(value, tuple):
-        return _dedupe([str(item) for item in value])
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return []
-        if text.startswith("[") and text.endswith("]"):
-            try:
-                parsed = _parse_yaml_inline_list(text)
-                if isinstance(parsed, list):
-                    return _dedupe([str(item) for item in parsed])
-            except Exception:
-                pass
-        return _dedupe(_split_csv(text))
-    return [str(value).strip()] if str(value).strip() else []
-
-
-def _as_tool_name_list(value: Any) -> List[str]:
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple)):
-        return _dedupe([str(item) for item in value])
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return []
-        if text.startswith("[") and text.endswith("]"):
-            try:
-                parsed = _parse_yaml_inline_list(text)
-                if isinstance(parsed, list):
-                    return _dedupe([str(item) for item in parsed])
-            except Exception:
-                pass
-        return _dedupe([part for part in re.split(r"[\s,]+", text) if part])
-    return [str(value).strip()] if str(value).strip() else []
-
-
-def _coerce_bool(value: Any, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"true", "yes", "1", "on"}:
-            return True
-        if lowered in {"false", "no", "0", "off"}:
-            return False
-    return default
 
 
 def _recover_tool_args(raw_args: Dict[str, Any]) -> Dict[str, Any]:
@@ -140,247 +61,6 @@ def _recover_tool_args(raw_args: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def _split_kv(line: str) -> Optional[Tuple[str, str]]:
-    if ":" not in line:
-        return None
-    key, value = line.split(":", 1)
-    key = key.strip()
-    if not key or not re.fullmatch(r"[A-Za-z0-9_.-]+", key):
-        return None
-    return key, value.strip()
-
-
-def _parse_yaml_inline_list(raw: str) -> List[Any]:
-    text = raw.strip()
-    if not (text.startswith("[") and text.endswith("]")):
-        raise ValueError("Expected inline YAML list")
-    inner = text[1:-1].strip()
-    if not inner:
-        return []
-
-    parts: List[str] = []
-    buff: List[str] = []
-    quote: Optional[str] = None
-
-    for ch in inner:
-        if quote:
-            buff.append(ch)
-            if ch == quote:
-                quote = None
-            continue
-        if ch in {"'", '"'}:
-            quote = ch
-            buff.append(ch)
-            continue
-        if ch == ",":
-            parts.append("".join(buff).strip())
-            buff = []
-            continue
-        buff.append(ch)
-
-    tail = "".join(buff).strip()
-    if tail:
-        parts.append(tail)
-
-    return [_parse_yaml_scalar(part) for part in parts if part]
-
-
-def _parse_yaml_scalar(raw: str) -> Any:
-    value = raw.strip()
-    if not value:
-        return ""
-
-    if value.startswith("[") and value.endswith("]"):
-        return _parse_yaml_inline_list(value)
-
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-        quote = value[0]
-        body = value[1:-1]
-        if quote == '"':
-            body = (
-                body.replace(r"\\n", "\n")
-                .replace(r"\\t", "\t")
-                .replace(r'\\"', '"')
-                .replace(r"\\\\", "\\")
-            )
-        else:
-            body = body.replace(r"\\'", "'").replace(r"\\\\", "\\")
-        return body
-
-    lowered = value.lower()
-    if lowered in {"true", "yes", "on"}:
-        return True
-    if lowered in {"false", "no", "off"}:
-        return False
-    if lowered in {"null", "~", "none"}:
-        return None
-
-    if _INT_RE.match(value):
-        try:
-            return int(value)
-        except Exception:
-            pass
-    if _FLOAT_RE.match(value):
-        try:
-            return float(value)
-        except Exception:
-            pass
-
-    return value
-
-
-def _prepare_yaml_lines(text: str) -> List[Tuple[int, int, str]]:
-    out: List[Tuple[int, int, str]] = []
-    for line_no, raw in enumerate(text.splitlines(), start=1):
-        if not raw.strip():
-            continue
-        leading = len(raw) - len(raw.lstrip(" "))
-        if "\t" in raw[:leading]:
-            raise ValueError(f"Tabs are not supported in YAML frontmatter (line {line_no})")
-        stripped = raw.strip()
-        if stripped.startswith("#"):
-            continue
-        out.append((line_no, leading, stripped))
-    return out
-
-
-def _parse_yaml_map(lines: List[Tuple[int, int, str]], idx: int, indent: int) -> Tuple[Dict[str, Any], int]:
-    out: Dict[str, Any] = {}
-
-    while idx < len(lines):
-        line_no, cur_indent, text = lines[idx]
-        if cur_indent < indent:
-            break
-        if cur_indent > indent:
-            raise ValueError(f"Unexpected indentation at line {line_no}")
-        if text.startswith("- "):
-            raise ValueError(f"List item found where mapping expected at line {line_no}")
-
-        pair = _split_kv(text)
-        if pair is None:
-            raise ValueError(f"Invalid key/value syntax at line {line_no}")
-        key, inline_value = pair
-        idx += 1
-
-        if inline_value:
-            out[key] = _parse_yaml_scalar(inline_value)
-            continue
-
-        if idx >= len(lines) or lines[idx][1] <= cur_indent:
-            out[key] = {}
-            continue
-
-        next_indent = lines[idx][1]
-        if lines[idx][2].startswith("- "):
-            nested, idx = _parse_yaml_list(lines, idx, next_indent)
-        else:
-            nested, idx = _parse_yaml_map(lines, idx, next_indent)
-        out[key] = nested
-
-    return out, idx
-
-
-def _parse_yaml_list(lines: List[Tuple[int, int, str]], idx: int, indent: int) -> Tuple[List[Any], int]:
-    items: List[Any] = []
-
-    while idx < len(lines):
-        line_no, cur_indent, text = lines[idx]
-        if cur_indent < indent:
-            break
-        if cur_indent != indent or not text.startswith("- "):
-            break
-
-        item_text = text[2:].strip()
-        idx += 1
-
-        if item_text:
-            pair = _split_kv(item_text)
-            if pair is None:
-                items.append(_parse_yaml_scalar(item_text))
-                continue
-
-            key, inline_value = pair
-            item: Dict[str, Any] = {key: _parse_yaml_scalar(inline_value)}
-            if idx < len(lines) and lines[idx][1] > cur_indent:
-                nested, idx = _parse_yaml_map(lines, idx, lines[idx][1])
-                item.update(nested)
-            items.append(item)
-            continue
-
-        if idx >= len(lines) or lines[idx][1] <= cur_indent:
-            items.append({})
-            continue
-
-        next_indent = lines[idx][1]
-        if lines[idx][2].startswith("- "):
-            nested, idx = _parse_yaml_list(lines, idx, next_indent)
-        else:
-            nested, idx = _parse_yaml_map(lines, idx, next_indent)
-        items.append(nested)
-
-    return items, idx
-
-
-def _parse_yaml_frontmatter(text: str) -> Dict[str, Any]:
-    if yaml is not None:
-        parsed = yaml.safe_load(text)  # type: ignore[union-attr]
-        if parsed is None:
-            return {}
-        if not isinstance(parsed, dict):
-            raise ValueError("SKILL.md frontmatter must be a mapping")
-        return parsed
-
-    lines = _prepare_yaml_lines(text)
-    if not lines:
-        return {}
-
-    parsed, idx = _parse_yaml_map(lines, 0, lines[0][1])
-    if idx != len(lines):
-        line_no, _, _ = lines[idx]
-        raise ValueError(f"Unable to parse YAML frontmatter near line {line_no}")
-    return parsed
-
-
-def _extract_skill_doc(skill_doc: Path) -> Tuple[Dict[str, Any], str]:
-    text = skill_doc.read_text(encoding="utf-8")
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        raise ValueError("SKILL.md must start with YAML frontmatter delimiter '---'")
-
-    end = -1
-    for idx in range(1, len(lines)):
-        if lines[idx].strip() == "---":
-            end = idx
-            break
-    if end < 0:
-        raise ValueError("SKILL.md frontmatter is missing closing delimiter '---'")
-
-    frontmatter_text = "\n".join(lines[1:end])
-    prompt = "\n".join(lines[end + 1 :]).strip()
-    frontmatter = _parse_yaml_frontmatter(frontmatter_text)
-    return frontmatter, prompt
-
-
-@dataclass(slots=True)
-class SkillManifest:
-    id: str
-    name: str
-    version: str
-    description: str
-    enabled: bool
-    triggers: Dict[str, List[str]] = field(default_factory=dict)
-    prompt: str = ""
-    path: Optional[Path] = None
-    hooks: Optional[object] = None
-    tags: List[str] = field(default_factory=list)
-    categories: List[str] = field(default_factory=list)
-    allowed_tools: List[str] = field(default_factory=list)
-    required_tools: List[str] = field(default_factory=list)
-    command_tools: List["ToolCommandDef"] = field(default_factory=list)
-    disable_model_invocation: bool = False
-    format: str = "agentskills"
-
-
 @dataclass(slots=True)
 class SkillContext:
     user_input: str
@@ -411,17 +91,6 @@ class RegisteredTool:
     timeout_s: int = 30
     confirm_arg: str = ""
     cwd: str = ""
-
-
-@dataclass(slots=True)
-class ToolCommandDef:
-    name: str
-    capability: str
-    description: str
-    parameters: Dict[str, Any]
-    command: str
-    timeout_s: int = 30
-    confirm_arg: str = ""
 
 
 class SkillRuntime:
@@ -455,146 +124,13 @@ class SkillRuntime:
         spec.loader.exec_module(module)
         return module
 
-    def _load_agentskill_manifest(self, child: Path, skill_doc: Path) -> SkillManifest:
-        frontmatter, prompt = _extract_skill_doc(skill_doc)
-
-        skill_id = str(frontmatter.get("name", "")).strip()
-        if not skill_id:
-            raise ValueError("SKILL.md frontmatter requires 'name'")
-        if skill_id != child.name:
-            raise ValueError(f"SKILL.md name '{skill_id}' must match directory '{child.name}'")
-
-        description = str(frontmatter.get("description", "")).strip()
-        if not description:
-            raise ValueError("SKILL.md frontmatter requires 'description'")
-
-        metadata_raw = frontmatter.get("metadata", {})
-        if metadata_raw is None:
-            metadata_raw = {}
-        if not isinstance(metadata_raw, dict):
-            raise ValueError("SKILL.md 'metadata' must be a mapping")
-
-        version_raw = metadata_raw.get("version", frontmatter.get("version", "0.1.0"))
-        version = str(version_raw).strip()
-        if version and not _SEMVER_RE.match(version):
-            raise ValueError(f"Invalid semantic version: '{version}'")
-
-        categories = _as_str_list(frontmatter.get("categories") or metadata_raw.get("categories"))
-        # Keep categories permissive to support user-defined values.
-        categories = _dedupe(categories)
-
-        tags = _as_str_list(frontmatter.get("tags") or metadata_raw.get("tags"))
-
-        tools_cfg_raw = frontmatter.get("tools", {})
-        if tools_cfg_raw is None:
-            tools_cfg_raw = {}
-        if not isinstance(tools_cfg_raw, dict):
-            raise ValueError("SKILL.md 'tools' must be a mapping")
-        metadata_tools_raw = metadata_raw.get("tools", {})
-        if metadata_tools_raw is None:
-            metadata_tools_raw = {}
-        if not isinstance(metadata_tools_raw, dict):
-            raise ValueError("SKILL.md metadata.tools must be a mapping")
-
-        allowed_tools = _as_tool_name_list(
-            frontmatter.get("allowed-tools")
-            or metadata_raw.get("allowed-tools")
-            or metadata_tools_raw.get("allowed-tools")
-            or tools_cfg_raw.get("allowed-tools")
-        )
-        required_tools = _as_tool_name_list(
-            frontmatter.get("required-tools")
-            or metadata_raw.get("required-tools")
-            or metadata_tools_raw.get("required-tools")
-            or tools_cfg_raw.get("required-tools")
-        )
-        raw_defs = (
-            metadata_tools_raw.get("definitions")
-            or tools_cfg_raw.get("definitions")
-            or []
-        )
-        if raw_defs and not isinstance(raw_defs, list):
-            raise ValueError("SKILL.md tools.definitions must be a list")
-        command_tools: List[ToolCommandDef] = []
-        for idx, raw in enumerate(raw_defs):
-            if not isinstance(raw, dict):
-                raise ValueError(f"SKILL.md tools.definitions[{idx}] must be a mapping")
-
-            name = str(raw.get("name", "")).strip()
-            capability = str(raw.get("capability", "")).strip()
-            description = str(raw.get("description", "")).strip()
-            command = str(raw.get("command", "")).strip()
-            parameters = raw.get("parameters")
-            timeout_s = int(raw.get("timeout-s", 30))
-            confirm_arg = str(raw.get("confirm-arg", "")).strip()
-
-            if not name:
-                raise ValueError(f"SKILL.md tools.definitions[{idx}] missing name")
-            if not capability:
-                raise ValueError(f"SKILL.md tools.definitions[{idx}] missing capability")
-            if not description:
-                raise ValueError(f"SKILL.md tools.definitions[{idx}] missing description")
-            if not command:
-                raise ValueError(f"SKILL.md tools.definitions[{idx}] missing command")
-            if not isinstance(parameters, dict):
-                raise ValueError(f"SKILL.md tools.definitions[{idx}] parameters must be a mapping")
-            if timeout_s <= 0:
-                raise ValueError(f"SKILL.md tools.definitions[{idx}] timeout-s must be > 0")
-
-            command_tools.append(
-                ToolCommandDef(
-                    name=name,
-                    capability=capability,
-                    description=description,
-                    parameters=parameters,
-                    command=command,
-                    timeout_s=timeout_s,
-                    confirm_arg=confirm_arg,
-                )
-            )
-        disable_model_invocation = _coerce_bool(
-            metadata_tools_raw.get("disable-model-invocation", tools_cfg_raw.get("disable-model-invocation")),
-            False,
-        )
-
-        trigger_cfg = metadata_raw.get("triggers", frontmatter.get("triggers", {}))
-        if trigger_cfg is None:
-            trigger_cfg = {}
-        if not isinstance(trigger_cfg, dict):
-            raise ValueError("SKILL.md triggers must be a mapping")
-
-        enabled = _coerce_bool(metadata_raw.get("enabled", frontmatter.get("enabled")), True)
-        keywords = _as_str_list(trigger_cfg.get("keywords")) or list(tags)
-        file_ext = _as_str_list(trigger_cfg.get("file_ext"))
-
-        return SkillManifest(
-            id=skill_id,
-            name=skill_id,
-            version=version,
-            description=description,
-            enabled=enabled,
-            triggers={
-                "keywords": keywords,
-                "file_ext": file_ext,
-            },
-            prompt=prompt,
-            path=child,
-            tags=tags,
-            categories=categories,
-            allowed_tools=allowed_tools,
-            required_tools=required_tools,
-            command_tools=command_tools,
-            disable_model_invocation=disable_model_invocation,
-            format="agentskills",
-        )
-
     def _load_manifest(self, child: Path) -> Optional[SkillManifest]:
-        skill_doc = child / _SKILL_DOC
+        skill_doc = child / SKILL_DOC
         if not skill_doc.exists():
             if self.debug:
-                print(f"[skill] {child.name}: missing {_SKILL_DOC}")
+                print(f"[skill] {child.name}: missing {SKILL_DOC}")
             return None
-        return self._load_agentskill_manifest(child, skill_doc)
+        return parse_agentskill_manifest(child, skill_doc)
 
     def _remove_skill_tools(self, skill_id: str) -> None:
         for tool_name, reg in list(self._tool_registry.items()):
@@ -996,7 +532,6 @@ class SkillRuntime:
         out = (proc.stdout or "").strip()
         if not out:
             return {}
-        # Allow scripts to print diagnostics as long as the last line is the JSON result.
         candidate = out.splitlines()[-1].strip()
 
         try:

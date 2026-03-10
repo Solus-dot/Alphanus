@@ -8,6 +8,7 @@ dependencies = [
   "textual>=0.60",
   "sentence-transformers>=5.2.0",
   "numpy>=2.4.2",
+  "PyYAML>=6.0.2",
   "python-dotenv>=1.2",
 ]
 

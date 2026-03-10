@@ -65,6 +65,8 @@ metadata:
               type: integer
             memory_type:
               type: string
+            min_score:
+              type: number
           required:
             - query
       - name: list_memories

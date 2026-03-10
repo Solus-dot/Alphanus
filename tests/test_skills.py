@@ -343,6 +343,10 @@ if __name__ == "__main__":
     assert out["ok"] is True
     assert out["data"]["text"] == "hello"
 
+    out_raw = runtime.execute_tool_call("echo_text", {"_raw": '{"text":"raw-hello"}'}, selected=[skill], ctx=ctx)
+    assert out_raw["ok"] is True
+    assert out_raw["data"]["text"] == "raw-hello"
+
 
 def test_frontmatter_metadata_format_executes(tmp_path: Path):
     home = tmp_path / "home"

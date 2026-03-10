@@ -82,3 +82,58 @@ def test_user_text_strips_inline_attachment_blocks():
     ]
     turn = tree.add_turn(content)
     assert turn.user_text() == "Please refactor this."
+
+
+def test_inactive_branch_compaction_truncates_large_payloads_only_when_inactive():
+    tree = ConvTree(
+        compact_inactive_branches=True,
+        inactive_assistant_char_limit=32,
+        inactive_tool_argument_char_limit=32,
+        inactive_tool_content_char_limit=32,
+    )
+
+    root_turn = tree.add_turn("root")
+    tree.complete_turn(root_turn.id, "root-ok")
+
+    tree.arm_branch("branch-a")
+    a = tree.add_turn("work on a")
+    tree.append_skill_exchange(
+        a.id,
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "create_file", "arguments": '{"content":"' + ("x" * 120) + '"}'},
+                }
+            ],
+        },
+    )
+    tree.append_skill_exchange(
+        a.id,
+        {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "name": "create_file",
+            "content": "y" * 120,
+        },
+    )
+    tree.complete_turn(a.id, "z" * 120)
+
+    # Still active branch: no compaction should apply yet.
+    active_args = tree.nodes[a.id].skill_exchanges[0]["tool_calls"][0]["function"]["arguments"]
+    assert "...[compacted]" not in active_args
+
+    # Move back and open sibling branch, making branch-a inactive.
+    tree.unbranch()
+    b = tree.add_turn("work on b")
+    tree.complete_turn(b.id, "done")
+
+    inactive_node = tree.nodes[a.id]
+    assert "...[compacted]" in (inactive_node.assistant_content or "")
+    compacted_args = inactive_node.skill_exchanges[0]["tool_calls"][0]["function"]["arguments"]
+    compacted_tool_content = inactive_node.skill_exchanges[1]["content"]
+    assert "...[compacted]" in compacted_args
+    assert "...[compacted]" in compacted_tool_content

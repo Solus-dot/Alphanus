@@ -79,3 +79,10 @@ def test_prune_hard_fallback_enforces_budget():
 
     pruned = mgr.prune(messages, max_tokens=40)
     assert mgr.estimate_tokens(pruned) + 40 <= mgr.context_limit - mgr.safety_margin
+
+
+def test_default_config_includes_tui_memory_limits():
+    tui = DEFAULT_CONFIG.get("tui", {})
+    assert int(tui.get("chat_log_max_lines", 0)) > 0
+    tree = tui.get("tree_compaction", {})
+    assert bool(tree.get("enabled", False))

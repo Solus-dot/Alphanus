@@ -156,6 +156,27 @@ def test_store_memory_replace_query_can_replace_non_fact(tmp_path: Path):
     assert second["meta"].get("auto_resolution") == "replace_query"
 
 
+def test_recall_memory_fallback_finds_name_fact(tmp_path: Path):
+    runtime, ws = _memory_runtime(tmp_path)
+    skill = runtime.get_skill("memory-rag")
+    assert skill is not None
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
+
+    stored = runtime.execute_tool_call("store_memory", {"text": "My name is Meems"}, selected=[skill], ctx=ctx)
+    assert stored["ok"] is True
+
+    recalled = runtime.execute_tool_call(
+        "recall_memory",
+        {"query": "user name", "top_k": 3},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert recalled["ok"] is True
+    hits = recalled["data"]["hits"]
+    assert hits
+    assert any("name is meems" in str(hit.get("text", "")).lower() for hit in hits)
+
+
 def test_default_hash_backend_never_attempts_transformer(monkeypatch, tmp_path: Path):
     called = {"count": 0}
 
