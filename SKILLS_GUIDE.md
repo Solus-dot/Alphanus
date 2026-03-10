@@ -1,101 +1,96 @@
-# Alphanus Skill Guide
+# Alphanus Skills Guide
 
-Alphanus follows the `agentskills.io` skill format with command-backed tool execution.
+Alphanus uses an AgentSkills-style `SKILL.md` manifest with command-backed tool execution.
 
-## 1. Required Layout
+## 1. Folder Layout
 
 ```text
 skills/<skill-id>/
-  SKILL.md
-  scripts/      # optional command handlers referenced from SKILL.md
-  tools.py      # optional legacy fallback adapter
-  hooks.py      # optional
+  SKILL.md              # required
+  scripts/              # optional command handlers referenced by SKILL.md
+  tools.py              # optional legacy fallback adapter
+  hooks.py              # optional pre_prompt/pre_action/post_response
 ```
 
-Only `SKILL.md` is required. Legacy `skill.toml` / `prompt.md` is not loaded.
+Only `SKILL.md` is required.
 
-## 2. Minimal `SKILL.md`
+## 2. Required Frontmatter
 
 ```md
 ---
-name: notes-skill
-description: Save short notes in the workspace.
-allowed-tools: save_note
+name: skill-name
+description: What this skill does and when to use it.
+---
+```
+
+Constraints used in this project:
+- `name` must match directory name.
+- `name` should be lowercase letters, numbers, and hyphens.
+- `description` must be non-empty.
+
+## 3. Supported Optional Frontmatter
+
+```md
+---
+name: workspace-ops
+description: Read and write workspace files safely.
+license: Apache-2.0
+compatibility: "requires local python3"
+allowed-tools: create_file edit_file read_file
 metadata:
   version: "1.0.0"
-  categories:
-    - coding
-  tags:
-    - note
-    - save
+  categories: [coding]
+  tags: [file, workspace]
+  enabled: true
   triggers:
-    keywords:
-      - note
-      - save note
-    file_ext:
-      - .md
+    keywords: ["file", "edit"]
+    file_ext: [".py", ".md"]
   tools:
+    required-tools: [create_file]
+    disable-model-invocation: false
     definitions:
-      - name: save_note
+      - name: create_file
         capability: workspace_write
-        description: Save a note.
-        command: python3 scripts/save_note.py
+        description: Create or overwrite a workspace file.
+        command: python3 scripts/create_file.py
         timeout-s: 30
         parameters:
           type: object
           properties:
-            filename:
-              type: string
-            content:
-              type: string
-          required:
-            - filename
-            - content
+            filepath: { type: string }
+            content: { type: string }
+          required: [filepath, content]
 ---
-Use this skill when the user asks to save short notes.
 ```
 
-## 3. Frontmatter Fields
-
-Standard fields:
-
-- `name` (required): must match directory name
+Top-level fields recognized by runtime/parser:
+- `name` (required)
 - `description` (required)
 - `license` (optional)
 - `compatibility` (optional)
-- `allowed-tools` (optional; list or space-delimited string)
+- `allowed-tools` (optional; list, comma-delimited, or space-delimited)
+- `required-tools` (optional)
+- `tools` (optional)
 - `metadata` (optional mapping)
 
-`metadata` supports:
+## 4. Command Tool Contract
 
-- `version` (optional semver)
-- `categories` (optional list)
-- `tags` (optional list)
-- `enabled` (optional bool, default `true`)
-- `triggers.keywords` (optional)
-- `triggers.file_ext` (optional)
-- `tools.required-tools` (optional)
-- `tools.disable-model-invocation` (optional)
-- `tools.definitions` (optional; command-backed tool definitions)
+Preferred tool path is `metadata.tools.definitions` (or `tools.definitions` fallback).
 
-Command definition fields:
+Required per definition:
+- `name`
+- `capability`
+- `description`
+- `command`
+- `parameters` (JSON schema object)
 
-- `name` (required)
-- `capability` (required)
-- `description` (required)
-- `parameters` JSON schema object (required)
-- `command` bash command string (required)
-- `timeout-s` integer seconds (optional, default `30`)
-- `confirm-arg` argument key requiring interactive approval (optional)
+Optional:
+- `timeout-s` (default `30`)
+- `confirm-arg` (argument key that requires interactive approval)
 
-No per-skill priority or capability gate is used.
+Runtime executes `command` in the skill directory with `shell=True` and sends args via stdin and env vars.
 
-## 4. Command Execution Contract
-
-Runtime executes each tool definition `command` through bash in the skill directory.
-
-Runtime-provided environment variables:
-
+Environment variables injected:
 - `ALPHANUS_TOOL_NAME`
 - `ALPHANUS_TOOL_ARGS_JSON`
 - `ALPHANUS_WORKSPACE_ROOT`
@@ -106,7 +101,9 @@ Runtime-provided environment variables:
 - `ALPHANUS_MEMORY_EAGER_LOAD`
 - `ALPHANUS_CONFIG_JSON`
 
-The command must print a single JSON result object (or print diagnostics and the JSON result on the final line):
+Tool output contract:
+- Final stdout line must be valid JSON object.
+- Preferred normalized envelope:
 
 ```json
 {"ok": true, "data": {}, "error": null, "meta": {}}
@@ -114,24 +111,35 @@ The command must print a single JSON result object (or print diagnostics and the
 
 ## 5. Legacy `tools.py` Fallback
 
-Legacy adapters are still supported:
+Still supported when command definitions are absent.
 
-- `TOOL_SPECS: Dict[str, Dict[str, Any]]`
-- `execute(tool_name: str, args: Dict[str, Any], env) -> Dict[str, Any]`
+`tools.py` must expose:
+- `TOOL_SPECS: dict[str, dict]`
+- `execute(tool_name: str, args: dict, env) -> dict`
 
-Use this only when command-backed tools are not practical.
+Command-defined tools and `tools.py` tools are merged; duplicates are skipped.
 
-## 6. Runtime Behavior
+## 6. Hooks
+
+Optional `hooks.py` can define:
+- `pre_prompt(context) -> str | None`
+- `pre_action(context, action_name, args) -> tuple[bool, str]`
+- `post_response(context, text) -> None`
+
+Hook failures are non-fatal and do not crash the turn.
+
+## 7. Runtime Flow
 
 1. Runtime loads `skills/*/SKILL.md`.
-2. Runtime validates required fields and name/directory match.
-3. Runtime loads command definitions (`metadata.tools.definitions`) first.
-4. Runtime optionally loads legacy `tools.py` and merges non-duplicate tools.
-5. Runtime enforces allowlist/required tool rules.
-6. Skill selection uses keyword and file-extension trigger matches.
-7. Selected tools are exposed and dispatched for tool calls.
+2. Frontmatter is parsed by `core/skill_parser.py` using `PyYAML`.
+3. Manifest is validated (`name`, `description`, semver shape for version, etc.).
+4. Command tools are registered.
+5. Optional legacy `tools.py` tools are registered.
+6. Skills are selected per turn (`selection_mode`, triggers, limits).
+7. Selected tools are exposed to the model via OpenAI `tools` payload.
+8. Tool calls execute via `core/skills.py` and normalized results return to agent loop.
 
-## 7. TUI Commands
+## 8. TUI Skill Commands
 
 - `/skills`
 - `/skill reload`
@@ -139,21 +147,20 @@ Use this only when command-backed tools are not practical.
 - `/skill off <id>`
 - `/skill info <id>`
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
-Skill not loading:
+Skill does not load:
+1. Ensure `SKILL.md` begins and ends frontmatter with `---`.
+2. Ensure `name` equals directory name.
+3. Ensure `description` is non-empty.
+4. Ensure `metadata` is a mapping if present.
+5. Ensure every command definition has all required keys.
 
-1. Confirm `SKILL.md` exists and frontmatter starts/ends with `---`.
-2. Confirm `name` and `description` are present.
-3. Confirm `name` equals directory name.
-4. Confirm optional `metadata` is a mapping if present.
-5. If `required-tools` is set, confirm each tool is present.
-6. If using command tools, confirm each `metadata.tools.definitions` item has required fields.
+Tool call fails with "no JSON output":
+1. Ensure script prints JSON on the final stdout line.
+2. Ensure required args are present.
+3. Ensure script exits `0` on success.
 
-Tool not visible:
-
-1. Confirm skill is enabled.
-2. Confirm tool name is in `allowed-tools` (if set).
-3. Confirm command script is executable in your environment.
-4. Confirm command prints JSON result.
-5. Run `/skill reload`.
+`shell_command` confirmation issues:
+1. Check `confirm-arg` is configured correctly.
+2. Check runtime permission flags in `capabilities` config.
