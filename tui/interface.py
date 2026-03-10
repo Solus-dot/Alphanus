@@ -24,6 +24,7 @@ from tui.markdown_utils import hanging_indent, render_md
 
 DEFAULT_SAVE = "llamachat_tree.json"
 MAX_REPLY_ACC_CHARS = 24000
+SHELL_CONFIRM_TIMEOUT_S = 60
 
 HELP_SECTIONS = [
     (
@@ -209,6 +210,7 @@ class AlphanusTUI(App):
         self._last_scroll = 0.0
         self._scroll_interval = 0.05
         self._last_status2 = ""
+        self._auto_follow_stream = True
 
         self._esc_pending = False
         self._esc_ts = 0.0
@@ -288,6 +290,13 @@ class AlphanusTUI(App):
             self._esc_pending = False
             self._update_status2()
             return
+        if self.streaming:
+            if self._auto_follow_stream and not self._is_near_bottom():
+                self._auto_follow_stream = False
+                self._update_status2()
+            elif not self._auto_follow_stream and self._is_near_bottom():
+                self._auto_follow_stream = True
+                self._update_status2()
         if self.streaming and not self._esc_pending:
             self._spin_i += 1
             self._update_status2()
@@ -311,11 +320,25 @@ class AlphanusTUI(App):
 
     def _write(self, markup: str) -> None:
         self._log().write(Text.from_markup(markup))
-        self._scroll().scroll_end(animate=False)
+        self._maybe_scroll_end()
 
     def _write_indented(self, markup: str, indent: int = 2) -> None:
         self._log().write(Padding(Text.from_markup(markup), pad=(0, 0, 0, indent)))
-        self._scroll().scroll_end(animate=False)
+        self._maybe_scroll_end()
+
+    def _is_near_bottom(self, threshold: float = 1.0) -> bool:
+        scroll = self._scroll()
+        try:
+            return (scroll.max_scroll_y - scroll.scroll_y) <= threshold
+        except Exception:
+            return True
+
+    def _maybe_scroll_end(self, force: bool = False) -> None:
+        if force:
+            self._scroll().scroll_end(animate=False)
+            return
+        if not self.streaming or self._auto_follow_stream:
+            self._scroll().scroll_end(animate=False)
 
     def _write_info(self, text: str) -> None:
         self._write(f"[dim]  {esc(text)}[/dim]")
@@ -367,11 +390,13 @@ class AlphanusTUI(App):
         right = f"[dim]{turns} turn{'s' if turns != 1 else ''}[/dim]"
 
         if self._await_shell_confirm:
-            left = f"[bold yellow]approve shell command?[/bold yellow] [dim]y=yes n=no[/dim]"
+            left = f"[bold yellow]approve shell command?[/bold yellow] [dim][y/n][/dim]"
         elif self.streaming:
             frame = self._spin_frames[self._spin_i % len(self._spin_frames)]
             if self._esc_pending:
                 left = f"[dim]{frame}[/dim] [dim]generating[/dim] [bold red]esc again to stop[/bold red]"
+            elif not self._auto_follow_stream:
+                left = f"[dim]{frame}[/dim] [dim]generating[/dim] [yellow]free scroll[/yellow] [dim]pgdn to resume follow[/dim]"
             else:
                 left = f"[dim]{frame}[/dim] [dim]generating[/dim] [dim]esc · stop[/dim]"
         else:
@@ -472,10 +497,11 @@ class AlphanusTUI(App):
             self._write_turn_user(turn)
             if turn.assistant_content:
                 self._write_completed_turn_asst(turn)
-        self._scroll().scroll_end(animate=False)
+        self._maybe_scroll_end(force=True)
 
     def _start_stream(self, turn: Turn, user_input: str, attachment_paths: List[str]) -> None:
         self.streaming = True
+        self._auto_follow_stream = True
         self._active_turn_id = turn.id
         self._reply_acc = ""
         self._tool_activity_seen = False
@@ -649,7 +675,7 @@ class AlphanusTUI(App):
 
         now = time.monotonic()
         if now - self._last_scroll >= self._scroll_interval:
-            self._scroll().scroll_end(animate=False)
+            self._maybe_scroll_end()
             self._last_scroll = now
 
     def _on_stream_end(self, turn_id: str, result: AgentTurnResult) -> None:
@@ -695,11 +721,12 @@ class AlphanusTUI(App):
                 self._write("[bold red]  ✖ interrupted[/bold red]")
 
         self._write("")
-        self._scroll().scroll_end(animate=False)
+        self._maybe_scroll_end()
         self.streaming = False
         self._live_preview.reset()
         self._active_turn_id = None
         self._esc_pending = False
+        self._auto_follow_stream = True
         self._update_status1()
         self._update_status2()
         self._update_sidebar()
@@ -708,7 +735,9 @@ class AlphanusTUI(App):
         event = threading.Event()
         holder = {"value": False}
         self.call_from_thread(self._begin_shell_confirm, command, event, holder)
-        event.wait(timeout=60)
+        if not event.wait(timeout=SHELL_CONFIRM_TIMEOUT_S):
+            self.call_from_thread(self._expire_shell_confirm, event)
+            return False
         return bool(holder.get("value", False))
 
     def _begin_shell_confirm(self, command: str, event: threading.Event, holder: Dict[str, bool]) -> None:
@@ -717,6 +746,21 @@ class AlphanusTUI(App):
         self._shell_confirm_event = event
         self._shell_confirm_result = holder
         self._write(f"[yellow]  ? Run shell command: {esc(command)}[/yellow]")
+        self._update_status2()
+
+    def _expire_shell_confirm(self, event: threading.Event) -> None:
+        if not self._await_shell_confirm:
+            return
+        if self._shell_confirm_event is not event:
+            return
+        if self._shell_confirm_result is not None:
+            self._shell_confirm_result["value"] = False
+        self._shell_confirm_event.set()
+        self._write("[dim red]  · shell command approval timed out[/dim red]")
+        self._await_shell_confirm = False
+        self._shell_confirm_command = ""
+        self._shell_confirm_event = None
+        self._shell_confirm_result = None
         self._update_status2()
 
     def _finish_shell_confirm(self, approved: bool) -> None:
@@ -776,9 +820,15 @@ class AlphanusTUI(App):
 
     def action_scroll_up(self) -> None:
         self._scroll().scroll_page_up()
+        if self.streaming:
+            self._auto_follow_stream = False
+            self._update_status2()
 
     def action_scroll_down(self) -> None:
         self._scroll().scroll_page_down()
+        if self.streaming and self._is_near_bottom():
+            self._auto_follow_stream = True
+            self._update_status2()
 
     def _handle_command(self, text: str) -> bool:
         parts = text.strip().split(None, 1)
