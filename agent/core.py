@@ -177,24 +177,27 @@ class Agent:
 
     @staticmethod
     def _debug_compact(value: Any, depth: int = 0) -> Any:
-        if depth >= 4:
+        if depth >= 8:
             return "[truncated]"
         if isinstance(value, str):
-            if len(value) <= 1000:
+            if value.startswith("data:image/"):
+                prefix, _, encoded = value.partition(",")
+                return f"{prefix},...[{len(encoded)} base64 chars]"
+            if len(value) <= 4000:
                 return value
-            return value[:1000] + f"...[truncated {len(value) - 1000} chars]"
+            return value[:4000] + f"...[truncated {len(value) - 4000} chars]"
         if isinstance(value, list):
-            items = [Agent._debug_compact(item, depth + 1) for item in value[:20]]
-            if len(value) > 20:
-                items.append(f"...[{len(value) - 20} more items]")
+            items = [Agent._debug_compact(item, depth + 1) for item in value[:50]]
+            if len(value) > 50:
+                items.append(f"...[{len(value) - 50} more items]")
             return items
         if isinstance(value, dict):
             items = list(value.items())
             out: Dict[str, Any] = {}
-            for key, item in items[:40]:
+            for key, item in items[:80]:
                 out[str(key)] = Agent._debug_compact(item, depth + 1)
-            if len(items) > 40:
-                out["__truncated_keys__"] = len(items) - 40
+            if len(items) > 80:
+                out["__truncated_keys__"] = len(items) - 80
             return out
         return value
 
@@ -425,6 +428,16 @@ class Agent:
             content_chars=len("".join(content_parts)),
             reasoning_chars=len("".join(reasoning_parts)),
             tool_call_count=len(tool_calls),
+            content="".join(content_parts),
+            reasoning="".join(reasoning_parts),
+            tool_calls=[
+                {
+                    "id": call.id,
+                    "name": call.name,
+                    "arguments": call.arguments,
+                }
+                for call in tool_calls
+            ],
         )
         return StreamPassResult(
             finish_reason=finish_reason,

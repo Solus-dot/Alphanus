@@ -92,8 +92,6 @@ def stream_chat_completions(
                     return
                 try:
                     chunk = json.loads(payload_str)
-                    if on_debug_event:
-                        on_debug_event({"type": "http_chunk", "endpoint": endpoint, "chunk": chunk})
                     yield chunk
                 except json.JSONDecodeError:
                     if on_debug_event:
