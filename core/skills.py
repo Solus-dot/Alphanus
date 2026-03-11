@@ -316,7 +316,8 @@ class SkillRuntime:
                     score += 30
 
             for ext in skill.triggers.get("file_ext", []):
-                if ext.lower() in text or ext.lower() in attachments:
+                ext_lower = ext.lower()
+                if ext_lower in text or ext_lower in attachments:
                     score += 20
 
             if "memory" in skill.id and ctx.memory_hits:
@@ -328,10 +329,9 @@ class SkillRuntime:
         return scored
 
     def select_skills(self, ctx: SkillContext, top_n: int = 3) -> List[SkillManifest]:
-        enabled = [s for s in self.skills.values() if s.enabled]
-        enabled.sort(key=lambda s: s.id)
-
         if self.selection_mode == "all_enabled":
+            enabled = [s for s in self.skills.values() if s.enabled]
+            enabled.sort(key=lambda s: s.id)
             if self.max_active_skills <= 0:
                 return enabled
             return enabled[: self.max_active_skills]
@@ -498,7 +498,7 @@ class SkillRuntime:
             return _err("E_NOT_FOUND", str(exc), int((time.perf_counter() - start) * 1000))
         except PermissionError as exc:
             return _err("E_POLICY", str(exc), int((time.perf_counter() - start) * 1000))
-        except TimeoutError as exc:
+        except (TimeoutError, subprocess.TimeoutExpired) as exc:
             return _err("E_TIMEOUT", str(exc), int((time.perf_counter() - start) * 1000))
         except Exception as exc:
             message = str(exc) if self.debug else "Action failed"

@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from pathlib import Path
 
 from core.memory import VectorMemory
@@ -425,3 +424,63 @@ if __name__ == "__main__":
     out = runtime.execute_tool_call("echo_text", {"text": "hello"}, selected=[skill], ctx=ctx)
     assert out["ok"] is True
     assert out["data"]["text"] == "hello"
+
+
+def test_command_timeout_maps_to_e_timeout(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "slow-skill" / "scripts").mkdir(parents=True)
+
+    (skills / "slow-skill" / "SKILL.md").write_text(
+        """
+---
+name: slow-skill
+description: timeout test
+version: 1.0.0
+tools:
+  allowed-tools:
+    - slow_tool
+  definitions:
+    - name: slow_tool
+      capability: utility_wait
+      description: Sleep long enough to hit timeout.
+      command: python3 scripts/slow_tool.py
+      timeout-s: 1
+      parameters:
+        type: object
+        properties: {}
+---
+Slow
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "slow-skill" / "scripts" / "slow_tool.py").write_text(
+        """
+import time
+
+time.sleep(2)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("slow-skill")
+    assert skill is not None
+
+    ctx = SkillContext(
+        user_input="wait",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+    out = runtime.execute_tool_call("slow_tool", {}, selected=[skill], ctx=ctx)
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_TIMEOUT"
