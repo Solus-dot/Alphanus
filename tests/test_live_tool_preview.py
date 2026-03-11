@@ -7,6 +7,7 @@ def test_live_preview_streams_completed_lines_before_close():
     manager = LiveToolPreviewManager()
     writes = []
     indented = []
+    previews = []
     code_blocks = []
 
     manager.update(
@@ -14,18 +15,19 @@ def test_live_preview_streams_completed_lines_before_close():
         "create_file",
         '{"filepath":"demo.py","content":"print(1)\\nprint(2)',
         writes.append,
-        lambda text, indent: indented.append((text, indent)),
-        lambda lines, language, indent: code_blocks.append((list(lines), language, indent)),
+        lambda lines, language: previews.append((list(lines), language)),
     )
 
     assert writes == ["[dim]  · file draft: demo.py[/dim]"]
-    assert code_blocks == [(["print(1)"], "python", 2)]
+    assert previews == [(["print(1)", "print(2)"], "python")]
 
     streamed = manager.close(
         "s1",
         lambda text, indent: indented.append((text, indent)),
         lambda lines, language, indent: code_blocks.append((list(lines), language, indent)),
+        lambda: previews.append((["<cleared>"], None)),
     )
 
     assert streamed is True
-    assert code_blocks[-1] == (["print(2)"], "python", 2)
+    assert code_blocks[-1] == (["print(1)", "print(2)"], "python", 2)
+    assert previews[-1] == (["<cleared>"], None)

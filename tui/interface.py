@@ -387,6 +387,17 @@ class AlphanusTUI(App):
             return
         partial.update(f"  {esc(self._buf_c)}" if self._buf_c else "")
 
+    def _update_live_preview_partial(self, lines: List[str], language: Optional[str]) -> None:
+        partial = self._partial()
+        partial.display = True
+        partial.update(Padding(self._syntax_renderable("\n".join(lines), language), (0, 0, 0, 2)))
+
+    def _clear_partial_preview(self) -> None:
+        partial = self._partial()
+        partial.update("")
+        if not self.streaming:
+            partial.display = False
+
     def _is_near_bottom(self, threshold: float = 1.0) -> bool:
         scroll = self._scroll()
         try:
@@ -718,7 +729,7 @@ class AlphanusTUI(App):
             raw_arguments = str(event.get("raw_arguments") or "")
             if stream_id and name:
                 self._live_preview.update(
-                    stream_id, name, raw_arguments, self._write, self._write_indented, self._write_code_block
+                    stream_id, name, raw_arguments, self._write, self._update_live_preview_partial
                 )
 
         elif etype == "tool_call":
@@ -730,7 +741,13 @@ class AlphanusTUI(App):
             self._write(
                 f"[dim]  · tool call: {esc(name)}({esc(self._live_preview.compact_tool_args(name, args))})[/dim]"
             )
-            streamed = self._live_preview.close(stream_id, self._write_indented, self._write_code_block) if stream_id else False
+            streamed = (
+                self._live_preview.close(
+                    stream_id, self._write_indented, self._write_code_block, self._clear_partial_preview
+                )
+                if stream_id
+                else False
+            )
             if not streamed:
                 self._live_preview.write_static_preview(
                     name, args, self._write, self._write_indented, self._write_code_block
@@ -773,7 +790,7 @@ class AlphanusTUI(App):
         partial.update("")
         partial.display = False
 
-        self._live_preview.close_all(self._write_indented, self._write_code_block)
+        self._live_preview.close_all(self._write_indented, self._write_code_block, self._clear_partial_preview)
 
         if self._buf_r and not self._content_open:
             if not self._is_tool_trace_line(self._buf_r):
