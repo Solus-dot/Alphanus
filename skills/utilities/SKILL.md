@@ -3,7 +3,7 @@ name: utilities
 description: Utility actions for weather, file search, URL open, and YouTube playback.
 allowed-tools: get_weather search_home_files open_url play_youtube
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
   categories:
     - productivity
   tags:

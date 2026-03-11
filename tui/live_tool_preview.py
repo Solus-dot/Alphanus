@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from rich.markup import escape as esc
@@ -8,6 +9,7 @@ from rich.markup import escape as esc
 
 WriteFn = Callable[[str], None]
 WriteIndentedFn = Callable[[str, int], None]
+WriteCodeFn = Callable[[List[str], Optional[str], int], None]
 
 
 @dataclass(slots=True)
@@ -21,6 +23,7 @@ class LivePreviewState:
     rendered_chars: int = 0
     rendered_lines: int = 0
     truncated: bool = False
+    preview_lines: List[str] = field(default_factory=list)
 
 
 class LiveToolPreviewManager:
@@ -68,6 +71,7 @@ class LiveToolPreviewManager:
         raw_arguments: str,
         write: WriteFn,
         write_indented: WriteIndentedFn,
+        write_code: WriteCodeFn,
     ) -> None:
         if name not in self.streamed_file_tools:
             return
@@ -93,11 +97,11 @@ class LiveToolPreviewManager:
             state.opened = True
             path_label = state.filepath or "(pending filepath)"
             write(f"[dim]  · file draft: {esc(path_label)}[/dim]")
-            write_indented("[dim]```[/dim]", 2)
 
         if len(content) < state.printed_len:
             state.printed_len = 0
             state.line_buf = ""
+            state.preview_lines = []
 
         delta = content[state.printed_len :]
         state.printed_len = len(content)
@@ -116,7 +120,7 @@ class LiveToolPreviewManager:
 
                 remaining_chars = self.max_live_preview_chars - state.rendered_chars
                 out_line = line[:remaining_chars]
-                write_indented(esc(out_line), 2)
+                state.preview_lines.append(out_line)
                 state.rendered_chars += len(out_line) + 1
                 state.rendered_lines += 1
 
@@ -126,22 +130,29 @@ class LiveToolPreviewManager:
                     break
 
         if complete and not state.closed:
-            self._close_state(state, write_indented)
+            self._close_state(state, write_indented, write_code)
 
-    def close(self, stream_id: str, write_indented: WriteIndentedFn) -> bool:
+    def close(self, stream_id: str, write_indented: WriteIndentedFn, write_code: WriteCodeFn) -> bool:
         state = self._streams.get(stream_id)
         if not state or not state.opened:
             return False
         if not state.closed:
-            self._close_state(state, write_indented)
+            self._close_state(state, write_indented, write_code)
         self._streams.pop(stream_id, None)
         return True
 
-    def close_all(self, write_indented: WriteIndentedFn) -> None:
+    def close_all(self, write_indented: WriteIndentedFn, write_code: WriteCodeFn) -> None:
         for stream_id in list(self._streams.keys()):
-            self.close(stream_id, write_indented)
+            self.close(stream_id, write_indented, write_code)
 
-    def write_static_preview(self, tool_name: str, args: Any, write: WriteFn, write_indented: WriteIndentedFn) -> None:
+    def write_static_preview(
+        self,
+        tool_name: str,
+        args: Any,
+        write: WriteFn,
+        write_indented: WriteIndentedFn,
+        write_code: WriteCodeFn,
+    ) -> None:
         if tool_name not in self.streamed_file_tools:
             return
         if not isinstance(args, dict):
@@ -157,27 +168,46 @@ class LiveToolPreviewManager:
         lines = lines[: self.max_static_preview_lines]
 
         write(f"[dim]  · file draft: {esc(filepath)}[/dim]")
-        write_indented("[dim]```[/dim]", 2)
-        for line in lines:
-            write_indented(esc(line), 2)
+        write_code(lines, self._guess_language(filepath), 2)
         if truncated:
             write_indented("[dim]... (preview truncated) ...[/dim]", 2)
-        write_indented("[dim]```[/dim]", 2)
 
-    def _close_state(self, state: LivePreviewState, write_indented: WriteIndentedFn) -> None:
+    def _close_state(self, state: LivePreviewState, write_indented: WriteIndentedFn, write_code: WriteCodeFn) -> None:
         tail = state.line_buf
         if tail and not state.truncated:
             remaining_chars = self.max_live_preview_chars - state.rendered_chars
             if remaining_chars > 0:
-                write_indented(esc(tail[:remaining_chars]), 2)
+                state.preview_lines.append(tail[:remaining_chars])
                 state.rendered_chars += min(len(tail), remaining_chars)
             if len(tail) > remaining_chars:
                 state.truncated = True
             state.line_buf = ""
+        if state.preview_lines:
+            write_code(state.preview_lines, self._guess_language(state.filepath), 2)
         if state.truncated:
             write_indented("[dim]... (live preview truncated) ...[/dim]", 2)
-        write_indented("[dim]```[/dim]", 2)
         state.closed = True
+
+    @staticmethod
+    def _guess_language(filepath: str) -> Optional[str]:
+        suffix = Path(filepath).suffix.lower()
+        if suffix == ".py":
+            return "python"
+        if suffix in {".js", ".mjs", ".cjs"}:
+            return "javascript"
+        if suffix in {".ts", ".tsx"}:
+            return "typescript"
+        if suffix in {".json"}:
+            return "json"
+        if suffix in {".html", ".htm"}:
+            return "html"
+        if suffix in {".css"}:
+            return "css"
+        if suffix in {".md"}:
+            return "markdown"
+        if suffix in {".sh", ".bash", ".zsh"}:
+            return "bash"
+        return None
 
     @staticmethod
     def _extract_partial_json_string_field(raw: str, key: str) -> Tuple[Optional[str], bool]:

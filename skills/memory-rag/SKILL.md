@@ -3,7 +3,7 @@ name: memory-rag
 description: Store and recall durable user facts/preferences.
 allowed-tools: store_memory recall_memory list_memories forget_memory get_memory_stats export_memories
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
   categories:
     - productivity
   tags:

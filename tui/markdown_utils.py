@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 from rich.markup import escape as esc
 
@@ -48,3 +48,12 @@ def render_md(line: str, in_fence: bool) -> Tuple[str, bool]:
         out.append(esc(line[i]))
         i += 1
     return "".join(out), in_fence
+
+
+def fence_language(line: str) -> Optional[str]:
+    stripped = line.strip()
+    if not (stripped.startswith("```") or stripped.startswith("~~~")):
+        return None
+    marker = stripped[:3]
+    rest = stripped[len(marker) :].strip()
+    return rest or None

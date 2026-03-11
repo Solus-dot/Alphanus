@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from rich.markup import escape as esc
 from rich.padding import Padding
+from rich.syntax import Syntax
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -20,7 +21,7 @@ from agent.core import Agent, AgentTurnResult
 from core.attachments import build_content, classify_attachment
 from core.conv_tree import ConvTree, Turn
 from tui.live_tool_preview import LiveToolPreviewManager
-from tui.markdown_utils import hanging_indent, render_md
+from tui.markdown_utils import fence_language, hanging_indent, render_md
 
 DEFAULT_SAVE = "llamachat_tree.json"
 MAX_REPLY_ACC_CHARS = 24000
@@ -206,6 +207,8 @@ class AlphanusTUI(App):
         self._buf_r = ""
         self._buf_c = ""
         self._in_fence = False
+        self._fence_lang: Optional[str] = None
+        self._fence_lines: List[str] = []
 
         self._last_scroll = 0.0
         self._scroll_interval = 0.05
@@ -325,6 +328,64 @@ class AlphanusTUI(App):
     def _write_indented(self, markup: str, indent: int = 2) -> None:
         self._log().write(Padding(Text.from_markup(markup), pad=(0, 0, 0, indent)))
         self._maybe_scroll_end()
+
+    def _write_renderable(self, renderable, indent: int = 2) -> None:
+        self._log().write(Padding(renderable, pad=(0, 0, 0, indent)))
+        self._maybe_scroll_end()
+
+    def _syntax_renderable(self, code: str, language: Optional[str]) -> Syntax:
+        return Syntax(
+            code,
+            language or "text",
+            theme="monokai",
+            word_wrap=True,
+            background_color="#1c1c1c",
+            line_numbers=False,
+        )
+
+    def _write_code_block(self, lines: List[str], language: Optional[str], indent: int = 2) -> None:
+        self._write_renderable(self._syntax_renderable("\n".join(lines), language), indent=indent)
+
+    def _reset_fence_state(self) -> None:
+        self._in_fence = False
+        self._fence_lang = None
+        self._fence_lines = []
+
+    def _flush_fence_block(self) -> None:
+        if self._fence_lines:
+            self._write_code_block(self._fence_lines, self._fence_lang, indent=2)
+        self._reset_fence_state()
+
+    def _render_content_line(self, line: str) -> None:
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            if self._in_fence:
+                self._flush_fence_block()
+            else:
+                self._in_fence = True
+                self._fence_lang = fence_language(line)
+                self._fence_lines = []
+            return
+
+        if self._in_fence:
+            self._fence_lines.append(line)
+            return
+
+        rendered, _ = render_md(line, False)
+        self._write_indented(rendered, indent=max(2, hanging_indent(line)))
+
+    def _update_partial_content(self) -> None:
+        partial = self._partial()
+        if self._in_fence:
+            lines = list(self._fence_lines)
+            if self._buf_c:
+                lines.append(self._buf_c)
+            if lines:
+                partial.update(Padding(self._syntax_renderable("\n".join(lines), self._fence_lang), (0, 0, 0, 2)))
+            else:
+                partial.update("")
+            return
+        partial.update(f"  {esc(self._buf_c)}" if self._buf_c else "")
 
     def _is_near_bottom(self, threshold: float = 1.0) -> bool:
         scroll = self._scroll()
@@ -457,7 +518,9 @@ class AlphanusTUI(App):
                     self._write(
                         f"[dim]  · tool call: {esc(name)}({esc(self._live_preview.compact_tool_args(name, args))})[/dim]"
                     )
-                    self._live_preview.write_static_preview(name, args, self._write, self._write_indented)
+                    self._live_preview.write_static_preview(
+                        name, args, self._write, self._write_indented, self._write_code_block
+                    )
             elif msg.get("role") == "tool":
                 name = msg.get("name", "tool")
                 try:
@@ -480,10 +543,30 @@ class AlphanusTUI(App):
         display = content.replace("\n[interrupted]", "").rstrip()
 
         in_fence = False
+        fence_lang: Optional[str] = None
+        fence_lines: List[str] = []
         for line in display.splitlines() or [""]:
-            rendered, in_fence = render_md(line, in_fence)
-            indent = 2 if in_fence else max(2, hanging_indent(line))
-            self._write_indented(rendered, indent=indent)
+            stripped = line.strip()
+            if stripped.startswith("```") or stripped.startswith("~~~"):
+                if in_fence:
+                    if fence_lines:
+                        self._write_code_block(fence_lines, fence_lang, indent=2)
+                    in_fence = False
+                    fence_lang = None
+                    fence_lines = []
+                else:
+                    in_fence = True
+                    fence_lang = fence_language(line)
+                    fence_lines = []
+                continue
+            if in_fence:
+                fence_lines.append(line)
+                continue
+            rendered, _ = render_md(line, False)
+            self._write_indented(rendered, indent=max(2, hanging_indent(line)))
+
+        if in_fence and fence_lines:
+            self._write_code_block(fence_lines, fence_lang, indent=2)
 
         if interrupted:
             self._write("[dim red]  ✖ interrupted[/dim red]")
@@ -511,7 +594,7 @@ class AlphanusTUI(App):
         self._done_thinking_rendered = False
         self._buf_r = ""
         self._buf_c = ""
-        self._in_fence = False
+        self._reset_fence_state()
         self._stop_event = threading.Event()
         self._partial().display = True
 
@@ -566,20 +649,21 @@ class AlphanusTUI(App):
             line, self._buf_c = self._buf_c.split("\n", 1)
             if self._is_tool_trace_line(line):
                 continue
-            rendered, self._in_fence = render_md(line, self._in_fence)
-            indent = 2 if self._in_fence else max(2, hanging_indent(line))
-            self._write_indented(rendered, indent=indent)
+            self._render_content_line(line)
 
         if include_partial and self._buf_c:
             if not self._is_tool_trace_line(self._buf_c):
-                rendered, self._in_fence = render_md(self._buf_c, self._in_fence)
-                indent = 2 if self._in_fence else max(2, hanging_indent(self._buf_c))
-                self._write_indented(rendered, indent=indent)
+                if self._in_fence:
+                    self._fence_lines.append(self._buf_c)
+                    self._flush_fence_block()
+                else:
+                    rendered, _ = render_md(self._buf_c, False)
+                    self._write_indented(rendered, indent=max(2, hanging_indent(self._buf_c)))
             self._buf_c = ""
             self._partial().update("")
             return
 
-        self._partial().update(f"  {esc(self._buf_c)}" if self._buf_c else "")
+        self._update_partial_content()
 
     def _handle_content_token(self, token: str) -> None:
         if not self._content_open:
@@ -631,7 +715,9 @@ class AlphanusTUI(App):
             name = str(event.get("name") or "")
             raw_arguments = str(event.get("raw_arguments") or "")
             if stream_id and name:
-                self._live_preview.update(stream_id, name, raw_arguments, self._write, self._write_indented)
+                self._live_preview.update(
+                    stream_id, name, raw_arguments, self._write, self._write_indented, self._write_code_block
+                )
 
         elif etype == "tool_call":
             self._tool_activity_seen = True
@@ -642,9 +728,11 @@ class AlphanusTUI(App):
             self._write(
                 f"[dim]  · tool call: {esc(name)}({esc(self._live_preview.compact_tool_args(name, args))})[/dim]"
             )
-            streamed = self._live_preview.close(stream_id, self._write_indented) if stream_id else False
+            streamed = self._live_preview.close(stream_id, self._write_indented, self._write_code_block) if stream_id else False
             if not streamed:
-                self._live_preview.write_static_preview(name, args, self._write, self._write_indented)
+                self._live_preview.write_static_preview(
+                    name, args, self._write, self._write_indented, self._write_code_block
+                )
 
         elif etype == "tool_result":
             self._tool_activity_seen = True
@@ -683,7 +771,7 @@ class AlphanusTUI(App):
         partial.update("")
         partial.display = False
 
-        self._live_preview.close_all(self._write_indented)
+        self._live_preview.close_all(self._write_indented, self._write_code_block)
 
         if self._buf_r and not self._content_open:
             if not self._is_tool_trace_line(self._buf_r):
@@ -702,10 +790,30 @@ class AlphanusTUI(App):
         reply = result.content if result.content else self._reply_acc
         if result.status == "done" and not self._content_open and reply.strip():
             in_fence = False
+            fence_lang: Optional[str] = None
+            fence_lines: List[str] = []
             for line in reply.splitlines() or [""]:
-                rendered, in_fence = render_md(line, in_fence)
-                indent = 2 if in_fence else max(2, hanging_indent(line))
-                self._write_indented(rendered, indent=indent)
+                stripped = line.strip()
+                if stripped.startswith("```") or stripped.startswith("~~~"):
+                    if in_fence:
+                        if fence_lines:
+                            self._write_code_block(fence_lines, fence_lang, indent=2)
+                        in_fence = False
+                        fence_lang = None
+                        fence_lines = []
+                    else:
+                        in_fence = True
+                        fence_lang = fence_language(line)
+                        fence_lines = []
+                    continue
+                if in_fence:
+                    fence_lines.append(line)
+                    continue
+                rendered, _ = render_md(line, False)
+                self._write_indented(rendered, indent=max(2, hanging_indent(line)))
+
+            if in_fence and fence_lines:
+                self._write_code_block(fence_lines, fence_lang, indent=2)
 
         if turn_id in self.conv_tree.nodes:
             for msg in result.skill_exchanges:
