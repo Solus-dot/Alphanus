@@ -103,10 +103,9 @@ Optional scenarios:
 
 ```bash
 uv run python scripts/live_smoke.py --include-browser
-uv run python scripts/live_smoke.py --include-browser --include-email --json
+uv run python scripts/live_smoke.py --include-browser --json
 ```
 
 Notes:
 - `--include-browser` exercises `open_url` and `play_youtube`.
-- `--include-email` exercises `read_email` and will fail cleanly unless email capability is enabled.
 - The script uses a temporary workspace under the repo and a temporary memory file, then runs real `Agent.run_turn(...)` scenarios against the live endpoint.

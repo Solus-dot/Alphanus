@@ -1,14 +1,13 @@
 ---
 name: utilities
-description: Utility actions for weather, email metadata, file search, and URL open.
-allowed-tools: get_weather read_email search_home_files open_url play_youtube
+description: Utility actions for weather, file search, URL open, and YouTube playback.
+allowed-tools: get_weather search_home_files open_url play_youtube
 metadata:
   version: "1.0.0"
   categories:
     - productivity
   tags:
     - weather
-    - email
     - search
     - open
     - youtube
@@ -26,17 +25,6 @@ metadata:
               type: string
           required:
             - city
-      - name: read_email
-        capability: utility_email_read
-        description: Read latest email metadata via IMAP.
-        command: python3 scripts/read_email.py
-        timeout-s: 30
-        parameters:
-          type: object
-          properties:
-            count:
-              type: integer
-          required: []
       - name: search_home_files
         capability: utility_file_search
         description: Search filenames under home directory.

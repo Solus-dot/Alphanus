@@ -1,15 +1,9 @@
 from __future__ import annotations
 
 import os
-import sys
-from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-from core.tool_script import emit, read_args  # noqa: E402
-from core.workspace import WorkspaceManager  # noqa: E402
+from core.tool_script import emit, read_args
+from core.workspace import WorkspaceManager
 
 
 def load_workspace() -> WorkspaceManager:

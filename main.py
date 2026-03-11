@@ -8,8 +8,6 @@ from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import urlparse
 
-from dotenv import load_dotenv
-
 from agent.core import Agent
 from core.memory import VectorMemory
 from core.skills import SkillRuntime
@@ -57,8 +55,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "capabilities": {
         "shell_require_confirmation": True,
         "dangerously_skip_permissions": False,
-        "email_enabled": False,
-        "email_imap_server": "imap.gmail.com",
     },
     "skills": {
         "selection_mode": "all_enabled",
@@ -133,8 +129,6 @@ def main() -> int:
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent
-    load_dotenv(project_root / ".env")
-
     config_path = project_root / "config" / "global_config.json"
     config = load_or_create_global_config(config_path)
     if args.debug:

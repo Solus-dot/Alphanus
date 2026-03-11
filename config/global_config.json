@@ -31,9 +31,7 @@
   },
   "capabilities": {
     "shell_require_confirmation": true,
-    "dangerously_skip_permissions": false,
-    "email_enabled": false,
-    "email_imap_server": "imap.gmail.com"
+    "dangerously_skip_permissions": false
   },
   "skills": {
     "selection_mode": "all_enabled",

@@ -113,10 +113,6 @@ def _browser_scenarios() -> List[Scenario]:
     ]
 
 
-def _email_scenarios() -> List[Scenario]:
-    return [Scenario("read_email", "Read my latest email metadata.")]
-
-
 def _summarize_events(events: List[Dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     tool_calls = [
         {"name": evt.get("name"), "arguments": evt.get("arguments")}
@@ -141,7 +137,6 @@ def _summarize_events(events: List[Dict[str, Any]]) -> tuple[list[dict[str, Any]
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run live Alphanus smoke checks against a real model endpoint.")
     parser.add_argument("--include-browser", action="store_true", help="Include open_url and play_youtube scenarios.")
-    parser.add_argument("--include-email", action="store_true", help="Include read_email scenario.")
     parser.add_argument(
         "--json",
         action="store_true",
@@ -180,8 +175,6 @@ def main() -> int:
     scenarios = _base_scenarios()
     if args.include_browser:
         scenarios.extend(_browser_scenarios())
-    if args.include_email:
-        scenarios.extend(_email_scenarios())
 
     results = []
     for scenario in scenarios:
