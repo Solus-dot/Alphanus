@@ -68,3 +68,17 @@ def test_shell_metachar_policy(tmp_path: Path):
     res = mgr.run_shell_command("echo ok; rm -rf /")
     assert res["ok"] is False
     assert res["error"]["code"] == "E_POLICY"
+
+
+def test_workspace_reads_allowed_outside_home_root(tmp_path: Path):
+    home = tmp_path / "home"
+    ws_parent = tmp_path / "external"
+    ws = ws_parent / "ws"
+    home.mkdir()
+    ws.mkdir(parents=True)
+    target = ws / "notes.txt"
+    target.write_text("alpha", encoding="utf-8")
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    assert mgr.read_file(str(target)) == "alpha"
+    assert mgr.list_files(str(ws)) == ["notes.txt"]

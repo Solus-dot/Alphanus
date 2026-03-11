@@ -65,7 +65,7 @@ metadata:
             - url
       - name: play_youtube
         capability: utility_play_youtube
-        description: Open first YouTube search URL for a topic.
+        description: Open the first YouTube video result for a topic and autoplay when resolvable.
         command: python3 scripts/play_youtube.py
         timeout-s: 30
         parameters:
@@ -82,3 +82,7 @@ Rules:
 - Prefer direct answer when possible.
 - If network actions fail, return a clear structured error.
 - Keep utility responses concise and actionable.
+- After `open_url`, confirm that the exact URL was opened.
+- After `play_youtube`, inspect the tool result:
+  - If `resolved_first_result` is true, say that the first playable YouTube result was opened.
+  - If `resolved_first_result` is false, say that YouTube search results were opened as a fallback.

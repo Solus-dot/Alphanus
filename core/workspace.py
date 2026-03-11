@@ -64,6 +64,11 @@ class WorkspaceManager:
             if self._is_relative_to(resolved, blocked_root):
                 raise PermissionError("Read path is in restricted system location")
 
+        # Workspace reads must remain valid even when the workspace itself is
+        # configured outside the user's home directory.
+        if self._is_relative_to(resolved, self.workspace_root):
+            return resolved
+
         if not self._is_relative_to(resolved, self.home_root):
             raise PermissionError("Read path must remain inside home directory")
         if self._is_secret_path(resolved):
