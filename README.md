@@ -90,3 +90,23 @@ Skills live under `skills/<skill-id>/SKILL.md` and can expose tools via:
 ```bash
 uv run pytest
 ```
+
+## Live Smoke Checks
+
+Run a real end-to-end smoke pass against your currently running model server:
+
+```bash
+uv run python scripts/live_smoke.py
+```
+
+Optional scenarios:
+
+```bash
+uv run python scripts/live_smoke.py --include-browser
+uv run python scripts/live_smoke.py --include-browser --include-email --json
+```
+
+Notes:
+- `--include-browser` exercises `open_url` and `play_youtube`.
+- `--include-email` exercises `read_email` and will fail cleanly unless email capability is enabled.
+- The script uses a temporary workspace under the repo and a temporary memory file, then runs real `Agent.run_turn(...)` scenarios against the live endpoint.
