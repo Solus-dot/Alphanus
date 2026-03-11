@@ -347,6 +347,50 @@ if __name__ == "__main__":
     assert out_raw["data"]["text"] == "raw-hello"
 
 
+def test_skill_prompt_is_loaded_lazily(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "lazy-skill").mkdir(parents=True)
+
+    (skills / "lazy-skill" / "SKILL.md").write_text(
+        """
+---
+name: lazy-skill
+description: lazy prompt
+version: 1.0.0
+triggers:
+  keywords:
+    - lazy
+---
+Loaded on demand
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("lazy-skill")
+    assert skill is not None
+    assert skill.prompt is None
+
+    ctx = SkillContext(
+        user_input="lazy",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+    block = runtime.compose_skill_block([skill], ctx=ctx, context_limit=1024)
+    assert "Loaded on demand" in block
+    assert skill.prompt == "Loaded on demand"
+
+
 def test_frontmatter_metadata_format_executes(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
@@ -424,6 +468,63 @@ if __name__ == "__main__":
     out = runtime.execute_tool_call("echo_text", {"text": "hello"}, selected=[skill], ctx=ctx)
     assert out["ok"] is True
     assert out["data"]["text"] == "hello"
+
+
+def test_invalid_command_tool_output_maps_to_e_protocol(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "bad-output" / "scripts").mkdir(parents=True)
+
+    (skills / "bad-output" / "SKILL.md").write_text(
+        """
+---
+name: bad-output
+description: invalid output
+version: 1.0.0
+tools:
+  allowed-tools:
+    - bad_tool
+  definitions:
+    - name: bad_tool
+      capability: utility_bad
+      description: Emit invalid output.
+      command: python3 scripts/bad_tool.py
+      parameters:
+        type: object
+        properties: {}
+---
+Bad output
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "bad-output" / "scripts" / "bad_tool.py").write_text(
+        """
+print("definitely not json")
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("bad-output")
+    assert skill is not None
+
+    ctx = SkillContext(
+        user_input="bad",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+    out = runtime.execute_tool_call("bad_tool", {}, selected=[skill], ctx=ctx)
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_PROTOCOL"
 
 
 def test_command_timeout_maps_to_e_timeout(tmp_path: Path):

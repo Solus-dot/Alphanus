@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.memory import VectorMemory
-from core.skill_parser import SKILL_DOC, SkillManifest, ToolCommandDef, parse_agentskill_manifest
+from core.skill_parser import SKILL_DOC, SkillManifest, ToolCommandDef, extract_skill_doc, parse_agentskill_manifest
 from core.workspace import WorkspaceManager
 
 
@@ -27,6 +27,10 @@ def _err(code: str, message: str, duration_ms: int) -> Dict[str, Any]:
         "error": {"code": code, "message": message},
         "meta": {"duration_ms": duration_ms},
     }
+
+
+class ToolProtocolError(RuntimeError):
+    pass
 
 
 def _recover_tool_args(raw_args: Dict[str, Any]) -> Dict[str, Any]:
@@ -163,6 +167,28 @@ class SkillRuntime:
             return None
         return parse_agentskill_manifest(child, skill_doc)
 
+    def _ensure_skill_prompt(self, manifest: SkillManifest) -> str:
+        if manifest.prompt is not None:
+            return manifest.prompt
+        if not manifest.doc_path:
+            manifest.prompt = ""
+            return manifest.prompt
+        _, prompt = extract_skill_doc(manifest.doc_path, include_prompt=True)
+        manifest.prompt = prompt
+        return manifest.prompt
+
+    def _ensure_skill_hooks(self, manifest: SkillManifest) -> Optional[object]:
+        if manifest.hooks is not None:
+            return manifest.hooks
+        hooks_path = manifest.hooks_path
+        if not hooks_path or not hooks_path.exists():
+            return None
+        manifest.hooks = self._load_module(
+            hooks_path,
+            f"alphanus_hooks_{manifest.id.replace('-', '_')}",
+        )
+        return manifest.hooks
+
     def _remove_skill_tools(self, skill_id: str) -> None:
         for tool_name, reg in list(self._tool_registry.items()):
             if reg.skill_id == skill_id:
@@ -186,13 +212,6 @@ class SkillRuntime:
 
                 if manifest.id in self.skills:
                     raise ValueError(f"Duplicate skill id '{manifest.id}'")
-
-                hooks_path = child / "hooks.py"
-                if hooks_path.exists():
-                    manifest.hooks = self._load_module(
-                        hooks_path,
-                        f"alphanus_hooks_{manifest.id.replace('-', '_')}",
-                    )
 
                 if not self._load_skill_tools(manifest):
                     continue
@@ -355,14 +374,15 @@ class SkillRuntime:
         sections: List[str] = []
         for skill in selected:
             extra = ""
-            if skill.hooks and hasattr(skill.hooks, "pre_prompt"):
+            hooks = self._ensure_skill_hooks(skill)
+            if hooks and hasattr(hooks, "pre_prompt"):
                 try:
-                    hook_out = skill.hooks.pre_prompt(ctx)  # type: ignore[attr-defined]
+                    hook_out = hooks.pre_prompt(ctx)  # type: ignore[attr-defined]
                     if hook_out:
                         extra = str(hook_out).strip()
                 except Exception:
                     pass
-            body = skill.prompt.strip()
+            body = self._ensure_skill_prompt(skill).strip()
             if extra:
                 body += "\n\n" + extra
             sections.append(f"### Skill: {skill.name} ({skill.id})\n{body}")
@@ -428,7 +448,7 @@ class SkillRuntime:
         args: Dict[str, Any],
     ) -> Tuple[bool, str]:
         for skill in selected:
-            hooks = skill.hooks
+            hooks = self._ensure_skill_hooks(skill)
             if not hooks or not hasattr(hooks, "pre_action"):
                 continue
             try:
@@ -441,12 +461,139 @@ class SkillRuntime:
 
     def post_response(self, selected: List[SkillManifest], ctx: SkillContext, text: str) -> None:
         for skill in selected:
-            hooks = skill.hooks
+            hooks = self._ensure_skill_hooks(skill)
             if hooks and hasattr(hooks, "post_response"):
                 try:
                     hooks.post_response(ctx, text)  # type: ignore[attr-defined]
                 except Exception:
                     continue
+
+    @staticmethod
+    def _schema_type_matches(value: Any, expected: str) -> bool:
+        if expected == "string":
+            return isinstance(value, str)
+        if expected == "integer":
+            return isinstance(value, int) and not isinstance(value, bool)
+        if expected == "number":
+            return (isinstance(value, int) and not isinstance(value, bool)) or isinstance(value, float)
+        if expected == "boolean":
+            return isinstance(value, bool)
+        if expected == "object":
+            return isinstance(value, dict)
+        if expected == "array":
+            return isinstance(value, list)
+        if expected == "null":
+            return value is None
+        return True
+
+    def _validate_schema_value(self, field_name: str, value: Any, schema: Dict[str, Any]) -> None:
+        enum = schema.get("enum")
+        if isinstance(enum, list) and enum and value not in enum:
+            raise ValueError(f"Invalid '{field_name}': expected one of {', '.join(map(str, enum[:10]))}")
+
+        raw_type = schema.get("type")
+        expected_types: List[str] = []
+        if isinstance(raw_type, str):
+            expected_types = [raw_type]
+        elif isinstance(raw_type, list):
+            expected_types = [str(item) for item in raw_type if isinstance(item, str)]
+
+        if expected_types and not any(self._schema_type_matches(value, item) for item in expected_types):
+            raise ValueError(f"Invalid '{field_name}': expected {' or '.join(expected_types)}")
+
+        if isinstance(value, dict):
+            props = schema.get("properties")
+            if isinstance(props, dict):
+                required = schema.get("required") or []
+                if isinstance(required, list):
+                    for item in required:
+                        key = str(item).strip()
+                        if key and key not in value:
+                            raise ValueError(f"Missing required argument: {field_name}.{key}")
+                for key, child in props.items():
+                    if key in value and isinstance(child, dict):
+                        self._validate_schema_value(f"{field_name}.{key}", value[key], child)
+            if schema.get("additionalProperties") is False and isinstance(props, dict):
+                unknown = [key for key in value if key not in props]
+                if unknown:
+                    raise ValueError(f"Unexpected arguments for '{field_name}': {', '.join(sorted(unknown)[:5])}")
+
+        if isinstance(value, list):
+            items = schema.get("items")
+            if isinstance(items, dict):
+                for idx, item in enumerate(value):
+                    self._validate_schema_value(f"{field_name}[{idx}]", item, items)
+
+    def _validate_tool_args(self, reg: RegisteredTool, args: Dict[str, Any]) -> Dict[str, Any]:
+        cleaned = {key: value for key, value in args.items() if not str(key).startswith("_")}
+        schema = reg.parameters if isinstance(reg.parameters, dict) else {}
+        schema_type = schema.get("type")
+        if schema_type and schema_type != "object":
+            raise ValueError(f"Tool '{reg.name}' must declare an object parameters schema")
+
+        required = schema.get("required") or []
+        if isinstance(required, list):
+            for item in required:
+                key = str(item).strip()
+                if key and key not in cleaned:
+                    raise ValueError(f"Missing required argument: {key}")
+
+        props = schema.get("properties")
+        if isinstance(props, dict):
+            for key, child_schema in props.items():
+                if key in cleaned and isinstance(child_schema, dict):
+                    self._validate_schema_value(key, cleaned[key], child_schema)
+            if schema.get("additionalProperties") is False:
+                unknown = [key for key in cleaned if key not in props]
+                if unknown:
+                    raise ValueError(f"Unexpected arguments: {', '.join(sorted(unknown)[:5])}")
+
+        return cleaned
+
+    def _resolve_tool_call(
+        self,
+        tool_name: str,
+        selected: List[SkillManifest],
+    ) -> Tuple[RegisteredTool, SkillManifest]:
+        reg = self._tool_registry.get(tool_name)
+        if not reg:
+            raise LookupError(f"No adapter for tool '{tool_name}'")
+
+        selected_map = {skill.id: skill for skill in selected}
+        owner = selected_map.get(reg.skill_id)
+        if not owner:
+            raise PermissionError(f"Tool '{tool_name}' not allowed by active skills")
+        if owner.disable_model_invocation:
+            raise PermissionError(f"Tool '{tool_name}' is disabled for model invocation")
+        if owner.allowed_tools and tool_name not in owner.allowed_tools:
+            raise PermissionError(f"Tool '{tool_name}' not allowed by skill policy")
+        return reg, owner
+
+    def _prepare_tool_args(
+        self,
+        reg: RegisteredTool,
+        args: Dict[str, Any],
+        selected: List[SkillManifest],
+        ctx: SkillContext,
+    ) -> Dict[str, Any]:
+        recovered = _recover_tool_args(args)
+        validated = self._validate_tool_args(reg, recovered)
+        allowed, reason = self._run_pre_action_hooks(selected, ctx, reg.name, validated)
+        if not allowed:
+            raise PermissionError(reason or "Denied by skill policy")
+        return validated
+
+    def _execute_registered_tool(
+        self,
+        reg: RegisteredTool,
+        args: Dict[str, Any],
+        env: ToolExecutionEnv,
+    ) -> Any:
+        if reg.command:
+            return self._execute_command_tool(reg, args, env)
+        if reg.module is None or not hasattr(reg.module, "execute"):
+            raise ToolProtocolError(f"Tool '{reg.name}' has no callable execute() handler")
+        return reg.module.execute(reg.name, args, env)
 
     def execute_tool_call(
         self,
@@ -457,41 +604,21 @@ class SkillRuntime:
         confirm_shell: Optional[Callable[[str], bool]] = None,
     ) -> Dict[str, Any]:
         start = time.perf_counter()
-        reg = self._tool_registry.get(tool_name)
-        if not reg:
-            return _err("E_UNSUPPORTED", f"No adapter for tool '{tool_name}'", int((time.perf_counter() - start) * 1000))
-
-        selected_map = {skill.id: skill for skill in selected}
-        owner = selected_map.get(reg.skill_id)
-        if not owner:
-            return _err("E_POLICY", f"Tool '{tool_name}' not allowed by active skills", int((time.perf_counter() - start) * 1000))
-        if owner.disable_model_invocation:
-            return _err("E_POLICY", f"Tool '{tool_name}' is disabled for model invocation", int((time.perf_counter() - start) * 1000))
-        if owner.allowed_tools and tool_name not in owner.allowed_tools:
-            return _err("E_POLICY", f"Tool '{tool_name}' not allowed by skill policy", int((time.perf_counter() - start) * 1000))
-
-        args = _recover_tool_args(args)
-        allowed, reason = self._run_pre_action_hooks(selected, ctx, tool_name, args)
-        if not allowed:
-            return _err("E_POLICY", reason, int((time.perf_counter() - start) * 1000))
-
-        env = ToolExecutionEnv(
-            workspace=self.workspace,
-            memory=self.memory,
-            config=self.config,
-            debug=self.debug,
-            confirm_shell=confirm_shell,
-        )
-
         try:
-            if reg.command:
-                result = self._execute_command_tool(reg, args, env)
-            else:
-                if reg.module is None:
-                    raise RuntimeError(f"Tool '{tool_name}' has no module or command executor")
-                result = reg.module.execute(tool_name, args, env)
+            reg, _owner = self._resolve_tool_call(tool_name, selected)
+            normalized_args = self._prepare_tool_args(reg, args, selected, ctx)
+            env = ToolExecutionEnv(
+                workspace=self.workspace,
+                memory=self.memory,
+                config=self.config,
+                debug=self.debug,
+                confirm_shell=confirm_shell,
+            )
+            result = self._execute_registered_tool(reg, normalized_args, env)
             duration = int((time.perf_counter() - start) * 1000)
             return self._normalize_result(result, duration)
+        except LookupError as exc:
+            return _err("E_UNSUPPORTED", str(exc), int((time.perf_counter() - start) * 1000))
         except ValueError as exc:
             return _err("E_VALIDATION", str(exc), int((time.perf_counter() - start) * 1000))
         except FileNotFoundError as exc:
@@ -500,6 +627,8 @@ class SkillRuntime:
             return _err("E_POLICY", str(exc), int((time.perf_counter() - start) * 1000))
         except (TimeoutError, subprocess.TimeoutExpired) as exc:
             return _err("E_TIMEOUT", str(exc), int((time.perf_counter() - start) * 1000))
+        except ToolProtocolError as exc:
+            return _err("E_PROTOCOL", str(exc), int((time.perf_counter() - start) * 1000))
         except Exception as exc:
             message = str(exc) if self.debug else "Action failed"
             return _err("E_IO", message, int((time.perf_counter() - start) * 1000))
@@ -562,7 +691,7 @@ class SkillRuntime:
         try:
             parsed = json.loads(candidate)
         except Exception as exc:
-            raise RuntimeError(
+            raise ToolProtocolError(
                 "Tool command output is not valid JSON"
                 + (f": {exc}" if self.debug else "")
             ) from exc

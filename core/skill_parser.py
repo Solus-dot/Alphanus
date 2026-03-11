@@ -61,7 +61,7 @@ def _coerce_bool(value: Any, default: bool) -> bool:
     return default
 
 
-def extract_skill_doc(skill_doc: Path) -> Tuple[Dict[str, Any], str]:
+def extract_skill_doc(skill_doc: Path, include_prompt: bool = True) -> Tuple[Dict[str, Any], Optional[str]]:
     text = skill_doc.read_text(encoding="utf-8")
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
@@ -76,7 +76,7 @@ def extract_skill_doc(skill_doc: Path) -> Tuple[Dict[str, Any], str]:
         raise ValueError("SKILL.md frontmatter is missing closing delimiter '---'")
 
     frontmatter_text = "\n".join(lines[1:end])
-    prompt = "\n".join(lines[end + 1 :]).strip()
+    prompt = "\n".join(lines[end + 1 :]).strip() if include_prompt else None
     parsed = yaml.safe_load(frontmatter_text)
     if parsed is None:
         frontmatter: Dict[str, Any] = {}
@@ -106,8 +106,10 @@ class SkillManifest:
     description: str
     enabled: bool
     triggers: Dict[str, List[str]] = field(default_factory=dict)
-    prompt: str = ""
+    prompt: Optional[str] = None
     path: Optional[Path] = None
+    doc_path: Optional[Path] = None
+    hooks_path: Optional[Path] = None
     hooks: Optional[object] = None
     tags: List[str] = field(default_factory=list)
     categories: List[str] = field(default_factory=list)
@@ -118,8 +120,8 @@ class SkillManifest:
     format: str = "agentskills"
 
 
-def parse_agentskill_manifest(child: Path, skill_doc: Path) -> SkillManifest:
-    frontmatter, prompt = extract_skill_doc(skill_doc)
+def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool = False) -> SkillManifest:
+    frontmatter, prompt = extract_skill_doc(skill_doc, include_prompt=include_prompt)
 
     skill_id = str(frontmatter.get("name", "")).strip()
     if not skill_id:
@@ -232,6 +234,8 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path) -> SkillManifest:
         triggers={"keywords": keywords, "file_ext": file_ext},
         prompt=prompt,
         path=child,
+        doc_path=skill_doc,
+        hooks_path=child / "hooks.py",
         tags=tags,
         categories=categories,
         allowed_tools=allowed_tools,
