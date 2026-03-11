@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import urllib.request
 from pathlib import Path
 
@@ -487,3 +488,37 @@ def test_tool_result_history_compaction_can_be_gated_by_tool_name(mocker, runtim
     tool_content = tool_msgs[-1]["content"]
     assert "truncated" in tool_content
     assert huge_text not in tool_content
+
+
+def test_agent_can_cancel_while_waiting_for_readiness(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 5,
+            "readiness_poll_s": 0.5,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+    stop_event = threading.Event()
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            stop_event.set()
+            raise urllib.request.URLError("refused")
+        raise AssertionError("chat endpoint should not be reached")
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "hi"}],
+        user_input="hi",
+        thinking=True,
+        stop_event=stop_event,
+    )
+
+    assert result.status == "cancelled"

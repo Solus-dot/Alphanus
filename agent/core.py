@@ -217,27 +217,52 @@ class Agent:
         except Exception:
             return
 
-    def ensure_ready(self) -> bool:
-        deadline = time.monotonic() + self.readiness_timeout_s
+    @staticmethod
+    def _stop_requested(stop_event) -> bool:
+        return bool(stop_event is not None and stop_event.is_set())
+
+    @staticmethod
+    def _sleep_with_stop(duration_s: float, stop_event) -> bool:
+        if duration_s <= 0:
+            return not Agent._stop_requested(stop_event)
+        deadline = time.monotonic() + duration_s
+        while time.monotonic() < deadline:
+            if Agent._stop_requested(stop_event):
+                return False
+            time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+        return not Agent._stop_requested(stop_event)
+
+    def ensure_ready(self, stop_event=None, on_event: Optional[Callable[[Dict[str, Any]], None]] = None, timeout_s: Optional[float] = None) -> Optional[bool]:
+        timeout = self.readiness_timeout_s if timeout_s is None else max(0.0, float(timeout_s))
+        deadline = time.monotonic() + timeout
         headers = self._headers()
         req = urllib.request.Request(self.models_endpoint, headers=headers, method="GET")
+        attempt_timeout = min(self.connect_timeout_s, 1.0)
         self._debug_log(
             "readiness_start",
             endpoint=self.models_endpoint,
-            timeout_s=self.readiness_timeout_s,
+            timeout_s=timeout,
             header_keys=sorted(headers.keys()),
         )
+        self._emit(on_event, {"type": "info", "text": f"waiting for endpoint handshake: {self.models_endpoint}"})
 
         while time.monotonic() < deadline:
+            if self._stop_requested(stop_event):
+                self._ready_checked = False
+                self._debug_log("readiness_cancelled", endpoint=self.models_endpoint)
+                return None
             try:
-                with urllib.request.urlopen(req, timeout=self.connect_timeout_s, context=self.ssl_context) as resp:
+                with urllib.request.urlopen(req, timeout=attempt_timeout, context=self.ssl_context) as resp:
                     if 200 <= resp.status < 300:
                         self._ready_checked = True
                         self._debug_log("readiness_ok", endpoint=self.models_endpoint, status=resp.status)
                         return True
             except Exception as exc:
                 self._debug_log("readiness_retry", endpoint=self.models_endpoint, error=str(exc))
-                time.sleep(self.readiness_poll_s)
+                if not self._sleep_with_stop(self.readiness_poll_s, stop_event):
+                    self._ready_checked = False
+                    self._debug_log("readiness_cancelled", endpoint=self.models_endpoint)
+                    return None
                 continue
         self._ready_checked = False
         self._debug_log("readiness_failed", endpoint=self.models_endpoint)
@@ -456,8 +481,17 @@ class Agent:
                 if retryable and attempt < self.per_turn_retries:
                     attempt += 1
                     self._emit(on_event, {"type": "info", "text": f"Retrying request ({attempt}/{self.per_turn_retries})..."})
-                    time.sleep(self.retry_backoff_s)
-                    self.ensure_ready()
+                    if not self._sleep_with_stop(self.retry_backoff_s, stop_event):
+                        return StreamPassResult(finish_reason="cancelled")
+                    ready = self.ensure_ready(
+                        stop_event=stop_event,
+                        on_event=on_event,
+                        timeout_s=min(self.readiness_timeout_s, 5.0),
+                    )
+                    if ready is None:
+                        return StreamPassResult(finish_reason="cancelled")
+                    if not ready:
+                        raise
                     continue
                 raise
 
@@ -476,14 +510,21 @@ class Agent:
         if endpoint_err:
             return AgentTurnResult(status="error", content="", reasoning="", skill_exchanges=[], error=endpoint_err)
 
-        if not self._ready_checked and not self.ensure_ready():
-            return AgentTurnResult(
-                status="error",
-                content="",
-                reasoning="",
-                skill_exchanges=[],
-                error=f"Model endpoint not ready: {self.models_endpoint}",
-            )
+        if self._stop_requested(stop_event):
+            return AgentTurnResult(status="cancelled", content="", reasoning="", skill_exchanges=[])
+
+        if not self._ready_checked:
+            ready = self.ensure_ready(stop_event=stop_event, on_event=on_event)
+            if ready is None:
+                return AgentTurnResult(status="cancelled", content="", reasoning="", skill_exchanges=[])
+            if not ready:
+                return AgentTurnResult(
+                    status="error",
+                    content="",
+                    reasoning="",
+                    skill_exchanges=[],
+                    error=f"Model endpoint not ready: {self.models_endpoint}",
+                )
 
         branch_labels = branch_labels or []
         attachments = attachments or []

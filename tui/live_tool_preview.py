@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -23,7 +23,6 @@ class LivePreviewState:
     rendered_chars: int = 0
     rendered_lines: int = 0
     truncated: bool = False
-    preview_lines: List[str] = field(default_factory=list)
 
 
 class LiveToolPreviewManager:
@@ -101,13 +100,13 @@ class LiveToolPreviewManager:
         if len(content) < state.printed_len:
             state.printed_len = 0
             state.line_buf = ""
-            state.preview_lines = []
 
         delta = content[state.printed_len :]
         state.printed_len = len(content)
 
         if delta and not state.truncated:
             state.line_buf += delta
+            new_lines: List[str] = []
             while "\n" in state.line_buf:
                 line, state.line_buf = state.line_buf.split("\n", 1)
                 if (
@@ -120,7 +119,7 @@ class LiveToolPreviewManager:
 
                 remaining_chars = self.max_live_preview_chars - state.rendered_chars
                 out_line = line[:remaining_chars]
-                state.preview_lines.append(out_line)
+                new_lines.append(out_line)
                 state.rendered_chars += len(out_line) + 1
                 state.rendered_lines += 1
 
@@ -128,6 +127,8 @@ class LiveToolPreviewManager:
                     state.truncated = True
                     state.line_buf = ""
                     break
+            if new_lines:
+                write_code(new_lines, self._guess_language(state.filepath), 2)
 
         if complete and not state.closed:
             self._close_state(state, write_indented, write_code)
@@ -177,13 +178,11 @@ class LiveToolPreviewManager:
         if tail and not state.truncated:
             remaining_chars = self.max_live_preview_chars - state.rendered_chars
             if remaining_chars > 0:
-                state.preview_lines.append(tail[:remaining_chars])
+                write_code([tail[:remaining_chars]], self._guess_language(state.filepath), 2)
                 state.rendered_chars += min(len(tail), remaining_chars)
             if len(tail) > remaining_chars:
                 state.truncated = True
             state.line_buf = ""
-        if state.preview_lines:
-            write_code(state.preview_lines, self._guess_language(state.filepath), 2)
         if state.truncated:
             write_indented("[dim]... (live preview truncated) ...[/dim]", 2)
         state.closed = True

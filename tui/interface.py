@@ -454,7 +454,9 @@ class AlphanusTUI(App):
             left = f"[bold yellow]approve shell command?[/bold yellow] [dim][y/n][/dim]"
         elif self.streaming:
             frame = self._spin_frames[self._spin_i % len(self._spin_frames)]
-            if self._esc_pending:
+            if self._stop_event.is_set():
+                left = f"[dim]{frame}[/dim] [yellow]stopping...[/yellow]"
+            elif self._esc_pending:
                 left = f"[dim]{frame}[/dim] [dim]generating[/dim] [bold red]esc again to stop[/bold red]"
             elif not self._auto_follow_stream:
                 left = f"[dim]{frame}[/dim] [dim]generating[/dim] [yellow]free scroll[/yellow] [dim]pgdn to resume follow[/dim]"
@@ -925,6 +927,7 @@ class AlphanusTUI(App):
         else:
             self._stop_event.set()
             self._esc_pending = False
+            self._update_status2()
 
     def action_scroll_up(self) -> None:
         self._scroll().scroll_page_up()
