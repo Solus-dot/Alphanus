@@ -1493,11 +1493,12 @@ class AlphanusTUI(App):
     def _cmd_skills(self) -> None:
         self._write("")
         self._write("[bold cyan]  Skills[/bold cyan]")
+        name_col = max((len(skill.id) for skill in self.agent.skill_runtime.list_skills()), default=0) + 2
         for skill in self.agent.skill_runtime.list_skills():
             state = "on" if skill.enabled else "off"
             color = "green" if skill.enabled else "red"
             self._write(
-                f"  [bold]{esc(skill.id)}[/bold] [dim]({esc(skill.version)})[/dim] "
+                f"  [bold]{esc(skill.id):<{name_col}}[/bold][dim]({esc(skill.version)})[/dim] "
                 f"[{color}]{state}[/{color}] [dim]{esc(skill.description)}[/dim]"
             )
 
@@ -1534,15 +1535,17 @@ class AlphanusTUI(App):
                 self._write_error(f"Skill not found: {parts[1]}")
                 return True
             self._write("")
-            self._write(f"[bold]{esc(skill.name)}[/bold] [dim]({esc(skill.id)})[/dim]")
-            self._write(f"[dim]{esc(skill.description)}[/dim]")
-            self._write(f"[dim]enabled={skill.enabled}[/dim]")
+            self._write(f"  [bold]{esc(skill.name)}[/bold] [dim]({esc(skill.id)})[/dim]")
+            self._write(f"  [dim]{esc(skill.description)}[/dim]")
             keywords = ", ".join(skill.triggers.get("keywords", [])) or "none"
             file_ext = ", ".join(skill.triggers.get("file_ext", [])) or "none"
             tools = ", ".join(skill.allowed_tools) or "all"
-            self._write(f"[dim]keywords: {esc(keywords)}[/dim]")
-            self._write(f"[dim]file_ext: {esc(file_ext)}[/dim]")
-            self._write(f"[dim]tools: {esc(tools)}[/dim]")
+            enabled = "on" if skill.enabled else "off"
+            color = "green" if skill.enabled else "red"
+            self._write(f"  [dim]status:[/dim] [{color}]{enabled}[/{color}]")
+            self._write(f"  [dim]keywords:[/dim] {esc(keywords)}")
+            self._write(f"  [dim]file_ext:[/dim] {esc(file_ext)}")
+            self._write(f"  [dim]tools:[/dim] {esc(tools)}")
             return True
 
         self._write_error("Usage: /skill on|off|reload|info <id>")
