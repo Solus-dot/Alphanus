@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def _load_play_youtube_module():
-    path = Path(__file__).resolve().parents[1] / "skills" / "utilities" / "scripts" / "play_youtube.py"
+    path = Path(__file__).resolve().parents[1] / "skills" / "utilities" / "tools.py"
     spec = importlib.util.spec_from_file_location("play_youtube_test", str(path))
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

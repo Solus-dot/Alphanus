@@ -319,6 +319,7 @@ class AlphanusTUI(App):
         self._shell_confirm_result: Optional[Dict[str, bool]] = None
         self._command_matches: List[CommandEntry] = []
         self._command_anchor_region = None
+        self._command_match_keys: List[str] = []
         self._code_blocks: List[Tuple[str, Optional[str]]] = []
 
     def compose(self) -> ComposeResult:
@@ -662,26 +663,48 @@ class AlphanusTUI(App):
     def _refresh_command_popup(self, value: str) -> None:
         popup = self._command_popup()
         options = self._command_options()
-        self._command_matches = self._command_entries_for_query(value)
-        if not self._command_matches or self.streaming or self._await_shell_confirm:
+        next_matches = self._command_entries_for_query(value)
+        next_keys = [entry.prompt for entry in next_matches]
+        if not next_matches or self.streaming or self._await_shell_confirm:
+            next_matches = []
+            next_keys = []
+
+        if not next_matches:
+            self._command_matches = []
+            self._command_match_keys = []
             popup.display = False
             options.clear_options()
+            popup.absolute_offset = None
             return
 
+        was_hidden = not bool(popup.display)
+        geometry_changed = self._command_anchor_region != self.query_one(ChatInput).region
         self._command_anchor_region = self.query_one(ChatInput).region
+        self._command_matches = next_matches
+
+        if next_keys != self._command_match_keys:
+            self._command_match_keys = next_keys
+            popup.display = True
+            rendered = [
+                Option(
+                    f"[bold #8fb7ff]{esc(entry.prompt)}[/bold #8fb7ff] [dim]{esc(entry.description)}[/dim]",
+                    id=str(index),
+                )
+                for index, entry in enumerate(self._command_matches)
+            ]
+            options.clear_options()
+            options.add_options(rendered)
+            options.highlighted = 0
+            self.call_after_refresh(self._position_command_popup)
+            if was_hidden:
+                self.set_timer(0.02, self._position_command_popup)
+            return
+
         popup.display = True
-        rendered = [
-            Option(
-                f"[bold #8fb7ff]{esc(entry.prompt)}[/bold #8fb7ff] [dim]{esc(entry.description)}[/dim]",
-                id=str(index),
-            )
-            for index, entry in enumerate(self._command_matches)
-        ]
-        options.clear_options()
-        options.add_options(rendered)
-        options.highlighted = 0
-        self.call_after_refresh(self._position_command_popup)
-        self.set_timer(0.02, self._position_command_popup)
+        if was_hidden or geometry_changed:
+            self.call_after_refresh(self._position_command_popup)
+            if was_hidden:
+                self.set_timer(0.02, self._position_command_popup)
 
     def _position_command_popup(self) -> None:
         if not self._command_matches:
@@ -704,6 +727,7 @@ class AlphanusTUI(App):
     def _hide_command_popup(self) -> None:
         self._command_matches = []
         self._command_anchor_region = None
+        self._command_match_keys = []
         self._command_options().clear_options()
         self._command_popup().display = False
         self._command_popup().absolute_offset = None
