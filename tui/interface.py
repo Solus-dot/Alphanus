@@ -566,6 +566,14 @@ class AlphanusTUI(App):
     def _write_error(self, text: str) -> None:
         self._write(f"[bold red]  ✖ {esc(text)}[/bold red]")
 
+    def _write_section_heading(self, title: str, color: str = "cyan") -> None:
+        self._write("")
+        self._write(f"[bold {color}]  {esc(title)}[/bold {color}]")
+
+    def _write_detail_line(self, label: str, value: str, *, value_markup: bool = False) -> None:
+        rendered = value if value_markup else esc(value)
+        self._write(f"  [dim]{esc(label)}:[/dim] {rendered}")
+
     def _append_reply_token(self, token: str) -> None:
         if not token:
             return
@@ -1365,8 +1373,7 @@ class AlphanusTUI(App):
             if not children:
                 self._write_info("No child branches from current turn.")
             else:
-                self._write("")
-                self._write("[bold cyan]  Children[/bold cyan]")
+                self._write_section_heading("Children")
                 for i, cid in enumerate(children):
                     t = self.conv_tree.nodes[cid]
                     self._write(f"  [yellow]{i}.[/yellow] [dim]{esc(t.short(60))}[/dim]")
@@ -1491,10 +1498,10 @@ class AlphanusTUI(App):
                 self._write(f"[dim]  {esc(text)}[/dim]")
 
     def _cmd_skills(self) -> None:
-        self._write("")
-        self._write("[bold cyan]  Skills[/bold cyan]")
-        name_col = max((len(skill.id) for skill in self.agent.skill_runtime.list_skills()), default=0) + 2
-        for skill in self.agent.skill_runtime.list_skills():
+        skills = self.agent.skill_runtime.list_skills()
+        self._write_section_heading("Skills")
+        name_col = max((len(skill.id) for skill in skills), default=0) + 2
+        for skill in skills:
             state = "on" if skill.enabled else "off"
             color = "green" if skill.enabled else "red"
             self._write(
@@ -1534,18 +1541,19 @@ class AlphanusTUI(App):
             if not skill:
                 self._write_error(f"Skill not found: {parts[1]}")
                 return True
-            self._write("")
-            self._write(f"  [bold]{esc(skill.name)}[/bold] [dim]({esc(skill.id)})[/dim]")
+            self._write_section_heading(skill.name)
             self._write(f"  [dim]{esc(skill.description)}[/dim]")
             keywords = ", ".join(skill.triggers.get("keywords", [])) or "none"
             file_ext = ", ".join(skill.triggers.get("file_ext", [])) or "none"
             tools = ", ".join(skill.allowed_tools) or "all"
             enabled = "on" if skill.enabled else "off"
             color = "green" if skill.enabled else "red"
-            self._write(f"  [dim]status:[/dim] [{color}]{enabled}[/{color}]")
-            self._write(f"  [dim]keywords:[/dim] {esc(keywords)}")
-            self._write(f"  [dim]file_ext:[/dim] {esc(file_ext)}")
-            self._write(f"  [dim]tools:[/dim] {esc(tools)}")
+            self._write_detail_line("id", skill.id)
+            self._write_detail_line("version", skill.version)
+            self._write_detail_line("status", f"[{color}]{enabled}[/{color}]", value_markup=True)
+            self._write_detail_line("keywords", keywords)
+            self._write_detail_line("file_ext", file_ext)
+            self._write_detail_line("tools", tools)
             return True
 
         self._write_error("Usage: /skill on|off|reload|info <id>")
@@ -1555,12 +1563,11 @@ class AlphanusTUI(App):
         sub = arg.strip().lower()
         if sub == "stats":
             stats = self.agent.skill_runtime.memory.stats()
-            self._write("")
-            self._write("[bold cyan]  Memory Stats[/bold cyan]")
-            self._write(f"  [dim]count: {stats['count']}[/dim]")
-            self._write(f"  [dim]model: {esc(str(stats['model_name']))}[/dim]")
-            self._write(f"  [dim]dimension: {stats['dimension']}[/dim]")
-            self._write(f"  [dim]by_type: {esc(json.dumps(stats['by_type']))}[/dim]")
+            self._write_section_heading("Memory Stats")
+            self._write_detail_line("count", str(stats["count"]))
+            self._write_detail_line("model", str(stats["model_name"]))
+            self._write_detail_line("dimension", str(stats["dimension"]))
+            self._write_detail_line("by_type", json.dumps(stats["by_type"]))
             return True
         self._write_error("Usage: /memory stats")
         return True
@@ -1569,8 +1576,7 @@ class AlphanusTUI(App):
         sub = arg.strip().lower()
         if sub == "tree":
             tree = self.agent.skill_runtime.workspace.workspace_tree()
-            self._write("")
-            self._write("[bold cyan]  Workspace Tree[/bold cyan]")
+            self._write_section_heading("Workspace Tree")
             for line in tree.splitlines():
                 self._write(f"[dim]  {esc(line)}[/dim]")
             return True
