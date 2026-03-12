@@ -13,21 +13,6 @@ metadata:
     - terminal
     - ls
     - git
-  tools:
-    definitions:
-      - name: shell_command
-        capability: run_shell_command
-        description: Run a shell command in workspace with explicit confirmation.
-        command: python3 scripts/shell_command.py
-        timeout-s: 30
-        confirm-arg: command
-        parameters:
-          type: object
-          properties:
-            command:
-              type: string
-          required:
-            - command
 ---
 Use `shell_command` only when shell output is the best way to complete the task.
 

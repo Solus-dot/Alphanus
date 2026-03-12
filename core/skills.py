@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -129,6 +130,8 @@ class RegisteredTool:
     description: str
     parameters: Dict[str, Any]
     module: Optional[object] = None
+    module_path: Optional[Path] = None
+    module_name: str = ""
     command: str = ""
     timeout_s: int = 30
     confirm_arg: str = ""
@@ -195,6 +198,33 @@ class SkillRuntime:
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
+
+    @staticmethod
+    def _read_tool_specs(path: Path) -> Optional[Dict[str, Any]]:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except Exception:
+            return None
+
+        has_execute = False
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "execute":
+                has_execute = True
+                break
+        if not has_execute:
+            return None
+
+        for node in tree.body:
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "TOOL_SPECS":
+                    try:
+                        value = ast.literal_eval(node.value)
+                    except Exception:
+                        return None
+                    return value if isinstance(value, dict) else None
+        return None
 
     def _load_manifest(self, child: Path) -> Optional[SkillManifest]:
         skill_doc = child / SKILL_DOC
@@ -289,19 +319,13 @@ class SkillRuntime:
 
         tools_path = manifest.path / "tools.py"
         if tools_path.exists():
-            module = self._load_module(
-                tools_path,
-                f"alphanus_tools_{manifest.id.replace('-', '_')}",
-            )
-            if module is None:
-                return False
-
-            specs = getattr(module, "TOOL_SPECS", None)
-            executor = getattr(module, "execute", None)
-            if not isinstance(specs, dict) or not callable(executor):
+            specs = self._read_tool_specs(tools_path)
+            if not isinstance(specs, dict):
                 if self.debug:
                     print(f"[skill] {manifest.id} tools.py missing TOOL_SPECS dict or execute()")
                 return False
+
+            module_name = f"alphanus_tools_{manifest.id.replace('-', '_')}"
 
             for tool_name, spec in specs.items():
                 if allowed_tools and tool_name not in allowed_tools:
@@ -327,7 +351,8 @@ class SkillRuntime:
                     capability=capability,
                     description=description,
                     parameters=parameters,
-                    module=module,
+                    module_path=tools_path,
+                    module_name=module_name,
                     cwd=str(manifest.path),
                 )
                 local_registered.append(tool_name)
@@ -649,6 +674,8 @@ class SkillRuntime:
     ) -> Any:
         if reg.command:
             return self._execute_command_tool(reg, args, env)
+        if reg.module is None and reg.module_path:
+            reg.module = self._load_module(reg.module_path, reg.module_name or f"alphanus_tools_{reg.skill_id}")
         if reg.module is None or not hasattr(reg.module, "execute"):
             raise ToolProtocolError(f"Tool '{reg.name}' has no callable execute() handler")
         return reg.module.execute(reg.name, args, env)

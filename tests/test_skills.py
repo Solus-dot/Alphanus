@@ -173,6 +173,69 @@ def execute(tool_name, args, env):
     assert out["error"]["code"] == "E_UNSUPPORTED"
 
 
+def test_tools_py_is_not_imported_until_execution(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "lazy-skill").mkdir(parents=True)
+
+    (skills / "lazy-skill" / "SKILL.md").write_text(
+        """
+---
+name: lazy-skill
+description: lazy test
+allowed-tools: lazy_tool
+---
+Lazy tool
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "lazy-skill" / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "lazy_tool": {
+    "capability": "workspace_read",
+    "description": "Lazy tool",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  }
+}
+
+RAISED = True
+raise RuntimeError("should not import during skill load")
+
+def execute(tool_name, args, env):
+    return {"ok": True, "data": {"value": 1}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        debug=True,
+    )
+    skill = runtime.get_skill("lazy-skill")
+    assert skill is not None
+
+    ctx = SkillContext(
+        user_input="run lazy tool",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+    out = runtime.execute_tool_call("lazy_tool", {}, selected=[skill], ctx=ctx)
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_IO"
+
+
 def test_prompt_only_skill_can_be_selected_from_description_metadata(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"

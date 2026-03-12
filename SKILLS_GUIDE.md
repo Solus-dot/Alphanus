@@ -1,14 +1,16 @@
 # Alphanus Skills Guide
 
-Alphanus uses an AgentSkills-style `SKILL.md` manifest with command-backed tool execution.
+Alphanus uses an AgentSkills-style `SKILL.md` manifest with two supported execution paths:
+- native `tools.py` handlers for in-process tools
+- command definitions for script-backed tools
 
 ## 1. Folder Layout
 
 ```text
 skills/<skill-id>/
   SKILL.md              # required
+  tools.py              # optional native in-process tool handlers
   scripts/              # optional command handlers referenced by SKILL.md
-  tools.py              # optional legacy fallback adapter
   hooks.py              # optional pre_prompt/pre_action/post_response
 ```
 
@@ -73,9 +75,37 @@ Top-level fields recognized by runtime/parser:
 - `tools` (optional)
 - `metadata` (optional mapping)
 
-## 4. Command Tool Contract
+## 4. Native `tools.py` Contract
 
-Preferred tool path is `metadata.tools.definitions` (or `tools.definitions` fallback).
+Preferred for bundled/high-frequency tools.
+
+`tools.py` must expose:
+- `TOOL_SPECS: dict[str, dict]`
+- `execute(tool_name: str, args: dict, env) -> dict | Any`
+
+Each `TOOL_SPECS` entry must include:
+- `capability`
+- `description`
+- `parameters` (JSON schema object)
+
+Important runtime behavior:
+- `TOOL_SPECS` is read lazily from source at skill-load time without importing the module.
+- The Python module itself is imported only on first execution.
+- After first execution, the loaded module is cached.
+- Native tools receive `ToolExecutionEnv` directly:
+  - `workspace`
+  - `memory`
+  - `config`
+  - `debug`
+  - `confirm_shell`
+
+This is the path used by the current built-in `workspace-ops`, `memory-rag`, `shell-ops`, and part of `utilities`.
+
+## 5. Command Tool Contract
+
+Used for external/script-backed tools and desktop-side effects.
+
+Definitions live in `metadata.tools.definitions` (or `tools.definitions` fallback).
 
 Required per definition:
 - `name`
@@ -109,17 +139,23 @@ Tool output contract:
 {"ok": true, "data": {}, "error": null, "meta": {}}
 ```
 
-## 5. Legacy `tools.py` Fallback
+Native `tools.py` tools and command-defined tools are merged; duplicates are skipped.
 
-Still supported when command definitions are absent.
+## 6. Choosing a Path
 
-`tools.py` must expose:
-- `TOOL_SPECS: dict[str, dict]`
-- `execute(tool_name: str, args: dict, env) -> dict`
+Use `tools.py` when:
+- the skill is first-party/bundled
+- low latency matters
+- the tool needs direct access to `workspace` / `memory`
+- you want simpler testing and fewer subprocess failure modes
 
-Command-defined tools and `tools.py` tools are merged; duplicates are skipped.
+Use command tools when:
+- the skill is intended to be shared externally
+- the implementation should stay language-agnostic
+- subprocess isolation is useful
+- the tool performs desktop-side effects or depends on external CLIs
 
-## 6. Hooks
+## 7. Hooks
 
 Optional `hooks.py` can define:
 - `pre_prompt(context) -> str | None`
@@ -128,18 +164,20 @@ Optional `hooks.py` can define:
 
 Hook failures are non-fatal and do not crash the turn.
 
-## 7. Runtime Flow
+## 8. Runtime Flow
 
 1. Runtime loads `skills/*/SKILL.md`.
 2. Frontmatter is parsed by `core/skill_parser.py` using `PyYAML`.
 3. Manifest is validated (`name`, `description`, semver shape for version, etc.).
-4. Command tools are registered.
-5. Optional legacy `tools.py` tools are registered.
-6. Skills are selected per turn (`selection_mode`, triggers, limits).
-7. Selected tools are exposed to the model via OpenAI `tools` payload.
-8. Tool calls execute via `core/skills.py` and normalized results return to agent loop.
+4. `tools.py` metadata is read lazily from source when present.
+5. Command tools are registered.
+6. Native and command tools are merged into one registry.
+7. Native `tools.py` modules are imported only on first execution.
+8. Skills are selected per turn (`selection_mode`, triggers, limits).
+9. Selected tools are exposed to the model via OpenAI `tools` payload.
+10. Tool calls execute via `core/skills.py` and normalized results return to agent loop.
 
-## 8. TUI Skill Commands
+## 9. TUI Skill Commands
 
 - `/skills`
 - `/skill reload`
@@ -147,7 +185,7 @@ Hook failures are non-fatal and do not crash the turn.
 - `/skill off <id>`
 - `/skill info <id>`
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 Skill does not load:
 1. Ensure `SKILL.md` begins and ends frontmatter with `---`.
@@ -155,6 +193,7 @@ Skill does not load:
 3. Ensure `description` is non-empty.
 4. Ensure `metadata` is a mapping if present.
 5. Ensure every command definition has all required keys.
+6. Ensure `tools.py` contains a literal `TOOL_SPECS` mapping and an `execute()` function.
 
 Tool call fails with "no JSON output":
 1. Ensure script prints JSON on the final stdout line.
@@ -162,5 +201,6 @@ Tool call fails with "no JSON output":
 3. Ensure script exits `0` on success.
 
 `shell_command` confirmation issues:
-1. Check `confirm-arg` is configured correctly.
-2. Check runtime permission flags in `capabilities` config.
+1. For command-backed tools, check `confirm-arg` is configured correctly.
+2. For native shell tools, ensure confirmation logic is implemented in `tools.py`.
+3. Check runtime permission flags in `capabilities` config.

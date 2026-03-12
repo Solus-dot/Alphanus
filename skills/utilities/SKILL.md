@@ -13,32 +13,6 @@ metadata:
     - youtube
   tools:
     definitions:
-      - name: get_weather
-        capability: utility_weather
-        description: Fetch weather for a city.
-        command: python3 scripts/get_weather.py
-        timeout-s: 30
-        parameters:
-          type: object
-          properties:
-            city:
-              type: string
-          required:
-            - city
-      - name: search_home_files
-        capability: utility_file_search
-        description: Search filenames under home directory.
-        command: python3 scripts/search_home_files.py
-        timeout-s: 30
-        parameters:
-          type: object
-          properties:
-            query:
-              type: string
-            directory:
-              type: string
-          required:
-            - query
       - name: open_url
         capability: utility_open_url
         description: Open URL in default browser.
