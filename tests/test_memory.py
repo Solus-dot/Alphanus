@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import pickle
 import time
 from pathlib import Path
@@ -35,6 +36,16 @@ def _memory_runtime(tmp_path: Path) -> tuple[SkillRuntime, str]:
         config={},
     )
     return runtime, str(ws)
+
+
+def _load_memory_tools_module():
+    repo_root = Path(__file__).resolve().parents[1]
+    path = repo_root / "skills" / "memory-rag" / "tools.py"
+    spec = importlib.util.spec_from_file_location("test_memory_rag_tools", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_add_search_forget(monkeypatch, tmp_path: Path):
@@ -175,6 +186,35 @@ def test_recall_memory_fallback_finds_name_fact(tmp_path: Path):
     hits = recalled["data"]["hits"]
     assert hits
     assert any("name is meems" in str(hit.get("text", "")).lower() for hit in hits)
+
+
+def test_fact_from_item_uses_metadata_only():
+    tools = _load_memory_tools_module()
+
+    class _Item:
+        metadata = {}
+        text = "My favorite editor is Vim"
+
+    assert tools._fact_from_item(_Item()) is None
+
+
+def test_recall_memory_lexical_fallback_avoids_substring_matches(tmp_path: Path):
+    runtime, ws = _memory_runtime(tmp_path)
+    skill = runtime.get_skill("memory-rag")
+    assert skill is not None
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
+
+    stored = runtime.execute_tool_call("store_memory", {"text": "Joanna likes tea"}, selected=[skill], ctx=ctx)
+    assert stored["ok"] is True
+
+    recalled = runtime.execute_tool_call(
+        "recall_memory",
+        {"query": "ann", "top_k": 3, "min_score": 1.1},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert recalled["ok"] is True
+    assert recalled["data"]["hits"] == []
 
 
 def test_default_hash_backend_never_attempts_transformer(monkeypatch, tmp_path: Path):

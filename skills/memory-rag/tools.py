@@ -116,7 +116,7 @@ def _fact_from_item(item) -> Optional[Tuple[str, str]]:
     value = metadata.get("fact_value")
     if isinstance(key, str) and key.strip() and isinstance(value, str) and value.strip():
         return (key.strip(), value.strip())
-    return _extract_fact(str(item.text))
+    return None
 
 
 def _find_conflicting_fact_ids(memory, fact_key: str, fact_value: str) -> list[int]:
@@ -155,19 +155,19 @@ def _ids_from_replace_query(memory, args: Dict[str, Any], text: str) -> list[int
 
 
 def _lexical_fallback(memory, query: str, top_k: int, memory_type):
-    tokens = [tok for tok in re.findall(r"[a-z0-9]+", query.lower()) if len(tok) > 1]
-    if not tokens:
+    query_tokens = {tok for tok in re.findall(r"[a-z0-9]+", query.lower()) if len(tok) > 1}
+    if not query_tokens:
         return []
 
     scored = []
     for item in list(memory.memories):
         if memory_type and item.type != memory_type:
             continue
-        text = str(item.text).lower()
-        overlap = sum(1 for token in tokens if token in text)
+        text_tokens = set(re.findall(r"[a-z0-9]+", str(item.text).lower()))
+        overlap = len(query_tokens & text_tokens)
         if overlap <= 0:
             continue
-        score = overlap / max(1, len(tokens))
+        score = overlap / max(1, len(query_tokens))
         scored.append((score, item))
 
     scored.sort(key=lambda pair: (pair[0], pair[1].timestamp), reverse=True)
