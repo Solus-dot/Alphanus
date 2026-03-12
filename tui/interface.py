@@ -4,28 +4,43 @@ import json
 import os
 import threading
 import time
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from rich.markup import escape as esc
 from rich.padding import Padding
+from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
+from textual.geometry import Offset
 from textual.reactive import reactive
-from textual.widgets import Input, RichLog, Static
+from textual.widgets import Input, OptionList, RichLog, Static
+from textual.widgets.option_list import Option
 
 from agent.core import Agent, AgentTurnResult
 from core.attachments import build_content, classify_attachment
 from core.conv_tree import ConvTree, Turn
 from tui.live_tool_preview import LiveToolPreviewManager
 from tui.markdown_utils import fence_language, hanging_indent, render_md
+from tui.popups import CodeViewerModal, ConfigEditorModal
 
 DEFAULT_SAVE = "llamachat_tree.json"
 MAX_REPLY_ACC_CHARS = 24000
 SHELL_CONFIRM_TIMEOUT_S = 60
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+GLOBAL_CONFIG_PATH = PROJECT_ROOT / "config" / "global_config.json"
+
+
+@dataclass(frozen=True)
+class CommandEntry:
+    prompt: str
+    insert_text: str
+    description: str
 
 HELP_SECTIONS = [
     (
@@ -63,10 +78,36 @@ HELP_SECTIONS = [
         [
             ("/memory stats", "Show memory stats"),
             ("/workspace tree", "Render workspace tree"),
+            ("/config", "Edit global config in a popup"),
+            ("/code [n|last]", "Open a copyable code block viewer"),
             ("/save [file]", f"Save tree JSON (default {DEFAULT_SAVE})"),
             ("/load [file]", f"Load tree JSON (default {DEFAULT_SAVE})"),
         ],
     ),
+]
+
+COMMAND_ENTRIES = [
+    CommandEntry("/help", "/help", "Show this help"),
+    CommandEntry("/think", "/think", "Toggle thinking mode"),
+    CommandEntry("/clear", "/clear", "Clear tree and chat log"),
+    CommandEntry("/file <path>", "/file ", "Attach a file to the next message"),
+    CommandEntry("/branch [label]", "/branch ", "Arm the next user message as a branch"),
+    CommandEntry("/unbranch", "/unbranch", "Return to the nearest branch fork"),
+    CommandEntry("/branches", "/branches", "List branches from the current turn"),
+    CommandEntry("/switch <n>", "/switch ", "Switch to a child branch"),
+    CommandEntry("/tree", "/tree", "Render the full conversation tree"),
+    CommandEntry("/skills", "/skills", "List installed skills"),
+    CommandEntry("/skill on <id>", "/skill on ", "Enable a skill"),
+    CommandEntry("/skill off <id>", "/skill off ", "Disable a skill"),
+    CommandEntry("/skill reload", "/skill reload", "Reload skills from disk"),
+    CommandEntry("/skill info <id>", "/skill info ", "Show skill details"),
+    CommandEntry("/memory stats", "/memory stats", "Show memory stats"),
+    CommandEntry("/workspace tree", "/workspace tree", "Render the workspace tree"),
+    CommandEntry("/config", "/config", "Edit the global config in a popup"),
+    CommandEntry("/code [n|last]", "/code ", "Open a copyable code block viewer"),
+    CommandEntry("/save [file]", "/save ", f"Save tree JSON (default {DEFAULT_SAVE})"),
+    CommandEntry("/load [file]", "/load ", f"Load tree JSON (default {DEFAULT_SAVE})"),
+    CommandEntry("/quit", "/quit", "Exit app"),
 ]
 class ChatInput(Input):
     BINDINGS = [
@@ -138,6 +179,58 @@ class AlphanusTUI(App):
         height: auto;
         background: #1c1c1c;
         layout: vertical;
+        dock: bottom;
+    }
+
+    #command-popup {
+        width: 64;
+        max-height: 12;
+        background: #101418;
+        border: round #5f87d7;
+        display: none;
+        overlay: screen;
+        padding: 0 1;
+    }
+
+    #command-popup-title {
+        height: auto;
+        color: #8fb7ff;
+        padding: 0 1;
+        text-style: bold;
+    }
+
+    #command-popup-hint {
+        height: auto;
+        color: #a0a0a0;
+        padding: 0 1;
+    }
+
+    #command-options {
+        width: 1fr;
+        height: auto;
+        max-height: 8;
+        background: #101418;
+        border: none;
+        padding: 0 0 1 0;
+        scrollbar-background: #0d1319;
+        scrollbar-background-hover: #111921;
+        scrollbar-background-active: #111921;
+        scrollbar-color: #3f5468;
+        scrollbar-color-hover: #56718a;
+        scrollbar-color-active: #6e90b0;
+        scrollbar-corner-color: #0d1319;
+    }
+
+    #command-options > .option-list--option-highlighted {
+        color: #f3f6fb;
+        background: #1f3550;
+        text-style: bold;
+    }
+
+    #command-options:focus > .option-list--option-highlighted {
+        color: #ffffff;
+        background: #29496d;
+        text-style: bold;
     }
 
     #footer-sep {
@@ -224,6 +317,9 @@ class AlphanusTUI(App):
         self._shell_confirm_command = ""
         self._shell_confirm_event: Optional[threading.Event] = None
         self._shell_confirm_result: Optional[Dict[str, bool]] = None
+        self._command_matches: List[CommandEntry] = []
+        self._command_anchor_region = None
+        self._code_blocks: List[Tuple[str, Optional[str]]] = []
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main-area"):
@@ -245,6 +341,10 @@ class AlphanusTUI(App):
             yield Static("", id="status2")
             with Horizontal(id="input-row"):
                 yield ChatInput(id="chat-input", placeholder="Type a message…")
+            with Vertical(id="command-popup"):
+                yield Static("commands", id="command-popup-title")
+                yield Static("type to filter · tab to insert", id="command-popup-hint")
+                yield OptionList(id="command-options")
 
     def on_mount(self) -> None:
         self.thinking = bool(self.agent.config.get("agent", {}).get("enable_thinking", True))
@@ -259,6 +359,9 @@ class AlphanusTUI(App):
         sidebar = self.query_one("#sidebar", ScrollableContainer)
         sidebar.display = event.size.width >= 120
         self._update_sidebar()
+        if self._command_popup_active():
+            self._command_anchor_region = self.query_one(ChatInput).region
+            self._position_command_popup()
 
     def _new_conv_tree(self) -> ConvTree:
         return ConvTree(
@@ -278,6 +381,21 @@ class AlphanusTUI(App):
         return tree
 
     def on_key(self, event) -> None:
+        chat_input = self.query_one(ChatInput)
+        if chat_input.has_focus and self._command_popup_active():
+            key = event.key.lower()
+            if key == "down":
+                self._move_command_selection(1)
+                event.stop()
+                return
+            if key == "up":
+                self._move_command_selection(-1)
+                event.stop()
+                return
+            if key == "tab":
+                self._accept_command_selection()
+                event.stop()
+                return
         if not self._await_shell_confirm:
             return
         key = event.key.lower()
@@ -306,6 +424,8 @@ class AlphanusTUI(App):
 
     def watch_streaming(self, value: bool) -> None:
         self.query_one(ChatInput).disabled = value
+        if value:
+            self._hide_command_popup()
         self._update_status2()
 
     def watch_thinking(self, value: bool) -> None:
@@ -320,6 +440,12 @@ class AlphanusTUI(App):
 
     def _partial(self) -> Static:
         return self.query_one("#partial", Static)
+
+    def _command_popup(self) -> Vertical:
+        return self.query_one("#command-popup", Vertical)
+
+    def _command_options(self) -> OptionList:
+        return self.query_one("#command-options", OptionList)
 
     def _write(self, markup: str) -> None:
         self._log().write(Text.from_markup(markup))
@@ -339,12 +465,33 @@ class AlphanusTUI(App):
             language or "text",
             theme="monokai",
             word_wrap=True,
-            background_color="#1c1c1c",
+            background_color="#0b0b0b",
             line_numbers=False,
         )
 
+    def _code_panel_renderable(self, code: str, language: Optional[str]) -> Panel:
+        return Panel(
+            self._syntax_renderable(code, language),
+            expand=True,
+            padding=(0, 1),
+            border_style="#2e2e2e",
+            style="on #0b0b0b",
+        )
+
+    def _remember_code_block(self, code: str, language: Optional[str]) -> int:
+        self._code_blocks.append((code, language))
+        if len(self._code_blocks) > 64:
+            self._code_blocks = self._code_blocks[-64:]
+        return len(self._code_blocks)
+
     def _write_code_block(self, lines: List[str], language: Optional[str], indent: int = 2) -> None:
-        self._write_renderable(self._syntax_renderable("\n".join(lines), language), indent=indent)
+        code = "\n".join(lines)
+        block_index = self._remember_code_block(code, language)
+        self._write_renderable(self._code_panel_renderable(code, language), indent=indent)
+        self._write_indented(
+            f"[dim]code block {block_index} · /code {block_index} to open copyable view[/dim]",
+            indent=indent + 2,
+        )
 
     def _reset_fence_state(self) -> None:
         self._in_fence = False
@@ -381,7 +528,7 @@ class AlphanusTUI(App):
             if self._buf_c:
                 lines.append(self._buf_c)
             if lines:
-                partial.update(Padding(self._syntax_renderable("\n".join(lines), self._fence_lang), (0, 0, 0, 2)))
+                partial.update(Padding(self._code_panel_renderable("\n".join(lines), self._fence_lang), (0, 0, 0, 2)))
             else:
                 partial.update("")
             return
@@ -390,7 +537,7 @@ class AlphanusTUI(App):
     def _update_live_preview_partial(self, lines: List[str], language: Optional[str]) -> None:
         partial = self._partial()
         partial.display = True
-        partial.update(Padding(self._syntax_renderable("\n".join(lines), language), (0, 0, 0, 2)))
+        partial.update(Padding(self._code_panel_renderable("\n".join(lines), language), (0, 0, 0, 2)))
 
     def _clear_partial_preview(self) -> None:
         partial = self._partial()
@@ -489,6 +636,170 @@ class AlphanusTUI(App):
         self.query_one(ChatInput).placeholder = (
             "Type to start branch…" if self.conv_tree._pending_branch else "Type a message…"
         )
+
+    def _command_entries_for_query(self, value: str) -> List[CommandEntry]:
+        query = value.strip().lower()
+        if not query.startswith("/"):
+            return []
+        needle = query[1:]
+        if not needle:
+            return COMMAND_ENTRIES[:10]
+
+        def sort_key(entry: CommandEntry) -> Tuple[int, int, str]:
+            haystack = f"{entry.prompt} {entry.description}".lower()
+            starts = 0 if entry.prompt.lower().startswith(f"/{needle}") else 1
+            pos = haystack.find(needle)
+            return (starts, pos if pos >= 0 else 9999, entry.prompt)
+
+        matches = [
+            entry
+            for entry in COMMAND_ENTRIES
+            if needle in entry.prompt.lower() or needle in entry.description.lower()
+        ]
+        matches.sort(key=sort_key)
+        return matches[:8]
+
+    def _refresh_command_popup(self, value: str) -> None:
+        popup = self._command_popup()
+        options = self._command_options()
+        self._command_matches = self._command_entries_for_query(value)
+        if not self._command_matches or self.streaming or self._await_shell_confirm:
+            popup.display = False
+            options.clear_options()
+            return
+
+        self._command_anchor_region = self.query_one(ChatInput).region
+        popup.display = True
+        rendered = [
+            Option(
+                f"[bold #8fb7ff]{esc(entry.prompt)}[/bold #8fb7ff] [dim]{esc(entry.description)}[/dim]",
+                id=str(index),
+            )
+            for index, entry in enumerate(self._command_matches)
+        ]
+        options.clear_options()
+        options.add_options(rendered)
+        options.highlighted = 0
+        self.call_after_refresh(self._position_command_popup)
+        self.set_timer(0.02, self._position_command_popup)
+
+    def _position_command_popup(self) -> None:
+        if not self._command_matches:
+            return
+        popup = self._command_popup()
+        chat_input = self.query_one(ChatInput)
+        option_rows = min(len(self._command_matches), 8)
+        popup_height = option_rows + 4
+        popup_width = max(44, min(72, max(chat_input.region.width, 44)))
+        popup.styles.height = popup_height
+        popup.styles.width = popup_width
+
+        input_region = self._command_anchor_region or chat_input.region
+        x = max(1, int(input_region.x))
+        above_y = int(input_region.y) - popup_height - 1
+        below_y = int(input_region.y + input_region.height)
+        y = above_y if above_y >= 1 else below_y
+        popup.absolute_offset = Offset(x, y)
+
+    def _hide_command_popup(self) -> None:
+        self._command_matches = []
+        self._command_anchor_region = None
+        self._command_options().clear_options()
+        self._command_popup().display = False
+        self._command_popup().absolute_offset = None
+
+    def _command_popup_active(self) -> bool:
+        return bool(self._command_matches) and bool(self._command_popup().display)
+
+    def _move_command_selection(self, delta: int) -> None:
+        if not self._command_popup_active():
+            return
+        options = self._command_options()
+        current = 0 if options.highlighted is None else int(options.highlighted)
+        count = len(self._command_matches)
+        if count <= 0:
+            return
+        options.highlighted = (current + delta) % count
+        options.scroll_to_highlight(top=False)
+
+    def _accept_command_selection(self) -> bool:
+        if not self._command_popup_active():
+            return False
+        options = self._command_options()
+        highlighted = 0 if options.highlighted is None else int(options.highlighted)
+        if highlighted < 0 or highlighted >= len(self._command_matches):
+            return False
+        entry = self._command_matches[highlighted]
+        chat_input = self.query_one(ChatInput)
+        chat_input.value = entry.insert_text
+        chat_input.cursor_position = len(chat_input.value)
+        self._refresh_command_popup(chat_input.value)
+        return True
+
+    def _should_accept_popup_on_enter(self, text: str) -> bool:
+        stripped = text.strip()
+        if not self._command_popup_active() or not stripped.startswith("/"):
+            return False
+        if " " in stripped:
+            return False
+        base = stripped.lower()
+        exact = {entry.insert_text.strip().lower() for entry in COMMAND_ENTRIES}
+        return base not in exact
+
+    def _open_config_editor(self) -> None:
+        raw = GLOBAL_CONFIG_PATH.read_text(encoding="utf-8")
+        self.push_screen(ConfigEditorModal(GLOBAL_CONFIG_PATH, raw), self._on_config_editor_close)
+
+    def _merge_live_config(self, base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
+        merged: Dict[str, Any] = dict(base)
+        for key, value in updates.items():
+            if isinstance(value, dict) and isinstance(base.get(key), dict):
+                merged[key] = self._merge_live_config(base[key], value)
+            else:
+                merged[key] = value
+        return merged
+
+    def _apply_tui_config(self) -> None:
+        tui_cfg = self.agent.config.get("tui", {})
+        tree_cfg = tui_cfg.get("tree_compaction", {})
+        chat_log_max_lines = int(tui_cfg.get("chat_log_max_lines", 5000))
+        self._chat_log_max_lines = chat_log_max_lines if chat_log_max_lines > 0 else None
+        self._tree_compaction_enabled = bool(tree_cfg.get("enabled", True))
+        self._inactive_assistant_char_limit = int(tree_cfg.get("inactive_assistant_char_limit", 12000))
+        self._inactive_tool_argument_char_limit = int(tree_cfg.get("inactive_tool_argument_char_limit", 5000))
+        self._inactive_tool_content_char_limit = int(tree_cfg.get("inactive_tool_content_char_limit", 8000))
+        self.conv_tree = self._apply_tree_compaction_policy(self.conv_tree)
+        try:
+            self._log().max_lines = self._chat_log_max_lines
+        except Exception:
+            pass
+        self._update_status1()
+        self._update_status2()
+        self._update_sidebar()
+
+    def _on_config_editor_close(self, result: Optional[Dict[str, Any]]) -> None:
+        if not result:
+            return
+        text = str(result.get("text", ""))
+        parsed = result.get("config")
+        if not isinstance(parsed, dict):
+            self._write_error("Config save failed: invalid config payload")
+            return
+
+        GLOBAL_CONFIG_PATH.write_text(text, encoding="utf-8")
+        merged = self._merge_live_config(self.agent.config, parsed)
+        self.agent.config = merged
+        self.agent.skill_runtime.config = merged
+        self.thinking = bool(merged.get("agent", {}).get("enable_thinking", self.thinking))
+        self._apply_tui_config()
+        self._write_info("Saved global config. Restart to apply endpoint, workspace, or memory changes.")
+
+    def _open_code_block(self, index: int) -> None:
+        if index < 1 or index > len(self._code_blocks):
+            self._write_error(f"No code block {index}")
+            return
+        code, language = self._code_blocks[index - 1]
+        self.push_screen(CodeViewerModal(code, language, title=f"Code Block {index}"))
 
     def _update_sidebar(self) -> None:
         sidebar = self.query_one("#sidebar", ScrollableContainer)
@@ -922,16 +1233,46 @@ class AlphanusTUI(App):
     @on(Input.Submitted, "#chat-input")
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
-        self.query_one(ChatInput).value = ""
         if not text:
+            self.query_one(ChatInput).value = ""
             return
+        if self._should_accept_popup_on_enter(text):
+            self._accept_command_selection()
+            return
+        self.query_one(ChatInput).value = ""
+        self._hide_command_popup()
         if not self._handle_command(text):
             if not self.streaming:
                 self._send(text)
 
+    @on(Input.Changed, "#chat-input")
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self._refresh_command_popup(event.value)
+
+    @on(OptionList.OptionSelected, "#command-options")
+    def on_command_option_selected(self, event: OptionList.OptionSelected) -> None:
+        option_id = event.option.id
+        if option_id is None:
+            return
+        try:
+            index = int(option_id)
+        except ValueError:
+            return
+        if index < 0 or index >= len(self._command_matches):
+            return
+        entry = self._command_matches[index]
+        chat_input = self.query_one(ChatInput)
+        chat_input.value = entry.insert_text
+        chat_input.cursor_position = len(chat_input.value)
+        chat_input.focus()
+        self._refresh_command_popup(chat_input.value)
+
     def action_handle_esc(self) -> None:
         if self._await_shell_confirm:
             self._finish_shell_confirm(False)
+            return
+        if self._command_popup_active():
+            self._hide_command_popup()
             return
         if not self.streaming:
             self.query_one(ChatInput).value = ""
@@ -1093,6 +1434,13 @@ class AlphanusTUI(App):
         if cmd == "/workspace":
             return self._cmd_workspace(arg)
 
+        if cmd == "/config":
+            self._open_config_editor()
+            return True
+
+        if cmd == "/code":
+            return self._cmd_code(arg)
+
         if cmd.startswith("/"):
             self._write_error(f"Unknown command: {cmd}")
             return True
@@ -1200,4 +1548,20 @@ class AlphanusTUI(App):
                 self._write(f"[dim]  {esc(line)}[/dim]")
             return True
         self._write_error("Usage: /workspace tree")
+        return True
+
+    def _cmd_code(self, arg: str) -> bool:
+        target = arg.strip().lower() or "last"
+        if not self._code_blocks:
+            self._write_error("No code blocks available yet")
+            return True
+        if target == "last":
+            self._open_code_block(len(self._code_blocks))
+            return True
+        try:
+            index = int(target)
+        except ValueError:
+            self._write_error("Usage: /code [n|last]")
+            return True
+        self._open_code_block(index)
         return True
