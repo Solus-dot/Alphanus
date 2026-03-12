@@ -57,7 +57,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "dangerously_skip_permissions": False,
     },
     "skills": {
-        "selection_mode": "all_enabled",
+        "selection_mode": "heuristic",
         "max_active_skills": 6,
         "strict_capability_policy": False
     },

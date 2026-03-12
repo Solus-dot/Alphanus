@@ -173,6 +173,86 @@ def execute(tool_name, args, env):
     assert out["error"]["code"] == "E_UNSUPPORTED"
 
 
+def test_prompt_only_skill_can_be_selected_from_description_metadata(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "frontend-design").mkdir(parents=True)
+    (skills / "shell-ops").mkdir(parents=True)
+
+    (skills / "frontend-design" / "SKILL.md").write_text(
+        """
+---
+name: frontend-design
+description: Create distinctive landing pages, HTML/CSS interfaces, and polished web UI.
+metadata:
+  tags:
+    - html
+    - css
+    - design
+---
+Make the interface look great.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    (skills / "shell-ops" / "SKILL.md").write_text(
+        """
+---
+name: shell-ops
+description: Run terminal commands in the workspace.
+metadata:
+  tags:
+    - shell
+    - terminal
+---
+Run shell commands carefully.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    (skills / "shell-ops" / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "shell_command": {
+    "capability": "run_shell_command",
+    "description": "Run a shell command",
+    "parameters": {
+      "type": "object",
+      "properties": {"command": {"type": "string"}},
+      "required": ["command"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    return {"ok": True, "data": {"command": args.get("command", "")}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"skills": {"selection_mode": "heuristic", "max_active_skills": 1}},
+    )
+
+    ctx = SkillContext(
+        user_input="Design a bold landing page in HTML and CSS for a boutique hotel.",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    selected = runtime.select_skills(ctx)
+    assert selected
+    assert selected[0].id == "frontend-design"
+
+
 def test_agentskill_name_must_match_directory(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"

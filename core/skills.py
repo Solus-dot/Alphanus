@@ -15,6 +15,43 @@ from core.memory import VectorMemory
 from core.skill_parser import SKILL_DOC, SkillManifest, ToolCommandDef, extract_skill_doc, parse_agentskill_manifest
 from core.workspace import WorkspaceManager
 
+_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9+#._/-]{1,}")
+_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "app",
+    "application",
+    "artifact",
+    "artifacts",
+    "build",
+    "create",
+    "for",
+    "help",
+    "i",
+    "in",
+    "interface",
+    "is",
+    "it",
+    "me",
+    "my",
+    "of",
+    "on",
+    "or",
+    "page",
+    "please",
+    "production",
+    "project",
+    "quality",
+    "the",
+    "this",
+    "to",
+    "use",
+    "using",
+    "with",
+    "write",
+}
+
 
 def _ok(data: Any, duration_ms: int) -> Dict[str, Any]:
     return {"ok": True, "data": data, "error": None, "meta": {"duration_ms": duration_ms}}
@@ -320,9 +357,20 @@ class SkillRuntime:
     def get_skill(self, skill_id: str) -> Optional[SkillManifest]:
         return self.skills.get(skill_id)
 
+    @staticmethod
+    def _match_tokens(text: str) -> List[str]:
+        tokens: List[str] = []
+        for token in _TOKEN_RE.findall(text.lower()):
+            normalized = token.strip("._/-")
+            if len(normalized) < 3 or normalized in _STOPWORDS:
+                continue
+            tokens.append(normalized)
+        return tokens
+
     def score_skills(self, ctx: SkillContext) -> List[Tuple[int, SkillManifest]]:
         text = ctx.user_input.lower()
         attachments = " ".join(ctx.attachments).lower()
+        query_tokens = set(self._match_tokens(ctx.user_input))
         scored: List[Tuple[int, SkillManifest]] = []
 
         for skill in self.skills.values():
@@ -338,6 +386,16 @@ class SkillRuntime:
                 ext_lower = ext.lower()
                 if ext_lower in text or ext_lower in attachments:
                     score += 20
+
+            metadata_text = " ".join(
+                [skill.name, skill.description] + list(skill.tags) + list(skill.categories)
+            )
+            metadata_tokens = set(self._match_tokens(metadata_text))
+            overlap = query_tokens & metadata_tokens
+            if overlap:
+                score += min(24, len(overlap) * 6)
+                if any(token in skill.name.lower() for token in overlap):
+                    score += 4
 
             if "memory" in skill.id and ctx.memory_hits:
                 score += 10
