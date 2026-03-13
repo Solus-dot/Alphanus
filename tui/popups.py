@@ -22,13 +22,13 @@ class CodeViewerModal(ModalScreen[None]):
     #code-modal {
         width: 88%;
         height: 88%;
-        background: #0b0b0b;
-        border: round #5f87d7;
+        background: #181a1f;
+        border: panel #5f87d7;
         padding: 1 2;
     }
 
     #code-modal-title {
-        color: #8fb7ff;
+        color: #f4f7fb;
         text-style: bold;
         padding: 0 0 1 0;
     }
@@ -36,9 +36,9 @@ class CodeViewerModal(ModalScreen[None]):
     #code-modal-editor {
         width: 1fr;
         height: 1fr;
-        background: #0b0b0b;
+        background: #121417;
         color: #f0f0f0;
-        border: solid #2e2e2e;
+        border: solid #2b323b;
     }
 
     #code-modal-footer {
@@ -84,7 +84,7 @@ class CodeViewerModal(ModalScreen[None]):
             yield TextArea(
                 self._code,
                 language=self._language,
-                theme="monokai",
+                theme="github-dark",
                 read_only=True,
                 show_line_numbers=False,
                 compact=True,
@@ -123,13 +123,13 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
     #config-modal {
         width: 90%;
         height: 90%;
-        background: #101418;
-        border: round #7eb6ff;
+        background: #181a1f;
+        border: panel #5f87d7;
         padding: 1 2;
     }
 
     #config-modal-title {
-        color: #7eb6ff;
+        color: #f4f7fb;
         text-style: bold;
         padding: 0 0 1 0;
     }
@@ -142,9 +142,9 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
     #config-modal-editor {
         width: 1fr;
         height: 1fr;
-        background: #0f1114;
+        background: #121417;
         color: #f0f0f0;
-        border: solid #314761;
+        border: solid #2b323b;
     }
 
     #config-modal-error {
@@ -190,7 +190,7 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
             yield TextArea(
                 self._initial_text,
                 language="json",
-                theme="monokai",
+                theme="github-dark",
                 read_only=False,
                 show_line_numbers=True,
                 compact=True,
