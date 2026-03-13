@@ -409,6 +409,82 @@ class Agent:
             previous = stripped if stripped else previous
         return "\n".join(deduped).strip()
 
+    @staticmethod
+    def _fallback_answer_from_history(dynamic_history: List[Dict[str, Any]]) -> str:
+        search_results: List[Dict[str, str]] = []
+        fetched_sources: List[Dict[str, str]] = []
+        fetch_errors: List[str] = []
+
+        for message in dynamic_history:
+            if message.get("role") != "tool":
+                continue
+            name = str(message.get("name", "")).strip()
+            try:
+                payload = json.loads(str(message.get("content", "{}")))
+            except Exception:
+                continue
+            if not payload.get("ok"):
+                if name == "fetch_url":
+                    msg = str(payload.get("error", {}).get("message", "")).strip()
+                    if msg:
+                        fetch_errors.append(msg)
+                continue
+            data = payload.get("data")
+            if name == "web_search" and isinstance(data, dict):
+                for item in data.get("results", [])[:5]:
+                    if not isinstance(item, dict):
+                        continue
+                    title = str(item.get("title", "")).strip()
+                    url = str(item.get("url", "")).strip()
+                    domain = str(item.get("domain", "")).strip()
+                    if title and url:
+                        search_results.append({"title": title, "url": url, "domain": domain})
+            elif name == "fetch_url" and isinstance(data, dict):
+                title = str(data.get("title", "")).strip()
+                final_url = str(data.get("final_url", "")).strip() or str(data.get("url", "")).strip()
+                if final_url:
+                    fetched_sources.append({"title": title or final_url, "url": final_url})
+
+        if fetched_sources:
+            lines = [
+                "I found relevant sources, but the model failed to produce a clean final summary.",
+                "Verified fetched sources:",
+            ]
+            for idx, item in enumerate(fetched_sources[:3], start=1):
+                lines.append(f"{idx}. {item['title']} — {item['url']}")
+            if fetch_errors:
+                lines.append(f"Some pages were blocked or failed to load ({fetch_errors[0]}).")
+            return "\n".join(lines)
+
+        if search_results:
+            lines = [
+                "I found relevant search results, but the model failed to produce a clean final summary.",
+                "Relevant sources to check:",
+            ]
+            seen = set()
+            count = 0
+            for item in search_results:
+                key = item["url"]
+                if key in seen:
+                    continue
+                seen.add(key)
+                domain = f" ({item['domain']})" if item.get("domain") else ""
+                lines.append(f"{count + 1}. {item['title']}{domain} — {item['url']}")
+                count += 1
+                if count >= 3:
+                    break
+            if fetch_errors:
+                lines.append(f"Some fetched pages were blocked or failed to load ({fetch_errors[0]}).")
+            return "\n".join(lines)
+
+        if fetch_errors:
+            return (
+                "I couldn't produce a verified answer because the fetched sources failed to load cleanly "
+                f"({fetch_errors[0]}), and the model did not return a usable final response."
+            )
+
+        return ""
+
     def _run_finalization_pass(
         self,
         system_content: str,
@@ -438,7 +514,7 @@ class Agent:
                 return self._call_with_retry(
                     finalize_payload,
                     stop_event,
-                    on_event,
+                    None,
                     pass_id=f"{pass_id}_{suffix}",
                 )
             except Exception as exc:
@@ -499,6 +575,14 @@ class Agent:
         second_result = coerce_result(second, first_result.reasoning)
         if second_result.content:
             return second_result
+        fallback = self._fallback_answer_from_history(dynamic_history)
+        if fallback:
+            return AgentTurnResult(
+                status="done",
+                content=fallback,
+                reasoning=second_result.reasoning,
+                skill_exchanges=skill_exchanges,
+            )
         return AgentTurnResult(
             status="error",
             content="",

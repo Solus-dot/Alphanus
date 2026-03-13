@@ -282,6 +282,80 @@ def test_finalization_retries_when_model_leaks_tool_markup(mocker, runtime: Skil
     assert len(chat_reqs) == 3
 
 
+def test_finalization_falls_back_to_sources_when_markup_repeats(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    history = [
+        {
+            "role": "tool",
+            "name": "web_search",
+            "content": json.dumps(
+                {
+                    "ok": True,
+                    "data": {
+                        "results": [
+                            {
+                                "title": "Meta Newsroom",
+                                "url": "https://about.fb.com/news/",
+                                "domain": "about.fb.com",
+                                "snippet": "Meta newsroom updates.",
+                            }
+                        ]
+                    },
+                    "error": None,
+                    "meta": {},
+                }
+            ),
+        }
+    ]
+
+    chat_reqs = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"reasoning_content":"Need a plain answer."}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"<tool_call>\\n<function=web_search>\\n<parameter=query>meta</parameter>\\n</function>\\n</tool_call>"}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=history,
+        user_input="tell me about meta",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert "Relevant sources to check:" in result.content
+    assert "https://about.fb.com/news/" in result.content
+
+
 def test_search_failures_return_safe_non_speculative_answer(mocker, runtime: SkillRuntime):
     search_skill = runtime.skills_dir / "search-ops"
     search_skill.mkdir(parents=True)
