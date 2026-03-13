@@ -18,6 +18,36 @@ def test_add_complete_and_cancel_turn():
     assert content is not None
     assert "[interrupted]" in content
     assert "partial" in content
+    assert tree.nodes[turn_bad.id].assistant_state == "cancelled"
+
+
+def test_fail_turn_sets_error_state_without_interrupted_marker():
+    tree = ConvTree()
+    turn = tree.add_turn("lookup")
+    tree.fail_turn(turn.id, "partial answer")
+
+    assert tree.nodes[turn.id].assistant_content == "partial answer"
+    assert tree.nodes[turn.id].assistant_state == "error"
+
+
+def test_render_tree_only_indents_branch_roots():
+    tree = ConvTree()
+    first = tree.add_turn("hi")
+    tree.complete_turn(first.id, "hello")
+    second = tree.add_turn("how are you")
+    tree.complete_turn(second.id, "fine")
+
+    tree.current_id = first.id
+    tree.arm_branch("alt")
+    branch = tree.add_turn("other path")
+    tree.complete_turn(branch.id, "alt")
+
+    rows = tree.render_tree(width=40)
+
+    assert rows[0][0] == "● [root]"
+    assert rows[1][0].startswith("○ ✓  hi")
+    assert rows[2][0].startswith("· ✓  how are you")
+    assert rows[3][0].startswith("  ● [alt] ⎇ ✓  other path")
 
 
 def test_branch_unbranch_and_switch():

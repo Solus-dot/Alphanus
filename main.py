@@ -61,6 +61,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_active_skills": 6,
         "strict_capability_policy": False
     },
+    "search": {
+        "provider": "tavily",
+        "tavily_api_key": "",
+    },
     "tui": {
         "chat_log_max_lines": 5000,
         "tree_compaction": {
@@ -99,6 +103,20 @@ def load_or_create_global_config(path: Path) -> Dict[str, Any]:
     return merged
 
 
+def load_dotenv(path: Path) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'").strip('"')
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def resolve_path(path_str: str, root: Path) -> str:
     path = Path(os.path.expanduser(path_str))
     if not path.is_absolute():
@@ -129,6 +147,7 @@ def main() -> int:
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent
+    load_dotenv(project_root / ".env")
     config_path = project_root / "config" / "global_config.json"
     config = load_or_create_global_config(config_path)
     if args.debug:

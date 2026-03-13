@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from core.memory import VectorMemory
 from core.skills import SkillContext, SkillRuntime
@@ -9,9 +13,12 @@ from core.workspace import WorkspaceManager
 
 
 class _Headers:
+    def __init__(self, content_type: str = "application/json; charset=utf-8"):
+        self._content_type = content_type
+
     def get(self, key, default=None):
         if key.lower() == "content-type":
-            return "text/html; charset=utf-8"
+            return self._content_type
         return default
 
     def get_content_charset(self):
@@ -27,21 +34,31 @@ def _load_search_module():
     return module
 
 
-def test_web_search_parses_duckduckgo_results(mocker):
+def _env(key: str = "tvly-test-key"):
+    return SimpleNamespace(config={"search": {"provider": "tavily", "tavily_api_key": key}})
+
+
+def test_web_search_calls_tavily_and_normalizes_results(mocker):
     module = _load_search_module()
 
-    html = """
-    <html><body>
-      <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Falpha">Alpha Result</a>
-      <a class="result__snippet">Alpha snippet text.</a>
-      <a class="result__a" href="https://example.org/beta">Beta Result</a>
-      <div class="result__snippet">Beta snippet text.</div>
-    </body></html>
-    """
+    payload = {
+        "results": [
+            {
+                "title": "Meta Newsroom",
+                "url": "https://about.fb.com/news/",
+                "content": "Official Meta newsroom updates.",
+            },
+            {
+                "title": "TechCrunch",
+                "url": "https://techcrunch.com/example",
+                "content": "Reporting on Meta acquisitions.",
+            },
+        ]
+    }
 
     class _Resp:
-        def __init__(self, payload: str):
-            self._payload = payload.encode("utf-8")
+        def __init__(self):
+            self._payload = json.dumps(payload).encode("utf-8")
             self.headers = _Headers()
 
         def __enter__(self):
@@ -53,13 +70,29 @@ def test_web_search_parses_duckduckgo_results(mocker):
         def read(self):
             return self._payload
 
-    mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp(html))
-    out = module.execute("web_search", {"query": "alpha beta", "limit": 2}, env=None)
-    assert out["query"] == "alpha beta"
-    assert out["search_engine"] == "duckduckgo"
-    assert out["results"][0]["url"] == "https://example.com/alpha"
-    assert out["results"][0]["snippet"] == "Alpha snippet text."
-    assert out["results"][1]["domain"] == "example.org"
+    opened = {}
+
+    def fake_urlopen(req, timeout=None):
+        opened["url"] = req.full_url
+        opened["auth"] = req.get_header("Authorization")
+        opened["body"] = json.loads(req.data.decode("utf-8"))
+        return _Resp()
+
+    mocker.patch.object(module.urllib.request, "urlopen", side_effect=fake_urlopen)
+    out = module.execute("web_search", {"query": "meta acquisitions", "limit": 2}, env=_env())
+
+    assert opened["url"] == "https://api.tavily.com/search"
+    assert opened["auth"] == "Bearer tvly-test-key"
+    assert opened["body"]["query"] == "meta acquisitions"
+    assert out["search_engine"] == "tavily"
+    assert out["results"][0]["domain"] == "about.fb.com"
+    assert out["results"][1]["snippet"] == "Reporting on Meta acquisitions."
+
+
+def test_web_search_requires_api_key():
+    module = _load_search_module()
+    with pytest.raises(RuntimeError, match="Tavily API key not configured"):
+        module.execute("web_search", {"query": "meta"}, env=_env(key=""))
 
 
 def test_fetch_url_extracts_title_and_text(mocker):
@@ -75,7 +108,7 @@ def test_fetch_url_extracts_title_and_text(mocker):
     class _Resp:
         def __init__(self, payload: str):
             self._payload = payload.encode("utf-8")
-            self.headers = _Headers()
+            self.headers = _Headers("text/html; charset=utf-8")
 
         def __enter__(self):
             return self
@@ -90,7 +123,7 @@ def test_fetch_url_extracts_title_and_text(mocker):
             return "https://example.com/final"
 
     mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp(html))
-    out = module.execute("fetch_url", {"url": "https://example.com/page", "max_chars": 1000}, env=None)
+    out = module.execute("fetch_url", {"url": "https://example.com/page", "max_chars": 1000}, env=_env())
     assert out["title"] == "Example Page"
     assert out["final_url"] == "https://example.com/final"
     assert "Readable content." in out["content"]
@@ -105,12 +138,19 @@ def test_search_ops_skill_loads_and_executes_from_repo(tmp_path: Path, mocker):
     home.mkdir()
     ws.mkdir()
 
+    payload = {
+        "results": [
+            {
+                "title": "Example",
+                "url": "https://example.com",
+                "content": "Snippet",
+            }
+        ]
+    }
+
     class _Resp:
         def __init__(self):
-            self._payload = (
-                b'<a class="result__a" href="https://example.com">Example</a>'
-                b'<div class="result__snippet">Snippet</div>'
-            )
+            self._payload = json.dumps(payload).encode("utf-8")
             self.headers = _Headers()
 
         def __enter__(self):
@@ -128,6 +168,7 @@ def test_search_ops_skill_loads_and_executes_from_repo(tmp_path: Path, mocker):
         skills_dir=str(Path(__file__).resolve().parents[1] / "skills"),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=VectorMemory(storage_path=str(mem)),
+        config={"search": {"provider": "tavily", "tavily_api_key": "tvly-test-key"}},
     )
     skill = runtime.get_skill("search-ops")
     assert skill is not None

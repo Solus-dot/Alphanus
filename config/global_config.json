@@ -37,5 +37,9 @@
     "selection_mode": "heuristic",
     "max_active_skills": 6,
     "strict_capability_policy": false
+  },
+  "search": {
+    "provider": "tavily",
+    "tavily_api_key": ""
   }
 }

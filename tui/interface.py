@@ -142,7 +142,7 @@ class AlphanusTUI(App):
         height: 1fr;
         background: #1c1c1c;
         scrollbar-size: 1 1;
-        scrollbar-color: #606060 #2a2a2a;
+        scrollbar-color: #586272 #232830;
     }
 
     #chat-log {
@@ -185,7 +185,7 @@ class AlphanusTUI(App):
     #command-popup {
         width: 64;
         max-height: 12;
-        background: #101418;
+        background: #171b20;
         border: round #5f87d7;
         display: none;
         overlay: screen;
@@ -209,54 +209,66 @@ class AlphanusTUI(App):
         width: 1fr;
         height: auto;
         max-height: 8;
-        background: #101418;
+        background: #171b20;
         border: none;
         padding: 0 0 1 0;
-        scrollbar-background: #0d1319;
-        scrollbar-background-hover: #111921;
-        scrollbar-background-active: #111921;
-        scrollbar-color: #3f5468;
-        scrollbar-color-hover: #56718a;
-        scrollbar-color-active: #6e90b0;
-        scrollbar-corner-color: #0d1319;
+        scrollbar-background: #151a21;
+        scrollbar-background-hover: #1b212a;
+        scrollbar-background-active: #1b212a;
+        scrollbar-color: #4e5f74;
+        scrollbar-color-hover: #5e7490;
+        scrollbar-color-active: #7390b2;
+        scrollbar-corner-color: #151a21;
     }
 
     #command-options > .option-list--option-highlighted {
-        color: #f3f6fb;
-        background: #1f3550;
-        text-style: bold;
+        color: #f8fbff;
+        background: #2c313a;
+        text-style: none;
     }
 
     #command-options:focus > .option-list--option-highlighted {
         color: #ffffff;
-        background: #29496d;
+        background: #3a4f72;
         text-style: bold;
     }
 
     #footer-sep {
         height: 1;
-        background: #2a2a2a;
+        background: #2b323b;
     }
 
-    #status1, #status2 {
+    #status1 {
         height: 1;
         padding: 0 2;
-        background: #1c1c1c;
+        background: #181b20;
+    }
+
+    #status2 {
+        height: 1;
+        padding: 0 2;
+        background: #181b20;
     }
 
     #input-row {
-        height: 1;
+        height: auto;
         layout: horizontal;
-        background: #242424;
+        background: #181b20;
         padding: 0 2;
+        min-height: 3;
     }
 
     ChatInput {
         width: 1fr;
-        height: 1;
-        border: none;
-        background: #242424;
+        height: 3;
+        border: round #384252;
+        background: #21252b;
         color: #e0e0e0;
+    }
+
+    ChatInput:focus {
+        border: round #5f87d7;
+        background: #262c34;
     }
     """
 
@@ -467,9 +479,9 @@ class AlphanusTUI(App):
         return Syntax(
             code,
             language or "text",
-            theme="monokai",
+            theme="github-dark",
             word_wrap=True,
-            background_color="#0b0b0b",
+            background_color="#121417",
             line_numbers=False,
         )
 
@@ -478,8 +490,8 @@ class AlphanusTUI(App):
             self._syntax_renderable(code, language),
             expand=True,
             padding=(0, 1),
-            border_style="#2e2e2e",
-            style="on #0b0b0b",
+            border_style="#2b323b",
+            style="on #121417",
         )
 
     def _remember_code_block(self, code: str, language: Optional[str]) -> int:
@@ -902,7 +914,9 @@ class AlphanusTUI(App):
         self._write_skill_exchanges(turn)
 
         content = turn.assistant_content or ""
-        interrupted = "[interrupted]" in content
+        state = str(getattr(turn, "assistant_state", "") or ("cancelled" if "[interrupted]" in content else "done"))
+        interrupted = state == "cancelled"
+        failed = state == "error"
         display = content.replace("\n[interrupted]", "").rstrip()
 
         in_fence = False
@@ -933,6 +947,8 @@ class AlphanusTUI(App):
 
         if interrupted:
             self._write("[dim red]  ✖ interrupted[/dim red]")
+        elif failed:
+            self._write("[dim red]  ! failed[/dim red]")
         self._write("")
 
     def _rebuild_viewport(self) -> None:
@@ -1194,8 +1210,12 @@ class AlphanusTUI(App):
 
         if result.status == "done":
             self.conv_tree.complete_turn(turn_id, reply)
-        else:
+        elif result.status == "cancelled":
             self.conv_tree.cancel_turn(turn_id, reply)
+        else:
+            self.conv_tree.fail_turn(turn_id, reply)
+
+        if result.status != "done":
             if result.error:
                 self._write_error(result.error)
             if result.status == "cancelled":

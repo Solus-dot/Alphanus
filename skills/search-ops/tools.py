@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import html
 import json
+import os
 import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from html.parser import HTMLParser
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from core.skills import ToolExecutionEnv
 
@@ -46,10 +45,14 @@ _BLOCK_TAG_RE = re.compile(r"</?(?:p|div|section|article|li|ul|ol|h[1-6]|br|tr|t
 _SCRIPT_STYLE_RE = re.compile(r"<(script|style|noscript)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+_TAVILY_ENDPOINT = "https://api.tavily.com/search"
 
 
-def _request(url: str) -> urllib.request.Request:
-    return urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+def _request(url: str, *, data: bytes | None = None, headers: Dict[str, str] | None = None) -> urllib.request.Request:
+    merged = {"User-Agent": _USER_AGENT}
+    if headers:
+        merged.update(headers)
+    return urllib.request.Request(url, data=data, headers=merged)
 
 
 def _decode_response(resp) -> tuple[str, str]:
@@ -65,107 +68,86 @@ def _decode_response(resp) -> tuple[str, str]:
     return content_type, text
 
 
-class _DuckDuckGoParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.results: List[Dict[str, str]] = []
-        self._current_link: Optional[Dict[str, str]] = None
-        self._current_snippet: List[str] = []
-        self._capture_title = False
-        self._capture_snippet = False
-
-    def handle_starttag(self, tag: str, attrs) -> None:
-        attr_map = {key: value for key, value in attrs}
-        class_names = set((attr_map.get("class") or "").split())
-        if tag == "a" and "result__a" in class_names:
-            self._capture_title = True
-            self._current_link = {
-                "href": attr_map.get("href", ""),
-                "title": "",
-            }
-            return
-        if "result__snippet" in class_names:
-            self._capture_snippet = True
-            self._current_snippet = []
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag == "a" and self._capture_title and self._current_link is not None:
-            self._capture_title = False
-            href = _unwrap_duckduckgo_url(self._current_link["href"])
-            title = _clean_text(self._current_link["title"])
-            if href and title:
-                self.results.append({"title": title, "url": href, "snippet": ""})
-            self._current_link = None
-            return
-        if self._capture_snippet and tag in {"a", "div", "span"}:
-            snippet = _clean_text("".join(self._current_snippet))
-            if snippet and self.results and not self.results[-1]["snippet"]:
-                self.results[-1]["snippet"] = snippet
-            self._capture_snippet = False
-            self._current_snippet = []
-
-    def handle_data(self, data: str) -> None:
-        if self._capture_title and self._current_link is not None:
-            self._current_link["title"] += data
-        elif self._capture_snippet:
-            self._current_snippet.append(data)
-
-
-def _unwrap_duckduckgo_url(url: str) -> str:
-    if not url:
-        return ""
-    if url.startswith("//"):
-        url = "https:" + url
-    if url.startswith("/l/?") or url.startswith("https://duckduckgo.com/l/?") or url.startswith("http://duckduckgo.com/l/?"):
-        parsed = urllib.parse.urlparse(url)
-        params = urllib.parse.parse_qs(parsed.query)
-        uddg = params.get("uddg", [""])[0]
-        return urllib.parse.unquote(uddg) if uddg else ""
-    return url if url.startswith("http://") or url.startswith("https://") else ""
-
-
 def _clean_text(text: str) -> str:
-    return re.sub(r"\s+", " ", html.unescape(text)).strip()
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _host(url: str) -> str:
     return urllib.parse.urlparse(url).netloc.lower()
 
 
-def _search(query: str, limit: int) -> Dict[str, Any]:
-    url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote_plus(query)
+def _tavily_api_key(env: ToolExecutionEnv) -> str:
+    search_cfg = env.config.get("search", {}) if isinstance(env.config, dict) else {}
+    key = str(search_cfg.get("tavily_api_key", "")).strip() or os.environ.get("TAVILY_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("Tavily API key not configured")
+    return key
+
+
+def _search(query: str, limit: int, env: ToolExecutionEnv) -> Dict[str, Any]:
+    key = _tavily_api_key(env)
+    payload = {
+        "query": query,
+        "topic": "general",
+        "search_depth": "basic",
+        "max_results": limit,
+        "include_answer": False,
+        "include_raw_content": False,
+    }
+    req = _request(
+        _TAVILY_ENDPOINT,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+    )
     try:
-        with urllib.request.urlopen(_request(url), timeout=15) as resp:
-            content_type, payload = _decode_response(resp)
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            content_type, body = _decode_response(resp)
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"Search service returned HTTP {exc.code}") from exc
+        raise RuntimeError(f"Tavily returned HTTP {exc.code}") from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"Search service unreachable: {exc.reason}") from exc
+        raise RuntimeError(f"Tavily unreachable: {exc.reason}") from exc
 
-    if "html" not in content_type.lower():
-        raise RuntimeError("Search service returned a non-HTML response")
+    if "json" not in content_type.lower():
+        raise RuntimeError("Tavily returned a non-JSON response")
 
-    parser = _DuckDuckGoParser()
-    parser.feed(payload)
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Tavily returned invalid JSON") from exc
 
-    unique: List[Dict[str, str]] = []
+    raw_results = payload.get("results")
+    if not isinstance(raw_results, list):
+        raise RuntimeError("Tavily response missing results list")
+
+    results = []
     seen = set()
-    for result in parser.results:
-        if result["url"] in seen:
+    for item in raw_results:
+        if not isinstance(item, dict):
             continue
-        seen.add(result["url"])
-        unique.append(
+        url = str(item.get("url", "")).strip()
+        title = _clean_text(str(item.get("title", "")).strip())
+        snippet = _clean_text(str(item.get("content", "")).strip())
+        if not url.startswith(("http://", "https://")) or not title or url in seen:
+            continue
+        seen.add(url)
+        results.append(
             {
-                "title": result["title"],
-                "url": result["url"],
-                "snippet": result["snippet"],
-                "domain": _host(result["url"]),
+                "title": title,
+                "url": url,
+                "snippet": snippet,
+                "domain": _host(url),
             }
         )
-        if len(unique) >= limit:
+        if len(results) >= limit:
             break
 
-    return {"query": query, "results": unique, "search_engine": "duckduckgo"}
+    if not results:
+        raise RuntimeError("Tavily returned no usable results")
+
+    return {"query": query, "results": results, "search_engine": "tavily"}
 
 
 def _html_to_text(payload: str) -> str:
@@ -212,7 +194,7 @@ def execute(tool_name: str, args: Dict[str, Any], env: ToolExecutionEnv):
     if tool_name == "web_search":
         query = str(args["query"]).strip()
         limit = int(args.get("limit", 5) or 5)
-        return _search(query, max(1, min(limit, 10)))
+        return _search(query, max(1, min(limit, 10)), env)
     if tool_name == "fetch_url":
         url = str(args["url"]).strip()
         max_chars = int(args.get("max_chars", 12000) or 12000)

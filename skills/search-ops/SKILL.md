@@ -3,7 +3,7 @@ name: search-ops
 description: Search the web and fetch page content for research and up-to-date information.
 allowed-tools: web_search fetch_url
 metadata:
-  version: "1.0.0"
+  version: "1.2.0"
   categories:
     - research
   tags:
@@ -31,3 +31,10 @@ Rules:
 - Use internet search for time-sensitive or factual lookup tasks.
 - Keep citations compact: mention the source title or domain when summarizing fetched pages.
 - If a page fetch fails, continue with the remaining results instead of stopping the turn.
+- Keep the search loop short:
+  - use at most 3 `web_search` calls
+  - fetch at most 2 URLs
+  - after that, answer from the evidence you already have
+- Do not keep reformulating the same search endlessly.
+- If search results already contain enough evidence, answer without fetching more pages.
+- If one fetch fails, try at most one alternative source, then answer.

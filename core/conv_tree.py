@@ -26,6 +26,7 @@ class Turn:
     label: str = ""
     branch_root: bool = False
     skill_exchanges: List[dict] = field(default_factory=list)
+    assistant_state: str = "pending"
 
     @staticmethod
     def _strip_attachment_blocks(text: str) -> str:
@@ -86,19 +87,31 @@ class Turn:
             "label": self.label,
             "branch_root": self.branch_root,
             "skill_exchanges": self.skill_exchanges,
+            "assistant_state": self.assistant_state,
         }
 
     @staticmethod
     def from_dict(data: dict) -> "Turn":
+        assistant_content = data.get("assistant_content")
+        assistant_state = str(data.get("assistant_state") or "").strip()
+        if not assistant_state:
+            content = str(assistant_content or "")
+            if "[interrupted]" in content:
+                assistant_state = "cancelled"
+            elif assistant_content:
+                assistant_state = "done"
+            else:
+                assistant_state = "pending"
         return Turn(
             id=data["id"],
             user_content=data.get("user_content", ""),
-            assistant_content=data.get("assistant_content"),
+            assistant_content=assistant_content,
             parent=data.get("parent"),
             children=list(data.get("children", [])),
             label=data.get("label", ""),
             branch_root=bool(data.get("branch_root", False)),
             skill_exchanges=list(data.get("skill_exchanges", [])),
+            assistant_state=assistant_state,
         )
 
 
@@ -184,6 +197,7 @@ class ConvTree:
             children=[],
             label=label,
             branch_root=is_branch,
+            assistant_state="pending",
         )
         self.nodes[turn_id] = turn
         self.current.children.append(turn_id)
@@ -193,15 +207,22 @@ class ConvTree:
     def complete_turn(self, turn_id: str, reply: str) -> None:
         if turn_id in self.nodes:
             self.nodes[turn_id].assistant_content = reply
+            self.nodes[turn_id].assistant_state = "done"
             self.compact_inactive_branches()
 
     def cancel_turn(self, turn_id: str, partial: str) -> None:
         if turn_id not in self.nodes:
             return
         partial = (partial or "").rstrip()
-        self.nodes[turn_id].assistant_content = (
-            f"{partial}\n[interrupted]" if partial else "[interrupted]"
-        )
+        self.nodes[turn_id].assistant_content = f"{partial}\n[interrupted]" if partial else "[interrupted]"
+        self.nodes[turn_id].assistant_state = "cancelled"
+        self.compact_inactive_branches()
+
+    def fail_turn(self, turn_id: str, partial: str) -> None:
+        if turn_id not in self.nodes:
+            return
+        self.nodes[turn_id].assistant_content = (partial or "").rstrip()
+        self.nodes[turn_id].assistant_state = "error"
         self.compact_inactive_branches()
 
     def append_skill_exchange(self, turn_id: str, message: dict) -> None:
@@ -238,11 +259,13 @@ class ConvTree:
         return self.current
 
     def _status_marker(self, node: Turn) -> str:
-        content = node.assistant_content
-        if content is None:
+        state = str(getattr(node, "assistant_state", "pending") or "pending")
+        if state == "pending":
             return "…"
-        if "[interrupted]" in content:
-            return "✗"
+        if state == "cancelled":
+            return "✖"
+        if state == "error":
+            return "!"
         return "✓"
 
     def render_tree(self, width: int = 80) -> List[Tuple[str, str, bool]]:
@@ -256,27 +279,23 @@ class ConvTree:
                 return "○"
             return "·"
 
-        def node_line(node_id: str, prefix: str) -> str:
+        def node_line(node_id: str, depth: int) -> str:
             node = self.nodes[node_id]
             label = f" [{node.label}]" if node.label else (" [branch]" if node.branch_root else "")
             branch = " ⎇" if node.branch_root else ""
-            text = node.short(max_len=max(8, width - len(prefix) - 12))
-            return f"{prefix}{dot(node_id)}{label}{branch} {self._status_marker(node)}  {text}"
+            indent = "  " * max(0, depth)
+            text = node.short(max_len=max(8, width - len(indent) - 10))
+            return f"{indent}{dot(node_id)}{label}{branch} {self._status_marker(node)}  {text}"
 
-        def walk(node_id: str, prefix: str) -> None:
-            children = self.nodes[node_id].children
-            for idx, child_id in enumerate(children):
-                last = idx == len(children) - 1
-                connector = "└─" if last else "├─"
-                if node_id == "root":
-                    row = node_line(child_id, "")
-                else:
-                    row = f"{prefix}{connector} {node_line(child_id, '')}"
-                rows.append((row, child_id, child_id in active_ids))
-                walk(child_id, prefix + ("   " if last else "│  "))
+        def walk(node_id: str, depth: int) -> None:
+            for child_id in self.nodes[node_id].children:
+                child = self.nodes[child_id]
+                child_depth = depth + (1 if child.branch_root else 0)
+                rows.append((node_line(child_id, child_depth), child_id, child_id in active_ids))
+                walk(child_id, child_depth)
 
         rows.append(("● [root]", "root", True))
-        walk("root", "")
+        walk("root", 0)
         if len(rows) == 1:
             rows.append(("(empty)", "sub", False))
         return rows

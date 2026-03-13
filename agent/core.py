@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -379,6 +380,137 @@ class Agent:
             return full_reasoning + delta_reasoning
         return full_reasoning + delta_reasoning[:remaining]
 
+    @staticmethod
+    def _sanitize_final_content(text: str) -> str:
+        if not text:
+            return ""
+        text = re.sub(r"<tool_call>.*?</tool_call>", "", text, flags=re.IGNORECASE | re.DOTALL)
+        kept: List[str] = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if re.fullmatch(r"</?tool_call>", stripped, flags=re.IGNORECASE):
+                continue
+            if re.fullmatch(r"<function=[^>]+>", stripped, flags=re.IGNORECASE):
+                continue
+            if re.fullmatch(r"</function>", stripped, flags=re.IGNORECASE):
+                continue
+            if re.fullmatch(r"<parameter=[^>]+>", stripped, flags=re.IGNORECASE):
+                continue
+            if re.fullmatch(r"</parameter>", stripped, flags=re.IGNORECASE):
+                continue
+            kept.append(line)
+        deduped: List[str] = []
+        previous = None
+        for line in kept:
+            stripped = line.strip()
+            if stripped and stripped == previous:
+                continue
+            deduped.append(line)
+            previous = stripped if stripped else previous
+        return "\n".join(deduped).strip()
+
+    def _run_finalization_pass(
+        self,
+        system_content: str,
+        dynamic_history: List[Dict[str, Any]],
+        full_reasoning: str,
+        skill_exchanges: List[Dict[str, Any]],
+        stop_event,
+        on_event: Optional[Callable[[Dict[str, Any]], None]],
+        pass_id: str,
+        extra_rules: str = "",
+    ) -> AgentTurnResult:
+        def finalize_once(extra: str, suffix: str):
+            finalize_system = (
+                system_content
+                + "\n\nFinalization rule:\n"
+                + "- Provide only the final user-facing answer using prior tool results.\n"
+                + "- Do not call tools.\n"
+                + "- Do not include hidden reasoning.\n"
+                + "- Never emit XML, HTML-like tool markup, or <tool_call> blocks."
+            )
+            if extra:
+                finalize_system += "\n" + extra.strip()
+            finalize_messages = [{"role": "system", "content": finalize_system}] + dynamic_history
+            finalize_messages = self.context_mgr.prune(finalize_messages, self.context_budget_max_tokens)
+            finalize_payload = self._build_payload(finalize_messages, thinking=False, tools=None)
+            try:
+                return self._call_with_retry(
+                    finalize_payload,
+                    stop_event,
+                    on_event,
+                    pass_id=f"{pass_id}_{suffix}",
+                )
+            except Exception as exc:
+                message = str(exc)
+                self._emit(on_event, {"type": "error", "text": message})
+                return AgentTurnResult(
+                    status="error",
+                    content="",
+                    reasoning=full_reasoning,
+                    skill_exchanges=skill_exchanges,
+                    error=message,
+                )
+
+        def coerce_result(stream_result, current_reasoning: str) -> AgentTurnResult:
+            if stream_result.finish_reason == "cancelled":
+                return AgentTurnResult(
+                    status="cancelled",
+                    content="",
+                    reasoning=self._append_reasoning(current_reasoning, stream_result.reasoning),
+                    skill_exchanges=skill_exchanges,
+                )
+            if stream_result.finish_reason == "tool_calls":
+                return AgentTurnResult(
+                    status="error",
+                    content="",
+                    reasoning=self._append_reasoning(current_reasoning, stream_result.reasoning),
+                    skill_exchanges=skill_exchanges,
+                    error="Finalization pass unexpectedly returned tool calls",
+                )
+            cleaned = self._sanitize_final_content(stream_result.content)
+            return AgentTurnResult(
+                status="done",
+                content=cleaned,
+                reasoning=self._append_reasoning(current_reasoning, stream_result.reasoning),
+                skill_exchanges=skill_exchanges,
+            )
+
+        first = finalize_once(extra_rules, "final")
+        if isinstance(first, AgentTurnResult):
+            return first
+        first_result = coerce_result(first, full_reasoning)
+        if first_result.status != "done":
+            return first_result
+        if first_result.content:
+            return first_result
+        if "<tool_call>" not in first.content.lower():
+            return first_result
+
+        second = finalize_once(
+            extra_rules
+            + "\nMarkup correction rule:\n"
+            + "- Your previous draft emitted raw tool markup.\n"
+            + "- Respond again in plain natural language only.",
+            "final_retry",
+        )
+        if isinstance(second, AgentTurnResult):
+            return second
+        second_result = coerce_result(second, first_result.reasoning)
+        if second_result.content:
+            return second_result
+        return AgentTurnResult(
+            status="error",
+            content="",
+            reasoning=second_result.reasoning,
+            skill_exchanges=skill_exchanges,
+            error="Finalization emitted tool markup instead of a user-facing answer",
+        )
+
+    @staticmethod
+    def _is_search_skill_selected(selected: List[Any]) -> bool:
+        return any(getattr(skill, "id", "") == "search-ops" for skill in selected)
+
     def _stream_one_pass(
         self,
         payload: Dict[str, Any],
@@ -536,6 +668,11 @@ class Agent:
         action_depth = 0
         full_reasoning = ""
         pass_index = 0
+        search_tool_counts: Dict[str, int] = {"web_search": 0, "fetch_url": 0}
+        search_has_success = False
+        search_has_fetch_content = False
+        search_failure_count = 0
+        search_mode = self._is_search_skill_selected(selected)
 
         while True:
             pass_index += 1
@@ -619,9 +756,26 @@ class Agent:
                 dynamic_history.append(assistant_msg)
                 skill_exchanges.append(assistant_msg)
 
+                force_finalize_reason = ""
                 for call in stream_result.tool_calls:
                     action_depth += 1
                     if action_depth > self.max_action_depth:
+                        if search_mode and search_has_success:
+                            return self._run_finalization_pass(
+                                system_content,
+                                dynamic_history,
+                                full_reasoning,
+                                skill_exchanges,
+                                stop_event,
+                                on_event,
+                                pass_id,
+                                extra_rules=(
+                                    "Search completion rule:\n"
+                                    "- The search loop budget is exhausted.\n"
+                                    "- Answer using the successful search or fetch results already in the conversation.\n"
+                                    "- Do not search again."
+                                ),
+                            )
                         return AgentTurnResult(
                             status="error",
                             content="",
@@ -669,56 +823,94 @@ class Agent:
                     dynamic_history.append(tool_message)
                     skill_exchanges.append(tool_message)
 
+                    if search_mode and call.name in search_tool_counts:
+                        search_tool_counts[call.name] += 1
+                        if result.get("ok"):
+                            search_has_success = True
+                            if call.name == "fetch_url":
+                                search_has_fetch_content = True
+                        else:
+                            if call.name == "web_search":
+                                search_failure_count += 1
+                            if call.name == "fetch_url" and search_failure_count >= 2:
+                                force_finalize_reason = (
+                                    "Search completion rule:\n"
+                                    "- The search provider has already failed repeatedly.\n"
+                                    "- Do not use memory or prior knowledge to fill gaps.\n"
+                                    "- If the fetched page does not explicitly answer the question, say you could not verify it."
+                                )
+                                break
+                            if call.name not in {"web_search", "fetch_url"} and search_failure_count >= 2:
+                                force_finalize_reason = (
+                                    "Search completion rule:\n"
+                                    "- Search has failed repeatedly.\n"
+                                    "- Do not switch to memory recall or unrelated tools.\n"
+                                    "- Answer only with verified evidence, or say verification failed."
+                                )
+                                break
+                        if call.name == "web_search" and not result.get("ok") and search_failure_count >= 2 and not search_has_success:
+                            return AgentTurnResult(
+                                status="done",
+                                content=(
+                                    "I couldn't verify Meta's latest acquisitions because the current web search provider "
+                                    "returned no parsable results. I don't want to speculate without reliable sources."
+                                ),
+                                reasoning=full_reasoning,
+                                skill_exchanges=skill_exchanges,
+                            )
+                        if call.name == "fetch_url" and not result.get("ok") and search_has_success:
+                            force_finalize_reason = (
+                                "Search completion rule:\n"
+                                "- A page fetch failed.\n"
+                                "- Continue with the successful search results and any successful fetches already gathered.\n"
+                                "- Do not keep retrying searches indefinitely."
+                            )
+                            break
+                        if call.name == "web_search" and search_tool_counts["web_search"] >= 3 and search_has_success:
+                            force_finalize_reason = (
+                                "Search completion rule:\n"
+                                "- Enough search attempts have already been made.\n"
+                                "- Summarize from the best available results now.\n"
+                                "- Do not issue more search calls."
+                            )
+                            break
+                        if call.name == "fetch_url" and search_tool_counts["fetch_url"] >= 2 and search_has_fetch_content:
+                            force_finalize_reason = (
+                                "Search completion rule:\n"
+                                "- Enough pages have been fetched.\n"
+                                "- Answer from the gathered evidence now.\n"
+                                "- Do not fetch additional pages."
+                            )
+                            break
+                if force_finalize_reason:
+                    return self._run_finalization_pass(
+                        system_content,
+                        dynamic_history,
+                        full_reasoning,
+                        skill_exchanges,
+                        stop_event,
+                        on_event,
+                        pass_id,
+                        extra_rules=force_finalize_reason,
+                    )
                 continue
 
             # stop or length: final answer produced
             final = stream_result.content
             if not final.strip():
-                finalize_system = (
-                    system_content
-                    + "\n\nFinalization rule:\n"
-                    + "- Provide only the final user-facing answer using prior tool results.\n"
-                    + "- Do not call tools.\n"
-                    + "- Do not include hidden reasoning."
+                finalized = self._run_finalization_pass(
+                    system_content,
+                    dynamic_history,
+                    full_reasoning,
+                    skill_exchanges,
+                    stop_event,
+                    on_event,
+                    pass_id,
                 )
-                finalize_messages = [{"role": "system", "content": finalize_system}] + dynamic_history
-                finalize_messages = self.context_mgr.prune(finalize_messages, self.context_budget_max_tokens)
-                finalize_payload = self._build_payload(finalize_messages, thinking=False, tools=None)
-                try:
-                    finalize_result = self._call_with_retry(
-                        finalize_payload,
-                        stop_event,
-                        on_event,
-                        pass_id=f"{pass_id}_final",
-                    )
-                except Exception as exc:
-                    message = str(exc)
-                    self._emit(on_event, {"type": "error", "text": message})
-                    return AgentTurnResult(
-                        status="error",
-                        content="",
-                        reasoning=full_reasoning,
-                        skill_exchanges=skill_exchanges,
-                        error=message,
-                    )
-
-                if finalize_result.finish_reason == "cancelled":
-                    return AgentTurnResult(
-                        status="cancelled",
-                        content="",
-                        reasoning=self._append_reasoning(full_reasoning, finalize_result.reasoning),
-                        skill_exchanges=skill_exchanges,
-                    )
-                if finalize_result.finish_reason == "tool_calls":
-                    return AgentTurnResult(
-                        status="error",
-                        content="",
-                        reasoning=self._append_reasoning(full_reasoning, finalize_result.reasoning),
-                        skill_exchanges=skill_exchanges,
-                        error="Finalization pass unexpectedly returned tool calls",
-                    )
-                full_reasoning = self._append_reasoning(full_reasoning, finalize_result.reasoning)
-                final = finalize_result.content
+                if finalized.status != "done":
+                    return finalized
+                full_reasoning = finalized.reasoning
+                final = finalized.content
 
             self.skill_runtime.post_response(selected, ctx, final)
             return AgentTurnResult(
