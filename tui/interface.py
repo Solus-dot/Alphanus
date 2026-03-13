@@ -460,6 +460,9 @@ class AlphanusTUI(App):
         self._log().write(Padding(renderable, pad=(0, 0, 0, indent)))
         self._maybe_scroll_end()
 
+    def _partial_markup_renderable(self, markup: str, indent: int = 2):
+        return Padding(Text.from_markup(markup), pad=(0, 0, 0, indent))
+
     def _syntax_renderable(self, code: str, language: Optional[str]) -> Syntax:
         return Syntax(
             code,
@@ -533,7 +536,11 @@ class AlphanusTUI(App):
             else:
                 partial.update("")
             return
-        partial.update(f"  {esc(self._buf_c)}" if self._buf_c else "")
+        if not self._buf_c:
+            partial.update("")
+            return
+        rendered, _ = render_md(self._buf_c, False)
+        partial.update(self._partial_markup_renderable(rendered, indent=max(2, hanging_indent(self._buf_c))))
 
     def _update_live_preview_partial(self, lines: List[str], language: Optional[str]) -> None:
         partial = self._partial()
@@ -1051,7 +1058,11 @@ class AlphanusTUI(App):
                     display = prefix + ("\n" if prefix else "")
             elif self._is_tool_trace_line(display):
                 display = ""
-            partial.update(f"[dim]  {esc(display)}[/dim]" if display else "")
+            if display:
+                rendered, _ = render_md(display, False)
+                partial.update(self._partial_markup_renderable(f"[dim]{rendered}[/dim]", indent=4))
+            else:
+                partial.update("")
 
         elif etype == "content_token":
             token = event.get("text", "")
