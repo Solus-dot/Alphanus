@@ -58,11 +58,7 @@ _VIDEO_ID_RE = re.compile(r'"videoId":"([A-Za-z0-9_-]{11})"')
 
 
 def _is_under(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
+    return path.is_relative_to(root)
 
 
 def _get_weather(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -98,7 +94,9 @@ def _search_home_files(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str,
         raise PermissionError("Search directory outside home root")
 
     matches = []
-    for dirpath, _, filenames in os.walk(root):
+    ignore_dirs = {".git", "node_modules", ".venv", "venv", "__pycache__", ".next", "dist", "build"}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [name for name in dirnames if name not in ignore_dirs]
         for name in filenames:
             if query in name.lower():
                 matches.append(str(Path(dirpath) / name))

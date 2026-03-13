@@ -12,15 +12,7 @@ _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)
 
 
 def _dedupe(items: List[str]) -> List[str]:
-    seen = set()
-    out: List[str] = []
-    for raw in items:
-        item = str(raw).strip()
-        if not item or item in seen:
-            continue
-        seen.add(item)
-        out.append(item)
-    return out
+    return list(dict.fromkeys(str(raw).strip() for raw in items if str(raw).strip()))
 
 
 def _as_str_list(value: Any) -> List[str]:
