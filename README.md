@@ -83,7 +83,7 @@ See [SKILLS_GUIDE.md](./SKILLS_GUIDE.md).
 
 Skills live under `skills/<skill-id>/SKILL.md` and can expose tools via:
 - `metadata.tools.definitions` command entries (preferred)
-- `tools.py` (`TOOL_SPECS` + `execute`) legacy fallback
+- `tools.py` (`TOOL_SPECS` + `execute`) native tool modules
 
 ## Tests
 
