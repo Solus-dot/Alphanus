@@ -270,7 +270,7 @@ def test_finalization_falls_back_immediately_when_model_leaks_tool_markup(mocker
 
     assert result.status == "done"
     assert "<tool_call>" not in result.content
-    assert "I couldn't verify the answer from reliable web results" in result.content
+    assert "I couldn't turn the available tool and model output into a clean user-facing answer" in result.content
     assert len(chat_reqs) == 2
 
 
@@ -347,6 +347,95 @@ def test_finalization_falls_back_to_sources_when_markup_repeats(mocker, runtime:
     assert "Relevant sources to check:" in result.content
     assert "https://about.fb.com/news/" in result.content
     assert len(chat_reqs) == 2
+
+
+def test_finalization_falls_back_to_generic_tool_summary_without_search_contamination(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    history = [
+        {
+            "role": "tool",
+            "name": "get_weather",
+            "content": json.dumps(
+                {
+                    "ok": True,
+                    "data": {
+                        "city": "London",
+                        "temperature_c": 14,
+                        "condition": "Cloudy",
+                    },
+                    "error": None,
+                    "meta": {},
+                }
+            ),
+        }
+    ]
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"<tool_call>\\n<function=get_weather>\\n<parameter=city>London</parameter>\\n</function>\\n</tool_call>"}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent._run_finalization_pass(
+        "system",
+        history,
+        "",
+        history[:],
+        threading.Event(),
+        None,
+        "pass",
+        allow_search_fallback=False,
+    )
+
+    assert result.status == "done"
+    assert "get_weather" in result.content
+    assert "temperature_c" in result.content
+    assert "I couldn't verify the answer from reliable web results" not in result.content
+
+
+def test_search_fallback_requires_actual_search_activity(runtime: SkillRuntime):
+    agent = Agent(
+        {
+            "agent": {
+                "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+                "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            }
+        },
+        runtime,
+    )
+
+    assert agent._search_fallback_allowed(
+        {"web_search": 0, "fetch_url": 0},
+        search_failure_count=0,
+        search_has_success=False,
+        search_has_fetch_content=False,
+    ) is False
+    assert agent._search_fallback_allowed(
+        {"web_search": 1, "fetch_url": 0},
+        search_failure_count=0,
+        search_has_success=False,
+        search_has_fetch_content=False,
+    ) is True
 
 
 def test_search_failures_return_safe_non_speculative_answer(mocker, runtime: SkillRuntime):
@@ -618,6 +707,107 @@ def execute(tool_name, args, env):
 
     assert result.status == "done"
     assert result.content == "I checked current web results before answering."
+    assert len(chat_reqs) == 3
+
+
+def test_model_skill_router_selects_skill_before_tool_turn(mocker, runtime: SkillRuntime):
+    search_skill = runtime.skills_dir / "search-ops"
+    search_skill.mkdir(parents=True)
+    (search_skill / "SKILL.md").write_text(
+        """
+---
+name: search-ops
+description: Search the web and fetch page content for research and up-to-date information.
+allowed-tools: web_search
+metadata:
+  tags: [web, latest, recent, current, news, lookup]
+---
+Search the internet.
+""".strip(),
+        encoding="utf-8",
+    )
+    (search_skill / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "web_search": {
+    "capability": "web_search",
+    "description": "Search web",
+    "parameters": {
+      "type": "object",
+      "properties": {"query": {"type": "string"}},
+      "required": ["query"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    return {"ok": True, "data": {"results": [{"title": "Meta News", "url": "https://example.com", "domain": "example.com", "snippet": "Verified"}]}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+    runtime.load_skills()
+
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        },
+        "skills": {
+            "selection_mode": "model",
+            "max_active_skills": 2,
+        },
+    }
+    agent = Agent(cfg, runtime)
+
+    chat_reqs = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"{\\"skills\\": [\\"search-ops\\"]}"}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        if len(chat_reqs) == 2:
+            payload = json.loads(req.data.decode("utf-8"))
+            tool_names = [tool["function"]["name"] for tool in payload.get("tools", [])]
+            assert tool_names == ["web_search"]
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"meta latest acquisitions\\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"I checked the selected search skill before answering."}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "tell me about the latest acquisitions"}],
+        user_input="tell me about the latest acquisitions",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert result.content == "I checked the selected search skill before answering."
     assert len(chat_reqs) == 3
 
 

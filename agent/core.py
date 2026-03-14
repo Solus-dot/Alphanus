@@ -301,6 +301,91 @@ class Agent:
             return self.system_prompt
         return f"{self.system_prompt}\n\nActive skill guidance:\n\n{skill_block}"
 
+    @staticmethod
+    def _parse_skill_route(content: str, valid_ids: List[str], limit: int) -> Optional[List[str]]:
+        text = content.strip()
+        if not text:
+            return None
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE | re.DOTALL).strip()
+        parsed_ids: List[str] = []
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict):
+                raw = data.get("skills")
+            else:
+                raw = data
+            if isinstance(raw, list):
+                parsed_ids = [str(item).strip() for item in raw]
+        except Exception:
+            parsed_ids = []
+
+        if not parsed_ids:
+            lowered = text.lower()
+            parsed_ids = [skill_id for skill_id in valid_ids if skill_id.lower() in lowered]
+
+        out: List[str] = []
+        seen = set()
+        valid = set(valid_ids)
+        for skill_id in parsed_ids:
+            if skill_id in valid and skill_id not in seen:
+                out.append(skill_id)
+                seen.add(skill_id)
+            if len(out) >= limit:
+                break
+        return out or None
+
+    def _route_skills_with_model(
+        self,
+        ctx: SkillContext,
+        stop_event,
+    ) -> Optional[List[Any]]:
+        enabled = self.skill_runtime.enabled_skills()
+        if not enabled:
+            return []
+
+        skills_cfg = self.config.get("skills", {}) if isinstance(self.config, dict) else {}
+        configured_limit = int(skills_cfg.get("max_active_skills", getattr(self.skill_runtime, "max_active_skills", 2)))
+        limit = configured_limit if configured_limit > 0 else 2
+        catalog = self.skill_runtime.skill_catalog_text()
+        routing_system = (
+            "You are selecting local skills for the next assistant turn.\n"
+            "Choose the smallest set of skills needed for the user's request.\n"
+            f"Return strict JSON only in the form {{\"skills\": [\"skill-id\"]}} with at most {limit} ids.\n"
+            "Return an empty list when no skill is needed.\n"
+            "Do not explain your choice."
+        )
+        routing_messages = [
+            {"role": "system", "content": routing_system},
+            {
+                "role": "user",
+                "content": f"User request:\n{ctx.user_input}\n\nAvailable skills:\n{catalog}",
+            },
+        ]
+        payload = self._build_payload(routing_messages, thinking=False, tools=None)
+        try:
+            result = self._call_with_retry(payload, stop_event, None, pass_id="skill_route")
+        except Exception:
+            return None
+        if result.finish_reason == "cancelled":
+            return None
+        skill_ids = self._parse_skill_route(result.content, [skill.id for skill in enabled], limit)
+        if skill_ids is None:
+            return None
+        return self.skill_runtime.skills_by_ids(skill_ids)
+
+    def _select_skills(
+        self,
+        ctx: SkillContext,
+        stop_event,
+    ) -> List[Any]:
+        skills_cfg = self.config.get("skills", {}) if isinstance(self.config, dict) else {}
+        mode = str(skills_cfg.get("selection_mode", getattr(self.skill_runtime, "selection_mode", ""))).strip().lower()
+        if mode == "model":
+            routed = self._route_skills_with_model(ctx, stop_event)
+            if routed is not None:
+                return routed
+        return self.skill_runtime.select_skills(ctx)
+
     def _build_payload(
         self,
         model_messages: List[Dict[str, Any]],
@@ -414,6 +499,7 @@ class Agent:
         search_results: List[Dict[str, str]] = []
         fetched_sources: List[Dict[str, str]] = []
         fetch_errors: List[str] = []
+        generic_successes: List[Dict[str, Any]] = []
 
         for message in dynamic_history:
             if message.get("role") != "tool":
@@ -444,6 +530,8 @@ class Agent:
                 final_url = str(data.get("final_url", "")).strip() or str(data.get("url", "")).strip()
                 if final_url:
                     fetched_sources.append({"title": title or final_url, "url": final_url})
+            else:
+                generic_successes.append({"name": name, "data": data})
 
         if fetched_sources:
             lines = [
@@ -483,6 +571,31 @@ class Agent:
                 f"({fetch_errors[0]}), and the model did not return a usable final response."
             )
 
+        if generic_successes:
+            latest = generic_successes[-1]
+            name = str(latest.get("name", "tool")).strip() or "tool"
+            data = latest.get("data")
+            if isinstance(data, dict) and data:
+                preview_items = []
+                for key, value in list(data.items())[:6]:
+                    rendered = str(value)
+                    if len(rendered) > 160:
+                        rendered = rendered[:160] + "..."
+                    preview_items.append(f"- {key}: {rendered}")
+                if preview_items:
+                    return (
+                        f"The `{name}` tool completed successfully, but the model failed to produce a clean final summary.\n\n"
+                        "Tool result:\n"
+                        + "\n".join(preview_items)
+                    )
+            rendered = str(data)
+            if len(rendered) > 400:
+                rendered = rendered[:400] + "..."
+            return (
+                f"The `{name}` tool completed successfully, but the model failed to produce a clean final summary.\n\n"
+                f"Tool result: {rendered}"
+            )
+
         return ""
 
     @staticmethod
@@ -490,6 +603,27 @@ class Agent:
         return (
             "I couldn't verify the answer from reliable web results in this turn, and I don't want to speculate "
             "without confirmed sources."
+        )
+
+    @staticmethod
+    def _generic_finalization_failure_answer() -> str:
+        return (
+            "I couldn't turn the available tool and model output into a clean user-facing answer in this turn."
+        )
+
+    @staticmethod
+    def _search_fallback_allowed(
+        search_tool_counts: Dict[str, int],
+        search_failure_count: int,
+        search_has_success: bool,
+        search_has_fetch_content: bool,
+    ) -> bool:
+        return (
+            search_tool_counts.get("web_search", 0) > 0
+            or search_tool_counts.get("fetch_url", 0) > 0
+            or search_failure_count > 0
+            or search_has_success
+            or search_has_fetch_content
         )
 
     @staticmethod
@@ -520,6 +654,7 @@ class Agent:
         on_event: Optional[Callable[[Dict[str, Any]], None]],
         pass_id: str,
         extra_rules: str = "",
+        allow_search_fallback: bool = False,
     ) -> AgentTurnResult:
         def finalize_once(extra: str, suffix: str):
             finalize_system = (
@@ -593,6 +728,13 @@ class Agent:
             return AgentTurnResult(
                 status="done",
                 content=fallback,
+                reasoning=first_result.reasoning,
+                skill_exchanges=skill_exchanges,
+            )
+        if not allow_search_fallback:
+            return AgentTurnResult(
+                status="done",
+                content=self._generic_finalization_failure_answer(),
                 reasoning=first_result.reasoning,
                 skill_exchanges=skill_exchanges,
             )
@@ -757,7 +899,7 @@ class Agent:
         branch_labels = branch_labels or []
         attachments = attachments or []
         ctx = self._build_skill_context(user_input, branch_labels, attachments)
-        selected = self.skill_runtime.select_skills(ctx)
+        selected = self._select_skills(ctx, stop_event)
 
         dynamic_history = list(history_messages)
         skill_exchanges: List[Dict[str, Any]] = []
@@ -885,6 +1027,7 @@ class Agent:
                                     "- Answer using the successful search or fetch results already in the conversation.\n"
                                     "- Do not search again."
                                 ),
+                                allow_search_fallback=True,
                             )
                         return AgentTurnResult(
                             status="error",
@@ -1039,6 +1182,12 @@ class Agent:
                             )
                             break
                 if force_finalize_reason:
+                    allow_search_fallback = self._search_fallback_allowed(
+                        search_tool_counts,
+                        search_failure_count,
+                        search_has_success,
+                        search_has_fetch_content,
+                    )
                     return self._run_finalization_pass(
                         system_content,
                         dynamic_history,
@@ -1048,6 +1197,7 @@ class Agent:
                         on_event,
                         pass_id,
                         extra_rules=force_finalize_reason,
+                        allow_search_fallback=allow_search_fallback,
                     )
                 continue
 
@@ -1068,6 +1218,12 @@ class Agent:
                     skill_exchanges=skill_exchanges,
                 )
             if not final.strip():
+                allow_search_fallback = self._search_fallback_allowed(
+                    search_tool_counts,
+                    search_failure_count,
+                    search_has_success,
+                    search_has_fetch_content,
+                )
                 finalized = self._run_finalization_pass(
                     system_content,
                     dynamic_history,
@@ -1076,6 +1232,7 @@ class Agent:
                     stop_event,
                     on_event,
                     pass_id,
+                    allow_search_fallback=allow_search_fallback,
                 )
                 if finalized.status != "done":
                     return finalized

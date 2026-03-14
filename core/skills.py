@@ -384,6 +384,31 @@ class SkillRuntime:
     def list_skills(self) -> List[SkillManifest]:
         return sorted(self.skills.values(), key=lambda s: s.id)
 
+    def enabled_skills(self) -> List[SkillManifest]:
+        return [skill for skill in self.list_skills() if skill.enabled]
+
+    def skills_by_ids(self, skill_ids: List[str]) -> List[SkillManifest]:
+        out: List[SkillManifest] = []
+        seen = set()
+        for skill_id in skill_ids:
+            key = str(skill_id).strip()
+            if not key or key in seen:
+                continue
+            skill = self.skills.get(key)
+            if not skill or not skill.enabled:
+                continue
+            out.append(skill)
+            seen.add(key)
+        return out
+
+    def skill_catalog_text(self, max_tags: int = 3) -> str:
+        lines: List[str] = []
+        for skill in self.enabled_skills():
+            tags = ", ".join(skill.tags[:max_tags])
+            tag_text = f" tags: {tags}." if tags else ""
+            lines.append(f"- {skill.id}: {skill.description}.{tag_text}")
+        return "\n".join(lines)
+
     def set_enabled(self, skill_id: str, enabled: bool) -> bool:
         skill = self.skills.get(skill_id)
         if not skill:

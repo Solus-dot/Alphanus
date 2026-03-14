@@ -34,7 +34,7 @@
     "dangerously_skip_permissions": false
   },
   "skills": {
-    "selection_mode": "heuristic",
+    "selection_mode": "model",
     "max_active_skills": 2,
     "strict_capability_policy": false
   },
