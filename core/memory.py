@@ -76,12 +76,45 @@ class VectorMemory:
         self._dirty = False
         self._pending_writes = 0
         self._last_save_ts = 0.0
+        self._matrix_cache: Optional[np.ndarray] = None
+        self._norm_cache: Optional[np.ndarray] = None
+        self._type_index_cache: Dict[str, np.ndarray] = {}
+        self._all_index_cache: Optional[np.ndarray] = None
 
         self.encoder = None
         self.dimension = 384
         self._load()
         if self.eager_load_encoder:
             self._ensure_encoder()
+
+    def _invalidate_index_cache(self) -> None:
+        self._matrix_cache = None
+        self._norm_cache = None
+        self._type_index_cache = {}
+        self._all_index_cache = None
+
+    def _ensure_index_cache(self) -> None:
+        if self._matrix_cache is not None and self._norm_cache is not None and self._all_index_cache is not None:
+            return
+
+        if not self.memories:
+            self._matrix_cache = np.empty((0, self.dimension), dtype=np.float32)
+            self._norm_cache = np.empty((0,), dtype=np.float32)
+            self._all_index_cache = np.empty((0,), dtype=np.int32)
+            self._type_index_cache = {}
+            return
+
+        matrix = np.asarray([item.vector for item in self.memories], dtype=np.float32)
+        self._matrix_cache = matrix
+        self._norm_cache = np.linalg.norm(matrix, axis=1).astype(np.float32, copy=False)
+        self._all_index_cache = np.arange(len(self.memories), dtype=np.int32)
+
+        typed: Dict[str, List[int]] = {}
+        for idx, item in enumerate(self.memories):
+            typed.setdefault(item.type, []).append(idx)
+        self._type_index_cache = {
+            key: np.asarray(indexes, dtype=np.int32) for key, indexes in typed.items()
+        }
 
     def _load_transformer_encoder(self, model_name: str):
         try:
@@ -144,10 +177,13 @@ class VectorMemory:
             )
 
         self.memories = loaded
+        if loaded:
+            self.dimension = int(loaded[0].vector.shape[0])
         self._next_id = max((m.id for m in loaded), default=0) + 1
         self._dirty = False
         self._pending_writes = 0
         self._last_save_ts = time.time()
+        self._invalidate_index_cache()
 
     def _save(self) -> None:
         payload = {
@@ -221,7 +257,8 @@ class VectorMemory:
         )
         self._next_id += 1
         self.memories.append(item)
-        self._mark_dirty(force=True)
+        self._invalidate_index_cache()
+        self._mark_dirty(force=False)
         return self._to_public(item)
 
     def search(
@@ -240,16 +277,16 @@ class VectorMemory:
         if q_norm == 0:
             return []
 
-        candidate_indexes = [
-            idx for idx, item in enumerate(self.memories) if not memory_type or item.type == memory_type
-        ]
-        if not candidate_indexes:
+        self._ensure_index_cache()
+        if memory_type:
+            candidate_indexes = self._type_index_cache.get(memory_type)
+        else:
+            candidate_indexes = self._all_index_cache
+        if candidate_indexes is None or candidate_indexes.size == 0 or self._matrix_cache is None or self._norm_cache is None:
             return []
 
-        # Vectorized cosine similarity over one contiguous matrix is faster and
-        # avoids per-item Python-loop overhead for medium/large stores.
-        matrix = np.asarray([self.memories[idx].vector for idx in candidate_indexes], dtype=np.float32)
-        vec_norms = np.linalg.norm(matrix, axis=1)
+        matrix = self._matrix_cache[candidate_indexes]
+        vec_norms = self._norm_cache[candidate_indexes]
         denom = vec_norms * q_norm
         dots = matrix @ q
         scores = np.divide(
@@ -276,7 +313,7 @@ class VectorMemory:
         touched = False
         out = []
         for local_idx in selected:
-            item = self.memories[candidate_indexes[int(local_idx)]]
+            item = self.memories[int(candidate_indexes[int(local_idx)])]
             score = float(scores[int(local_idx)])
             item.access_count += 1
             item.last_accessed = now
@@ -298,7 +335,8 @@ class VectorMemory:
         self.memories = [m for m in self.memories if m.id != int(memory_id)]
         changed = len(self.memories) != before
         if changed:
-            self._mark_dirty(force=True)
+            self._invalidate_index_cache()
+            self._mark_dirty(force=False)
         return changed
 
     def stats(self) -> Dict[str, Any]:

@@ -213,6 +213,7 @@ def _store_memory(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]
         metadata=metadata or None,
         importance=args.get("importance"),
     )
+    memory.flush()
 
     meta: Dict[str, Any] = {}
     if forgotten_ids:
@@ -249,6 +250,7 @@ def _forget_memory(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any
     deleted = env.memory.forget(int(args["memory_id"]))
     if not deleted:
         raise FileNotFoundError("Memory id not found")
+    env.memory.flush()
     return {"deleted": True}
 
 
