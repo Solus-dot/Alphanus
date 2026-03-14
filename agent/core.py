@@ -485,6 +485,13 @@ class Agent:
 
         return ""
 
+    @staticmethod
+    def _unverified_search_answer() -> str:
+        return (
+            "I couldn't verify the answer from reliable web results in this turn, and I don't want to speculate "
+            "without confirmed sources."
+        )
+
     def _run_finalization_pass(
         self,
         system_content: str,
@@ -558,37 +565,24 @@ class Agent:
         first_result = coerce_result(first, full_reasoning)
         if first_result.status != "done":
             return first_result
-        if first_result.content:
+        leaked_markup = "<tool_call>" in first.content.lower()
+        if first_result.content and not leaked_markup:
             return first_result
-        if "<tool_call>" not in first.content.lower():
+        if not leaked_markup:
             return first_result
-
-        second = finalize_once(
-            extra_rules
-            + "\nMarkup correction rule:\n"
-            + "- Your previous draft emitted raw tool markup.\n"
-            + "- Respond again in plain natural language only.",
-            "final_retry",
-        )
-        if isinstance(second, AgentTurnResult):
-            return second
-        second_result = coerce_result(second, first_result.reasoning)
-        if second_result.content:
-            return second_result
         fallback = self._fallback_answer_from_history(dynamic_history)
         if fallback:
             return AgentTurnResult(
                 status="done",
                 content=fallback,
-                reasoning=second_result.reasoning,
+                reasoning=first_result.reasoning,
                 skill_exchanges=skill_exchanges,
             )
         return AgentTurnResult(
-            status="error",
-            content="",
-            reasoning=second_result.reasoning,
+            status="done",
+            content=self._unverified_search_answer(),
+            reasoning=first_result.reasoning,
             skill_exchanges=skill_exchanges,
-            error="Finalization emitted tool markup instead of a user-facing answer",
         )
 
     @staticmethod
@@ -757,6 +751,10 @@ class Agent:
         search_has_fetch_content = False
         search_failure_count = 0
         search_mode = self._is_search_skill_selected(selected)
+        blocked_fetch_domains: set[str] = set()
+        fetched_urls: set[str] = set()
+        max_search_calls = 2
+        max_fetch_calls = 2
 
         while True:
             pass_index += 1
@@ -879,6 +877,43 @@ class Agent:
                         },
                     )
 
+                    if search_mode and call.name == "web_search" and search_tool_counts["web_search"] >= max_search_calls:
+                        force_finalize_reason = (
+                            "Search completion rule:\n"
+                            "- The search-attempt budget is exhausted.\n"
+                            "- Answer only from the evidence already gathered.\n"
+                            "- Do not issue more search calls."
+                        )
+                        break
+                    if search_mode and call.name == "fetch_url":
+                        if search_tool_counts["fetch_url"] >= max_fetch_calls:
+                            force_finalize_reason = (
+                                "Search completion rule:\n"
+                                "- The page-fetch budget is exhausted.\n"
+                                "- Answer only from the evidence already gathered.\n"
+                                "- Do not fetch more pages."
+                            )
+                            break
+                        raw_url = str(call.arguments.get("url", "")).strip()
+                        if raw_url:
+                            host = urllib.parse.urlparse(raw_url).netloc.lower()
+                            if raw_url in fetched_urls:
+                                force_finalize_reason = (
+                                    "Search completion rule:\n"
+                                    "- This URL was already fetched in this turn.\n"
+                                    "- Do not retry the same page.\n"
+                                    "- Answer from the evidence already gathered."
+                                )
+                                break
+                            if host and host in blocked_fetch_domains:
+                                force_finalize_reason = (
+                                    "Search completion rule:\n"
+                                    "- This source domain already blocked a fetch attempt in this turn.\n"
+                                    "- Do not retry the same blocked domain.\n"
+                                    "- Answer from the remaining evidence."
+                                )
+                                break
+
                     result = self.skill_runtime.execute_tool_call(
                         call.name,
                         call.arguments,
@@ -913,9 +948,21 @@ class Agent:
                             search_has_success = True
                             if call.name == "fetch_url":
                                 search_has_fetch_content = True
+                                fetched_payload = result.get("data") if isinstance(result.get("data"), dict) else {}
+                                for key in ("url", "final_url"):
+                                    seen_url = str(fetched_payload.get(key, "")).strip()
+                                    if seen_url:
+                                        fetched_urls.add(seen_url)
                         else:
                             if call.name == "web_search":
                                 search_failure_count += 1
+                            if call.name == "fetch_url":
+                                error_obj = result.get("error") or {}
+                                message = str(error_obj.get("message", "")).lower()
+                                raw_url = str(call.arguments.get("url", "")).strip()
+                                host = urllib.parse.urlparse(raw_url).netloc.lower()
+                                if host and any(code in message for code in ("http 401", "http 403", "http 429")):
+                                    blocked_fetch_domains.add(host)
                             if call.name == "fetch_url" and search_failure_count >= 2:
                                 force_finalize_reason = (
                                     "Search completion rule:\n"
@@ -935,10 +982,7 @@ class Agent:
                         if call.name == "web_search" and not result.get("ok") and search_failure_count >= 2 and not search_has_success:
                             return AgentTurnResult(
                                 status="done",
-                                content=(
-                                    "I couldn't verify Meta's latest acquisitions because the current web search provider "
-                                    "returned no parsable results. I don't want to speculate without reliable sources."
-                                ),
+                                content=self._unverified_search_answer(),
                                 reasoning=full_reasoning,
                                 skill_exchanges=skill_exchanges,
                             )
@@ -950,7 +994,7 @@ class Agent:
                                 "- Do not keep retrying searches indefinitely."
                             )
                             break
-                        if call.name == "web_search" and search_tool_counts["web_search"] >= 3 and search_has_success:
+                        if call.name == "web_search" and search_tool_counts["web_search"] >= max_search_calls and search_has_success:
                             force_finalize_reason = (
                                 "Search completion rule:\n"
                                 "- Enough search attempts have already been made.\n"
@@ -958,7 +1002,7 @@ class Agent:
                                 "- Do not issue more search calls."
                             )
                             break
-                        if call.name == "fetch_url" and search_tool_counts["fetch_url"] >= 2 and search_has_fetch_content:
+                        if call.name == "fetch_url" and search_tool_counts["fetch_url"] >= max_fetch_calls and search_has_fetch_content:
                             force_finalize_reason = (
                                 "Search completion rule:\n"
                                 "- Enough pages have been fetched.\n"

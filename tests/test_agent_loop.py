@@ -221,7 +221,7 @@ def test_agent_requests_final_answer_if_post_tool_content_empty(mocker, runtime:
     )
 
 
-def test_finalization_retries_when_model_leaks_tool_markup(mocker, runtime: SkillRuntime):
+def test_finalization_falls_back_immediately_when_model_leaks_tool_markup(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
             "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
@@ -258,14 +258,6 @@ def test_finalization_retries_when_model_leaks_tool_markup(mocker, runtime: Skil
                     "data: [DONE]",
                 ]
             )
-        if len(chat_reqs) == 3:
-            return FakeResponse(
-                [
-                    'data: {"choices":[{"delta":{"content":"Meta has not made many public acquisitions recently."}}]}',
-                    'data: {"choices":[{"finish_reason":"stop"}]}',
-                    "data: [DONE]",
-                ]
-            )
         raise AssertionError("Unexpected extra completion call")
 
     mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
@@ -278,8 +270,8 @@ def test_finalization_retries_when_model_leaks_tool_markup(mocker, runtime: Skil
 
     assert result.status == "done"
     assert "<tool_call>" not in result.content
-    assert "Meta has not made many public acquisitions recently." in result.content
-    assert len(chat_reqs) == 3
+    assert "I couldn't verify the answer from reliable web results" in result.content
+    assert len(chat_reqs) == 2
 
 
 def test_finalization_falls_back_to_sources_when_markup_repeats(mocker, runtime: SkillRuntime):
@@ -354,6 +346,7 @@ def test_finalization_falls_back_to_sources_when_markup_repeats(mocker, runtime:
     assert result.status == "done"
     assert "Relevant sources to check:" in result.content
     assert "https://about.fb.com/news/" in result.content
+    assert len(chat_reqs) == 2
 
 
 def test_search_failures_return_safe_non_speculative_answer(mocker, runtime: SkillRuntime):
@@ -434,6 +427,104 @@ def execute(tool_name, args, env):
 
     assert result.status == "done"
     assert "I couldn't verify" in result.content
+
+
+def test_search_tool_call_cap_forces_finalization_after_two_searches(mocker, runtime: SkillRuntime):
+    search_skill = runtime.skills_dir / "search-ops"
+    search_skill.mkdir(parents=True)
+    (search_skill / "SKILL.md").write_text(
+        """
+---
+name: search-ops
+description: web research
+version: 1.2.0
+allowed-tools: web_search
+metadata:
+  tags: [web, latest]
+  triggers:
+    keywords: [latest, web]
+---
+search
+""".strip(),
+        encoding="utf-8",
+    )
+    (search_skill / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "web_search": {
+    "capability": "web_search",
+    "description": "Search web",
+    "parameters": {
+      "type": "object",
+      "properties": {"query": {"type": "string"}},
+      "required": ["query"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    return {
+      "ok": True,
+      "data": {
+        "results": [
+          {"title": "Example Source", "url": "https://example.com", "domain": "example.com", "snippet": "Example"}
+        ]
+      },
+      "error": None,
+      "meta": {}
+    }
+""".strip(),
+        encoding="utf-8",
+    )
+    runtime.load_skills()
+
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    chat_reqs = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        if len(chat_reqs) in {1, 2}:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"meta latest acquisitions\\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"Use the verified sources already gathered."}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "tell me the latest acquisitions"}],
+        user_input="tell me the latest acquisitions",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert result.content == "Use the verified sources already gathered."
+    assert len(chat_reqs) == 3
 
 
 def test_agent_transport_error_marks_error(mocker, runtime: SkillRuntime):
