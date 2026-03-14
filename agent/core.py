@@ -350,6 +350,7 @@ class Agent:
         routing_system = (
             "You are selecting local skills for the next assistant turn.\n"
             "Choose the smallest set of skills needed for the user's request.\n"
+            "Use the skill descriptions, tags, and available tool names to infer intent.\n"
             f"Return strict JSON only in the form {{\"skills\": [\"skill-id\"]}} with at most {limit} ids.\n"
             "Return an empty list when no skill is needed.\n"
             "Do not explain your choice."

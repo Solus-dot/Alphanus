@@ -1,6 +1,6 @@
 ---
 name: utilities
-description: Utility actions for weather, file search, URL open, and YouTube playback.
+description: Utility actions for weather, local file search, opening URLs, and playing videos or songs on YouTube.
 allowed-tools: get_weather search_home_files open_url play_youtube
 metadata:
   version: "1.1.0"
@@ -11,6 +11,9 @@ metadata:
     - search
     - open
     - youtube
+    - play
+    - music
+    - video
 ---
 Use utility tools for quick lookup tasks.
 

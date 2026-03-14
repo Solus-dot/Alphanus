@@ -406,7 +406,9 @@ class SkillRuntime:
         for skill in self.enabled_skills():
             tags = ", ".join(skill.tags[:max_tags])
             tag_text = f" tags: {tags}." if tags else ""
-            lines.append(f"- {skill.id}: {skill.description}.{tag_text}")
+            tools = ", ".join(skill.allowed_tools[:4])
+            tool_text = f" tools: {tools}." if tools else ""
+            lines.append(f"- {skill.id}: {skill.description}.{tag_text}{tool_text}")
         return "\n".join(lines)
 
     def set_enabled(self, skill_id: str, enabled: bool) -> bool:

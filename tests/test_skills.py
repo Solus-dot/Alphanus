@@ -422,6 +422,40 @@ Design well.
     assert selected[0].id == "search-ops"
 
 
+def test_skill_catalog_includes_tools_for_model_routing(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "utilities").mkdir(parents=True)
+
+    (skills / "utilities" / "SKILL.md").write_text(
+        """
+---
+name: utilities
+description: Open URLs and play songs or videos on YouTube.
+allowed-tools: open_url play_youtube
+metadata:
+  tags: [open, youtube, play, music]
+---
+Utilities.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    catalog = runtime.skill_catalog_text()
+    assert "utilities" in catalog
+    assert "play songs or videos on YouTube" in catalog
+    assert "tools: open_url, play_youtube" in catalog
+
+
 def test_agentskill_name_must_match_directory(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
