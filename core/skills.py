@@ -534,11 +534,43 @@ class SkillRuntime:
             head = lines[0] if lines else ""
             body = "\n".join(lines[1:])
             allowed = max(0, remaining - len(head) - 1)
-            snippet = body[:allowed].rstrip()
+            snippet = self._safe_prompt_snippet(body, allowed)
             out.append(head + "\n" + snippet)
             used = budget
 
         return "\n\n".join(out)
+
+    @staticmethod
+    def _safe_prompt_snippet(body: str, allowed: int) -> str:
+        if allowed <= 0 or not body:
+            return ""
+        if len(body) <= allowed:
+            return body.rstrip()
+
+        kept: List[str] = []
+        used = 0
+        fence_balance = 0
+        for line in body.splitlines():
+            addition = len(line) if not kept else len(line) + 1
+            if used + addition > allowed:
+                break
+            kept.append(line)
+            used += addition
+            if line.lstrip().startswith("```"):
+                fence_balance += 1
+
+        while kept and fence_balance % 2 == 1:
+            removed = kept.pop()
+            if removed.lstrip().startswith("```"):
+                fence_balance -= 1
+
+        if kept:
+            return "\n".join(kept).rstrip()
+
+        clipped = body[:allowed].rstrip()
+        if clipped.count("```") % 2 == 1:
+            clipped = clipped.rsplit("```", 1)[0].rstrip()
+        return clipped
 
     def allowed_tool_names(self, selected: List[SkillManifest]) -> List[str]:
         selected_map = {skill.id: skill for skill in selected}

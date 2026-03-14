@@ -217,6 +217,58 @@ def test_recall_memory_lexical_fallback_avoids_substring_matches(tmp_path: Path)
     assert recalled["data"]["hits"] == []
 
 
+def test_recall_memory_birthday_query_finds_birthdate_fact(tmp_path: Path):
+    runtime, ws = _memory_runtime(tmp_path)
+    skill = runtime.get_skill("memory-rag")
+    assert skill is not None
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
+
+    stored = runtime.execute_tool_call(
+        "store_memory",
+        {"text": "My birthdate is August 5, 2005"},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert stored["ok"] is True
+
+    recalled = runtime.execute_tool_call(
+        "recall_memory",
+        {"query": "birthday", "top_k": 3},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert recalled["ok"] is True
+    hits = recalled["data"]["hits"]
+    assert hits
+    assert any("birthdate is august 5, 2005" in str(hit.get("text", "")).lower() for hit in hits)
+
+
+def test_recall_memory_favourite_query_finds_favorite_fact(tmp_path: Path):
+    runtime, ws = _memory_runtime(tmp_path)
+    skill = runtime.get_skill("memory-rag")
+    assert skill is not None
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
+
+    stored = runtime.execute_tool_call(
+        "store_memory",
+        {"text": "My favorite editor is Neovim"},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert stored["ok"] is True
+
+    recalled = runtime.execute_tool_call(
+        "recall_memory",
+        {"query": "my favourite editor", "top_k": 3},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert recalled["ok"] is True
+    hits = recalled["data"]["hits"]
+    assert hits
+    assert any("favorite editor is neovim" in str(hit.get("text", "")).lower() for hit in hits)
+
+
 def test_default_hash_backend_never_attempts_transformer(monkeypatch, tmp_path: Path):
     called = {"count": 0}
 

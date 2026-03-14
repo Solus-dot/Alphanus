@@ -67,6 +67,7 @@ HELP_SECTIONS = [
         "SKILLS",
         [
             ("/skills", "List installed skills"),
+            ("/reload", "Reload skills from disk"),
             ("/skill on <id>", "Enable skill"),
             ("/skill off <id>", "Disable skill"),
             ("/skill reload", "Reload skills from disk"),
@@ -97,6 +98,7 @@ COMMAND_ENTRIES = [
     CommandEntry("/switch <n>", "/switch ", "Switch to a child branch"),
     CommandEntry("/tree", "/tree", "Render the full conversation tree"),
     CommandEntry("/skills", "/skills", "List installed skills"),
+    CommandEntry("/reload", "/reload", "Reload skills from disk"),
     CommandEntry("/skill on <id>", "/skill on ", "Enable a skill"),
     CommandEntry("/skill off <id>", "/skill off ", "Disable a skill"),
     CommandEntry("/skill reload", "/skill reload", "Reload skills from disk"),
@@ -141,6 +143,7 @@ class AlphanusTUI(App):
         width: 1fr;
         height: 1fr;
         background: #1c1c1c;
+        overflow-x: hidden;
         scrollbar-size: 1 1;
         scrollbar-color: #586272 #232830;
     }
@@ -150,6 +153,7 @@ class AlphanusTUI(App):
         height: auto;
         background: #1c1c1c;
         padding: 0 2;
+        overflow-x: hidden;
         scrollbar-size: 0 0;
     }
 
@@ -159,6 +163,7 @@ class AlphanusTUI(App):
         background: #1c1c1c;
         display: none;
         padding: 0 2;
+        overflow-x: hidden;
     }
 
     #sidebar {
@@ -1485,6 +1490,11 @@ class AlphanusTUI(App):
 
         if cmd == "/skills":
             self._cmd_skills()
+            return True
+
+        if cmd == "/reload":
+            self.agent.skill_runtime.load_skills()
+            self._write_info("Reloaded skills")
             return True
 
         if cmd == "/skill":

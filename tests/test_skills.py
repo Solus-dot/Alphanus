@@ -456,6 +456,58 @@ Utilities.
     assert "tools: open_url, play_youtube" in catalog
 
 
+def test_compose_skill_block_does_not_leave_unclosed_fence(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "docs-skill").mkdir(parents=True)
+
+    (skills / "docs-skill" / "SKILL.md").write_text(
+        """
+---
+name: docs-skill
+description: Very long skill docs.
+---
+Intro line.
+
+```python
+print("alpha")
+print("beta")
+print("gamma")
+```
+
+Closing note.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("docs-skill")
+    assert skill is not None
+
+    block = runtime.compose_skill_block(
+        [skill],
+        SkillContext(
+            user_input="use docs",
+            branch_labels=[],
+            attachments=[],
+            workspace_root=str(ws),
+            memory_hits=[],
+        ),
+        context_limit=40,
+        ratio=1.0,
+        hard_cap=1,
+    )
+
+    assert block.count("```") % 2 == 0
+
+
 def test_agentskill_name_must_match_directory(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"

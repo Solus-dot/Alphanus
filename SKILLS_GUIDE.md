@@ -92,6 +92,10 @@ Important runtime behavior:
 - `TOOL_SPECS` is read lazily from source at skill-load time without importing the module.
 - The Python module itself is imported only on first execution.
 - After first execution, the loaded module is cached.
+- `TOOL_SPECS` must be a static Python dictionary literal.
+  - Supported: direct hard-coded dicts.
+  - Not supported: computed merges, function-built specs, schema loading at import time, or other dynamic Python expressions.
+  - Reason: runtime reads specs safely with AST/literal evaluation before importing the module.
 - Native tools receive `ToolExecutionEnv` directly:
   - `workspace`
   - `memory`
@@ -194,6 +198,9 @@ Skill does not load:
 4. Ensure `metadata` is a mapping if present.
 5. Ensure every command definition has all required keys.
 6. Ensure `tools.py` contains a literal `TOOL_SPECS` mapping and an `execute()` function.
+7. If a native skill exposes a large prompt, runtime may truncate it to fit context budget.
+   - Keep critical instructions near the top.
+   - Avoid depending on a single long trailing example block.
 
 Tool call fails with "no JSON output":
 1. Ensure script prints JSON on the final stdout line.

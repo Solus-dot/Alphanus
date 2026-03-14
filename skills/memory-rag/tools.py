@@ -83,6 +83,14 @@ _FACT_IS_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _FACT_I_AM_PATTERN = re.compile(r"\bi am\s+([^.!?\n]{1,80})", re.IGNORECASE)
+_QUERY_ALIAS_GROUPS = (
+    ("name", "full name", "called", "identity"),
+    ("birthday", "birthdate", "date of birth", "birth year", "age"),
+    ("favorite", "favourite", "likes", "prefers"),
+    ("editor", "ide"),
+    ("job", "work", "occupation", "role"),
+    ("city", "location", "address", "live"),
+)
 
 
 def _normalize_whitespace(value: str) -> str:
@@ -179,6 +187,44 @@ def _lexical_fallback(memory, query: str, top_k: int, memory_type):
     return out
 
 
+def _query_variants(query: str) -> list[str]:
+    base = " ".join(str(query).split()).strip()
+    if not base:
+        return []
+
+    lowered = base.lower()
+    variants = [base]
+
+    def _add(candidate: str) -> None:
+        candidate = " ".join(candidate.split()).strip()
+        if candidate and candidate not in variants:
+            variants.append(candidate)
+
+    for group in _QUERY_ALIAS_GROUPS:
+        present = [term for term in group if term in lowered]
+        if not present:
+            continue
+        for old in present:
+            for new in group:
+                if new != old:
+                    _add(lowered.replace(old, new))
+
+    if lowered.startswith("my "):
+        _add("user " + lowered[3:])
+    if lowered.startswith("user "):
+        _add("my " + lowered[5:])
+
+    personal_fact_terms = {
+        term
+        for group in _QUERY_ALIAS_GROUPS
+        for term in group
+    }
+    if "personal information" not in lowered and any(term in lowered for term in personal_fact_terms):
+        _add("user personal information")
+
+    return variants
+
+
 def _store_memory(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     memory = env.memory
     text = str(args["text"])
@@ -231,14 +277,36 @@ def _recall_memory(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any
     min_score = args.get("min_score")
     threshold = 0.18 if min_score is None else float(min_score)
     memory_type = args.get("memory_type")
-    hits = env.memory.search(
-        query=args["query"],
-        top_k=top_k,
-        memory_type=memory_type,
-        min_score=threshold,
-    )
+    hits = []
+    seen_ids = set()
+    for query in _query_variants(str(args["query"])):
+        direct_hits = env.memory.search(
+            query=query,
+            top_k=top_k,
+            memory_type=memory_type,
+            min_score=threshold,
+        )
+        for hit in direct_hits:
+            memory_id = int(hit.get("id", 0))
+            if memory_id and memory_id not in seen_ids:
+                hits.append(hit)
+                seen_ids.add(memory_id)
+            if len(hits) >= max(1, top_k):
+                break
+        if len(hits) >= max(1, top_k):
+            break
     if not hits:
-        hits = _lexical_fallback(env.memory, str(args["query"]), top_k=top_k, memory_type=memory_type)
+        for query in _query_variants(str(args["query"])):
+            fallback_hits = _lexical_fallback(env.memory, query, top_k=top_k, memory_type=memory_type)
+            for hit in fallback_hits:
+                memory_id = int(hit.get("id", 0))
+                if memory_id and memory_id not in seen_ids:
+                    hits.append(hit)
+                    seen_ids.add(memory_id)
+                if len(hits) >= max(1, top_k):
+                    break
+            if hits:
+                break
     return {"hits": hits}
 
 
