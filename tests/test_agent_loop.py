@@ -527,6 +527,100 @@ def execute(tool_name, args, env):
     assert len(chat_reqs) == 3
 
 
+def test_time_sensitive_query_forces_search_before_accepting_answer(mocker, runtime: SkillRuntime):
+    search_skill = runtime.skills_dir / "search-ops"
+    search_skill.mkdir(parents=True)
+    (search_skill / "SKILL.md").write_text(
+        """
+---
+name: search-ops
+description: Search the web for recent information.
+allowed-tools: web_search
+metadata:
+  tags: [web, latest, recent, current, news]
+---
+Search the internet.
+""".strip(),
+        encoding="utf-8",
+    )
+    (search_skill / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "web_search": {
+    "capability": "web_search",
+    "description": "Search web",
+    "parameters": {
+      "type": "object",
+      "properties": {"query": {"type": "string"}},
+      "required": ["query"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    return {"ok": True, "data": {"results": [{"title": "Example", "url": "https://example.com", "domain": "example.com", "snippet": "Verified"}]}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+    runtime.load_skills()
+
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    chat_reqs = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"As of my knowledge, Meta has not announced major new acquisitions."}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        if len(chat_reqs) == 2:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"meta latest acquisitions\\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"I checked current web results before answering."}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "tell me about the latest open source models"}],
+        user_input="tell me about the latest open source models",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert result.content == "I checked current web results before answering."
+    assert len(chat_reqs) == 3
+
+
 def test_agent_transport_error_marks_error(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {

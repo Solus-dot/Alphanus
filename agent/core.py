@@ -492,6 +492,24 @@ class Agent:
             "without confirmed sources."
         )
 
+    @staticmethod
+    def _is_time_sensitive_query(text: str) -> bool:
+        lowered = text.lower()
+        phrases = (
+            "latest",
+            "recent",
+            "current",
+            "today",
+            "right now",
+            "up to date",
+            "current situation",
+            "news",
+            "this week",
+            "this month",
+            "as of",
+        )
+        return any(phrase in lowered for phrase in phrases)
+
     def _run_finalization_pass(
         self,
         system_content: str,
@@ -751,10 +769,12 @@ class Agent:
         search_has_fetch_content = False
         search_failure_count = 0
         search_mode = self._is_search_skill_selected(selected)
+        time_sensitive_query = self._is_time_sensitive_query(user_input)
         blocked_fetch_domains: set[str] = set()
         fetched_urls: set[str] = set()
         max_search_calls = 2
         max_fetch_calls = 2
+        forced_search_retry = False
 
         while True:
             pass_index += 1
@@ -768,6 +788,14 @@ class Agent:
                 )
 
             system_content = self._compose_system_content(selected, ctx)
+            if search_mode and time_sensitive_query and forced_search_retry and search_tool_counts["web_search"] == 0:
+                system_content += (
+                    "\n\nMandatory retrieval rule:\n"
+                    "- This user request is time-sensitive.\n"
+                    "- You must call web_search before answering.\n"
+                    "- Do not answer from memory cutoff or prior knowledge alone.\n"
+                    "- If web_search fails, say you could not verify the answer."
+                )
             system_messages = [{"role": "system", "content": system_content}]
 
             model_messages = system_messages + dynamic_history
@@ -1025,6 +1053,20 @@ class Agent:
 
             # stop or length: final answer produced
             final = stream_result.content
+            if (
+                search_mode
+                and time_sensitive_query
+                and search_tool_counts["web_search"] == 0
+            ):
+                if not forced_search_retry:
+                    forced_search_retry = True
+                    continue
+                return AgentTurnResult(
+                    status="done",
+                    content=self._unverified_search_answer(),
+                    reasoning=full_reasoning,
+                    skill_exchanges=skill_exchanges,
+                )
             if not final.strip():
                 finalized = self._run_finalization_pass(
                     system_content,

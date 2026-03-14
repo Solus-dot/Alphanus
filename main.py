@@ -31,7 +31,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "ca_bundle_path": "",
         "allow_cross_host_endpoints": False,
         "max_tokens": None,
-        "context_budget_max_tokens": 1024,
+        "context_budget_max_tokens": 2048,
         "max_action_depth": 10,
         "max_tool_result_chars": 12000,
         "max_reasoning_chars": 20000,
@@ -58,7 +58,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "skills": {
         "selection_mode": "heuristic",
-        "max_active_skills": 6,
+        "max_active_skills": 2,
         "strict_capability_policy": False
     },
     "search": {

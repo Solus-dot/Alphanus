@@ -11,6 +11,10 @@ metadata:
     - internet
     - research
     - latest
+    - recent
+    - current
+    - news
+    - update
     - lookup
   triggers:
     keywords:
@@ -18,7 +22,14 @@ metadata:
       - internet
       - online
       - latest
+      - recent
+      - current
+      - today
+      - now
       - news
+      - updates
+      - current situation
+      - up to date
       - research
       - look up
       - search the web

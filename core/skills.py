@@ -53,6 +53,18 @@ _STOPWORDS = {
     "write",
 }
 
+_TIME_SENSITIVE_TOKENS = {
+    "recent",
+    "latest",
+    "current",
+    "today",
+    "now",
+    "breaking",
+    "update",
+    "updates",
+    "news",
+}
+
 
 def _ok(data: Any, duration_ms: int) -> Dict[str, Any]:
     return {"ok": True, "data": data, "error": None, "meta": {"duration_ms": duration_ms}}
@@ -396,6 +408,7 @@ class SkillRuntime:
         text = ctx.user_input.lower()
         attachments = " ".join(ctx.attachments).lower()
         query_tokens = set(self._match_tokens(ctx.user_input))
+        time_sensitive = bool(query_tokens & _TIME_SENSITIVE_TOKENS)
         scored: List[Tuple[int, SkillManifest]] = []
 
         for skill in self.skills.values():
@@ -422,6 +435,12 @@ class SkillRuntime:
                 if any(token in skill.name.lower() for token in overlap):
                     score += 4
 
+            if time_sensitive:
+                temporal_text = " ".join([skill.description] + list(skill.tags))
+                temporal_tokens = set(self._match_tokens(temporal_text))
+                if temporal_tokens & {"latest", "recent", "current", "news", "internet", "web", "online", "lookup"}:
+                    score += 18
+
             if "memory" in skill.id and ctx.memory_hits:
                 score += 10
 
@@ -438,7 +457,9 @@ class SkillRuntime:
                 return enabled
             return enabled[: self.max_active_skills]
 
-        scored = self.score_skills(ctx)
+        scored = [(score, skill) for score, skill in self.score_skills(ctx) if score > 0]
+        if not scored:
+            return []
         limit = self.max_active_skills if self.max_active_skills > 0 else top_n
         return [skill for _, skill in scored[: max(1, limit)]]
 
@@ -448,7 +469,7 @@ class SkillRuntime:
         ctx: SkillContext,
         context_limit: int,
         ratio: float = 0.15,
-        hard_cap: int = 3,
+        hard_cap: int = 2,
     ) -> str:
         selected = selected[:hard_cap]
         if not selected:

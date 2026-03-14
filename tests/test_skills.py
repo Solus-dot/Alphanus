@@ -316,6 +316,112 @@ def execute(tool_name, args, env):
     assert selected[0].id == "frontend-design"
 
 
+def test_heuristic_selection_skips_zero_score_skills(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "frontend-design").mkdir(parents=True)
+    (skills / "search-ops").mkdir(parents=True)
+
+    (skills / "frontend-design" / "SKILL.md").write_text(
+        """
+---
+name: frontend-design
+description: Create distinctive landing pages, HTML/CSS interfaces, and polished web UI.
+metadata:
+  tags: [html, css, design]
+---
+Design well.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "search-ops" / "SKILL.md").write_text(
+        """
+---
+name: search-ops
+description: Search the web for recent information.
+metadata:
+  tags: [web, latest, research]
+---
+Search the internet.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"skills": {"selection_mode": "heuristic", "max_active_skills": 2}},
+    )
+
+    ctx = SkillContext(
+        user_input="hi",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    assert runtime.select_skills(ctx) == []
+
+
+def test_time_sensitive_query_prefers_search_skill(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "search-ops").mkdir(parents=True)
+    (skills / "frontend-design").mkdir(parents=True)
+
+    (skills / "search-ops" / "SKILL.md").write_text(
+        """
+---
+name: search-ops
+description: Search the web and fetch page content for research and up-to-date information.
+metadata:
+  tags: [web, internet, latest, recent, current, news, lookup]
+---
+Search the internet.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "frontend-design" / "SKILL.md").write_text(
+        """
+---
+name: frontend-design
+description: Create distinctive landing pages, HTML/CSS interfaces, and polished web UI.
+metadata:
+  tags: [html, css, design]
+---
+Design well.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"skills": {"selection_mode": "heuristic", "max_active_skills": 2}},
+    )
+
+    ctx = SkillContext(
+        user_input="what is the current situation in iran",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    selected = runtime.select_skills(ctx)
+    assert selected
+    assert selected[0].id == "search-ops"
+
+
 def test_agentskill_name_must_match_directory(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
