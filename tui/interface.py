@@ -607,7 +607,7 @@ class AlphanusTUI(App):
         return True
 
     def _reload_skills(self) -> bool:
-        self.agent.skill_runtime.load_skills()
+        self.agent.reload_skills()
         self._write_info("Reloaded skills")
         return True
 

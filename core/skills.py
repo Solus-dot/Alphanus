@@ -302,6 +302,7 @@ class SkillRuntime:
         return True
 
     def load_skills(self) -> None:
+        previous_enabled = {skill_id: skill.enabled for skill_id, skill in self.skills.items()}
         self.generation += 1
         self.skills = {}
         self._tool_registry = {}
@@ -320,6 +321,9 @@ class SkillRuntime:
 
                 if manifest.id in self.skills:
                     raise ValueError(f"Duplicate skill id '{manifest.id}'")
+
+                if manifest.id in previous_enabled:
+                    manifest.enabled = previous_enabled[manifest.id]
 
                 manifest.available, manifest.availability_reason = self._check_skill_availability(manifest)
                 if not manifest.available:

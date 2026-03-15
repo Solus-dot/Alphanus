@@ -272,6 +272,42 @@ Beta.
     assert [skill.id for skill in snap3.skills] == ["alpha", "beta"]
 
 
+def test_agent_reload_skills_clears_cached_snapshot(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "alpha").mkdir(parents=True)
+
+    (skills / "alpha" / "SKILL.md").write_text(
+        """
+---
+name: alpha
+description: Alpha skill.
+---
+Alpha.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"skills": {"selection_mode": "model", "max_active_skills": 2}},
+    )
+    agent = Agent({"agent": {}}, runtime)
+
+    snap1 = agent._get_skill_snapshot()
+    generation = agent.reload_skills()
+    snap2 = agent._get_skill_snapshot()
+
+    assert generation == runtime.generation
+    assert snap2 is not snap1
+    assert snap2.generation == runtime.generation
+
+
 def test_finalization_falls_back_immediately_when_model_leaks_tool_markup(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {

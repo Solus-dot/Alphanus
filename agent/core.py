@@ -308,6 +308,11 @@ class Agent:
         self._skill_snapshot = SkillRoutingSnapshot(generation=generation, skills=skills, catalog=catalog)
         return self._skill_snapshot
 
+    def reload_skills(self) -> int:
+        self.skill_runtime.load_skills()
+        self._skill_snapshot = None
+        return int(getattr(self.skill_runtime, "generation", 0))
+
     def _compose_system_content(self, selected: List[Any], ctx: SkillContext) -> str:
         skill_block = self.skill_runtime.compose_skill_block(
             selected,

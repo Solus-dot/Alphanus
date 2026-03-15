@@ -529,6 +529,38 @@ Binary required.
     assert "definitely-not-a-real-binary-xyz" in skill.availability_reason
 
 
+def test_reload_preserves_manual_skill_toggle(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "toggle-skill").mkdir(parents=True)
+
+    (skills / "toggle-skill" / "SKILL.md").write_text(
+        """
+---
+name: toggle-skill
+description: Toggle me.
+---
+Toggle.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    assert runtime.set_enabled("toggle-skill", False) is True
+    runtime.load_skills()
+    skill = runtime.get_skill("toggle-skill")
+    assert skill is not None
+    assert skill.enabled is False
+
+
 def test_compose_skill_block_does_not_leave_unclosed_fence(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
