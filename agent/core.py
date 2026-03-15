@@ -325,6 +325,7 @@ class Agent:
             return None
         text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE | re.DOTALL).strip()
         parsed_ids: List[str] = []
+        parsed_explicitly = False
         try:
             data = json.loads(text)
             if isinstance(data, dict):
@@ -332,12 +333,21 @@ class Agent:
             else:
                 raw = data
             if isinstance(raw, list):
+                parsed_explicitly = True
                 parsed_ids = [str(item).strip() for item in raw]
+            elif raw == []:
+                parsed_explicitly = True
         except Exception:
             parsed_ids = []
 
+        lowered = text.lower()
+        if parsed_explicitly and not parsed_ids:
+            return []
+
+        if lowered in {"none", "no skills", "[]", "{\"skills\": []}", "{\"skills\":[]}"}:
+            return []
+
         if not parsed_ids:
-            lowered = text.lower()
             parsed_ids = [skill_id for skill_id in valid_ids if skill_id.lower() in lowered]
 
         out: List[str] = []

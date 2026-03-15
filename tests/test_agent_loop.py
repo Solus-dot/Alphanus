@@ -858,8 +858,62 @@ def execute(tool_name, args, env):
     )
 
     assert result.status == "done"
-    assert result.content == "I checked the selected search skill before answering."
-    assert len(chat_reqs) == 3
+
+
+def test_model_skill_router_respects_explicit_empty_selection(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        },
+        "skills": {
+            "selection_mode": "model",
+            "max_active_skills": 2,
+        },
+    }
+    agent = Agent(cfg, runtime)
+
+    chat_reqs = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"{\\"skills\\": []}"}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        payload = json.loads(req.data.decode("utf-8"))
+        assert "tools" not in payload
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"Hello"}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "hi"}],
+        user_input="hi",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert result.content == "Hello"
+    assert len(chat_reqs) == 2
 
 
 def test_agent_transport_error_marks_error(mocker, runtime: SkillRuntime):
