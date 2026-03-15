@@ -1552,12 +1552,15 @@ class AlphanusTUI(App):
         self._write_section_heading("Skills")
         name_col = max((len(skill.id) for skill in skills), default=0) + 2
         for skill in skills:
-            state = "on" if skill.enabled else "off"
-            color = "green" if skill.enabled else "red"
+            state, color = self.agent.skill_runtime.skill_status_label(skill)
+            source = self.agent.skill_runtime.skill_source_label(skill)
+            suffix = f" [dim]({esc(source)})[/dim]" if source else ""
             self._write(
                 f"  [bold]{esc(skill.id):<{name_col}}[/bold][dim]({esc(skill.version)})[/dim] "
-                f"[{color}]{state}[/{color}] [dim]{esc(skill.description)}[/dim]"
+                f"[{color}]{state}[/{color}] [dim]{esc(skill.description)}[/dim]{suffix}"
             )
+            if not skill.available and skill.availability_reason:
+                self._write(f"    [yellow]blocked:[/yellow] [dim]{esc(skill.availability_reason)}[/dim]")
 
     def _cmd_skill(self, arg: str) -> bool:
         parts = arg.split()
@@ -1591,11 +1594,13 @@ class AlphanusTUI(App):
             keywords = ", ".join(skill.triggers.get("keywords", [])) or "none"
             file_ext = ", ".join(skill.triggers.get("file_ext", [])) or "none"
             tools = ", ".join(skill.allowed_tools) or "all"
-            enabled = "on" if skill.enabled else "off"
-            color = "green" if skill.enabled else "red"
+            enabled, color = self.agent.skill_runtime.skill_status_label(skill)
             self._write_detail_line("id", skill.id)
             self._write_detail_line("version", skill.version)
             self._write_detail_line("status", f"[{color}]{enabled}[/{color}]", value_markup=True)
+            self._write_detail_line("source", self.agent.skill_runtime.skill_source_label(skill) or "unknown")
+            self._write_detail_line("compatibility", skill.compatibility or "none")
+            self._write_detail_line("availability", skill.availability_reason or "ready")
             self._write_detail_line("keywords", keywords)
             self._write_detail_line("file_ext", file_ext)
             self._write_detail_line("tools", tools)

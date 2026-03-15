@@ -455,6 +455,7 @@ Utilities.
     assert "utilities" in catalog
     assert "play songs or videos on YouTube" in catalog
     assert "tools: open_url, play_youtube" in catalog
+    assert "location: skills/utilities" in catalog
 
 
 def test_skill_with_missing_env_loads_as_unavailable(tmp_path: Path, monkeypatch):

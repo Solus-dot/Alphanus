@@ -426,6 +426,23 @@ class SkillRuntime:
     def list_skills(self) -> List[SkillManifest]:
         return sorted(self.skills.values(), key=lambda s: s.id)
 
+    def skill_source_label(self, skill: SkillManifest) -> str:
+        path = skill.path or skill.doc_path
+        if not path:
+            return ""
+        try:
+            return str(path.resolve().relative_to(self.skills_dir.parent))
+        except Exception:
+            return str(path)
+
+    @staticmethod
+    def skill_status_label(skill: SkillManifest) -> Tuple[str, str]:
+        if not skill.available:
+            return "blocked", "yellow"
+        if skill.enabled:
+            return "on", "green"
+        return "off", "red"
+
     def enabled_skills(self) -> List[SkillManifest]:
         return [skill for skill in self.list_skills() if skill.enabled and skill.available]
 
@@ -450,7 +467,9 @@ class SkillRuntime:
             tag_text = f" tags: {tags}." if tags else ""
             tools = ", ".join(skill.allowed_tools[:4])
             tool_text = f" tools: {tools}." if tools else ""
-            lines.append(f"- {skill.id}: {skill.description}.{tag_text}{tool_text}")
+            location = self.skill_source_label(skill)
+            location_text = f" location: {location}." if location else ""
+            lines.append(f"- {skill.id}: {skill.description}.{tag_text}{tool_text}{location_text}")
         return "\n".join(lines)
 
     def set_enabled(self, skill_id: str, enabled: bool) -> bool:
