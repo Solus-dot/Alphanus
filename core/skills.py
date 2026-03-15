@@ -6,7 +6,9 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -317,6 +319,11 @@ class SkillRuntime:
                 if manifest.id in self.skills:
                     raise ValueError(f"Duplicate skill id '{manifest.id}'")
 
+                manifest.available, manifest.availability_reason = self._check_skill_availability(manifest)
+                if not manifest.available:
+                    self.skills[manifest.id] = manifest
+                    continue
+
                 if not self._load_skill_tools(manifest):
                     continue
 
@@ -325,6 +332,36 @@ class SkillRuntime:
                 self._remove_skill_tools(manifest.id if manifest else child.name)
                 if self.debug:
                     print(f"[skill] failed to load {child.name}: {exc}")
+
+    @staticmethod
+    def _current_os_aliases() -> set[str]:
+        aliases = {sys.platform.lower(), os.name.lower()}
+        if sys.platform.startswith("darwin"):
+            aliases.update({"darwin", "mac", "macos", "osx"})
+        elif sys.platform.startswith("linux"):
+            aliases.update({"linux", "posix"})
+        elif sys.platform.startswith("win"):
+            aliases.update({"windows", "win32", "nt"})
+        return aliases
+
+    def _check_skill_availability(self, manifest: SkillManifest) -> Tuple[bool, str]:
+        requirements = manifest.requirements if isinstance(manifest.requirements, dict) else {}
+
+        required_os = [item.lower() for item in requirements.get("os", []) if str(item).strip()]
+        if required_os:
+            aliases = self._current_os_aliases()
+            if not any(item in aliases for item in required_os):
+                return False, f"requires os: {', '.join(required_os)}"
+
+        missing_env = [name for name in requirements.get("env", []) if name and not os.environ.get(name)]
+        if missing_env:
+            return False, f"missing env: {', '.join(missing_env)}"
+
+        missing_commands = [name for name in requirements.get("commands", []) if name and shutil.which(name) is None]
+        if missing_commands:
+            return False, f"missing commands: {', '.join(missing_commands)}"
+
+        return True, ""
 
     def _load_skill_tools(self, manifest: SkillManifest) -> bool:
         if not manifest.path:
@@ -390,7 +427,7 @@ class SkillRuntime:
         return sorted(self.skills.values(), key=lambda s: s.id)
 
     def enabled_skills(self) -> List[SkillManifest]:
-        return [skill for skill in self.list_skills() if skill.enabled]
+        return [skill for skill in self.list_skills() if skill.enabled and skill.available]
 
     def skills_by_ids(self, skill_ids: List[str]) -> List[SkillManifest]:
         out: List[SkillManifest] = []
@@ -400,7 +437,7 @@ class SkillRuntime:
             if not key or key in seen:
                 continue
             skill = self.skills.get(key)
-            if not skill or not skill.enabled:
+            if not skill or not skill.enabled or not skill.available:
                 continue
             out.append(skill)
             seen.add(key)
@@ -444,7 +481,7 @@ class SkillRuntime:
         scored: List[Tuple[int, SkillManifest]] = []
 
         for skill in self.skills.values():
-            if not skill.enabled:
+            if not skill.enabled or not skill.available:
                 continue
             score = 0
 

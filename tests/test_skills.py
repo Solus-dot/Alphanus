@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 from pathlib import Path
 
 from core.memory import VectorMemory
@@ -454,6 +455,77 @@ Utilities.
     assert "utilities" in catalog
     assert "play songs or videos on YouTube" in catalog
     assert "tools: open_url, play_youtube" in catalog
+
+
+def test_skill_with_missing_env_loads_as_unavailable(tmp_path: Path, monkeypatch):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "search-skill").mkdir(parents=True)
+    monkeypatch.delenv("TEST_SKILL_KEY", raising=False)
+
+    (skills / "search-skill" / "SKILL.md").write_text(
+        """
+---
+name: search-skill
+description: Search the internet.
+requirements:
+  env:
+    - TEST_SKILL_KEY
+---
+Search.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"skills": {"selection_mode": "heuristic", "max_active_skills": 1}},
+    )
+
+    skill = runtime.get_skill("search-skill")
+    assert skill is not None
+    assert skill.available is False
+    assert "missing env: TEST_SKILL_KEY" == skill.availability_reason
+    assert runtime.enabled_skills() == []
+
+
+def test_skill_with_missing_command_loads_as_unavailable(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "cmd-skill").mkdir(parents=True)
+
+    (skills / "cmd-skill" / "SKILL.md").write_text(
+        """
+---
+name: cmd-skill
+description: Needs a missing binary.
+requirements:
+  commands:
+    - definitely-not-a-real-binary-xyz
+---
+Binary required.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    skill = runtime.get_skill("cmd-skill")
+    assert skill is not None
+    assert skill.available is False
+    assert "definitely-not-a-real-binary-xyz" in skill.availability_reason
 
 
 def test_compose_skill_block_does_not_leave_unclosed_fence(tmp_path: Path):

@@ -97,6 +97,8 @@ class SkillManifest:
     version: str
     description: str
     enabled: bool
+    compatibility: str = ""
+    requirements: Dict[str, List[str]] = field(default_factory=dict)
     triggers: Dict[str, List[str]] = field(default_factory=dict)
     prompt: Optional[str] = None
     path: Optional[Path] = None
@@ -110,6 +112,8 @@ class SkillManifest:
     command_tools: List[ToolCommandDef] = field(default_factory=list)
     disable_model_invocation: bool = False
     format: str = "agentskills"
+    available: bool = True
+    availability_reason: str = ""
 
 
 def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool = False) -> SkillManifest:
@@ -138,6 +142,22 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
 
     categories = _dedupe(_as_str_list(frontmatter.get("categories") or metadata_raw.get("categories")))
     tags = _as_str_list(frontmatter.get("tags") or metadata_raw.get("tags"))
+    compatibility = str(frontmatter.get("compatibility") or metadata_raw.get("compatibility") or "").strip()
+
+    requirements_raw = frontmatter.get("requirements") or metadata_raw.get("requirements") or {}
+    if requirements_raw is None:
+        requirements_raw = {}
+    if not isinstance(requirements_raw, dict):
+        raise ValueError("SKILL.md requirements must be a mapping")
+    requirements = {
+        "os": _as_str_list(requirements_raw.get("os")),
+        "env": _as_str_list(requirements_raw.get("env")),
+        "commands": _as_str_list(
+            requirements_raw.get("commands")
+            or requirements_raw.get("binaries")
+            or requirements_raw.get("bins")
+        ),
+    }
 
     tools_cfg_raw = frontmatter.get("tools", {})
     if tools_cfg_raw is None:
@@ -223,6 +243,8 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         version=version,
         description=description,
         enabled=enabled,
+        compatibility=compatibility,
+        requirements=requirements,
         triggers={"keywords": keywords, "file_ext": file_ext},
         prompt=prompt,
         path=child,
