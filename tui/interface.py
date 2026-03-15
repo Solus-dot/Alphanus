@@ -598,6 +598,19 @@ class AlphanusTUI(App):
         rendered = value if value_markup else esc(value)
         self._write(f"  [dim]{esc(label)}:[/dim] {rendered}")
 
+    def _write_indexed_dim_lines(self, rows: List[str], *, color: str = "yellow") -> None:
+        for index, row in enumerate(rows):
+            self._write(f"  [{color}]{index}.[/{color}] [dim]{esc(row)}[/dim]")
+
+    def _write_usage(self, usage: str) -> bool:
+        self._write_error(f"Usage: {usage}")
+        return True
+
+    def _reload_skills(self) -> bool:
+        self.agent.skill_runtime.load_skills()
+        self._write_info("Reloaded skills")
+        return True
+
     def _append_reply_token(self, token: str) -> None:
         if not token:
             return
@@ -1410,9 +1423,7 @@ class AlphanusTUI(App):
                 self._write_info("No child branches from current turn.")
             else:
                 self._write_section_heading("Children")
-                for i, cid in enumerate(children):
-                    t = self.conv_tree.nodes[cid]
-                    self._write(f"  [yellow]{i}.[/yellow] [dim]{esc(t.short(60))}[/dim]")
+                self._write_indexed_dim_lines([self.conv_tree.nodes[cid].short(60) for cid in children])
             return True
 
         if cmd == "/switch":
@@ -1493,9 +1504,7 @@ class AlphanusTUI(App):
             return True
 
         if cmd == "/reload":
-            self.agent.skill_runtime.load_skills()
-            self._write_info("Reloaded skills")
-            return True
+            return self._reload_skills()
 
         if cmd == "/skill":
             return self._cmd_skill(arg)
@@ -1553,19 +1562,15 @@ class AlphanusTUI(App):
     def _cmd_skill(self, arg: str) -> bool:
         parts = arg.split()
         if not parts:
-            self._write_error("Usage: /skill on|off|reload|info <id>")
-            return True
+            return self._write_usage("/skill on|off|reload|info <id>")
 
         sub = parts[0].lower()
         if sub == "reload":
-            self.agent.skill_runtime.load_skills()
-            self._write_info("Reloaded skills")
-            return True
+            return self._reload_skills()
 
         if sub in {"on", "off"}:
             if len(parts) < 2:
-                self._write_error("/skill on|off requires a skill id")
-                return True
+                return self._write_usage("/skill on|off <id>")
             skill_id = parts[1]
             ok = self.agent.skill_runtime.set_enabled(skill_id, sub == "on")
             if not ok:
@@ -1576,8 +1581,7 @@ class AlphanusTUI(App):
 
         if sub == "info":
             if len(parts) < 2:
-                self._write_error("/skill info requires a skill id")
-                return True
+                return self._write_usage("/skill info <id>")
             skill = self.agent.skill_runtime.get_skill(parts[1])
             if not skill:
                 self._write_error(f"Skill not found: {parts[1]}")
@@ -1597,8 +1601,7 @@ class AlphanusTUI(App):
             self._write_detail_line("tools", tools)
             return True
 
-        self._write_error("Usage: /skill on|off|reload|info <id>")
-        return True
+        return self._write_usage("/skill on|off|reload|info <id>")
 
     def _cmd_memory(self, arg: str) -> bool:
         sub = arg.strip().lower()
@@ -1610,8 +1613,7 @@ class AlphanusTUI(App):
             self._write_detail_line("dimension", str(stats["dimension"]))
             self._write_detail_line("by_type", json.dumps(stats["by_type"]))
             return True
-        self._write_error("Usage: /memory stats")
-        return True
+        return self._write_usage("/memory stats")
 
     def _cmd_workspace(self, arg: str) -> bool:
         sub = arg.strip().lower()
@@ -1621,8 +1623,7 @@ class AlphanusTUI(App):
             for line in tree.splitlines():
                 self._write(f"[dim]  {esc(line)}[/dim]")
             return True
-        self._write_error("Usage: /workspace tree")
-        return True
+        return self._write_usage("/workspace tree")
 
     def _cmd_code(self, arg: str) -> bool:
         target = arg.strip().lower() or "last"
@@ -1635,7 +1636,6 @@ class AlphanusTUI(App):
         try:
             index = int(target)
         except ValueError:
-            self._write_error("Usage: /code [n|last]")
-            return True
+            return self._write_usage("/code [n|last]")
         self._open_code_block(index)
         return True

@@ -919,6 +919,30 @@ class Agent:
         max_fetch_calls = 2
         forced_search_retry = False
 
+        def search_rule(*lines: str) -> str:
+            return "Search completion rule:\n" + "\n".join(f"- {line}" for line in lines)
+
+        def allow_search_fallback() -> bool:
+            return self._search_fallback_allowed(
+                search_tool_counts,
+                search_failure_count,
+                search_has_success,
+                search_has_fetch_content,
+            )
+
+        def finalize_search(reason: str) -> AgentTurnResult:
+            return self._run_finalization_pass(
+                system_content,
+                dynamic_history,
+                full_reasoning,
+                skill_exchanges,
+                stop_event,
+                on_event,
+                pass_id,
+                extra_rules=reason,
+                allow_search_fallback=allow_search_fallback(),
+            )
+
         while True:
             pass_index += 1
             pass_id = f"pass_{pass_index}"
@@ -1014,21 +1038,12 @@ class Agent:
                     action_depth += 1
                     if action_depth > self.max_action_depth:
                         if search_mode and search_has_success:
-                            return self._run_finalization_pass(
-                                system_content,
-                                dynamic_history,
-                                full_reasoning,
-                                skill_exchanges,
-                                stop_event,
-                                on_event,
-                                pass_id,
-                                extra_rules=(
-                                    "Search completion rule:\n"
-                                    "- The search loop budget is exhausted.\n"
-                                    "- Answer using the successful search or fetch results already in the conversation.\n"
-                                    "- Do not search again."
-                                ),
-                                allow_search_fallback=True,
+                            return finalize_search(
+                                search_rule(
+                                    "The search loop budget is exhausted.",
+                                    "Answer using the successful search or fetch results already in the conversation.",
+                                    "Do not search again.",
+                                )
                             )
                         return AgentTurnResult(
                             status="error",
@@ -1050,39 +1065,35 @@ class Agent:
                     )
 
                     if search_mode and call.name == "web_search" and search_tool_counts["web_search"] >= max_search_calls:
-                        force_finalize_reason = (
-                            "Search completion rule:\n"
-                            "- The search-attempt budget is exhausted.\n"
-                            "- Answer only from the evidence already gathered.\n"
-                            "- Do not issue more search calls."
+                        force_finalize_reason = search_rule(
+                            "The search-attempt budget is exhausted.",
+                            "Answer only from the evidence already gathered.",
+                            "Do not issue more search calls.",
                         )
                         break
                     if search_mode and call.name == "fetch_url":
                         if search_tool_counts["fetch_url"] >= max_fetch_calls:
-                            force_finalize_reason = (
-                                "Search completion rule:\n"
-                                "- The page-fetch budget is exhausted.\n"
-                                "- Answer only from the evidence already gathered.\n"
-                                "- Do not fetch more pages."
+                            force_finalize_reason = search_rule(
+                                "The page-fetch budget is exhausted.",
+                                "Answer only from the evidence already gathered.",
+                                "Do not fetch more pages.",
                             )
                             break
                         raw_url = str(call.arguments.get("url", "")).strip()
                         if raw_url:
                             host = urllib.parse.urlparse(raw_url).netloc.lower()
                             if raw_url in fetched_urls:
-                                force_finalize_reason = (
-                                    "Search completion rule:\n"
-                                    "- This URL was already fetched in this turn.\n"
-                                    "- Do not retry the same page.\n"
-                                    "- Answer from the evidence already gathered."
+                                force_finalize_reason = search_rule(
+                                    "This URL was already fetched in this turn.",
+                                    "Do not retry the same page.",
+                                    "Answer from the evidence already gathered.",
                                 )
                                 break
                             if host and host in blocked_fetch_domains:
-                                force_finalize_reason = (
-                                    "Search completion rule:\n"
-                                    "- This source domain already blocked a fetch attempt in this turn.\n"
-                                    "- Do not retry the same blocked domain.\n"
-                                    "- Answer from the remaining evidence."
+                                force_finalize_reason = search_rule(
+                                    "This source domain already blocked a fetch attempt in this turn.",
+                                    "Do not retry the same blocked domain.",
+                                    "Answer from the remaining evidence.",
                                 )
                                 break
 
@@ -1136,19 +1147,17 @@ class Agent:
                                 if host and any(code in message for code in ("http 401", "http 403", "http 429")):
                                     blocked_fetch_domains.add(host)
                             if call.name == "fetch_url" and search_failure_count >= 2:
-                                force_finalize_reason = (
-                                    "Search completion rule:\n"
-                                    "- The search provider has already failed repeatedly.\n"
-                                    "- Do not use memory or prior knowledge to fill gaps.\n"
-                                    "- If the fetched page does not explicitly answer the question, say you could not verify it."
+                                force_finalize_reason = search_rule(
+                                    "The search provider has already failed repeatedly.",
+                                    "Do not use memory or prior knowledge to fill gaps.",
+                                    "If the fetched page does not explicitly answer the question, say you could not verify it.",
                                 )
                                 break
                             if call.name not in {"web_search", "fetch_url"} and search_failure_count >= 2:
-                                force_finalize_reason = (
-                                    "Search completion rule:\n"
-                                    "- Search has failed repeatedly.\n"
-                                    "- Do not switch to memory recall or unrelated tools.\n"
-                                    "- Answer only with verified evidence, or say verification failed."
+                                force_finalize_reason = search_rule(
+                                    "Search has failed repeatedly.",
+                                    "Do not switch to memory recall or unrelated tools.",
+                                    "Answer only with verified evidence, or say verification failed.",
                                 )
                                 break
                         if call.name == "web_search" and not result.get("ok") and search_failure_count >= 2 and not search_has_success:
@@ -1159,47 +1168,28 @@ class Agent:
                                 skill_exchanges=skill_exchanges,
                             )
                         if call.name == "fetch_url" and not result.get("ok") and search_has_success:
-                            force_finalize_reason = (
-                                "Search completion rule:\n"
-                                "- A page fetch failed.\n"
-                                "- Continue with the successful search results and any successful fetches already gathered.\n"
-                                "- Do not keep retrying searches indefinitely."
+                            force_finalize_reason = search_rule(
+                                "A page fetch failed.",
+                                "Continue with the successful search results and any successful fetches already gathered.",
+                                "Do not keep retrying searches indefinitely.",
                             )
                             break
                         if call.name == "web_search" and search_tool_counts["web_search"] >= max_search_calls and search_has_success:
-                            force_finalize_reason = (
-                                "Search completion rule:\n"
-                                "- Enough search attempts have already been made.\n"
-                                "- Summarize from the best available results now.\n"
-                                "- Do not issue more search calls."
+                            force_finalize_reason = search_rule(
+                                "Enough search attempts have already been made.",
+                                "Summarize from the best available results now.",
+                                "Do not issue more search calls.",
                             )
                             break
                         if call.name == "fetch_url" and search_tool_counts["fetch_url"] >= max_fetch_calls and search_has_fetch_content:
-                            force_finalize_reason = (
-                                "Search completion rule:\n"
-                                "- Enough pages have been fetched.\n"
-                                "- Answer from the gathered evidence now.\n"
-                                "- Do not fetch additional pages."
+                            force_finalize_reason = search_rule(
+                                "Enough pages have been fetched.",
+                                "Answer from the gathered evidence now.",
+                                "Do not fetch additional pages.",
                             )
                             break
                 if force_finalize_reason:
-                    allow_search_fallback = self._search_fallback_allowed(
-                        search_tool_counts,
-                        search_failure_count,
-                        search_has_success,
-                        search_has_fetch_content,
-                    )
-                    return self._run_finalization_pass(
-                        system_content,
-                        dynamic_history,
-                        full_reasoning,
-                        skill_exchanges,
-                        stop_event,
-                        on_event,
-                        pass_id,
-                        extra_rules=force_finalize_reason,
-                        allow_search_fallback=allow_search_fallback,
-                    )
+                    return finalize_search(force_finalize_reason)
                 continue
 
             # stop or length: final answer produced
@@ -1219,12 +1209,6 @@ class Agent:
                     skill_exchanges=skill_exchanges,
                 )
             if not final.strip():
-                allow_search_fallback = self._search_fallback_allowed(
-                    search_tool_counts,
-                    search_failure_count,
-                    search_has_success,
-                    search_has_fetch_content,
-                )
                 finalized = self._run_finalization_pass(
                     system_content,
                     dynamic_history,
@@ -1233,7 +1217,7 @@ class Agent:
                     stop_event,
                     on_event,
                     pass_id,
-                    allow_search_fallback=allow_search_fallback,
+                    allow_search_fallback=allow_search_fallback(),
                 )
                 if finalized.status != "done":
                     return finalized

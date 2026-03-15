@@ -273,6 +273,31 @@ class SkillRuntime:
             if reg.skill_id == skill_id:
                 self._tool_registry.pop(tool_name, None)
 
+    def _register_tool(self, tool_name: str, manifest: SkillManifest, spec: Dict[str, Any], **extra: Any) -> bool:
+        if tool_name in self._tool_registry:
+            if self.debug:
+                prev = self._tool_registry[tool_name]
+                print(f"[skill] duplicate tool '{tool_name}' in {manifest.id}; already registered by {prev.skill_id}")
+            return False
+
+        capability = str(spec.get("capability", "")).strip()
+        description = str(spec.get("description", "")).strip()
+        parameters = spec.get("parameters")
+        if not capability or not description or not isinstance(parameters, dict):
+            if self.debug:
+                print(f"[skill] invalid tool spec '{tool_name}' in {manifest.id}")
+            return False
+
+        self._tool_registry[tool_name] = RegisteredTool(
+            name=tool_name,
+            skill_id=manifest.id,
+            capability=capability,
+            description=description,
+            parameters=parameters,
+            **extra,
+        )
+        return True
+
     def load_skills(self) -> None:
         self.skills = {}
         self._tool_registry = {}
@@ -311,23 +336,20 @@ class SkillRuntime:
         for spec in manifest.command_tools:
             if allowed_tools and spec.name not in allowed_tools:
                 continue
-            if spec.name in self._tool_registry:
-                if self.debug:
-                    prev = self._tool_registry[spec.name]
-                    print(f"[skill] duplicate tool '{spec.name}' in {manifest.id}; already registered by {prev.skill_id}")
-                continue
-            self._tool_registry[spec.name] = RegisteredTool(
-                name=spec.name,
-                skill_id=manifest.id,
-                capability=spec.capability,
-                description=spec.description,
-                parameters=spec.parameters,
+            if self._register_tool(
+                spec.name,
+                manifest,
+                {
+                    "capability": spec.capability,
+                    "description": spec.description,
+                    "parameters": spec.parameters,
+                },
                 command=spec.command,
                 timeout_s=spec.timeout_s,
                 confirm_arg=spec.confirm_arg,
                 cwd=str(manifest.path),
-            )
-            local_registered.append(spec.name)
+            ):
+                local_registered.append(spec.name)
 
         tools_path = manifest.path / "tools.py"
         if tools_path.exists():
@@ -342,32 +364,15 @@ class SkillRuntime:
             for tool_name, spec in specs.items():
                 if allowed_tools and tool_name not in allowed_tools:
                     continue
-                if tool_name in self._tool_registry:
-                    if self.debug:
-                        prev = self._tool_registry[tool_name]
-                        print(f"[skill] duplicate tool '{tool_name}' in {manifest.id}; already registered by {prev.skill_id}")
-                    continue
-
-                capability = str(spec.get("capability", "")).strip()
-                description = str(spec.get("description", "")).strip()
-                parameters = spec.get("parameters")
-
-                if not capability or not description or not isinstance(parameters, dict):
-                    if self.debug:
-                        print(f"[skill] invalid tool spec '{tool_name}' in {manifest.id}")
-                    continue
-
-                self._tool_registry[tool_name] = RegisteredTool(
-                    name=tool_name,
-                    skill_id=manifest.id,
-                    capability=capability,
-                    description=description,
-                    parameters=parameters,
+                if self._register_tool(
+                    tool_name,
+                    manifest,
+                    spec,
                     module_path=tools_path,
                     module_name=module_name,
                     cwd=str(manifest.path),
-                )
-                local_registered.append(tool_name)
+                ):
+                    local_registered.append(tool_name)
 
         if manifest.required_tools:
             local_set = set(local_registered)
