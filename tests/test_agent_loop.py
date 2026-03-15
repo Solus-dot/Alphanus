@@ -221,6 +221,57 @@ def test_agent_requests_final_answer_if_post_tool_content_empty(mocker, runtime:
     )
 
 
+def test_skill_snapshot_refreshes_only_after_runtime_generation_changes(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "alpha").mkdir(parents=True)
+
+    (skills / "alpha" / "SKILL.md").write_text(
+        """
+---
+name: alpha
+description: Alpha skill.
+---
+Alpha.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"skills": {"selection_mode": "model", "max_active_skills": 2}},
+    )
+    agent = Agent({"agent": {}}, runtime)
+
+    snap1 = agent._get_skill_snapshot()
+    snap2 = agent._get_skill_snapshot()
+    assert snap1 is snap2
+    assert [skill.id for skill in snap1.skills] == ["alpha"]
+
+    (skills / "beta").mkdir(parents=True)
+    (skills / "beta" / "SKILL.md").write_text(
+        """
+---
+name: beta
+description: Beta skill.
+---
+Beta.
+""".strip(),
+        encoding="utf-8",
+    )
+    runtime.load_skills()
+
+    snap3 = agent._get_skill_snapshot()
+    assert snap3 is not snap1
+    assert snap3.generation == runtime.generation
+    assert [skill.id for skill in snap3.skills] == ["alpha", "beta"]
+
+
 def test_finalization_falls_back_immediately_when_model_leaks_tool_markup(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {

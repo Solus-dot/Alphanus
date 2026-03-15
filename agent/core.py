@@ -43,6 +43,13 @@ class AgentTurnResult:
     error: Optional[str] = None
 
 
+@dataclass(slots=True)
+class SkillRoutingSnapshot:
+    generation: int
+    skills: List[Any]
+    catalog: str
+
+
 class ToolCallAccumulator:
     def __init__(self, pass_id: str) -> None:
         self._pass_id = pass_id
@@ -159,6 +166,7 @@ class Agent:
 
         self.ssl_context = build_ssl_context(self.tls_verify, self.ca_bundle_path)
         self._ready_checked = False
+        self._skill_snapshot: Optional[SkillRoutingSnapshot] = None
 
     def _headers(self) -> Dict[str, str]:
         headers = {}
@@ -291,6 +299,15 @@ class Agent:
             memory_hits=hits,
         )
 
+    def _get_skill_snapshot(self, force_refresh: bool = False) -> SkillRoutingSnapshot:
+        generation = int(getattr(self.skill_runtime, "generation", 0))
+        if not force_refresh and self._skill_snapshot and self._skill_snapshot.generation == generation:
+            return self._skill_snapshot
+        skills = list(self.skill_runtime.enabled_skills())
+        catalog = self.skill_runtime.skill_catalog_text()
+        self._skill_snapshot = SkillRoutingSnapshot(generation=generation, skills=skills, catalog=catalog)
+        return self._skill_snapshot
+
     def _compose_system_content(self, selected: List[Any], ctx: SkillContext) -> str:
         skill_block = self.skill_runtime.compose_skill_block(
             selected,
@@ -337,16 +354,17 @@ class Agent:
     def _route_skills_with_model(
         self,
         ctx: SkillContext,
+        snapshot: SkillRoutingSnapshot,
         stop_event,
     ) -> Optional[List[Any]]:
-        enabled = self.skill_runtime.enabled_skills()
+        enabled = snapshot.skills
         if not enabled:
             return []
 
         skills_cfg = self.config.get("skills", {}) if isinstance(self.config, dict) else {}
         configured_limit = int(skills_cfg.get("max_active_skills", getattr(self.skill_runtime, "max_active_skills", 2)))
         limit = configured_limit if configured_limit > 0 else 2
-        catalog = self.skill_runtime.skill_catalog_text()
+        catalog = snapshot.catalog
         routing_system = (
             "You are selecting local skills for the next assistant turn.\n"
             "Choose the smallest set of skills needed for the user's request.\n"
@@ -382,7 +400,8 @@ class Agent:
         skills_cfg = self.config.get("skills", {}) if isinstance(self.config, dict) else {}
         mode = str(skills_cfg.get("selection_mode", getattr(self.skill_runtime, "selection_mode", ""))).strip().lower()
         if mode == "model":
-            routed = self._route_skills_with_model(ctx, stop_event)
+            snapshot = self._get_skill_snapshot()
+            routed = self._route_skills_with_model(ctx, snapshot, stop_event)
             if routed is not None:
                 return routed
         return self.skill_runtime.select_skills(ctx)

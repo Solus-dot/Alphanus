@@ -169,6 +169,7 @@ class SkillRuntime:
         self.skills_cfg = self.config.get("skills", {})
         self.selection_mode = str(self.skills_cfg.get("selection_mode", "all_enabled"))
         self.max_active_skills = int(self.skills_cfg.get("max_active_skills", 6))
+        self.generation = 0
 
         self.skills: Dict[str, SkillManifest] = {}
         self._tool_registry: Dict[str, RegisteredTool] = {}
@@ -301,6 +302,7 @@ class SkillRuntime:
         return True
 
     def load_skills(self) -> None:
+        self.generation += 1
         self.skills = {}
         self._tool_registry = {}
         if not self.skills_dir.exists():
