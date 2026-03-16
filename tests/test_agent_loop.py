@@ -436,6 +436,63 @@ def test_finalization_falls_back_to_sources_when_markup_repeats(mocker, runtime:
     assert len(chat_reqs) == 2
 
 
+def test_main_pass_tool_markup_forces_clean_finalization(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    chat_reqs = []
+    events = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"I should check that.\\n\\n<tool_call>\\n<function=shell>\\n<parameter=command>git branch</parameter>\\n</function>\\n</tool_call>"}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"I misformatted the previous reply. Please tell me what you want to do with the branch."}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "This is a branch!"}],
+        user_input="This is a branch!",
+        thinking=True,
+        on_event=events.append,
+    )
+
+    assert result.status == "done"
+    assert "<tool_call>" not in result.content
+    assert "misformatted the previous reply" in result.content
+    assert len(chat_reqs) == 2
+    assert not any(
+        evt.get("type") == "content_token" and "<tool_call>" in str(evt.get("text", ""))
+        for evt in events
+    )
+
+
 def test_finalization_falls_back_to_generic_tool_summary_without_search_contamination(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {

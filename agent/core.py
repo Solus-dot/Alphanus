@@ -573,6 +573,18 @@ class Agent:
         return "\n".join(deduped).strip()
 
     @staticmethod
+    def _contains_tool_markup(text: str) -> bool:
+        if not text:
+            return False
+        return bool(
+            re.search(
+                r"<tool_call\b|</tool_call>|<function=[^>]+>|</function>|<parameter=[^>]+>|</parameter>",
+                text,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
     def _fallback_answer_from_evidence(evidence: List[ToolEvidence]) -> str:
         search_results: List[Dict[str, str]] = []
         fetched_sources: List[Dict[str, str]] = []
@@ -845,6 +857,7 @@ class Agent:
         finish_reason = "stop"
         tool_acc = ToolCallAccumulator(pass_id=pass_id)
         tool_phase_started = False
+        suppress_content_stream = False
         self._debug_log("chat_pass_start", pass_id=pass_id, endpoint=self.model_endpoint, payload=payload)
 
         for chunk in stream_chat_completions(
@@ -873,7 +886,10 @@ class Agent:
             content = delta.get("content") or ""
             if content:
                 content_parts.append(content)
-                self._emit(on_event, {"type": "content_token", "text": content})
+                if self._contains_tool_markup(content):
+                    suppress_content_stream = True
+                if not suppress_content_stream:
+                    self._emit(on_event, {"type": "content_token", "text": content})
 
             tool_deltas = delta.get("tool_calls") or []
             if tool_deltas:
@@ -1352,6 +1368,24 @@ class Agent:
                 continue
 
             final = stream_result.content
+            if self._contains_tool_markup(final):
+                finalized = self._finalize_turn(
+                    system_content,
+                    state,
+                    stop_event,
+                    on_event,
+                    pass_id,
+                    (
+                        "Output correction rule:\n"
+                        "- The previous reply emitted raw tool markup instead of a user-facing answer.\n"
+                        "- Rewrite it as a normal assistant response.\n"
+                        "- Do not emit tool markup, XML-like tags, or pseudo-function calls."
+                    ),
+                )
+                if finalized.status != "done":
+                    return finish(finalized)
+                state.full_reasoning = finalized.reasoning
+                final = finalized.content
             if state.search_mode and state.time_sensitive_query and state.tool_counts.get("web_search", 0) == 0:
                 if not state.forced_search_retry:
                     state.forced_search_retry = True
