@@ -225,9 +225,3 @@ class WorkspaceManager:
                 "error": {"code": "E_IO", "message": str(exc)},
                 "meta": {"duration_ms": int((time.perf_counter() - start) * 1000)},
             }
-
-    def ensure_workspace_exists(self) -> None:
-        self.workspace_root.mkdir(parents=True, exist_ok=True)
-
-    def remove_workspace(self) -> None:
-        shutil.rmtree(self.workspace_root)
