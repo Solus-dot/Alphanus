@@ -9,7 +9,7 @@ import pytest
 
 from agent.core import Agent
 from core.memory import VectorMemory
-from core.skills import SkillRuntime
+from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
 
 
@@ -483,15 +483,18 @@ def test_finalization_falls_back_to_generic_tool_summary_without_search_contamin
 
     mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
 
+    state = agent._build_turn_state(
+        SkillContext(user_input="weather", branch_labels=[], attachments=[], workspace_root="", memory_hits=[]),
+        [],
+        history,
+        "weather",
+    )
     result = agent._run_finalization_pass(
         "system",
-        history,
-        "",
-        history[:],
+        state,
         threading.Event(),
         None,
         "pass",
-        allow_search_fallback=False,
     )
 
     assert result.status == "done"
@@ -511,18 +514,21 @@ def test_search_fallback_requires_actual_search_activity(runtime: SkillRuntime):
         runtime,
     )
 
-    assert agent._search_fallback_allowed(
-        {"web_search": 0, "fetch_url": 0},
-        search_failure_count=0,
-        search_has_success=False,
-        search_has_fetch_content=False,
-    ) is False
-    assert agent._search_fallback_allowed(
-        {"web_search": 1, "fetch_url": 0},
-        search_failure_count=0,
-        search_has_success=False,
-        search_has_fetch_content=False,
-    ) is True
+    empty = agent._build_turn_state(
+        SkillContext(user_input="x", branch_labels=[], attachments=[], workspace_root="", memory_hits=[]),
+        [],
+        [],
+        "x",
+    )
+    assert agent._search_fallback_allowed(empty) is False
+    active = agent._build_turn_state(
+        SkillContext(user_input="x", branch_labels=[], attachments=[], workspace_root="", memory_hits=[]),
+        [],
+        [],
+        "x",
+    )
+    active.tool_counts["web_search"] = 1
+    assert agent._search_fallback_allowed(active) is True
 
 
 def test_search_failures_return_safe_non_speculative_answer(mocker, runtime: SkillRuntime):
