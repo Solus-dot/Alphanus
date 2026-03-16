@@ -13,7 +13,7 @@ from rich.padding import Padding
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
@@ -47,6 +47,7 @@ HELP_SECTIONS = [
         "CONVERSATION",
         [
             ("/help", "Show this help"),
+            ("/details", "Toggle tool execution details"),
             ("/think", "Toggle thinking mode"),
             ("/clear", "Clear tree and chat log"),
             ("/file <path>", "Attach image/text file to next message"),
@@ -89,6 +90,7 @@ HELP_SECTIONS = [
 
 COMMAND_ENTRIES = [
     CommandEntry("/help", "/help", "Show this help"),
+    CommandEntry("/details", "/details", "Toggle tool execution details"),
     CommandEntry("/think", "/think", "Toggle thinking mode"),
     CommandEntry("/clear", "/clear", "Clear tree and chat log"),
     CommandEntry("/file <path>", "/file ", "Attach a file to the next message"),
@@ -130,29 +132,56 @@ class AlphanusTUI(App):
     CSS = """
     Screen {
         layout: vertical;
-        background: #1c1c1c;
-        color: #e0e0e0;
+        background: #09090b;
+        color: #e4e4e7;
+    }
+
+    #topbar {
+        height: 3;
+        layout: horizontal;
+        background: #121214;
+        border-bottom: solid #27272a;
+        padding: 0 2;
+    }
+
+    #topbar-left {
+        width: 1fr;
+        height: 3;
+        content-align: left middle;
+    }
+
+    #topbar-right {
+        width: auto;
+        height: 3;
+        content-align: right middle;
     }
 
     #main-area {
         height: 1fr;
         layout: horizontal;
+        background: #09090b;
     }
 
     #chat-scroll {
         width: 1fr;
         height: 1fr;
-        background: #1c1c1c;
+        background: #09090b;
         overflow-x: hidden;
         scrollbar-size: 1 1;
-        scrollbar-color: #586272 #232830;
+        scrollbar-color: #3f3f46 #121214;
+        scrollbar-background: #121214;
+        scrollbar-background-hover: #18181b;
+        scrollbar-background-active: #18181b;
+        scrollbar-color-hover: #52525b;
+        scrollbar-color-active: #6366f1;
+        scrollbar-corner-color: #121214;
     }
 
     #chat-log {
         width: 1fr;
         height: auto;
-        background: #1c1c1c;
-        padding: 0 2;
+        background: #09090b;
+        padding: 0 3;
         overflow-x: hidden;
         scrollbar-size: 0 0;
     }
@@ -160,29 +189,37 @@ class AlphanusTUI(App):
     #partial {
         width: 1fr;
         height: auto;
-        background: #1c1c1c;
+        background: #09090b;
         display: none;
-        padding: 0 2;
+        padding: 0 3;
         overflow-x: hidden;
     }
 
     #sidebar {
-        width: 34;
-        border-left: solid #2e2e2e;
-        background: #1c1c1c;
+        width: 38;
+        border-left: solid #27272a;
+        background: #121214;
         display: none;
-        padding: 0 1;
+        padding: 0;
+        scrollbar-background: #121214;
+        scrollbar-background-hover: #18181b;
+        scrollbar-background-active: #18181b;
+        scrollbar-color: #3f3f46;
+        scrollbar-color-hover: #52525b;
+        scrollbar-color-active: #6366f1;
+        scrollbar-corner-color: #121214;
     }
 
     #sidebar-content {
         width: 1fr;
         height: auto;
-        background: #1c1c1c;
+        background: #121214;
+        padding: 1 2;
     }
 
     #footer {
         height: auto;
-        background: #1c1c1c;
+        background: #09090b;
         layout: vertical;
         dock: bottom;
     }
@@ -190,8 +227,8 @@ class AlphanusTUI(App):
     #command-popup {
         width: 64;
         max-height: 12;
-        background: #171b20;
-        border: round #5f87d7;
+        background: #121214;
+        border: round #27272a;
         display: none;
         overlay: screen;
         padding: 0 1;
@@ -199,81 +236,88 @@ class AlphanusTUI(App):
 
     #command-popup-title {
         height: auto;
-        color: #8fb7ff;
-        padding: 0 1;
+        color: #6366f1;
+        padding: 1 1 0 1;
         text-style: bold;
     }
 
     #command-popup-hint {
         height: auto;
-        color: #a0a0a0;
-        padding: 0 1;
+        color: #a1a1aa;
+        padding: 0 1 1 1;
     }
 
     #command-options {
         width: 1fr;
         height: auto;
         max-height: 8;
-        background: #171b20;
+        background: #121214;
         border: none;
-        padding: 0 0 1 0;
-        scrollbar-background: #151a21;
-        scrollbar-background-hover: #1b212a;
-        scrollbar-background-active: #1b212a;
-        scrollbar-color: #4e5f74;
-        scrollbar-color-hover: #5e7490;
-        scrollbar-color-active: #7390b2;
-        scrollbar-corner-color: #151a21;
+        padding: 0 1 1 1;
+        scrollbar-background: #121214;
+        scrollbar-background-hover: #18181b;
+        scrollbar-background-active: #18181b;
+        scrollbar-color: #3f3f46;
+        scrollbar-color-hover: #52525b;
+        scrollbar-color-active: #6366f1;
+        scrollbar-corner-color: #121214;
     }
 
     #command-options > .option-list--option-highlighted {
-        color: #f8fbff;
-        background: #2c313a;
+        color: #e4e4e7;
+        background: #18181b;
         text-style: none;
     }
 
     #command-options:focus > .option-list--option-highlighted {
         color: #ffffff;
-        background: #3a4f72;
+        background: #312e81;
         text-style: bold;
     }
 
     #footer-sep {
         height: 1;
-        background: #2b323b;
+        background: #27272a;
     }
 
-    #status1 {
+    #status-bar {
         height: 1;
-        padding: 0 2;
-        background: #181b20;
+        layout: horizontal;
+        padding: 0 3;
+        background: #09090b;
     }
 
-    #status2 {
+    #status-left {
+        width: 1fr;
         height: 1;
-        padding: 0 2;
-        background: #181b20;
+        content-align: left middle;
+    }
+
+    #status-right {
+        width: auto;
+        height: 1;
+        content-align: right middle;
     }
 
     #input-row {
         height: auto;
         layout: horizontal;
-        background: #181b20;
-        padding: 0 2;
+        background: #09090b;
+        padding: 0 3 1 3;
         min-height: 3;
     }
 
     ChatInput {
         width: 1fr;
         height: 3;
-        border: round #384252;
-        background: #21252b;
-        color: #e0e0e0;
+        border: round #3f3f46;
+        background: #18181b;
+        color: #e4e4e7;
     }
 
     ChatInput:focus {
-        border: round #5f87d7;
-        background: #262c34;
+        border: round #6366f1;
+        background: #18181b;
     }
     """
 
@@ -322,7 +366,8 @@ class AlphanusTUI(App):
 
         self._last_scroll = 0.0
         self._scroll_interval = 0.05
-        self._last_status2 = ""
+        self._last_status_left = ""
+        self._last_status_right = ""
         self._auto_follow_stream = True
 
         self._esc_pending = False
@@ -338,8 +383,12 @@ class AlphanusTUI(App):
         self._command_anchor_region = None
         self._command_match_keys: List[str] = []
         self._code_blocks: List[Tuple[str, Optional[str]]] = []
+        self._show_tool_details = False
 
     def compose(self) -> ComposeResult:
+        with Horizontal(id="topbar"):
+            yield Static("", id="topbar-left")
+            yield Static("", id="topbar-right")
         with Horizontal(id="main-area"):
             with ScrollableContainer(id="chat-scroll"):
                 yield RichLog(
@@ -355,19 +404,20 @@ class AlphanusTUI(App):
 
         with Vertical(id="footer"):
             yield Static("", id="footer-sep")
-            yield Static("", id="status1")
-            yield Static("", id="status2")
-            with Horizontal(id="input-row"):
-                yield ChatInput(id="chat-input", placeholder="Type a message…")
             with Vertical(id="command-popup"):
                 yield Static("commands", id="command-popup-title")
                 yield Static("type to filter · tab to insert", id="command-popup-hint")
                 yield OptionList(id="command-options")
+            with Horizontal(id="input-row"):
+                yield ChatInput(id="chat-input", placeholder="Type a message…")
+            with Horizontal(id="status-bar"):
+                yield Static("", id="status-left")
+                yield Static("", id="status-right")
 
     def on_mount(self) -> None:
         self.thinking = bool(self.agent.config.get("agent", {}).get("enable_thinking", True))
         self.set_interval(0.1, self._tick)
-        self._show_banner()
+        self._update_topbar()
         self._update_status1()
         self._update_status2()
         self._update_sidebar()
@@ -486,7 +536,7 @@ class AlphanusTUI(App):
             language or "text",
             theme="github-dark",
             word_wrap=True,
-            background_color="#121417",
+            background_color="#121214",
             line_numbers=False,
         )
 
@@ -495,9 +545,21 @@ class AlphanusTUI(App):
             self._syntax_renderable(code, language),
             expand=True,
             padding=(0, 1),
-            border_style="#2b323b",
-            style="on #121417",
+            border_style="#27272a",
+            style="on #121214",
         )
+
+    def _write_tool_call_block(self, command_text: str, *, indent: int = 2) -> None:
+        if not self._show_tool_details:
+            return
+        self._write_indented(f"[#6366f1]│[/#6366f1] [#e4e4e7]> {esc(command_text)}[/#e4e4e7]", indent=indent)
+
+    def _show_tool_result_line(self, name: str, ok: bool) -> bool:
+        if not ok:
+            return True
+        if name in self._live_preview.streamed_file_tools:
+            return False
+        return self._show_tool_details
 
     def _remember_code_block(self, code: str, language: Optional[str]) -> int:
         self._code_blocks.append((code, language))
@@ -519,14 +581,18 @@ class AlphanusTUI(App):
         self._fence_lang = None
         self._fence_lines = []
 
+    @staticmethod
+    def _is_fence_line(line: str) -> bool:
+        stripped = line.strip()
+        return stripped.startswith("```") or stripped.startswith("~~~")
+
     def _flush_fence_block(self) -> None:
         if self._fence_lines:
             self._write_code_block(self._fence_lines, self._fence_lang, indent=2)
         self._reset_fence_state()
 
     def _render_content_line(self, line: str) -> None:
-        stripped = line.strip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
+        if self._is_fence_line(line):
             if self._in_fence:
                 self._flush_fence_block()
             else:
@@ -546,7 +612,7 @@ class AlphanusTUI(App):
         partial = self._partial()
         if self._in_fence:
             lines = list(self._fence_lines)
-            if self._buf_c:
+            if self._buf_c and not self._is_fence_line(self._buf_c):
                 lines.append(self._buf_c)
             if lines:
                 partial.update(Padding(self._code_panel_renderable("\n".join(lines), self._fence_lang), (0, 0, 0, 2)))
@@ -581,6 +647,9 @@ class AlphanusTUI(App):
         if force:
             self._scroll().scroll_end(animate=False)
             return
+        if self.streaming and self._auto_follow_stream and not self._is_near_bottom():
+            self._auto_follow_stream = False
+            self._update_status2()
         if not self.streaming or self._auto_follow_stream:
             self._scroll().scroll_end(animate=False)
 
@@ -590,7 +659,7 @@ class AlphanusTUI(App):
     def _write_error(self, text: str) -> None:
         self._write(f"[bold red]  ✖ {esc(text)}[/bold red]")
 
-    def _write_section_heading(self, title: str, color: str = "cyan") -> None:
+    def _write_section_heading(self, title: str, color: str = "#6366f1") -> None:
         self._write("")
         self._write(f"[bold {color}]  {esc(title)}[/bold {color}]")
 
@@ -624,36 +693,30 @@ class AlphanusTUI(App):
         return "tool call:" in s
 
     def _update_status1(self) -> None:
-        parts = []
-        if self.thinking:
-            parts.append("[#5f87d7]thinking[/#5f87d7]")
-        else:
-            parts.append("[dim]thinking off[/dim]")
-
+        parts = [f"[dim]files:[/dim] {len(self.pending)}"]
         if self.conv_tree._pending_branch:
             label = self.conv_tree._pending_branch_label
-            suffix = f" '{esc(label)}'" if label else ""
-            parts.append(f"[yellow]⎇ armed{suffix}[/yellow]")
+            if label:
+                parts.append(f"[#6366f1]branch: {esc(label)}[/#6366f1]")
+            else:
+                parts.append("[#6366f1]branch: armed[/#6366f1]")
+        else:
+            parts.append("[dim]branch:[/dim] idle")
 
         if self.pending:
-            badges = " ".join(
-                f"[black on {'cyan' if kind == 'image' else 'green'}] {esc(os.path.basename(path))} [/black on {'cyan' if kind == 'image' else 'green'}]"
-                for path, kind in self.pending
-            )
-            parts.append(badges)
+            latest_path, kind = self.pending[-1]
+            color = "#6366f1" if kind == "image" else "#10b981"
+            parts.append(f"[{color}]{esc(os.path.basename(latest_path))}[/{color}]")
 
-        self.query_one("#status1", Static).update(" " + "  [dim]·[/dim]  ".join(parts))
-
-    def _status2(self, text: str) -> None:
-        if text == self._last_status2:
+        think_label = "auto" if self.thinking else "off"
+        parts.append(f"[dim]thinking:[/dim] [#6366f1]{think_label}[/#6366f1]")
+        text = "  ".join(parts)
+        if text == self._last_status_right:
             return
-        self._last_status2 = text
-        self.query_one("#status2", Static).update(text)
+        self._last_status_right = text
+        self.query_one("#status-right", Static).update(text)
 
     def _update_status2(self) -> None:
-        turns = self.conv_tree.turn_count()
-        right = f"[dim]{turns} turn{'s' if turns != 1 else ''}[/dim]"
-
         if self._await_shell_confirm:
             left = f"[bold yellow]approve shell command?[/bold yellow] [dim][y/n][/dim]"
         elif self.streaming:
@@ -663,20 +726,23 @@ class AlphanusTUI(App):
             elif self._esc_pending:
                 left = f"[dim]{frame}[/dim] [dim]generating[/dim] [bold red]esc again to stop[/bold red]"
             elif not self._auto_follow_stream:
-                left = f"[dim]{frame}[/dim] [dim]generating[/dim] [yellow]free scroll[/yellow] [dim]pgdn to resume follow[/dim]"
+                left = f"[dim]pgup/dn ·[/dim] [#6366f1]free scroll[/#6366f1]"
             else:
                 left = f"[dim]{frame}[/dim] [dim]generating[/dim] [dim]esc · stop[/dim]"
         else:
-            left = "[dim]esc · clear   pgup/dn · scroll[/dim]"
+            left = "[dim]esc · clear[/dim]   [#6366f1]pgup/dn · free scroll[/#6366f1]"
+        if left == self._last_status_left:
+            return
+        self._last_status_left = left
+        self.query_one("#status-left", Static).update(left)
 
-        self._status2(f" {left}  {right}")
-
-    def _show_banner(self) -> None:
-        self._write("")
-        self._write("[bold #5f87d7]Alphanus[/bold #5f87d7] [dim]conversation tree · skills · streaming[/dim]")
-        self._write(f"[dim]{esc(self.agent.model_endpoint)}[/dim]")
-        self._write("[dim]/help for commands[/dim]")
-        self._write("")
+    def _update_topbar(self) -> None:
+        left = (
+            "[bold #6366f1 on #1a1730] ALPHANUS [/bold #6366f1 on #1a1730] "
+            f"[#a1a1aa]{esc(self.agent.model_endpoint)}[/#a1a1aa]"
+        )
+        self.query_one("#topbar-left", Static).update(left)
+        self.query_one("#topbar-right", Static).update("[#a1a1aa]Session active[/#a1a1aa]")
 
     def _update_input_placeholder(self) -> None:
         self.query_one(ChatInput).placeholder = (
@@ -732,7 +798,7 @@ class AlphanusTUI(App):
             popup.display = True
             rendered = [
                 Option(
-                    f"[bold #8fb7ff]{esc(entry.prompt)}[/bold #8fb7ff] [dim]{esc(entry.description)}[/dim]",
+                    f"[bold #6366f1]{esc(entry.prompt)}[/bold #6366f1] [dim]{esc(entry.description)}[/dim]",
                     id=str(index),
                 )
                 for index, entry in enumerate(self._command_matches)
@@ -860,6 +926,7 @@ class AlphanusTUI(App):
         self.agent.config = merged
         self.agent.skill_runtime.config = merged
         self.thinking = bool(merged.get("agent", {}).get("enable_thinking", self.thinking))
+        self._update_topbar()
         self._apply_tui_config()
         self._write_info("Saved global config. Restart to apply endpoint, workspace, or memory changes.")
 
@@ -874,16 +941,20 @@ class AlphanusTUI(App):
         sidebar = self.query_one("#sidebar", ScrollableContainer)
         if not sidebar.display:
             return
-        lines = [f"[dim]conversation tree · {self.conv_tree.turn_count()} turns[/dim]", ""]
+        lines = [
+            "[bold #a1a1aa]Conversation Tree[/bold #a1a1aa]",
+            f"[dim]{self.conv_tree.turn_count()} turns[/dim]",
+            "",
+        ]
         cur = self.conv_tree.current_id
         for text, tag, active in self.conv_tree.render_tree(width=30):
             line = esc(text)
             if tag == "root":
-                lines.append(f"[dim]{line}[/dim]")
+                lines.append(f"[#a1a1aa]{line}[/#a1a1aa]")
             elif tag == cur:
-                lines.append(f"[bold #5f87d7]{line}[/bold #5f87d7]")
+                lines.append(f"[bold #6366f1]{line}[/bold #6366f1]")
             elif active:
-                lines.append(f"[#5f87d7]{line}[/#5f87d7]")
+                lines.append(f"[#8b5cf6]{line}[/#8b5cf6]")
             else:
                 lines.append(f"[dim]{line}[/dim]")
         self.query_one("#sidebar-content", Static).update("\n".join(lines))
@@ -891,9 +962,9 @@ class AlphanusTUI(App):
     def _write_turn_user(self, turn: Turn) -> None:
         self._write("")
         if turn.branch_root:
-            label = f" ⎇  {esc(turn.label)}" if turn.label else " ⎇  new branch"
-            self._write(f"[dim yellow]{label}[/dim yellow]")
-        self._write("[bold #5faf5f]You[/bold #5faf5f]")
+            label = f" ⎇  {esc(turn.label)}" if turn.label else " ⎇  branch"
+            self._write(f"[dim #6366f1]{label}[/dim #6366f1]")
+        self._write("[bold #8b5cf6]You[/bold #8b5cf6]")
         body = turn.user_text()
         for line in body.splitlines() or [""]:
             self._write_indented(esc(line), indent=2)
@@ -908,9 +979,8 @@ class AlphanusTUI(App):
                         args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
                     except Exception:
                         args = raw_args
-                    self._write(
-                        f"[dim]  · tool call: {esc(name)}({esc(self._live_preview.compact_tool_args(name, args))})[/dim]"
-                    )
+                    if name not in self._live_preview.streamed_file_tools:
+                        self._write_tool_call_block(f"{name}({self._live_preview.compact_tool_args(name, args)})", indent=2)
                     self._live_preview.write_static_preview(
                         name, args, self._write, self._write_indented, self._write_code_block
                     )
@@ -920,15 +990,17 @@ class AlphanusTUI(App):
                     payload = json.loads(msg.get("content", "{}"))
                 except Exception:
                     payload = {"ok": False, "error": {"message": "invalid tool response"}}
+                if not self._show_tool_result_line(name, bool(payload.get("ok"))):
+                    continue
                 if payload.get("ok"):
-                    self._write(f"[dim green]  · {esc(name)} ✓[/dim green]")
+                    self._write_indented(f"[#10b981]✓ {esc(name)}[/#10b981]", indent=4)
                 else:
                     em = payload.get("error", {}).get("message", "failed")
-                    self._write(f"[dim red]  · {esc(name)} ✗ {esc(em)}[/dim red]")
+                    self._write_indented(f"[#f87171]✗ {esc(name)} · {esc(em)}[/#f87171]", indent=4)
 
     def _write_completed_turn_asst(self, turn: Turn) -> None:
         self._write("")
-        self._write("[bold #5f87d7]Assistant[/bold #5f87d7]")
+        self._write("[bold #6366f1]Assistant[/bold #6366f1]")
         self._write_skill_exchanges(turn)
 
         content = turn.assistant_content or ""
@@ -941,8 +1013,7 @@ class AlphanusTUI(App):
         fence_lang: Optional[str] = None
         fence_lines: List[str] = []
         for line in display.splitlines() or [""]:
-            stripped = line.strip()
-            if stripped.startswith("```") or stripped.startswith("~~~"):
+            if self._is_fence_line(line):
                 if in_fence:
                     if fence_lines:
                         self._write_code_block(fence_lines, fence_lang, indent=2)
@@ -996,7 +1067,7 @@ class AlphanusTUI(App):
         self._partial().display = True
 
         self._write("")
-        self._write("[bold #5f87d7]Assistant[/bold #5f87d7]")
+        self._write("[bold #6366f1]Assistant[/bold #6366f1]")
 
         branch_labels = [t.label for t in self.conv_tree.active_path if t.branch_root and t.label]
         history_messages = self.conv_tree.history_messages()
@@ -1051,8 +1122,11 @@ class AlphanusTUI(App):
         if include_partial and self._buf_c:
             if not self._is_tool_trace_line(self._buf_c):
                 if self._in_fence:
-                    self._fence_lines.append(self._buf_c)
-                    self._flush_fence_block()
+                    if self._is_fence_line(self._buf_c):
+                        self._flush_fence_block()
+                    else:
+                        self._fence_lines.append(self._buf_c)
+                        self._flush_fence_block()
                 else:
                     rendered, _ = render_md(self._buf_c, False)
                     self._write_indented(rendered, indent=max(2, hanging_indent(self._buf_c)))
@@ -1068,7 +1142,7 @@ class AlphanusTUI(App):
             if self._reasoning_open:
                 self._flush_reasoning_buffer()
                 if not self._done_thinking_rendered:
-                    self._write("[bold #5f87d7]· done thinking[/bold #5f87d7]")
+                    self._write("[bold #6366f1]· done thinking[/bold #6366f1]")
                     self._write("")
                     self._done_thinking_rendered = True
         self._buf_c += token
@@ -1083,7 +1157,7 @@ class AlphanusTUI(App):
             token = event.get("text", "")
             if not self._reasoning_open:
                 self._reasoning_open = True
-                self._write("[bold #5f87d7]· thinking[/bold #5f87d7]")
+                self._write("[bold #6366f1]· thinking[/bold #6366f1]")
             self._buf_r += token
             display = self._buf_r
             if "\n" in display:
@@ -1126,9 +1200,8 @@ class AlphanusTUI(App):
             name = event.get("name", "tool")
             args = event.get("arguments", {})
             stream_id = str(event.get("stream_id") or "")
-            self._write(
-                f"[dim]  · tool call: {esc(name)}({esc(self._live_preview.compact_tool_args(name, args))})[/dim]"
-            )
+            if self._show_tool_details and name not in self._live_preview.streamed_file_tools:
+                self._write_tool_call_block(f"{name}({self._live_preview.compact_tool_args(name, args)})", indent=2)
             streamed = (
                 self._live_preview.close(
                     stream_id, self._write_indented, self._write_code_block, self._clear_partial_preview
@@ -1146,11 +1219,13 @@ class AlphanusTUI(App):
             self._flush_reasoning_buffer()
             name = event.get("name", "tool")
             result = event.get("result", {})
+            if not self._show_tool_result_line(name, bool(result.get("ok"))):
+                return
             if result.get("ok"):
-                self._write(f"[dim green]  · {esc(name)} ✓[/dim green]")
+                self._write_indented(f"[#10b981]✓ {esc(name)}[/#10b981]", indent=4)
             else:
                 msg = result.get("error", {}).get("message", "failed")
-                self._write(f"[dim red]  · {esc(name)} ✗ {esc(msg)}[/dim red]")
+                self._write_indented(f"[#f87171]✗ {esc(name)} · {esc(msg)}[/#f87171]", indent=4)
 
         elif etype == "error":
             self._write_error(str(event.get("text", "Unknown error")))
@@ -1188,7 +1263,7 @@ class AlphanusTUI(App):
 
         if self._reasoning_open and not self._content_open:
             if not self._done_thinking_rendered:
-                self._write("[bold #5f87d7]· done thinking[/bold #5f87d7]")
+                self._write("[bold #6366f1]· done thinking[/bold #6366f1]")
                 self._write("")
                 self._done_thinking_rendered = True
 
@@ -1200,8 +1275,7 @@ class AlphanusTUI(App):
             fence_lang: Optional[str] = None
             fence_lines: List[str] = []
             for line in reply.splitlines() or [""]:
-                stripped = line.strip()
-                if stripped.startswith("```") or stripped.startswith("~~~"):
+                if self._is_fence_line(line):
                     if in_fence:
                         if fence_lines:
                             self._write_code_block(fence_lines, fence_lang, indent=2)
@@ -1380,6 +1454,21 @@ class AlphanusTUI(App):
             self._auto_follow_stream = True
             self._update_status2()
 
+    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        if self.streaming:
+            self._auto_follow_stream = False
+            self._update_status2()
+
+    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        if not self.streaming:
+            return
+        self.call_after_refresh(self._resume_auto_follow_if_near_bottom)
+
+    def _resume_auto_follow_if_near_bottom(self) -> None:
+        if self.streaming and self._is_near_bottom():
+            self._auto_follow_stream = True
+            self._update_status2()
+
     def _handle_command(self, text: str) -> bool:
         parts = text.strip().split(None, 1)
         cmd = parts[0].lower()
@@ -1393,6 +1482,11 @@ class AlphanusTUI(App):
             self._cmd_help()
             return True
 
+        if cmd == "/details":
+            self._show_tool_details = not self._show_tool_details
+            self._write_info(f"Tool details {'shown' if self._show_tool_details else 'hidden'}")
+            return True
+
         if cmd == "/think":
             self.thinking = not self.thinking
             self._write_info(f"Thinking {'enabled' if self.thinking else 'disabled'}")
@@ -1400,18 +1494,24 @@ class AlphanusTUI(App):
 
         if cmd == "/branch":
             self.conv_tree.arm_branch(arg)
-            suffix = f" '{arg}'" if arg else ""
-            self._write(f"[yellow]  ⎇ Branch armed{esc(suffix)}[/yellow]")
+            label = self.conv_tree._pending_branch_label
+            self._write(f"[#6366f1]  ⎇ Branch armed '{esc(label)}'[/#6366f1]")
             self._update_status1()
             self._update_input_placeholder()
             return True
 
         if cmd == "/unbranch":
+            if self.conv_tree._pending_branch:
+                self.conv_tree.clear_pending_branch()
+                self._write("[#6366f1]  ↩ Disarmed pending branch[/#6366f1]")
+                self._update_status1()
+                self._update_input_placeholder()
+                return True
             moved = self.conv_tree.unbranch()
             if moved is None:
                 self._write_error("No branch to leave.")
             else:
-                self._write("[yellow]  ↩ Returned to fork point[/yellow]")
+                self._write("[#6366f1]  ↩ Returned to fork point[/#6366f1]")
                 self._rebuild_viewport()
                 self._update_sidebar()
             self._update_status1()
@@ -1475,7 +1575,6 @@ class AlphanusTUI(App):
             self.pending.clear()
             self._log().clear()
             self._partial().update("")
-            self._show_banner()
             self._update_status1()
             self._update_status2()
             self._update_sidebar()

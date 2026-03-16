@@ -22,13 +22,13 @@ class CodeViewerModal(ModalScreen[None]):
     #code-modal {
         width: 88%;
         height: 88%;
-        background: #181a1f;
-        border: panel #5f87d7;
+        background: #121214;
+        border: panel #27272a;
         padding: 1 2;
     }
 
     #code-modal-title {
-        color: #f4f7fb;
+        color: #e4e4e7;
         text-style: bold;
         padding: 0 0 1 0;
     }
@@ -36,9 +36,9 @@ class CodeViewerModal(ModalScreen[None]):
     #code-modal-editor {
         width: 1fr;
         height: 1fr;
-        background: #121417;
-        color: #f0f0f0;
-        border: solid #2b323b;
+        background: #18181b;
+        color: #e4e4e7;
+        border: solid #27272a;
     }
 
     #code-modal-footer {
@@ -49,20 +49,20 @@ class CodeViewerModal(ModalScreen[None]):
 
     #code-modal-hint {
         width: 1fr;
-        color: #a0a0a0;
+        color: #a1a1aa;
         padding-top: 1;
     }
 
     #code-copy {
-        background: #2f5fb3;
+        background: #6366f1;
         color: #ffffff;
         border: none;
         margin-right: 1;
     }
 
     #code-close {
-        background: #2a2a2a;
-        color: #f0f0f0;
+        background: #18181b;
+        color: #e4e4e7;
         border: none;
     }
     """
@@ -84,7 +84,7 @@ class CodeViewerModal(ModalScreen[None]):
             yield TextArea(
                 self._code,
                 language=self._language,
-                theme="github-dark",
+                theme="dracula",
                 read_only=True,
                 show_line_numbers=False,
                 compact=True,
@@ -123,33 +123,33 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
     #config-modal {
         width: 90%;
         height: 90%;
-        background: #181a1f;
-        border: panel #5f87d7;
+        background: #121214;
+        border: panel #27272a;
         padding: 1 2;
     }
 
     #config-modal-title {
-        color: #f4f7fb;
+        color: #e4e4e7;
         text-style: bold;
         padding: 0 0 1 0;
     }
 
     #config-modal-subtitle {
-        color: #a0a0a0;
+        color: #a1a1aa;
         padding: 0 0 1 0;
     }
 
     #config-modal-editor {
         width: 1fr;
         height: 1fr;
-        background: #121417;
-        color: #f0f0f0;
-        border: solid #2b323b;
+        background: #18181b;
+        color: #e4e4e7;
+        border: solid #27272a;
     }
 
     #config-modal-error {
         min-height: 1;
-        color: #ff7b7b;
+        color: #f87171;
         padding: 1 0 0 0;
     }
 
@@ -160,15 +160,15 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
     }
 
     #config-save {
-        background: #2f7d57;
+        background: #10b981;
         color: #ffffff;
         border: none;
         margin-right: 1;
     }
 
     #config-cancel {
-        background: #2a2a2a;
-        color: #f0f0f0;
+        background: #18181b;
+        color: #e4e4e7;
         border: none;
     }
     """
@@ -190,7 +190,7 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
             yield TextArea(
                 self._initial_text,
                 language="json",
-                theme="github-dark",
+                theme="dracula",
                 read_only=False,
                 show_line_numbers=True,
                 compact=True,

@@ -160,7 +160,7 @@ class ConvTree:
 
     def arm_branch(self, label: str = "") -> None:
         self._pending_branch = True
-        self._pending_branch_label = label
+        self._pending_branch_label = label.strip() or f"branch-{self.turn_count() + 1}"
 
     def clear_pending_branch(self) -> None:
         self._pending_branch = False
