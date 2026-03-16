@@ -118,7 +118,27 @@ class WorkspaceManager:
         target = self._resolve_write_path(filepath)
         if not target.exists():
             raise FileNotFoundError(str(target))
+        if target.is_dir():
+            raise IsADirectoryError(str(target))
         target.unlink()
+        return str(target)
+
+    def delete_path(self, path: str, recursive: bool = False) -> str:
+        target = self._resolve_write_path(path)
+        if not target.exists():
+            raise FileNotFoundError(str(target))
+        if target.is_file():
+            target.unlink()
+            return str(target)
+        if not target.is_dir():
+            raise FileNotFoundError(str(target))
+        if recursive:
+            shutil.rmtree(target)
+            return str(target)
+        try:
+            target.rmdir()
+        except OSError as exc:
+            raise OSError("Directory is not empty; set recursive=true to delete it") from exc
         return str(target)
 
     def list_files(self, path: str = ".") -> List[str]:

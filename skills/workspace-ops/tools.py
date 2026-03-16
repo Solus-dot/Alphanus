@@ -57,6 +57,18 @@ TOOL_SPECS = {
             "required": ["filepath"],
         },
     },
+    "delete_path": {
+        "capability": "workspace_delete",
+        "description": "Delete a workspace file or directory inside the workspace.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "recursive": {"type": "boolean"},
+            },
+            "required": ["path"],
+        },
+    },
     "workspace_tree": {
         "capability": "workspace_tree",
         "description": "Render the workspace tree.",
@@ -165,6 +177,35 @@ def _delete_file(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     return data
 
 
+def _delete_path(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+    path = str(args["path"])
+    recursive = bool(args.get("recursive", False))
+    target = env.workspace._resolve_read_path(path)
+    is_dir = target.is_dir()
+    size_bytes = 0
+    file_count = 0
+    if is_dir:
+        for child in target.rglob("*"):
+            if child.is_file():
+                size_bytes += child.stat().st_size
+                file_count += 1
+    else:
+        size_bytes = target.stat().st_size
+        file_count = 1
+    path_str = env.workspace.delete_path(path, recursive=recursive)
+    data = _path_info(path_str)
+    data.update(
+        {
+            "deleted": True,
+            "recursive": recursive,
+            "kind": "directory" if is_dir else "file",
+            "size_bytes": size_bytes,
+            "file_count": file_count,
+        }
+    )
+    return data
+
+
 def _workspace_tree(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     max_depth = max(1, int(args.get("max_depth", 3)))
     tree = env.workspace.workspace_tree(max_depth=max_depth)
@@ -182,6 +223,8 @@ def execute(tool_name: str, args: Dict[str, Any], env: ToolExecutionEnv):
         return _list_files(args, env)
     if tool_name == "delete_file":
         return _delete_file(args, env)
+    if tool_name == "delete_path":
+        return _delete_path(args, env)
     if tool_name == "workspace_tree":
         return _workspace_tree(args, env)
     raise ValueError(f"Unsupported tool: {tool_name}")
