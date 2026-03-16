@@ -958,6 +958,17 @@ def test_model_skill_router_respects_explicit_empty_selection(mocker, runtime: S
     assert len(chat_reqs) == 2
 
 
+def test_large_tool_call_args_are_compacted_in_history(runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    large = "x" * 5000
+    compacted = agent._tool_call_args_for_history({"filepath": "a.txt", "content": large})
+
+    assert compacted["filepath"] == "a.txt"
+    assert compacted["content"].startswith("x" * 1200)
+    assert "[truncated 3800 chars]" in compacted["content"]
+    assert len(compacted["content"]) < len(large)
+
+
 def test_agent_transport_error_marks_error(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {

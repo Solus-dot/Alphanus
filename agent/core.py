@@ -517,6 +517,20 @@ class Agent:
             return result
         return self._compact_tool_result(result)
 
+    def _tool_call_args_for_history(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(args, dict):
+            return {}
+        out: Dict[str, Any] = {}
+        for key, value in args.items():
+            if isinstance(value, str):
+                if len(value) > 1200:
+                    out[key] = value[:1200] + f"...[truncated {len(value) - 1200} chars]"
+                else:
+                    out[key] = value
+                continue
+            out[key] = self._compact_jsonish(value)
+        return out
+
     def _append_reasoning(self, full_reasoning: str, delta_reasoning: str) -> str:
         if not delta_reasoning:
             return full_reasoning
@@ -1168,7 +1182,7 @@ class Agent:
                             "type": "function",
                             "function": {
                                 "name": call.name,
-                                "arguments": self._safe_json_dumps(call.arguments),
+                                "arguments": self._safe_json_dumps(self._tool_call_args_for_history(call.arguments)),
                             },
                         }
                         for call in stream_result.tool_calls
