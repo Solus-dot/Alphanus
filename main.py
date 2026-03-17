@@ -44,7 +44,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "memory": {
         "path": "./memories/memory.pkl",
         "embedding_backend": "hash",
-        "model_name": "all-MiniLM-L6-v2",
         "eager_load_encoder": False,
     },
     "context": {
@@ -63,7 +62,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "search": {
         "provider": "tavily",
-        "tavily_api_key": "",
     },
     "tui": {
         "chat_log_max_lines": 5000,

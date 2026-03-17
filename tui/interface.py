@@ -41,6 +41,7 @@ class CommandEntry:
     prompt: str
     insert_text: str
     description: str
+    aliases: Tuple[str, ...] = ()
 
 HELP_SECTIONS = [
     (
@@ -111,7 +112,7 @@ COMMAND_ENTRIES = [
     CommandEntry("/code [n|last]", "/code ", "Open a copyable code block viewer"),
     CommandEntry("/save [file]", "/save ", f"Save tree JSON (default {DEFAULT_SAVE})"),
     CommandEntry("/load [file]", "/load ", f"Load tree JSON (default {DEFAULT_SAVE})"),
-    CommandEntry("/quit", "/quit", "Exit app"),
+    CommandEntry("/quit", "/quit", "Exit app", aliases=("/exit", "/q")),
 ]
 class ChatInput(Input):
     BINDINGS = [
@@ -755,21 +756,35 @@ class AlphanusTUI(App):
             return []
         needle = query[1:]
         if not needle:
-            return COMMAND_ENTRIES[:10]
+            return COMMAND_ENTRIES
 
         def sort_key(entry: CommandEntry) -> Tuple[int, int, str]:
-            haystack = f"{entry.prompt} {entry.description}".lower()
-            starts = 0 if entry.prompt.lower().startswith(f"/{needle}") else 1
+            aliases = " ".join(entry.aliases)
+            haystack = f"{entry.prompt} {aliases} {entry.description}".lower()
+            starts = 0 if (
+                entry.prompt.lower().startswith(f"/{needle}")
+                or any(alias.lower().startswith(f"/{needle}") for alias in entry.aliases)
+            ) else 1
             pos = haystack.find(needle)
             return (starts, pos if pos >= 0 else 9999, entry.prompt)
 
         matches = [
             entry
             for entry in COMMAND_ENTRIES
-            if needle in entry.prompt.lower() or needle in entry.description.lower()
+            if (
+                needle in entry.prompt.lower()
+                or any(needle in alias.lower() for alias in entry.aliases)
+                or needle in entry.description.lower()
+            )
         ]
         matches.sort(key=sort_key)
-        return matches[:8]
+        return matches
+
+    @staticmethod
+    def _command_label(entry: CommandEntry) -> str:
+        if not entry.aliases:
+            return entry.prompt
+        return f"{entry.prompt} {' '.join(entry.aliases)}"
 
     def _refresh_command_popup(self, value: str) -> None:
         popup = self._command_popup()
@@ -793,25 +808,18 @@ class AlphanusTUI(App):
         self._command_anchor_region = self.query_one(ChatInput).region
         self._command_matches = next_matches
 
-        if next_keys != self._command_match_keys:
-            self._command_match_keys = next_keys
-            popup.display = True
-            rendered = [
-                Option(
-                    f"[bold #6366f1]{esc(entry.prompt)}[/bold #6366f1] [dim]{esc(entry.description)}[/dim]",
-                    id=str(index),
-                )
-                for index, entry in enumerate(self._command_matches)
-            ]
-            options.clear_options()
-            options.add_options(rendered)
-            options.highlighted = 0
-            self.call_after_refresh(self._position_command_popup)
-            if was_hidden:
-                self.set_timer(0.02, self._position_command_popup)
-            return
-
+        self._command_match_keys = next_keys
         popup.display = True
+        rendered = [
+            Option(
+                f"[bold #6366f1]{esc(self._command_label(entry))}[/bold #6366f1] [dim]{esc(entry.description)}[/dim]",
+                id=str(index),
+            )
+            for index, entry in enumerate(self._command_matches)
+        ]
+        options.clear_options()
+        options.add_options(rendered)
+        options.highlighted = 0
         if was_hidden or geometry_changed:
             self.call_after_refresh(self._position_command_popup)
             if was_hidden:
@@ -879,11 +887,26 @@ class AlphanusTUI(App):
             return False
         base = stripped.lower()
         exact = {entry.insert_text.strip().lower() for entry in COMMAND_ENTRIES}
+        for entry in COMMAND_ENTRIES:
+            exact.update(alias.strip().lower() for alias in entry.aliases)
         return base not in exact
 
+    @staticmethod
+    def _config_for_editor(config: Dict[str, Any]) -> Dict[str, Any]:
+        cleaned = json.loads(json.dumps(config))
+        search_cfg = cleaned.get("search")
+        if isinstance(search_cfg, dict):
+            search_cfg.pop("tavily_api_key", None)
+        memory_cfg = cleaned.get("memory")
+        if isinstance(memory_cfg, dict) and str(memory_cfg.get("embedding_backend", "hash")).strip().lower() == "hash":
+            memory_cfg.pop("model_name", None)
+        return cleaned
+
     def _open_config_editor(self) -> None:
-        raw = GLOBAL_CONFIG_PATH.read_text(encoding="utf-8")
-        self.push_screen(ConfigEditorModal(GLOBAL_CONFIG_PATH, raw), self._on_config_editor_close)
+        raw = json.loads(GLOBAL_CONFIG_PATH.read_text(encoding="utf-8"))
+        safe = self._config_for_editor(raw if isinstance(raw, dict) else {})
+        text = json.dumps(safe, indent=2) + "\n"
+        self.push_screen(ConfigEditorModal(GLOBAL_CONFIG_PATH, text), self._on_config_editor_close)
 
     def _merge_live_config(self, base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
         merged: Dict[str, Any] = dict(base)
@@ -921,14 +944,16 @@ class AlphanusTUI(App):
             self._write_error("Config save failed: invalid config payload")
             return
 
+        cleaned = self._config_for_editor(parsed)
+        text = json.dumps(cleaned, indent=2) + "\n"
         GLOBAL_CONFIG_PATH.write_text(text, encoding="utf-8")
-        merged = self._merge_live_config(self.agent.config, parsed)
+        merged = self._merge_live_config(self.agent.config, cleaned)
         self.agent.config = merged
         self.agent.skill_runtime.config = merged
         self.thinking = bool(merged.get("agent", {}).get("enable_thinking", self.thinking))
         self._update_topbar()
         self._apply_tui_config()
-        self._write_info("Saved global config. Restart to apply endpoint, workspace, or memory changes.")
+        self._write_info("Saved global config. Use environment variables for secrets like TAVILY_API_KEY.")
 
     def _open_code_block(self, index: int) -> None:
         if index < 1 or index > len(self._code_blocks):
@@ -1629,11 +1654,12 @@ class AlphanusTUI(App):
 
     def _cmd_help(self) -> None:
         self._write("")
-        col = 22
+        col = max((len(command) for _, rows in HELP_SECTIONS for command, _ in rows), default=22) + 2
         for section, rows in HELP_SECTIONS:
             self._write(f"[bold yellow]  {section}[/bold yellow]")
             for c, desc in rows:
-                self._write(f"  [yellow]{esc(c):<{col}}[/yellow] [dim]{esc(desc)}[/dim]")
+                cmd = esc(c.ljust(col))
+                self._write(f"  [yellow]{cmd}[/yellow][dim]{esc(desc)}[/dim]")
             self._write("")
 
     def _cmd_tree(self) -> None:
@@ -1654,8 +1680,9 @@ class AlphanusTUI(App):
             state, color = self.agent.skill_runtime.skill_status_label(skill)
             source = self.agent.skill_runtime.skill_source_label(skill)
             suffix = f" [dim]({esc(source)})[/dim]" if source else ""
+            skill_id = esc(skill.id.ljust(name_col))
             self._write(
-                f"  [bold]{esc(skill.id):<{name_col}}[/bold][dim]({esc(skill.version)})[/dim] "
+                f"  [bold]{skill_id}[/bold][dim]({esc(skill.version)})[/dim] "
                 f"[{color}]{state}[/{color}] [dim]{esc(skill.description)}[/dim]{suffix}"
             )
             if not skill.available and skill.availability_reason:

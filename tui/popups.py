@@ -139,6 +139,11 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
         padding: 0 0 1 0;
     }
 
+    #config-modal-note {
+        color: #c4b5fd;
+        padding: 0 0 1 0;
+    }
+
     #config-modal-editor {
         width: 1fr;
         height: 1fr;
@@ -187,6 +192,7 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
         with Vertical(id="config-modal"):
             yield Static("Global Config", id="config-modal-title")
             yield Static(str(self._config_path), id="config-modal-subtitle")
+            yield Static("Secrets are omitted here. Use environment variables such as TAVILY_API_KEY.", id="config-modal-note")
             yield TextArea(
                 self._initial_text,
                 language="json",

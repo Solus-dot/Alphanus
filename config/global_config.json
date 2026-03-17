@@ -21,7 +21,6 @@
   "memory": {
     "path": "./memories/memory.pkl",
     "embedding_backend": "hash",
-    "model_name": "all-MiniLM-L6-v2",
     "eager_load_encoder": false
   },
   "context": {
@@ -39,7 +38,6 @@
     "strict_capability_policy": false
   },
   "search": {
-    "provider": "tavily",
-    "tavily_api_key": ""
+    "provider": "tavily"
   }
 }
