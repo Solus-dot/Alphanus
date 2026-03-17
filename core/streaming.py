@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import select
 import ssl
+import time
 import urllib.error
 import urllib.request
 from typing import Callable, Dict, Generator, Optional
@@ -9,6 +11,7 @@ from typing import Callable, Dict, Generator, Optional
 
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 RETRYABLE_URL_ERRORS = (TimeoutError, ConnectionResetError)
+STREAM_POLL_TIMEOUT_S = 0.25
 
 
 class StreamError(Exception):
@@ -42,6 +45,25 @@ def should_retry(exc: Exception) -> bool:
     return False
 
 
+def _extract_stream_socket(resp):
+    candidates = [
+        getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None),
+        getattr(getattr(resp, "fp", None), "raw", None),
+        getattr(resp, "fp", None),
+    ]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        fileno = getattr(candidate, "fileno", None)
+        if callable(fileno):
+            try:
+                fileno()
+                return candidate
+            except Exception:
+                continue
+    return None
+
+
 def stream_chat_completions(
     endpoint: str,
     payload: Dict,
@@ -56,6 +78,7 @@ def stream_chat_completions(
     if headers:
         req_headers.update(headers)
     req = urllib.request.Request(endpoint, data=body, headers=req_headers, method="POST")
+    deadline = time.monotonic() + max(0.1, float(timeout_s))
 
     try:
         if on_debug_event:
@@ -79,6 +102,49 @@ def stream_chat_completions(
                         "reason": getattr(resp, "reason", ""),
                     }
                 )
+            readline = getattr(resp, "readline", None)
+            stream_sock = _extract_stream_socket(resp)
+            if callable(readline):
+                while True:
+                    if stop_event is not None and stop_event.is_set():
+                        return
+                    if time.monotonic() >= deadline:
+                        raise StreamError(
+                            f"Network error: stream timed out after {timeout_s}s",
+                            retryable=True,
+                        )
+                    if stream_sock is not None:
+                        ready, _, _ = select.select([stream_sock], [], [], STREAM_POLL_TIMEOUT_S)
+                        if not ready:
+                            continue
+                    try:
+                        raw = readline()
+                    except TimeoutError:
+                        continue
+                    if not raw:
+                        return
+                    line = raw.decode(errors="replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    payload_str = line[5:].strip()
+                    if payload_str == "[DONE]":
+                        if on_debug_event:
+                            on_debug_event({"type": "http_done", "endpoint": endpoint})
+                        return
+                    try:
+                        chunk = json.loads(payload_str)
+                        yield chunk
+                    except json.JSONDecodeError:
+                        if on_debug_event:
+                            on_debug_event(
+                                {
+                                    "type": "http_chunk_decode_error",
+                                    "endpoint": endpoint,
+                                    "payload_preview": payload_str[:500],
+                                }
+                            )
+                        continue
+                return
             for raw in resp:
                 if stop_event is not None and stop_event.is_set():
                     return
