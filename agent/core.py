@@ -81,6 +81,9 @@ class TurnState:
     tool_budgets: Dict[str, int] = field(default_factory=dict)
     requires_workspace_action: bool = False
     batch_workspace_action: bool = False
+    prefer_local_workspace_tools: bool = False
+    workspace_scaffold_action: bool = False
+    forced_workspace_retry: bool = False
 
 
 class ToolCallAccumulator:
@@ -570,9 +573,7 @@ class Agent:
         configured_limit = int(skills_cfg.get("max_active_skills", getattr(self.skill_runtime, "max_active_skills", 2)))
         limit = configured_limit if configured_limit > 0 else 2
         catalog = snapshot.catalog
-        use_recent_hint = self._is_confirmation_like(ctx.user_input) and bool(
-            ctx.recent_routing_hint or ctx.sticky_skill_ids
-        )
+        use_recent_hint = self._should_use_recent_routing_hint(ctx)
         routing_system = (
             "You are selecting local skills for the next assistant turn.\n"
             "Choose the smallest set of skills needed for the user's request.\n"
@@ -1194,6 +1195,8 @@ class Agent:
             time_sensitive_query=self._is_time_sensitive_query(user_input),
             requires_workspace_action=self._requires_workspace_action(ctx, selected),
             batch_workspace_action=self._is_batch_workspace_action(ctx, selected),
+            prefer_local_workspace_tools=self._prefers_local_workspace_tools(ctx, selected),
+            workspace_scaffold_action=self._is_workspace_scaffold_action(ctx, selected),
             tool_counts={},
             tool_budgets=dict(self.default_tool_budgets),
         )
@@ -1201,6 +1204,36 @@ class Agent:
     @staticmethod
     def _is_workspace_skill_selected(selected: List[Any]) -> bool:
         return any(getattr(skill, "id", "") == "workspace-ops" for skill in selected)
+
+    @classmethod
+    def _is_contextual_followup_like(cls, text: str) -> bool:
+        lowered = " ".join(text.strip().lower().split())
+        if not lowered or cls._is_confirmation_like(lowered):
+            return False
+        words = lowered.split()
+        if len(words) > 6:
+            return False
+        prefixes = (
+            "where is",
+            "where's",
+            "what about",
+            "and ",
+            "also ",
+            "add ",
+            "include ",
+            "make ",
+            "put ",
+            "now ",
+        )
+        if any(lowered.startswith(prefix) for prefix in prefixes):
+            return True
+        return any(token in lowered for token in (" js", " css", " html", "script", "style", "that", "it"))
+
+    @classmethod
+    def _should_use_recent_routing_hint(cls, ctx: SkillContext) -> bool:
+        if not (ctx.recent_routing_hint or ctx.sticky_skill_ids):
+            return False
+        return cls._is_confirmation_like(ctx.user_input) or cls._is_contextual_followup_like(ctx.user_input)
 
     def _requires_workspace_action(self, ctx: SkillContext, selected: List[Any]) -> bool:
         if not self._is_workspace_skill_selected(selected):
@@ -1224,6 +1257,33 @@ class Agent:
         )
         return any(marker in hint for marker in action_markers)
 
+    def _prefers_local_workspace_tools(self, ctx: SkillContext, selected: List[Any]) -> bool:
+        if not self._is_workspace_skill_selected(selected):
+            return False
+        text = " ".join(part for part in (ctx.user_input, ctx.recent_routing_hint) if part).lower()
+        if not text:
+            return False
+        explicit_shell = any(term in text for term in ("shell", "terminal", "bash", "zsh", "cmd ", "powershell", "run this command"))
+        explicit_web = any(term in text for term in ("http://", "https://", "website", "web ", "search ", "google ", "fetch "))
+        if explicit_shell or explicit_web:
+            return False
+        local_markers = (
+            "workspace",
+            "folder",
+            "directory",
+            "file",
+            "html",
+            "css",
+            "js",
+            "javascript",
+            "script",
+            "style",
+            "landing page",
+            "scaffold",
+            "component",
+        )
+        return any(marker in text for marker in local_markers)
+
     def _is_batch_workspace_action(self, ctx: SkillContext, selected: List[Any]) -> bool:
         if not self._is_workspace_skill_selected(selected):
             return False
@@ -1241,6 +1301,33 @@ class Agent:
             or ("workspace" in text and any(term in text for term in ("all", "everything", "files", "contents")))
         )
         return destructive and broad_scope
+
+    def _is_workspace_scaffold_action(self, ctx: SkillContext, selected: List[Any]) -> bool:
+        if not self._is_workspace_skill_selected(selected):
+            return False
+        text = " ".join(part for part in (ctx.user_input, ctx.recent_routing_hint) if part).lower()
+        if not text:
+            return False
+        build_terms = ("make ", "create ", "build ", "generate ", "save it in", "save them in")
+        artifact_terms = (
+            "landing page",
+            "html",
+            "css",
+            "javascript",
+            "js",
+            "website",
+            "web page",
+            "page",
+            "scaffold",
+        )
+        multi_file_terms = ("folder", "directory", "files", "html css", "html, css", "css and javascript", "html css and javascript")
+        return any(term in text for term in build_terms) and any(term in text for term in artifact_terms) and any(
+            term in text for term in multi_file_terms
+        )
+
+    @staticmethod
+    def _has_workspace_file_materialization(state: TurnState) -> bool:
+        return any(name in state.tool_counts for name in {"create_file", "create_files", "edit_file"})
 
     def _finalize_turn(
         self,
@@ -1284,11 +1371,25 @@ class Agent:
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, dict):
             return ""
+        if name == "create_directory":
+            base = str(data.get("basename", "")).strip()
+            path = str(data.get("filepath", "")).strip()
+            if base and path:
+                return f"I created the directory `{base}` in your workspace at `{path}`."
         if name == "create_file":
             base = str(data.get("basename", "")).strip()
             path = str(data.get("filepath", "")).strip()
             if base and path:
                 return f"I created `{base}` in your workspace at `{path}`."
+        if name == "create_files":
+            created = data.get("created")
+            if isinstance(created, list) and created:
+                names = [str(item.get("basename", "")).strip() for item in created if isinstance(item, dict)]
+                names = [name for name in names if name]
+                if names:
+                    if len(names) == 1:
+                        return f"I created `{names[0]}` in your workspace."
+                    return "I created these files in your workspace: " + ", ".join(f"`{name}`" for name in names) + "."
         if name == "edit_file":
             base = str(data.get("basename", "")).strip()
             path = str(data.get("filepath", "")).strip()
@@ -1475,6 +1576,30 @@ class Agent:
                     "- Do not replace an available workspace tool action with manual terminal instructions.\n"
                     "- Only decline if the required workspace tool is unavailable or policy blocks the action."
                 )
+            if state.workspace_scaffold_action:
+                system_content += (
+                    "\n\nWorkspace scaffold rule:\n"
+                    "- This request requires creating a local scaffold, not just a directory.\n"
+                    "- Do not stop after create_directory alone.\n"
+                    "- Use create_files or create_file to materialize the requested HTML, CSS, and JavaScript files."
+                )
+            if state.workspace_scaffold_action and state.forced_workspace_retry:
+                system_content += (
+                    "\n\nMandatory scaffold completion rule:\n"
+                    "- The previous pass stopped before creating the requested files.\n"
+                    "- Continue the scaffold now with workspace file-creation tools.\n"
+                    "- Do not claim completion until the requested files exist."
+                )
+            if state.prefer_local_workspace_tools:
+                system_content += (
+                    "\n\nLocal workspace tool rule:\n"
+                    "- This request is about local workspace files or folders.\n"
+                    "- Use native workspace tools for local file creation, reading, editing, and folder creation.\n"
+                    "- Prefer create_directory for folder creation.\n"
+                    "- Prefer create_files when creating several new files for one scaffold.\n"
+                    "- Do not use shell_command to create folders or inspect local files.\n"
+                    "- Do not use web_search, fetch_url, open_url, or play_youtube for local workspace file tasks."
+                )
             system_messages = [{"role": "system", "content": system_content}]
 
             model_messages = self.context_mgr.prune(system_messages + state.dynamic_history, self.context_budget_max_tokens)
@@ -1604,6 +1729,43 @@ class Agent:
                             )
                         break
 
+                    if state.prefer_local_workspace_tools and call.name in {
+                        "shell_command",
+                        "web_search",
+                        "fetch_url",
+                        "open_url",
+                        "play_youtube",
+                    }:
+                        result = {
+                            "ok": False,
+                            "data": None,
+                            "error": {
+                                "code": "E_POLICY",
+                                "message": f"{call.name} is not allowed for local workspace file tasks; use workspace tools instead.",
+                            },
+                            "meta": {},
+                        }
+                        self._emit(
+                            on_event,
+                            {
+                                "type": "tool_result",
+                                "name": call.name,
+                                "id": call.id,
+                                "result": result,
+                            },
+                        )
+                        tool_message = {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "name": call.name,
+                            "content": self._safe_json_dumps(self._tool_result_for_history(call.name, result)),
+                        }
+                        state.dynamic_history.append(tool_message)
+                        state.skill_exchanges.append(tool_message)
+                        self._record_tool_effects(state, call, result)
+                        all_tool_success = False
+                        continue
+
                     if state.search_mode and call.name == "fetch_url":
                         raw_url = str(call.arguments.get("url", "")).strip()
                         if raw_url:
@@ -1720,6 +1882,7 @@ class Agent:
                     and len(direct_answers) == 1
                     and (not state.search_mode or not search_tool_called)
                     and not state.batch_workspace_action
+                    and not state.workspace_scaffold_action
                 ):
                     self.skill_runtime.post_response(state.selected, state.ctx, direct_answers[0])
                     return finish(
@@ -1751,6 +1914,21 @@ class Agent:
                     return finish(finalized)
                 state.full_reasoning = finalized.reasoning
                 final = finalized.content
+            if (
+                state.workspace_scaffold_action
+                and not self._has_workspace_file_materialization(state)
+            ):
+                if not state.forced_workspace_retry:
+                    state.forced_workspace_retry = True
+                    continue
+                return finish(
+                    AgentTurnResult(
+                        status="done",
+                        content="I created the directory, but I failed to finish creating the requested scaffold files with the available workspace tools.",
+                        reasoning=state.full_reasoning,
+                        skill_exchanges=state.skill_exchanges,
+                    )
+                )
             if state.search_mode and state.time_sensitive_query and state.tool_counts.get("web_search", 0) == 0:
                 if not state.forced_search_retry:
                     state.forced_search_retry = True

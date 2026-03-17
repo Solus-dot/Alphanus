@@ -343,6 +343,38 @@ def test_confirmation_turn_reuses_immediate_prior_skill_context(mocker, runtime:
     assert [skill.id for skill in selected] == ["workspace-ops"]
 
 
+def test_contextual_followup_reuses_immediate_prior_skill_context(mocker, runtime: SkillRuntime):
+    runtime.config = {"skills": {"selection_mode": "model", "max_active_skills": 2}}
+    agent = Agent({"agent": {}}, runtime)
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        return type("R", (), {"finish_reason": "stop", "content": '{"skills":["workspace-ops"]}'})()
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+
+    history_messages = [
+        {"role": "user", "content": "create a bakery landing page in a folder called 1738 with html css js"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "create_file",
+                        "arguments": '{"filepath":"1738/index.html","content":"<html></html>"}',
+                    }
+                }
+            ],
+        },
+        {"role": "tool", "name": "create_file", "content": '{"ok": true, "data": {"filepath": "1738/index.html"}}'},
+    ]
+
+    ctx = agent._build_skill_context("Where is JS?", [], [], history_messages)
+    assert agent._should_use_recent_routing_hint(ctx) is True
+
+    selected = agent._select_skills(ctx, threading.Event())
+    assert [skill.id for skill in selected] == ["workspace-ops"]
+
+
 def test_confirmation_workspace_action_retries_instead_of_accepting_manual_terminal_advice(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
@@ -641,6 +673,148 @@ def test_batch_workspace_delete_does_not_stop_after_first_successful_tool(mocker
     assert result.status == "done"
     assert result.content == "Finished deleting all requested files."
     assert calls == ["pass_1", "pass_2"]
+
+
+def test_workspace_scaffold_does_not_stop_after_create_directory(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    mocker.patch.object(agent, "ensure_ready", return_value=True)
+    selected = [runtime.get_skill("workspace-ops")]
+    mocker.patch.object(agent, "_select_skills", return_value=selected)
+
+    calls = []
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        calls.append(pass_id)
+        if pass_id == "pass_1":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "tool_calls",
+                    "content": "",
+                    "reasoning": "",
+                    "tool_calls": [
+                        type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "create_directory", "arguments": {"path": "arjun"}})(),
+                    ],
+                },
+            )()
+        if pass_id == "pass_2":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "tool_calls",
+                    "content": "",
+                    "reasoning": "",
+                    "tool_calls": [
+                        type("Call", (), {"stream_id": "2", "index": 0, "id": "call_2", "name": "create_files", "arguments": {"files": [{"filepath": "arjun/index.html", "content": "<html></html>"}, {"filepath": "arjun/styles.css", "content": "body{}"}, {"filepath": "arjun/script.js", "content": "console.log(1)\n"}]}})(),
+                    ],
+                },
+            )()
+        if pass_id == "pass_3":
+            return type("R", (), {"finish_reason": "stop", "content": "Done.", "reasoning": "", "tool_calls": []})()
+        raise AssertionError(f"Unexpected pass id: {pass_id}")
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    executed = []
+    real_execute = runtime.execute_tool_call
+
+    def wrapped_execute(tool_name, args, selected, ctx, confirm_shell=None):
+        executed.append(tool_name)
+        return real_execute(tool_name, args, selected=selected, ctx=ctx, confirm_shell=confirm_shell)
+
+    mocker.patch.object(runtime, "execute_tool_call", side_effect=wrapped_execute)
+    mocker.patch.object(
+        runtime,
+        "tools_for_skills",
+        return_value=[
+            {"type": "function", "function": {"name": "create_directory"}},
+            {"type": "function", "function": {"name": "create_files"}},
+        ],
+    )
+
+    result = agent.run_turn(
+        history_messages=[],
+        user_input="Make a landing page for a bakery using html css and javascript and save it in a folder called arjun",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert executed == ["create_directory", "create_files"]
+    assert calls == ["pass_1", "pass_2", "pass_3"]
+
+
+def test_local_workspace_tasks_reject_shell_and_fetch_tools(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    mocker.patch.object(agent, "ensure_ready", return_value=True)
+    selected = [runtime.get_skill("workspace-ops")]
+    mocker.patch.object(agent, "_select_skills", return_value=selected)
+
+    calls = []
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        calls.append(pass_id)
+        if pass_id == "pass_1":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "tool_calls",
+                    "content": "",
+                    "reasoning": "",
+                    "tool_calls": [
+                        type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "shell_command", "arguments": {"command": "mkdir -p 1738"}})(),
+                        type("Call", (), {"stream_id": "1", "index": 1, "id": "call_2", "name": "fetch_url", "arguments": {"url": "/tmp/index.html"}})(),
+                    ],
+                },
+            )()
+        if pass_id == "pass_2":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "tool_calls",
+                    "content": "",
+                    "reasoning": "",
+                    "tool_calls": [
+                        type("Call", (), {"stream_id": "2", "index": 0, "id": "call_3", "name": "create_directory", "arguments": {"path": "1738"}})(),
+                        type("Call", (), {"stream_id": "2", "index": 1, "id": "call_4", "name": "create_files", "arguments": {"files": [{"filepath": "1738/index.html", "content": "<html></html>"}, {"filepath": "1738/script.js", "content": "console.log(1)\n"}]}})(),
+                    ],
+                },
+            )()
+        if pass_id == "pass_3":
+            return type("R", (), {"finish_reason": "stop", "content": "Done.", "reasoning": "", "tool_calls": []})()
+        raise AssertionError(f"Unexpected pass id: {pass_id}")
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    executed = []
+    real_execute = runtime.execute_tool_call
+
+    def wrapped_execute(tool_name, args, selected, ctx, confirm_shell=None):
+        executed.append(tool_name)
+        return real_execute(tool_name, args, selected=selected, ctx=ctx, confirm_shell=confirm_shell)
+
+    mocker.patch.object(runtime, "execute_tool_call", side_effect=wrapped_execute)
+    mocker.patch.object(
+        runtime,
+        "tools_for_skills",
+        return_value=[
+            {"type": "function", "function": {"name": "create_directory"}},
+            {"type": "function", "function": {"name": "create_files"}},
+            {"type": "function", "function": {"name": "shell_command"}},
+            {"type": "function", "function": {"name": "fetch_url"}},
+        ],
+    )
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "create a bakery landing page in 1738 with html css js"}],
+        user_input="Where is JS?",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert executed == ["create_directory", "create_files"]
+    assert calls == ["pass_1", "pass_2", "pass_3"]
 
 
 def test_finalization_falls_back_immediately_when_model_leaks_tool_markup(mocker, runtime: SkillRuntime):
