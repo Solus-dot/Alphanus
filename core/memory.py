@@ -50,7 +50,7 @@ class VectorMemory:
     def __init__(
         self,
         storage_path: str,
-        model_name: str = "all-MiniLM-L6-v2",
+        model_name: str = "BAAI/bge-small-en-v1.5",
         embedding_backend: str = "hash",
         min_score: float = 0.3,
         persist_access_updates: bool = False,
@@ -352,6 +352,8 @@ class VectorMemory:
             "dimension": self.dimension,
             "model_name": self.model_name,
             "embedding_backend": self.embedding_backend,
+            "mode_label": "semantic" if self.embedding_backend in {"transformer", "auto"} else "fallback-hash",
+            "recommended_model_name": "BAAI/bge-small-en-v1.5",
         }
 
     def export_txt(self, path: str) -> str:

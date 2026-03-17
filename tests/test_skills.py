@@ -1024,3 +1024,32 @@ time.sleep(2)
     out = runtime.execute_tool_call("slow_tool", {}, selected=[skill], ctx=ctx)
     assert out["ok"] is False
     assert out["error"]["code"] == "E_TIMEOUT"
+
+
+def test_skill_health_report_includes_provenance(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "s1").mkdir(parents=True)
+    (skills / "s1" / "SKILL.md").write_text(
+        """
+---
+name: s1
+description: test
+---
+Hello
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    report = runtime.skill_health_report()
+
+    assert report[0]["source_tier"] == "bundled"
+    assert report[0]["availability_code"] == "ready"

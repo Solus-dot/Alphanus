@@ -34,12 +34,13 @@ def _load_search_module():
     return module
 
 
-def _env(key: str = "tvly-test-key"):
-    return SimpleNamespace(config={"search": {"provider": "tavily", "tavily_api_key": key}})
+def _env(provider: str = "tavily"):
+    return SimpleNamespace(config={"search": {"provider": provider}})
 
 
-def test_web_search_calls_tavily_and_normalizes_results(mocker):
+def test_web_search_calls_tavily_and_normalizes_results(mocker, monkeypatch):
     module = _load_search_module()
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
 
     payload = {
         "results": [
@@ -89,10 +90,63 @@ def test_web_search_calls_tavily_and_normalizes_results(mocker):
     assert out["results"][1]["snippet"] == "Reporting on Meta acquisitions."
 
 
-def test_web_search_requires_api_key():
+def test_web_search_requires_api_key(monkeypatch):
     module = _load_search_module()
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="Tavily API key not configured"):
-        module.execute("web_search", {"query": "meta"}, env=_env(key=""))
+        module.execute("web_search", {"query": "meta"}, env=_env())
+
+
+def test_web_search_calls_brave_and_normalizes_results(mocker, monkeypatch):
+    module = _load_search_module()
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-test-key")
+
+    payload = {
+        "web": {
+            "results": [
+                {
+                    "title": "NIST CVE",
+                    "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-0001",
+                    "description": "Official advisory details.",
+                },
+                {
+                    "title": "Vendor advisory",
+                    "url": "https://example.com/advisory",
+                    "extra_snippets": ["Additional verified context."],
+                },
+            ]
+        }
+    }
+
+    class _Resp:
+        def __init__(self):
+            self._payload = json.dumps(payload).encode("utf-8")
+            self.headers = _Headers()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return self._payload
+
+    opened = {}
+
+    def fake_urlopen(req, timeout=None):
+        opened["url"] = req.full_url
+        opened["token"] = req.get_header("X-subscription-token")
+        return _Resp()
+
+    mocker.patch.object(module.urllib.request, "urlopen", side_effect=fake_urlopen)
+    out = module.execute("web_search", {"query": "latest cve", "limit": 2}, env=_env("brave"))
+
+    assert opened["url"].startswith("https://api.search.brave.com/res/v1/web/search?")
+    assert opened["token"] == "brave-test-key"
+    assert out["search_engine"] == "brave"
+    assert out["results"][0]["domain"] == "nvd.nist.gov"
+    assert out["results"][1]["snippet"] == "Additional verified context."
 
 
 def test_fetch_url_extracts_title_and_text(mocker):
@@ -128,10 +182,13 @@ def test_fetch_url_extracts_title_and_text(mocker):
     assert out["final_url"] == "https://example.com/final"
     assert "Readable content." in out["content"]
     assert out["truncated"] is False
+    assert out["domain"] == "example.com"
+    assert out["trust_score"] > 0
 
 
-def test_search_ops_skill_loads_and_executes_from_repo(tmp_path: Path, mocker):
+def test_search_ops_skill_loads_and_executes_from_repo(tmp_path: Path, mocker, monkeypatch):
     module = _load_search_module()
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
     home = tmp_path / "home"
     ws = home / "ws"
     mem = tmp_path / "mem.pkl"
@@ -168,7 +225,7 @@ def test_search_ops_skill_loads_and_executes_from_repo(tmp_path: Path, mocker):
         skills_dir=str(Path(__file__).resolve().parents[1] / "skills"),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=VectorMemory(storage_path=str(mem)),
-        config={"search": {"provider": "tavily", "tavily_api_key": "tvly-test-key"}},
+        config={"search": {"provider": "tavily"}},
     )
     skill = runtime.get_skill("search-ops")
     assert skill is not None

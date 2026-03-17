@@ -325,7 +325,12 @@ class SkillRuntime:
                 if manifest.id in previous_enabled:
                     manifest.enabled = previous_enabled[manifest.id]
 
-                manifest.available, manifest.availability_reason = self._check_skill_availability(manifest)
+                manifest.source_tier = self._skill_source_tier(manifest)
+                (
+                    manifest.available,
+                    manifest.availability_code,
+                    manifest.availability_reason,
+                ) = self._check_skill_availability(manifest)
                 if not manifest.available:
                     self.skills[manifest.id] = manifest
                     continue
@@ -350,24 +355,43 @@ class SkillRuntime:
             aliases.update({"windows", "win32", "nt"})
         return aliases
 
-    def _check_skill_availability(self, manifest: SkillManifest) -> Tuple[bool, str]:
+    @staticmethod
+    def _is_relative_to(path: Path, root: Path) -> bool:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            return False
+
+    def _skill_source_tier(self, manifest: SkillManifest) -> str:
+        path = manifest.path or manifest.doc_path
+        if not path:
+            return "external/local"
+        try:
+            if self._is_relative_to(path.resolve(), self.skills_dir.resolve()):
+                return "bundled"
+        except Exception:
+            pass
+        return "external/local"
+
+    def _check_skill_availability(self, manifest: SkillManifest) -> Tuple[bool, str, str]:
         requirements = manifest.requirements if isinstance(manifest.requirements, dict) else {}
 
         required_os = [item.lower() for item in requirements.get("os", []) if str(item).strip()]
         if required_os:
             aliases = self._current_os_aliases()
             if not any(item in aliases for item in required_os):
-                return False, f"requires os: {', '.join(required_os)}"
+                return False, "os", f"requires os: {', '.join(required_os)}"
 
         missing_env = [name for name in requirements.get("env", []) if name and not os.environ.get(name)]
         if missing_env:
-            return False, f"missing env: {', '.join(missing_env)}"
+            return False, "env", f"missing env: {', '.join(missing_env)}"
 
         missing_commands = [name for name in requirements.get("commands", []) if name and shutil.which(name) is None]
         if missing_commands:
-            return False, f"missing commands: {', '.join(missing_commands)}"
+            return False, "command", f"missing commands: {', '.join(missing_commands)}"
 
-        return True, ""
+        return True, "ready", ""
 
     def _load_skill_tools(self, manifest: SkillManifest) -> bool:
         if not manifest.path:
@@ -442,6 +466,10 @@ class SkillRuntime:
             return str(path)
 
     @staticmethod
+    def skill_provenance_label(skill: SkillManifest) -> str:
+        return str(getattr(skill, "source_tier", "") or "external/local")
+
+    @staticmethod
     def skill_status_label(skill: SkillManifest) -> Tuple[str, str]:
         if not skill.available:
             return "blocked", "yellow"
@@ -473,10 +501,27 @@ class SkillRuntime:
             tag_text = f" tags: {tags}." if tags else ""
             tools = ", ".join(skill.allowed_tools[:4])
             tool_text = f" tools: {tools}." if tools else ""
+            tier = self.skill_provenance_label(skill)
             location = self.skill_source_label(skill)
             location_text = f" location: {location}." if location else ""
-            lines.append(f"- {skill.id}: {skill.description}.{tag_text}{tool_text}{location_text}")
+            lines.append(f"- {skill.id}: {skill.description}. source: {tier}.{tag_text}{tool_text}{location_text}")
         return "\n".join(lines)
+
+    def skill_health_report(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "id": skill.id,
+                "enabled": bool(skill.enabled),
+                "available": bool(skill.available),
+                "status": self.skill_status_label(skill)[0],
+                "source_tier": self.skill_provenance_label(skill),
+                "source": self.skill_source_label(skill),
+                "availability_code": skill.availability_code or "ready",
+                "availability_reason": skill.availability_reason or "ready",
+                "tools": list(skill.allowed_tools),
+            }
+            for skill in self.list_skills()
+        ]
 
     def set_enabled(self, skill_id: str, enabled: bool) -> bool:
         skill = self.skills.get(skill_id)

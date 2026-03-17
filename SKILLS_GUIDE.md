@@ -122,7 +122,7 @@ Optional:
 - `timeout-s` (default `30`)
 - `confirm-arg` (argument key that requires interactive approval)
 
-Runtime executes `command` in the skill directory with `shell=True` and sends args via stdin and env vars.
+Runtime executes `command` in the skill directory with argv-first parsing (`shell=False` for normal commands) and sends args via stdin and env vars. Shell metacharacters remain blocked by policy.
 
 Environment variables injected:
 - `ALPHANUS_TOOL_NAME`

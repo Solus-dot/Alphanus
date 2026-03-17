@@ -82,3 +82,16 @@ def test_workspace_reads_allowed_outside_home_root(tmp_path: Path):
     mgr = WorkspaceManager(str(ws), home_root=str(home))
     assert mgr.read_file(str(target)) == "alpha"
     assert mgr.list_files(str(ws)) == ["notes.txt"]
+
+
+def test_shell_command_runs_with_argv_not_shell(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("python3 -c \"print('ok')\"")
+    assert res["ok"] is True
+    assert res["data"]["stdout"].strip() == "ok"
+    assert res["data"]["argv"][0] == "python3"

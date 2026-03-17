@@ -112,7 +112,9 @@ class SkillManifest:
     command_tools: List[ToolCommandDef] = field(default_factory=list)
     disable_model_invocation: bool = False
     format: str = "agentskills"
+    source_tier: str = "bundled"
     available: bool = True
+    availability_code: str = "ready"
     availability_reason: str = ""
 
 

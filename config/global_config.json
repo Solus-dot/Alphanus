@@ -7,7 +7,6 @@
     "readiness_timeout_s": 30,
     "readiness_poll_s": 0.5,
     "enable_thinking": true,
-    "auth_header": "",
     "tls_verify": true,
     "ca_bundle_path": "",
     "allow_cross_host_endpoints": false,

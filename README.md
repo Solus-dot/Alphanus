@@ -2,6 +2,11 @@
 
 Alphanus is a local-first coding assistant with a Textual TUI, an OpenAI-compatible model client (`llama-server` style endpoints), and a modular AgentSkills-style skill runtime.
 
+Status:
+- public alpha / power-user tooling
+- local-first
+- secrets via environment variables, not editable config
+
 ## Current Architecture
 
 - Streaming agent loop with reasoning/content token rendering
@@ -30,6 +35,11 @@ uv sync --extra dev
 uv run main.py
 ```
 
+Optional environment variables:
+- `TAVILY_API_KEY` for `search-ops`
+- `BRAVE_SEARCH_API_KEY` for `search-ops` when `search.provider = "brave"`
+- `ALPHANUS_AUTH_HEADER` for authenticated model endpoints (`Header-Name: value`)
+
 At startup, Alphanus prints endpoint readiness status, including:
 - `waiting for endpoint <...>/v1/models handshake...`
 
@@ -47,8 +57,10 @@ At startup, Alphanus prints endpoint readiness status, including:
 - `/branch [label]`, `/unbranch`, `/branches`, `/switch <n>`, `/tree`
 - `/skills`, `/skill on <id>`, `/skill off <id>`, `/skill reload`, `/skill info <id>`
 - `/memory stats`
+- `/doctor`
 - `/workspace tree`
 - `/file <path>`
+- `/report [file]`
 - `/save [file]`, `/load [file]`, `/clear`
 
 ## Memory and RAM Tuning
@@ -58,7 +70,8 @@ Edit `config/global_config.json`:
 ```json
 {
   "memory": {
-    "embedding_backend": "hash"
+    "embedding_backend": "hash",
+    "model_name": "BAAI/bge-small-en-v1.5"
   },
   "tui": {
     "chat_log_max_lines": 5000,
@@ -74,8 +87,17 @@ Edit `config/global_config.json`:
 
 Notes:
 - `memory.embedding_backend: "hash"` is lowest RAM usage.
+- `memory.embedding_backend: "transformer"` is the recommended semantic mode.
+- Recommended transformer model: `BAAI/bge-small-en-v1.5`.
+- `hash` mode is a low-resource fallback, not the recommended public-facing quality mode.
 - `tui.chat_log_max_lines` bounds RichLog memory growth.
 - Tree compaction is lossy for inactive branches; disable it if you need full historical payload fidelity when switching back.
+
+## Search And Current-Info Behavior
+
+- `search-ops` supports `tavily` and `brave` providers.
+- Time-sensitive answers require fetched-source evidence; otherwise Alphanus will decline to speculate.
+- Configure search credentials with environment variables only.
 
 ## Skills
 

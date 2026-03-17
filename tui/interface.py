@@ -4,7 +4,6 @@ import json
 import os
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,95 +24,25 @@ from textual.widgets.option_list import Option
 from agent.core import Agent, AgentTurnResult
 from core.attachments import build_content, classify_attachment
 from core.conv_tree import ConvTree, Turn
+from tui.commands import (
+    COMMAND_ENTRIES,
+    HELP_SECTIONS,
+    DEFAULT_SAVE,
+    CommandEntry,
+    command_entries_for_query,
+    command_label,
+    exact_command_inputs,
+)
 from tui.live_tool_preview import LiveToolPreviewManager
 from tui.markdown_utils import fence_language, hanging_indent, render_md
 from tui.popups import CodeViewerModal, ConfigEditorModal
+from tui.sidebar import render_sidebar_markup
+from tui.status import status_left_markup, status_right_markup, topbar_left, topbar_right
 
-DEFAULT_SAVE = "llamachat_tree.json"
 MAX_REPLY_ACC_CHARS = 24000
 SHELL_CONFIRM_TIMEOUT_S = 60
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 GLOBAL_CONFIG_PATH = PROJECT_ROOT / "config" / "global_config.json"
-
-
-@dataclass(frozen=True)
-class CommandEntry:
-    prompt: str
-    insert_text: str
-    description: str
-    aliases: Tuple[str, ...] = ()
-
-HELP_SECTIONS = [
-    (
-        "CONVERSATION",
-        [
-            ("/help", "Show this help"),
-            ("/details", "Toggle tool execution details"),
-            ("/think", "Toggle thinking mode"),
-            ("/clear", "Clear tree and chat log"),
-            ("/file <path>", "Attach image/text file to next message"),
-            ("/quit /exit /q", "Exit app"),
-        ],
-    ),
-    (
-        "BRANCHING",
-        [
-            ("/branch [label]", "Arm next user message as a branch"),
-            ("/unbranch", "Return to nearest branch fork parent"),
-            ("/branches", "List child turns of current turn"),
-            ("/switch <n>", "Switch to child branch by index"),
-            ("/tree", "Render full conversation tree"),
-        ],
-    ),
-    (
-        "SKILLS",
-        [
-            ("/skills", "List installed skills"),
-            ("/reload", "Reload skills from disk"),
-            ("/skill on <id>", "Enable skill"),
-            ("/skill off <id>", "Disable skill"),
-            ("/skill reload", "Reload skills from disk"),
-            ("/skill info <id>", "Show skill details"),
-        ],
-    ),
-    (
-        "UTILITIES",
-        [
-            ("/memory stats", "Show memory stats"),
-            ("/workspace tree", "Render workspace tree"),
-            ("/config", "Edit global config in a popup"),
-            ("/code [n|last]", "Open a copyable code block viewer"),
-            ("/save [file]", f"Save tree JSON (default {DEFAULT_SAVE})"),
-            ("/load [file]", f"Load tree JSON (default {DEFAULT_SAVE})"),
-        ],
-    ),
-]
-
-COMMAND_ENTRIES = [
-    CommandEntry("/help", "/help", "Show this help"),
-    CommandEntry("/details", "/details", "Toggle tool execution details"),
-    CommandEntry("/think", "/think", "Toggle thinking mode"),
-    CommandEntry("/clear", "/clear", "Clear tree and chat log"),
-    CommandEntry("/file <path>", "/file ", "Attach a file to the next message"),
-    CommandEntry("/branch [label]", "/branch ", "Arm the next user message as a branch"),
-    CommandEntry("/unbranch", "/unbranch", "Return to the nearest branch fork"),
-    CommandEntry("/branches", "/branches", "List branches from the current turn"),
-    CommandEntry("/switch <n>", "/switch ", "Switch to a child branch"),
-    CommandEntry("/tree", "/tree", "Render the full conversation tree"),
-    CommandEntry("/skills", "/skills", "List installed skills"),
-    CommandEntry("/reload", "/reload", "Reload skills from disk"),
-    CommandEntry("/skill on <id>", "/skill on ", "Enable a skill"),
-    CommandEntry("/skill off <id>", "/skill off ", "Disable a skill"),
-    CommandEntry("/skill reload", "/skill reload", "Reload skills from disk"),
-    CommandEntry("/skill info <id>", "/skill info ", "Show skill details"),
-    CommandEntry("/memory stats", "/memory stats", "Show memory stats"),
-    CommandEntry("/workspace tree", "/workspace tree", "Render the workspace tree"),
-    CommandEntry("/config", "/config", "Edit the global config in a popup"),
-    CommandEntry("/code [n|last]", "/code ", "Open a copyable code block viewer"),
-    CommandEntry("/save [file]", "/save ", f"Save tree JSON (default {DEFAULT_SAVE})"),
-    CommandEntry("/load [file]", "/load ", f"Load tree JSON (default {DEFAULT_SAVE})"),
-    CommandEntry("/quit", "/quit", "Exit app", aliases=("/exit", "/q")),
-]
 class ChatInput(Input):
     BINDINGS = [
         Binding("ctrl+u", "clear_all", show=False),
@@ -353,7 +282,6 @@ class AlphanusTUI(App):
         self._stop_event = threading.Event()
         self._active_turn_id: Optional[str] = None
         self._reply_acc = ""
-        self._tool_activity_seen = False
         self._live_preview = LiveToolPreviewManager()
 
         self._reasoning_open = False
@@ -382,7 +310,6 @@ class AlphanusTUI(App):
         self._shell_confirm_result: Optional[Dict[str, bool]] = None
         self._command_matches: List[CommandEntry] = []
         self._command_anchor_region = None
-        self._command_match_keys: List[str] = []
         self._code_blocks: List[Tuple[str, Optional[str]]] = []
         self._show_tool_details = False
 
@@ -694,110 +621,53 @@ class AlphanusTUI(App):
         return "tool call:" in s
 
     def _update_status1(self) -> None:
-        parts = [f"[dim]files:[/dim] {len(self.pending)}"]
-        if self.conv_tree._pending_branch:
-            label = self.conv_tree._pending_branch_label
-            if label:
-                parts.append(f"[#6366f1]branch: {esc(label)}[/#6366f1]")
-            else:
-                parts.append("[#6366f1]branch: armed[/#6366f1]")
-        else:
-            parts.append("[dim]branch:[/dim] idle")
-
-        if self.pending:
-            latest_path, kind = self.pending[-1]
-            color = "#6366f1" if kind == "image" else "#10b981"
-            parts.append(f"[{color}]{esc(os.path.basename(latest_path))}[/{color}]")
-
-        think_label = "auto" if self.thinking else "off"
-        parts.append(f"[dim]thinking:[/dim] [#6366f1]{think_label}[/#6366f1]")
-        text = "  ".join(parts)
+        latest_path = self.pending[-1][0] if self.pending else None
+        latest_kind = self.pending[-1][1] if self.pending else None
+        text = status_right_markup(
+            pending_count=len(self.pending),
+            branch_armed=bool(self.conv_tree._pending_branch),
+            branch_label=self.conv_tree._pending_branch_label,
+            latest_path=latest_path,
+            latest_kind=latest_kind,
+            thinking=self.thinking,
+        )
         if text == self._last_status_right:
             return
         self._last_status_right = text
         self.query_one("#status-right", Static).update(text)
 
     def _update_status2(self) -> None:
-        if self._await_shell_confirm:
-            left = f"[bold yellow]approve shell command?[/bold yellow] [dim][y/n][/dim]"
-        elif self.streaming:
-            frame = self._spin_frames[self._spin_i % len(self._spin_frames)]
-            if self._stop_event.is_set():
-                left = f"[dim]{frame}[/dim] [yellow]stopping...[/yellow]"
-            elif self._esc_pending:
-                left = f"[dim]{frame}[/dim] [dim]generating[/dim] [bold red]esc again to stop[/bold red]"
-            elif not self._auto_follow_stream:
-                left = f"[dim]pgup/dn ·[/dim] [#6366f1]free scroll[/#6366f1]"
-            else:
-                left = f"[dim]{frame}[/dim] [dim]generating[/dim] [dim]esc · stop[/dim]"
-        else:
-            left = "[dim]esc · clear[/dim]   [#6366f1]pgup/dn · free scroll[/#6366f1]"
+        left = status_left_markup(
+            await_shell_confirm=self._await_shell_confirm,
+            streaming=self.streaming,
+            spinner_frame=self._spin_frames[self._spin_i % len(self._spin_frames)],
+            stop_requested=self._stop_event.is_set(),
+            esc_pending=self._esc_pending,
+            auto_follow_stream=self._auto_follow_stream,
+        )
         if left == self._last_status_left:
             return
         self._last_status_left = left
         self.query_one("#status-left", Static).update(left)
 
     def _update_topbar(self) -> None:
-        left = (
-            "[bold #6366f1 on #1a1730] ALPHANUS [/bold #6366f1 on #1a1730] "
-            f"[#a1a1aa]{esc(self.agent.model_endpoint)}[/#a1a1aa]"
-        )
-        self.query_one("#topbar-left", Static).update(left)
-        self.query_one("#topbar-right", Static).update("[#a1a1aa]Session active[/#a1a1aa]")
+        self.query_one("#topbar-left", Static).update(topbar_left(self.agent.model_endpoint))
+        self.query_one("#topbar-right", Static).update(topbar_right())
 
     def _update_input_placeholder(self) -> None:
         self.query_one(ChatInput).placeholder = (
             "Type to start branch…" if self.conv_tree._pending_branch else "Type a message…"
         )
 
-    def _command_entries_for_query(self, value: str) -> List[CommandEntry]:
-        query = value.strip().lower()
-        if not query.startswith("/"):
-            return []
-        needle = query[1:]
-        if not needle:
-            return COMMAND_ENTRIES
-
-        def sort_key(entry: CommandEntry) -> Tuple[int, int, str]:
-            aliases = " ".join(entry.aliases)
-            haystack = f"{entry.prompt} {aliases} {entry.description}".lower()
-            starts = 0 if (
-                entry.prompt.lower().startswith(f"/{needle}")
-                or any(alias.lower().startswith(f"/{needle}") for alias in entry.aliases)
-            ) else 1
-            pos = haystack.find(needle)
-            return (starts, pos if pos >= 0 else 9999, entry.prompt)
-
-        matches = [
-            entry
-            for entry in COMMAND_ENTRIES
-            if (
-                needle in entry.prompt.lower()
-                or any(needle in alias.lower() for alias in entry.aliases)
-                or needle in entry.description.lower()
-            )
-        ]
-        matches.sort(key=sort_key)
-        return matches
-
-    @staticmethod
-    def _command_label(entry: CommandEntry) -> str:
-        if not entry.aliases:
-            return entry.prompt
-        return f"{entry.prompt} {' '.join(entry.aliases)}"
-
     def _refresh_command_popup(self, value: str) -> None:
         popup = self._command_popup()
         options = self._command_options()
-        next_matches = self._command_entries_for_query(value)
-        next_keys = [entry.prompt for entry in next_matches]
+        next_matches = command_entries_for_query(value)
         if not next_matches or self.streaming or self._await_shell_confirm:
             next_matches = []
-            next_keys = []
 
         if not next_matches:
             self._command_matches = []
-            self._command_match_keys = []
             popup.display = False
             options.clear_options()
             popup.absolute_offset = None
@@ -807,12 +677,10 @@ class AlphanusTUI(App):
         geometry_changed = self._command_anchor_region != self.query_one(ChatInput).region
         self._command_anchor_region = self.query_one(ChatInput).region
         self._command_matches = next_matches
-
-        self._command_match_keys = next_keys
         popup.display = True
         rendered = [
             Option(
-                f"[bold #6366f1]{esc(self._command_label(entry))}[/bold #6366f1] [dim]{esc(entry.description)}[/dim]",
+                f"[bold #6366f1]{esc(command_label(entry))}[/bold #6366f1] [dim]{esc(entry.description)}[/dim]",
                 id=str(index),
             )
             for index, entry in enumerate(self._command_matches)
@@ -846,7 +714,6 @@ class AlphanusTUI(App):
     def _hide_command_popup(self) -> None:
         self._command_matches = []
         self._command_anchor_region = None
-        self._command_match_keys = []
         self._command_options().clear_options()
         self._command_popup().display = False
         self._command_popup().absolute_offset = None
@@ -886,14 +753,14 @@ class AlphanusTUI(App):
         if " " in stripped:
             return False
         base = stripped.lower()
-        exact = {entry.insert_text.strip().lower() for entry in COMMAND_ENTRIES}
-        for entry in COMMAND_ENTRIES:
-            exact.update(alias.strip().lower() for alias in entry.aliases)
-        return base not in exact
+        return base not in exact_command_inputs()
 
     @staticmethod
     def _config_for_editor(config: Dict[str, Any]) -> Dict[str, Any]:
         cleaned = json.loads(json.dumps(config))
+        agent_cfg = cleaned.get("agent")
+        if isinstance(agent_cfg, dict):
+            agent_cfg.pop("auth_header", None)
         search_cfg = cleaned.get("search")
         if isinstance(search_cfg, dict):
             search_cfg.pop("tavily_api_key", None)
@@ -953,7 +820,9 @@ class AlphanusTUI(App):
         self.thinking = bool(merged.get("agent", {}).get("enable_thinking", self.thinking))
         self._update_topbar()
         self._apply_tui_config()
-        self._write_info("Saved global config. Use environment variables for secrets like TAVILY_API_KEY.")
+        self._write_info(
+            "Saved global config. Use environment variables for secrets like TAVILY_API_KEY or BRAVE_SEARCH_API_KEY."
+        )
 
     def _open_code_block(self, index: int) -> None:
         if index < 1 or index > len(self._code_blocks):
@@ -966,23 +835,7 @@ class AlphanusTUI(App):
         sidebar = self.query_one("#sidebar", ScrollableContainer)
         if not sidebar.display:
             return
-        lines = [
-            "[bold #a1a1aa]Conversation Tree[/bold #a1a1aa]",
-            f"[dim]{self.conv_tree.turn_count()} turns[/dim]",
-            "",
-        ]
-        cur = self.conv_tree.current_id
-        for text, tag, active in self.conv_tree.render_tree(width=30):
-            line = esc(text)
-            if tag == "root":
-                lines.append(f"[#a1a1aa]{line}[/#a1a1aa]")
-            elif tag == cur:
-                lines.append(f"[bold #6366f1]{line}[/bold #6366f1]")
-            elif active:
-                lines.append(f"[#8b5cf6]{line}[/#8b5cf6]")
-            else:
-                lines.append(f"[dim]{line}[/dim]")
-        self.query_one("#sidebar-content", Static).update("\n".join(lines))
+        self.query_one("#sidebar-content", Static).update(render_sidebar_markup(self.conv_tree, width=30))
 
     def _write_turn_user(self, turn: Turn) -> None:
         self._write("")
@@ -1080,7 +933,6 @@ class AlphanusTUI(App):
         self._auto_follow_stream = True
         self._active_turn_id = turn.id
         self._reply_acc = ""
-        self._tool_activity_seen = False
         self._live_preview.reset()
         self._reasoning_open = False
         self._content_open = False
@@ -1202,7 +1054,6 @@ class AlphanusTUI(App):
             self._handle_content_token(token)
 
         elif etype == "tool_phase_started":
-            self._tool_activity_seen = True
             # Preserve in-progress text before tool call deltas start.
             if self._reasoning_open:
                 self._flush_reasoning_buffer()
@@ -1210,7 +1061,6 @@ class AlphanusTUI(App):
             self._content_open = False
 
         elif etype == "tool_call_delta":
-            self._tool_activity_seen = True
             stream_id = str(event.get("stream_id") or "")
             name = str(event.get("name") or "")
             raw_arguments = str(event.get("raw_arguments") or "")
@@ -1220,7 +1070,6 @@ class AlphanusTUI(App):
                 )
 
         elif etype == "tool_call":
-            self._tool_activity_seen = True
             self._flush_reasoning_buffer()
             name = event.get("name", "tool")
             args = event.get("arguments", {})
@@ -1240,7 +1089,6 @@ class AlphanusTUI(App):
                 )
 
         elif etype == "tool_result":
-            self._tool_activity_seen = True
             self._flush_reasoning_buffer()
             name = event.get("name", "tool")
             result = event.get("result", {})
@@ -1630,6 +1478,10 @@ class AlphanusTUI(App):
         if cmd == "/reload":
             return self._reload_skills()
 
+        if cmd == "/doctor":
+            self._cmd_doctor()
+            return True
+
         if cmd == "/skill":
             return self._cmd_skill(arg)
 
@@ -1642,6 +1494,9 @@ class AlphanusTUI(App):
         if cmd == "/config":
             self._open_config_editor()
             return True
+
+        if cmd == "/report":
+            return self._cmd_report(arg)
 
         if cmd == "/code":
             return self._cmd_code(arg)
@@ -1679,14 +1534,19 @@ class AlphanusTUI(App):
         for skill in skills:
             state, color = self.agent.skill_runtime.skill_status_label(skill)
             source = self.agent.skill_runtime.skill_source_label(skill)
-            suffix = f" [dim]({esc(source)})[/dim]" if source else ""
+            provenance = self.agent.skill_runtime.skill_provenance_label(skill)
+            suffix = f" [dim]({esc(provenance)}"
+            if source:
+                suffix += f" · {esc(source)}"
+            suffix += ")[/dim]"
             skill_id = esc(skill.id.ljust(name_col))
             self._write(
                 f"  [bold]{skill_id}[/bold][dim]({esc(skill.version)})[/dim] "
                 f"[{color}]{state}[/{color}] [dim]{esc(skill.description)}[/dim]{suffix}"
             )
             if not skill.available and skill.availability_reason:
-                self._write(f"    [yellow]blocked:[/yellow] [dim]{esc(skill.availability_reason)}[/dim]")
+                code = esc(skill.availability_code or "blocked")
+                self._write(f"    [yellow]blocked ({code}):[/yellow] [dim]{esc(skill.availability_reason)}[/dim]")
 
     def _cmd_skill(self, arg: str) -> bool:
         parts = arg.split()
@@ -1724,8 +1584,10 @@ class AlphanusTUI(App):
             self._write_detail_line("id", skill.id)
             self._write_detail_line("version", skill.version)
             self._write_detail_line("status", f"[{color}]{enabled}[/{color}]", value_markup=True)
+            self._write_detail_line("provenance", self.agent.skill_runtime.skill_provenance_label(skill))
             self._write_detail_line("source", self.agent.skill_runtime.skill_source_label(skill) or "unknown")
             self._write_detail_line("compatibility", skill.compatibility or "none")
+            self._write_detail_line("availability_code", skill.availability_code or "ready")
             self._write_detail_line("availability", skill.availability_reason or "ready")
             self._write_detail_line("keywords", keywords)
             self._write_detail_line("file_ext", file_ext)
@@ -1740,11 +1602,57 @@ class AlphanusTUI(App):
             stats = self.agent.skill_runtime.memory.stats()
             self._write_section_heading("Memory Stats")
             self._write_detail_line("count", str(stats["count"]))
+            self._write_detail_line("mode", str(stats.get("mode_label", stats["embedding_backend"])))
+            self._write_detail_line("backend", str(stats["embedding_backend"]))
             self._write_detail_line("model", str(stats["model_name"]))
+            self._write_detail_line("recommended_model", str(stats.get("recommended_model_name", "")))
             self._write_detail_line("dimension", str(stats["dimension"]))
             self._write_detail_line("by_type", json.dumps(stats["by_type"]))
             return True
         return self._write_usage("/memory stats")
+
+    def _cmd_doctor(self) -> None:
+        report = self.agent.doctor_report()
+        self._write_section_heading("Doctor")
+        agent = report.get("agent", {})
+        workspace = report.get("workspace", {})
+        memory = report.get("memory", {})
+        search = report.get("search", {})
+        self._write_detail_line("endpoint_ready", str(agent.get("ready", False)).lower())
+        if agent.get("endpoint_policy_error"):
+            self._write_detail_line("endpoint_policy", str(agent.get("endpoint_policy_error")))
+        self._write_detail_line("workspace", str(workspace.get("path", "")))
+        self._write_detail_line("workspace_writable", str(workspace.get("writable", False)).lower())
+        self._write_detail_line("memory_mode", str(memory.get("mode", "")))
+        self._write_detail_line("memory_model", str(memory.get("model_name", "")))
+        self._write_detail_line("recommended_model", str(memory.get("recommended_model_name", "")))
+        self._write_detail_line("search_provider", str(search.get("provider", "")))
+        self._write_detail_line("search_ready", str(search.get("ready", False)).lower())
+        if search.get("reason"):
+            self._write_detail_line("search_reason", str(search.get("reason")))
+        self._write("")
+        self._write("  [bold yellow]Skills[/bold yellow]")
+        for skill in report.get("skills", []):
+            line = (
+                f"  [bold]{esc(str(skill.get('id', '')))}[/bold] "
+                f"[dim]({esc(str(skill.get('source_tier', '')))} · {esc(str(skill.get('availability_code', 'ready')))})[/dim] "
+                f"[dim]{esc(str(skill.get('status', 'unknown')))}[/dim]"
+            )
+            self._write(line)
+            reason = str(skill.get("availability_reason", "")).strip()
+            if reason and reason != "ready":
+                self._write(f"    [dim]{esc(reason)}[/dim]")
+
+    def _cmd_report(self, arg: str) -> bool:
+        path = arg.strip() or "alphanus-support-report.json"
+        payload = self.agent.build_support_bundle(self.conv_tree.to_dict())
+        try:
+            Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as exc:
+            self._write_error(f"Report save failed: {exc}")
+            return True
+        self._write_info(f"Saved support bundle to {path}")
+        return True
 
     def _cmd_workspace(self, arg: str) -> bool:
         sub = arg.strip().lower()

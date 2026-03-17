@@ -26,7 +26,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "readiness_timeout_s": 30,
         "readiness_poll_s": 0.5,
         "enable_thinking": True,
-        "auth_header": "",
         "tls_verify": True,
         "ca_bundle_path": "",
         "allow_cross_host_endpoints": False,
@@ -98,6 +97,12 @@ def load_or_create_global_config(path: Path) -> Dict[str, Any]:
 
     merged = deep_merge(DEFAULT_CONFIG, raw)
     merged["schema_version"] = schema
+    agent_cfg = merged.get("agent", {})
+    if isinstance(agent_cfg, dict):
+        agent_cfg.pop("auth_header", None)
+    search_cfg = merged.get("search", {})
+    if isinstance(search_cfg, dict):
+        search_cfg.pop("tavily_api_key", None)
     return merged
 
 
@@ -167,7 +172,7 @@ def main() -> int:
     memory_cfg = config.get("memory", {})
     memory = VectorMemory(
         storage_path=memory_path,
-        model_name=str(memory_cfg.get("model_name", "all-MiniLM-L6-v2")),
+        model_name=str(memory_cfg.get("model_name", "BAAI/bge-small-en-v1.5")),
         embedding_backend=str(memory_cfg.get("embedding_backend", "hash")),
         eager_load_encoder=bool(memory_cfg.get("eager_load_encoder", False)),
     )
@@ -185,6 +190,11 @@ def main() -> int:
 
     if not config.get("agent", {}).get("tls_verify", True):
         print("[warning] TLS verification is disabled (agent.tls_verify=false)")
+    print(
+        f"[info] memory mode: {memory.embedding_backend}"
+        + (f" ({memory.model_name})" if memory.embedding_backend in {"transformer", "auto"} else " (hash fallback)")
+    )
+    print("[info] use /doctor inside the TUI for readiness and health diagnostics.")
 
     # Readiness is validated before first generation too; this startup check
     # keeps failure visible early while still letting TUI boot.

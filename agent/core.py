@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import urllib.error
@@ -41,6 +42,7 @@ class AgentTurnResult:
     reasoning: str
     skill_exchanges: List[Dict[str, Any]]
     error: Optional[str] = None
+    journal: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -152,7 +154,11 @@ class Agent:
         agent_cfg = config.get("agent", {})
         self.model_endpoint = agent_cfg.get("model_endpoint", "http://127.0.0.1:8080/v1/chat/completions")
         self.models_endpoint = agent_cfg.get("models_endpoint", "http://127.0.0.1:8080/v1/models")
-        self.auth_header = agent_cfg.get("auth_header")
+        self.auth_header = (
+            os.environ.get("ALPHANUS_AUTH_HEADER", "").strip()
+            or os.environ.get("AUTH_HEADER", "").strip()
+            or None
+        )
         self.tls_verify = bool(agent_cfg.get("tls_verify", True))
         self.ca_bundle_path = agent_cfg.get("ca_bundle_path")
         self.allow_cross_host = bool(agent_cfg.get("allow_cross_host_endpoints", False))
@@ -196,6 +202,18 @@ class Agent:
         self.ssl_context = build_ssl_context(self.tls_verify, self.ca_bundle_path)
         self._ready_checked = False
         self._skill_snapshot: Optional[SkillRoutingSnapshot] = None
+        budgets = agent_cfg.get("tool_budgets", {})
+        self.default_tool_budgets = {
+            "web_search": 2,
+            "fetch_url": 2,
+            "recall_memory": 2,
+        }
+        if isinstance(budgets, dict):
+            for key, value in budgets.items():
+                try:
+                    self.default_tool_budgets[str(key)] = max(1, int(value))
+                except Exception:
+                    continue
 
     def _headers(self) -> Dict[str, str]:
         headers = {}
@@ -312,6 +330,56 @@ class Agent:
         if model_host != models_host and not self.allow_cross_host:
             return "agent.model_endpoint and agent.models_endpoint must share host"
         return None
+
+    def doctor_report(self) -> Dict[str, Any]:
+        endpoint_error = self._validate_endpoints()
+        workspace_root = Path(self.skill_runtime.workspace.workspace_root)
+        memory_stats = self.skill_runtime.memory.stats()
+        search_cfg = self.config.get("search", {}) if isinstance(self.config, dict) else {}
+        provider = str(search_cfg.get("provider", "tavily")).strip().lower() or "tavily"
+        provider_env = {
+            "tavily": "TAVILY_API_KEY",
+            "brave": "BRAVE_SEARCH_API_KEY",
+        }
+        required_env = provider_env.get(provider, "")
+        search_ready = bool(os.environ.get(required_env, "").strip()) if required_env else False
+        ready = self.ensure_ready(timeout_s=min(self.readiness_timeout_s, 3.0))
+        return {
+            "agent": {
+                "model_endpoint": self.model_endpoint,
+                "models_endpoint": self.models_endpoint,
+                "ready": bool(ready),
+                "endpoint_policy_error": endpoint_error or "",
+                "auth_header_source": "env" if self.auth_header else "none",
+            },
+            "workspace": {
+                "path": str(workspace_root),
+                "exists": workspace_root.exists(),
+                "writable": os.access(workspace_root, os.W_OK),
+            },
+            "memory": {
+                "backend": memory_stats.get("embedding_backend"),
+                "mode": memory_stats.get("mode_label"),
+                "model_name": memory_stats.get("model_name"),
+                "recommended_model_name": memory_stats.get("recommended_model_name"),
+                "dimension": memory_stats.get("dimension"),
+                "count": memory_stats.get("count"),
+            },
+            "search": {
+                "provider": provider,
+                "ready": search_ready,
+                "reason": "" if search_ready or not required_env else f"missing env: {required_env}",
+            },
+            "skills": self.skill_runtime.skill_health_report(),
+        }
+
+    def build_support_bundle(self, tree_payload: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "schema_version": "1.0.0",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "doctor": self.doctor_report(),
+            "tree": tree_payload,
+        }
 
     def _build_skill_context(
         self,
@@ -726,6 +794,10 @@ class Agent:
         )
 
     @staticmethod
+    def _needs_fetch_evidence(state: TurnState) -> bool:
+        return state.search_mode and state.time_sensitive_query and not state.search_has_fetch_content
+
+    @staticmethod
     def _is_time_sensitive_query(text: str) -> bool:
         lowered = text.lower()
         phrases = (
@@ -985,7 +1057,7 @@ class Agent:
             search_mode=self._is_search_skill_selected(selected),
             time_sensitive_query=self._is_time_sensitive_query(user_input),
             tool_counts={},
-            tool_budgets={"web_search": 2, "fetch_url": 2, "recall_memory": 2},
+            tool_budgets=dict(self.default_tool_budgets),
         )
 
     def _finalize_turn(
@@ -1022,8 +1094,61 @@ class Agent:
                 "The page-fetch budget is exhausted.",
                 "Answer only from the evidence already gathered.",
                 "Do not fetch more pages.",
-            )
+        )
         return f"Tool budget exceeded for {call.name} ({limit})"
+
+    @staticmethod
+    def _direct_tool_answer(name: str, payload: Dict[str, Any]) -> str:
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            return ""
+        if name == "create_file":
+            base = str(data.get("basename", "")).strip()
+            path = str(data.get("filepath", "")).strip()
+            if base and path:
+                return f"I created `{base}` in your workspace at `{path}`."
+        if name == "edit_file":
+            base = str(data.get("basename", "")).strip()
+            path = str(data.get("filepath", "")).strip()
+            if base and path:
+                return f"I updated `{base}` in your workspace at `{path}`."
+        if name == "delete_path":
+            path = str(data.get("filepath", "")).strip()
+            kind = str(data.get("kind", "path")).strip()
+            if path:
+                return f"I deleted the {kind} `{path}` from your workspace."
+        if name == "delete_file":
+            path = str(data.get("filepath", "")).strip()
+            if path:
+                return f"I deleted `{path}` from your workspace."
+        if name == "get_weather":
+            city = str(data.get("city", "")).strip()
+            temp = str(data.get("temp_c", "")).strip()
+            desc = str(data.get("desc", "")).strip()
+            if city and temp:
+                return f"The current weather in {city} is {temp} C" + (f" with {desc}." if desc else ".")
+        return ""
+
+    @staticmethod
+    def _build_turn_journal(state: TurnState, result: AgentTurnResult) -> Dict[str, Any]:
+        return {
+            "status": result.status,
+            "error": result.error or "",
+            "selected_skills": [getattr(skill, "id", "") for skill in state.selected],
+            "tool_counts": dict(state.tool_counts),
+            "tool_evidence": [
+                {
+                    "name": item.name,
+                    "args": item.args,
+                    "result": item.result,
+                }
+                for item in state.evidence
+            ],
+            "search_mode": state.search_mode,
+            "time_sensitive_query": state.time_sensitive_query,
+            "search_failures": state.search_failure_count,
+            "has_fetch_evidence": state.search_has_fetch_content,
+        }
 
     def _record_tool_effects(self, state: TurnState, call: ToolCall, result: Dict[str, Any]) -> None:
         state.tool_counts[call.name] = state.tool_counts.get(call.name, 0) + 1
@@ -1104,6 +1229,7 @@ class Agent:
         state = self._build_turn_state(ctx, selected, history_messages, user_input)
 
         def finish(result: AgentTurnResult) -> AgentTurnResult:
+            result.journal = self._build_turn_journal(state, result)
             self._log_turn_summary(state, result)
             return result
 
@@ -1208,6 +1334,8 @@ class Agent:
                 state.skill_exchanges.append(assistant_msg)
 
                 force_finalize_reason = ""
+                direct_answers: List[str] = []
+                all_tool_success = True
                 for call in stream_result.tool_calls:
                     state.action_depth += 1
                     if state.action_depth > self.max_action_depth:
@@ -1307,6 +1435,11 @@ class Agent:
                     state.dynamic_history.append(tool_message)
                     state.skill_exchanges.append(tool_message)
                     self._record_tool_effects(state, call, result)
+                    if not result.get("ok"):
+                        all_tool_success = False
+                    direct = self._direct_tool_answer(call.name, result)
+                    if direct:
+                        direct_answers.append(direct)
 
                     if not state.search_mode:
                         continue
@@ -1365,6 +1498,21 @@ class Agent:
 
                 if force_finalize_reason:
                     return finish(self._finalize_turn(system_content, state, stop_event, on_event, pass_id, force_finalize_reason))
+                if (
+                    not state.search_mode
+                    and len(stream_result.tool_calls) == 1
+                    and all_tool_success
+                    and len(direct_answers) == 1
+                ):
+                    self.skill_runtime.post_response(state.selected, state.ctx, direct_answers[0])
+                    return finish(
+                        AgentTurnResult(
+                            status="done",
+                            content=direct_answers[0],
+                            reasoning=state.full_reasoning,
+                            skill_exchanges=state.skill_exchanges,
+                        )
+                    )
                 continue
 
             final = stream_result.content
@@ -1398,12 +1546,30 @@ class Agent:
                         skill_exchanges=state.skill_exchanges,
                     )
                 )
+            if self._needs_fetch_evidence(state):
+                return finish(
+                    AgentTurnResult(
+                        status="done",
+                        content=self._unverified_search_answer(),
+                        reasoning=state.full_reasoning,
+                        skill_exchanges=state.skill_exchanges,
+                    )
+                )
             if not final.strip():
                 finalized = self._finalize_turn(system_content, state, stop_event, on_event, pass_id)
                 if finalized.status != "done":
                     return finish(finalized)
                 state.full_reasoning = finalized.reasoning
                 final = finalized.content
+                if self._needs_fetch_evidence(state):
+                    return finish(
+                        AgentTurnResult(
+                            status="done",
+                            content=self._unverified_search_answer(),
+                            reasoning=state.full_reasoning,
+                            skill_exchanges=state.skill_exchanges,
+                        )
+                    )
 
             self.skill_runtime.post_response(state.selected, state.ctx, final)
             return finish(

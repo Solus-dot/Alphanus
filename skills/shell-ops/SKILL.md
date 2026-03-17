@@ -12,7 +12,6 @@ metadata:
     - command
     - terminal
     - ls
-    - git
 ---
 Use `shell_command` only when shell output is the best way to complete the task.
 

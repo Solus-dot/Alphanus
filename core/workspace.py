@@ -3,6 +3,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -180,13 +181,23 @@ class WorkspaceManager:
             if re.search(pattern, trimmed, flags=re.IGNORECASE):
                 raise PermissionError("Command matches blocked dangerous pattern")
 
+    def _parse_command_argv(self, command: str) -> List[str]:
+        try:
+            argv = shlex.split(command, posix=True)
+        except ValueError as exc:
+            raise PermissionError(f"Command could not be parsed safely: {exc}") from exc
+        if not argv:
+            raise PermissionError("Empty command is not allowed")
+        return argv
+
     def run_shell_command(self, command: str, timeout_s: int = 30) -> dict:
         start = time.perf_counter()
         try:
             self._validate_shell_command(command)
+            argv = self._parse_command_argv(command)
             proc = subprocess.run(
-                command,
-                shell=True,
+                argv,
+                shell=False,
                 cwd=self.workspace_root,
                 capture_output=True,
                 text=True,
@@ -196,6 +207,7 @@ class WorkspaceManager:
                 "ok": True,
                 "data": {
                     "command": command,
+                    "argv": argv,
                     "stdout": proc.stdout,
                     "stderr": proc.stderr,
                     "returncode": proc.returncode,

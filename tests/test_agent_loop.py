@@ -856,7 +856,7 @@ def execute(tool_name, args, env):
     )
 
     assert result.status == "done"
-    assert result.content == "I checked current web results before answering."
+    assert "couldn't verify" in result.content.lower()
     assert len(chat_reqs) == 3
 
 
@@ -1327,3 +1327,161 @@ def test_agent_can_cancel_while_waiting_for_readiness(mocker, runtime: SkillRunt
     )
 
     assert result.status == "cancelled"
+
+
+def test_doctor_report_uses_env_auth_header(mocker, runtime: SkillRuntime, monkeypatch):
+    monkeypatch.setenv("ALPHANUS_AUTH_HEADER", "Authorization: Bearer test")
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+        },
+        "search": {"provider": "tavily"},
+    }
+    agent = Agent(cfg, runtime)
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        raise AssertionError("unexpected endpoint")
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+    report = agent.doctor_report()
+    assert report["agent"]["auth_header_source"] == "env"
+
+
+def test_doctor_report_supports_brave_provider(mocker, runtime: SkillRuntime, monkeypatch):
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-test-key")
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+        },
+        "search": {"provider": "brave"},
+    }
+    agent = Agent(cfg, runtime)
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        raise AssertionError("unexpected endpoint")
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+    report = agent.doctor_report()
+    assert report["search"]["provider"] == "brave"
+    assert report["search"]["ready"] is True
+    assert report["search"]["reason"] == ""
+
+
+def test_time_sensitive_search_without_fetch_evidence_declines(mocker, tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "search-ops").mkdir(parents=True)
+    (skills / "search-ops" / "SKILL.md").write_text(
+        """
+---
+name: search-ops
+description: web search
+allowed-tools: web_search fetch_url
+metadata:
+  tags: [web, latest, current]
+---
+Search
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "search-ops" / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "web_search": {
+    "capability": "web_search",
+    "description": "Search web",
+    "parameters": {
+      "type": "object",
+      "properties": {"query": {"type": "string"}},
+      "required": ["query"]
+    }
+  },
+  "fetch_url": {
+    "capability": "web_fetch",
+    "description": "Fetch url",
+    "parameters": {
+      "type": "object",
+      "properties": {"url": {"type": "string"}},
+      "required": ["url"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    if tool_name == "web_search":
+        return {"ok": True, "data": {"results": [{"title": "Iran update", "url": "https://example.com", "domain": "example.com", "snippet": "snippet"}]}, "error": None, "meta": {}}
+    if tool_name == "fetch_url":
+        return {"ok": False, "data": None, "error": {"code": "E_IO", "message": "blocked"}, "meta": {}}
+    raise ValueError(tool_name)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+        },
+        "skills": {"selection_mode": "all_enabled", "max_active_skills": 2},
+    }
+    agent = Agent(cfg, runtime)
+    chat_reqs = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"iran current situation\\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"Here is the current situation in Iran."}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "what is the current situation in iran"}],
+        user_input="what is the current situation in iran",
+        thinking=True,
+    )
+    assert result.status == "done"
+    assert "couldn't verify" in result.content.lower()
