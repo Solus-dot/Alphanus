@@ -37,7 +37,7 @@ class LiveToolPreviewManager:
         max_static_preview_chars: int = 8000,
         max_static_preview_lines: int = 140,
     ) -> None:
-        self.streamed_file_tools = set(streamed_file_tools or {"create_file", "edit_file"})
+        self.streamed_file_tools = set(streamed_file_tools or {"create_file", "edit_file", "create_files"})
         self.max_live_preview_chars = int(max_live_preview_chars)
         self.max_live_preview_lines = int(max_live_preview_lines)
         self.max_static_preview_chars = int(max_static_preview_chars)
@@ -51,17 +51,17 @@ class LiveToolPreviewManager:
         if not isinstance(args, dict):
             return str(args)
 
-        if tool_name in self.streamed_file_tools:
-            filepath = str(args.get("filepath", ""))
-            content = args.get("content", "")
-            n_chars = len(content) if isinstance(content, str) else 0
-            return f'filepath="{filepath}", content={n_chars} chars'
-
         if tool_name == "create_files":
             files = args.get("files")
             if isinstance(files, list):
                 return f"{len(files)} files"
             return "files=?"
+
+        if tool_name in self.streamed_file_tools:
+            filepath = str(args.get("filepath", ""))
+            content = args.get("content", "")
+            n_chars = len(content) if isinstance(content, str) else 0
+            return f'filepath="{filepath}", content={n_chars} chars'
 
         parts = []
         for key in sorted(args.keys()):
@@ -92,11 +92,22 @@ class LiveToolPreviewManager:
         else:
             state.name = name
 
-        filepath, _ = self._extract_partial_json_string_field(raw_arguments, "filepath")
-        if filepath:
+        if name == "create_files":
+            filepath, content = self._extract_latest_partial_file_entry(raw_arguments)
+        else:
+            filepath, _ = self._extract_partial_json_string_field(raw_arguments, "filepath")
+            content, _ = self._extract_partial_json_string_field(raw_arguments, "content")
+
+        if filepath and filepath != state.filepath:
+            if state.opened:
+                state.printed_len = 0
+                state.line_buf = ""
+                state.preview_lines = []
+                state.rendered_chars = 0
+                state.rendered_lines = 0
+                state.truncated = False
             state.filepath = filepath
 
-        content, complete = self._extract_partial_json_string_field(raw_arguments, "content")
         if content is None:
             return
 
@@ -269,6 +280,10 @@ class LiveToolPreviewManager:
         suffix = Path(filepath).suffix.lower()
         if suffix == ".py":
             return "python"
+        if suffix in {".c", ".h"}:
+            return "c"
+        if suffix in {".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"}:
+            return "cpp"
         if suffix in {".js", ".mjs", ".cjs"}:
             return "javascript"
         if suffix in {".ts", ".tsx"}:
@@ -287,18 +302,23 @@ class LiveToolPreviewManager:
 
     @staticmethod
     def _extract_partial_json_string_field(raw: str, key: str) -> Tuple[Optional[str], bool]:
+        value, complete, _ = LiveToolPreviewManager._extract_partial_json_string_field_from(raw, key, 0)
+        return value, complete
+
+    @staticmethod
+    def _extract_partial_json_string_field_from(raw: str, key: str, start_at: int) -> Tuple[Optional[str], bool, int]:
         marker = f'"{key}"'
-        start = raw.find(marker)
+        start = raw.find(marker, start_at)
         if start < 0:
-            return None, False
+            return None, False, -1
         colon = raw.find(":", start + len(marker))
         if colon < 0:
-            return None, False
+            return None, False, -1
         i = colon + 1
         while i < len(raw) and raw[i].isspace():
             i += 1
         if i >= len(raw) or raw[i] != '"':
-            return None, False
+            return None, False, -1
         i += 1
         out: List[str] = []
         escaped = False
@@ -326,7 +346,7 @@ class LiveToolPreviewManager:
                         except ValueError:
                             out.append("u")
                     else:
-                        return "".join(out), False
+                        return "".join(out), False, i
                 else:
                     out.append(ch)
                 escaped = False
@@ -334,8 +354,25 @@ class LiveToolPreviewManager:
                 if ch == "\\":
                     escaped = True
                 elif ch == '"':
-                    return "".join(out), True
+                    return "".join(out), True, i
                 else:
                     out.append(ch)
             i += 1
-        return "".join(out), False
+        return "".join(out), False, i
+
+    @classmethod
+    def _extract_latest_partial_file_entry(cls, raw: str) -> Tuple[Optional[str], Optional[str]]:
+        pos = 0
+        latest_path: Optional[str] = None
+        latest_content: Optional[str] = None
+        while True:
+            filepath, _complete, filepath_end = cls._extract_partial_json_string_field_from(raw, "filepath", pos)
+            if filepath is None:
+                break
+            content, _content_complete, content_end = cls._extract_partial_json_string_field_from(raw, "content", filepath_end)
+            if content is None:
+                break
+            latest_path = filepath
+            latest_content = content
+            pos = max(content_end, filepath_end) + 1
+        return latest_path, latest_content

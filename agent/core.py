@@ -83,6 +83,7 @@ class TurnState:
     batch_workspace_action: bool = False
     prefer_local_workspace_tools: bool = False
     workspace_scaffold_action: bool = False
+    workspace_materialization_target: int = 0
     forced_workspace_retry: bool = False
 
 
@@ -1197,6 +1198,7 @@ class Agent:
             batch_workspace_action=self._is_batch_workspace_action(ctx, selected),
             prefer_local_workspace_tools=self._prefers_local_workspace_tools(ctx, selected),
             workspace_scaffold_action=self._is_workspace_scaffold_action(ctx, selected),
+            workspace_materialization_target=self._workspace_materialization_target(ctx, selected),
             tool_counts={},
             tool_budgets=dict(self.default_tool_budgets),
         )
@@ -1328,6 +1330,62 @@ class Agent:
     @staticmethod
     def _has_workspace_file_materialization(state: TurnState) -> bool:
         return any(name in state.tool_counts for name in {"create_file", "create_files", "edit_file"})
+
+    def _workspace_materialization_target(self, ctx: SkillContext, selected: List[Any]) -> int:
+        if not self._is_workspace_skill_selected(selected):
+            return 0
+        if self._is_confirmation_like(ctx.user_input):
+            text = (ctx.recent_routing_hint or ctx.user_input).lower()
+        else:
+            text = ctx.user_input.lower()
+        if not text:
+            return 0
+        if not any(term in text for term in ("make ", "create ", "build ", "generate ", "write ", "save it in", "save them in")):
+            return 0
+
+        wants_dir = any(term in text for term in ("folder", "directory"))
+        wants_file = any(
+            term in text
+            for term in (" file", "files", ".py", ".js", ".html", ".css", "python", "html", "css", "javascript", "js", "script", "code", "program")
+        )
+
+        requested_files = 0
+        if "html" in text:
+            requested_files += 1
+        if "css" in text:
+            requested_files += 1
+        if "javascript" in text or " js " in f" {text} " or "script.js" in text:
+            requested_files += 1
+        if requested_files == 0 and any(term in text for term in ("landing page", "website", "web page")):
+            requested_files = 1
+        if requested_files == 0 and wants_file:
+            requested_files = 1
+        if "files" in text and requested_files < 2:
+            requested_files = 2
+        if wants_dir and requested_files == 0:
+            return 0
+        return requested_files
+
+    @staticmethod
+    def _workspace_materialization_count(state: TurnState) -> int:
+        count = 0
+        for item in state.evidence:
+            if not isinstance(item.result, dict) or not item.result.get("ok"):
+                continue
+            data = item.result.get("data")
+            if item.name == "create_file":
+                count += 1
+            elif item.name == "create_files" and isinstance(data, dict):
+                created_count = data.get("count")
+                if isinstance(created_count, int):
+                    count += created_count
+                else:
+                    created = data.get("created")
+                    if isinstance(created, list):
+                        count += len(created)
+            elif item.name == "edit_file":
+                count += 1
+        return count
 
     def _finalize_turn(
         self,
@@ -1583,12 +1641,26 @@ class Agent:
                     "- Do not stop after create_directory alone.\n"
                     "- Use create_files or create_file to materialize the requested HTML, CSS, and JavaScript files."
                 )
+            elif state.workspace_materialization_target > 0:
+                system_content += (
+                    "\n\nWorkspace materialization rule:\n"
+                    "- This request requires creating local file content, not just a directory.\n"
+                    "- Do not stop after create_directory alone.\n"
+                    "- Materialize the requested file content with workspace file-creation tools before finishing."
+                )
             if state.workspace_scaffold_action and state.forced_workspace_retry:
                 system_content += (
                     "\n\nMandatory scaffold completion rule:\n"
                     "- The previous pass stopped before creating the requested files.\n"
                     "- Continue the scaffold now with workspace file-creation tools.\n"
                     "- Do not claim completion until the requested files exist."
+                )
+            elif state.workspace_materialization_target > 0 and state.forced_workspace_retry:
+                system_content += (
+                    "\n\nMandatory workspace completion rule:\n"
+                    "- The previous pass stopped before creating the requested file content.\n"
+                    "- Continue with workspace file-creation tools now.\n"
+                    "- Do not claim completion until the requested file content exists."
                 )
             if state.prefer_local_workspace_tools:
                 system_content += (
@@ -1883,6 +1955,10 @@ class Agent:
                     and (not state.search_mode or not search_tool_called)
                     and not state.batch_workspace_action
                     and not state.workspace_scaffold_action
+                    and (
+                        state.workspace_materialization_target <= 0
+                        or self._workspace_materialization_count(state) >= state.workspace_materialization_target
+                    )
                 ):
                     self.skill_runtime.post_response(state.selected, state.ctx, direct_answers[0])
                     return finish(
@@ -1915,8 +1991,8 @@ class Agent:
                 state.full_reasoning = finalized.reasoning
                 final = finalized.content
             if (
-                state.workspace_scaffold_action
-                and not self._has_workspace_file_materialization(state)
+                state.workspace_materialization_target > 0
+                and self._workspace_materialization_count(state) < state.workspace_materialization_target
             ):
                 if not state.forced_workspace_retry:
                     state.forced_workspace_retry = True
@@ -1924,7 +2000,7 @@ class Agent:
                 return finish(
                     AgentTurnResult(
                         status="done",
-                        content="I created the directory, but I failed to finish creating the requested scaffold files with the available workspace tools.",
+                        content="I completed part of the workspace setup, but I failed to finish creating all requested file content with the available workspace tools.",
                         reasoning=state.full_reasoning,
                         skill_exchanges=state.skill_exchanges,
                     )

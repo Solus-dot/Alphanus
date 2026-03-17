@@ -45,7 +45,9 @@ description: workspace
 version: 1.0.0
 tools:
   allowed-tools:
+    - create_directory
     - create_file
+    - create_files
 ---
 workspace
 """.strip(),
@@ -54,6 +56,15 @@ workspace
     (skills / "workspace-ops" / "tools.py").write_text(
         """
 TOOL_SPECS = {
+  "create_directory": {
+    "capability": "workspace_write",
+    "description": "Create directory",
+    "parameters": {
+      "type": "object",
+      "properties": {"path": {"type": "string"}},
+      "required": ["path"]
+    }
+  },
   "create_file": {
     "capability": "workspace_write",
     "description": "Create file",
@@ -62,13 +73,31 @@ TOOL_SPECS = {
       "properties": {"filepath": {"type": "string"}, "content": {"type": "string"}},
       "required": ["filepath", "content"]
     }
+  },
+  "create_files": {
+    "capability": "workspace_write",
+    "description": "Create files",
+    "parameters": {
+      "type": "object",
+      "properties": {"files": {"type": "array"}},
+      "required": ["files"]
+    }
   }
 }
 
 def execute(tool_name, args, env):
+    if tool_name == "create_directory":
+        path = env.workspace.create_directory(args["path"])
+        return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
     if tool_name == "create_file":
         path = env.workspace.create_file(args["filepath"], args["content"])
         return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
+    if tool_name == "create_files":
+        created = []
+        for item in args.get("files", []):
+            path = env.workspace.create_file(item["filepath"], item["content"])
+            created.append({"filepath": path})
+        return {"ok": True, "data": {"created": created, "count": len(created)}, "error": None, "meta": {}}
     return {"ok": False, "data": None, "error": {"code": "E_UNSUPPORTED", "message": "nope"}, "meta": {}}
 """.strip(),
         encoding="utf-8",
@@ -741,6 +770,75 @@ def test_workspace_scaffold_does_not_stop_after_create_directory(mocker, runtime
 
     assert result.status == "done"
     assert executed == ["create_directory", "create_files"]
+    assert calls == ["pass_1", "pass_2", "pass_3"]
+
+
+def test_workspace_folder_and_single_file_does_not_stop_after_create_directory(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    mocker.patch.object(agent, "ensure_ready", return_value=True)
+    selected = [runtime.get_skill("workspace-ops")]
+    mocker.patch.object(agent, "_select_skills", return_value=selected)
+
+    calls = []
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        calls.append(pass_id)
+        if pass_id == "pass_1":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "tool_calls",
+                    "content": "",
+                    "reasoning": "",
+                    "tool_calls": [
+                        type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "create_directory", "arguments": {"path": "hvb"}})(),
+                    ],
+                },
+            )()
+        if pass_id == "pass_2":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "tool_calls",
+                    "content": "",
+                    "reasoning": "",
+                    "tool_calls": [
+                        type("Call", (), {"stream_id": "2", "index": 0, "id": "call_2", "name": "create_file", "arguments": {"filepath": "hvb/insertion_sort.py", "content": "def insertion_sort(arr):\n    return arr\n"}})(),
+                    ],
+                },
+            )()
+        if pass_id == "pass_3":
+            return type("R", (), {"finish_reason": "stop", "content": "Done.", "reasoning": "", "tool_calls": []})()
+        raise AssertionError(f"Unexpected pass id: {pass_id}")
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    executed = []
+    real_execute = runtime.execute_tool_call
+
+    def wrapped_execute(tool_name, args, selected, ctx, confirm_shell=None):
+        executed.append(tool_name)
+        return real_execute(tool_name, args, selected=selected, ctx=ctx, confirm_shell=confirm_shell)
+
+    mocker.patch.object(runtime, "execute_tool_call", side_effect=wrapped_execute)
+    mocker.patch.object(
+        runtime,
+        "tools_for_skills",
+        return_value=[
+            {"type": "function", "function": {"name": "create_directory"}},
+            {"type": "function", "function": {"name": "create_file"}},
+        ],
+    )
+
+    result = agent.run_turn(
+        history_messages=[],
+        user_input="make a folder called hvb and make a python file that does insertion sort",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert executed == ["create_directory", "create_file"]
     assert calls == ["pass_1", "pass_2", "pass_3"]
 
 

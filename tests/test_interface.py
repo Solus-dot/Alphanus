@@ -91,6 +91,25 @@ def test_live_tool_preview_shows_create_files_contents() -> None:
     assert any(language == "javascript" for _code, language, _indent in code_blocks)
 
 
+def test_live_tool_preview_streams_create_files_current_draft() -> None:
+    preview = LiveToolPreviewManager()
+    lines: list[str] = []
+    partial_updates: list[tuple[list[str], str | None]] = []
+
+    preview.update(
+        "stream-1",
+        "create_files",
+        '{"files":[{"filepath":"site/index.html","content":"<h1>Hello</h1>\\n"},{"filepath":"site/script.js","content":"console.log(\\"hi\\")\\n"}]}',
+        lines.append,
+        lambda code, language: partial_updates.append((code, language)),
+    )
+
+    assert any("site/script.js" in line for line in lines)
+    assert partial_updates
+    assert partial_updates[-1][1] == "javascript"
+    assert "console.log" in "\n".join(partial_updates[-1][0])
+
+
 def test_live_tool_preview_shows_edit_file_diff() -> None:
     preview = LiveToolPreviewManager()
     lines: list[str] = []
