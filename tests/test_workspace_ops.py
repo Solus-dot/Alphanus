@@ -115,6 +115,28 @@ def test_workspace_ops_list_delete_and_tree(tmp_path: Path):
     assert deleted["ok"] is True
     assert deleted["data"]["deleted"] is True
     assert deleted["data"]["size_bytes"] > 0
+    assert deleted["data"]["kind"] == "file"
+
+
+def test_workspace_ops_delete_file_supports_binary_files(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("workspace-ops")
+    assert skill is not None
+
+    binary_path = runtime.workspace.workspace_root / ".DS_Store"
+    binary_path.write_bytes(b"\x00\x87binary")
+
+    ctx = _ctx(str(runtime.workspace.workspace_root))
+    deleted = runtime.execute_tool_call(
+        "delete_file",
+        {"filepath": ".DS_Store"},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert deleted["ok"] is True
+    assert deleted["data"]["deleted"] is True
+    assert deleted["data"]["size_bytes"] == 8
+    assert deleted["data"]["kind"] == "file"
 
 
 def test_workspace_ops_delete_path_supports_directories(tmp_path: Path):

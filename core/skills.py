@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.memory import VectorMemory
-from core.skill_parser import SKILL_DOC, SkillManifest, ToolCommandDef, extract_skill_doc, parse_agentskill_manifest
+from core.skill_parser import SKILL_DOC, SkillManifest, extract_skill_doc, parse_agentskill_manifest
 from core.workspace import WorkspaceManager
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9+#._/-]{1,}")

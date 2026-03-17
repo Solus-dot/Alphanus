@@ -4,7 +4,7 @@ import json
 import ssl
 import urllib.error
 import urllib.request
-from typing import Callable, Dict, Generator, Optional, Tuple
+from typing import Callable, Dict, Generator, Optional
 
 
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}

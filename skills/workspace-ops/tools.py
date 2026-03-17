@@ -164,14 +164,15 @@ def _list_files(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
 
 def _delete_file(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     filepath = str(args["filepath"])
-    content = env.workspace.read_file(filepath)
+    target = env.workspace._resolve_read_path(filepath)
+    size_bytes = target.stat().st_size
     path_str = env.workspace.delete_file(filepath)
     data = _path_info(path_str)
     data.update(
         {
             "deleted": True,
-            "size_bytes": len(content.encode("utf-8")),
-            "line_count": _line_count(content),
+            "size_bytes": size_bytes,
+            "kind": "file",
         }
     )
     return data

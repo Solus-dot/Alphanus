@@ -25,7 +25,6 @@ from agent.core import Agent, AgentTurnResult
 from core.attachments import build_content, classify_attachment
 from core.conv_tree import ConvTree, Turn
 from tui.commands import (
-    COMMAND_ENTRIES,
     HELP_SECTIONS,
     DEFAULT_SAVE,
     CommandEntry,
@@ -848,6 +847,8 @@ class AlphanusTUI(App):
             self._write_indented(esc(line), indent=2)
 
     def _write_skill_exchanges(self, turn: Turn) -> None:
+        if not self._show_tool_details:
+            return
         for msg in turn.skill_exchanges:
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 for call in msg["tool_calls"]:
@@ -1061,6 +1062,8 @@ class AlphanusTUI(App):
             self._content_open = False
 
         elif etype == "tool_call_delta":
+            if not self._show_tool_details:
+                return
             stream_id = str(event.get("stream_id") or "")
             name = str(event.get("name") or "")
             raw_arguments = str(event.get("raw_arguments") or "")
@@ -1074,18 +1077,23 @@ class AlphanusTUI(App):
             name = event.get("name", "tool")
             args = event.get("arguments", {})
             stream_id = str(event.get("stream_id") or "")
-            if self._show_tool_details and name not in self._live_preview.streamed_file_tools:
-                self._write_tool_call_block(f"{name}({self._live_preview.compact_tool_args(name, args)})", indent=2)
-            streamed = (
+            if self._show_tool_details:
+                if name not in self._live_preview.streamed_file_tools:
+                    self._write_tool_call_block(f"{name}({self._live_preview.compact_tool_args(name, args)})", indent=2)
+                streamed = (
+                    self._live_preview.close(
+                        stream_id, self._write_indented, self._write_code_block, self._clear_partial_preview
+                    )
+                    if stream_id
+                    else False
+                )
+                if not streamed:
+                    self._live_preview.write_static_preview(
+                        name, args, self._write, self._write_indented, self._write_code_block
+                    )
+            elif stream_id:
                 self._live_preview.close(
                     stream_id, self._write_indented, self._write_code_block, self._clear_partial_preview
-                )
-                if stream_id
-                else False
-            )
-            if not streamed:
-                self._live_preview.write_static_preview(
-                    name, args, self._write, self._write_indented, self._write_code_block
                 )
 
         elif etype == "tool_result":
