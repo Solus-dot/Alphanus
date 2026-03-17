@@ -57,6 +57,12 @@ class LiveToolPreviewManager:
             n_chars = len(content) if isinstance(content, str) else 0
             return f'filepath="{filepath}", content={n_chars} chars'
 
+        if tool_name == "create_files":
+            files = args.get("files")
+            if isinstance(files, list):
+                return f"{len(files)} files"
+            return "files=?"
+
         parts = []
         for key in sorted(args.keys()):
             value = args[key]
@@ -166,9 +172,29 @@ class LiveToolPreviewManager:
         write_indented: WriteIndentedFn,
         write_code: WriteCodeFn,
     ) -> None:
-        if tool_name not in self.streamed_file_tools:
-            return
         if not isinstance(args, dict):
+            return
+        if tool_name == "create_files":
+            files = args.get("files")
+            if not isinstance(files, list):
+                return
+            for item in files:
+                if not isinstance(item, dict):
+                    continue
+                filepath = str(item.get("filepath", ""))
+                content = item.get("content")
+                if not isinstance(content, str) or not content.strip():
+                    continue
+                clipped = content[: self.max_static_preview_chars]
+                lines = clipped.splitlines()
+                truncated = len(content) > self.max_static_preview_chars or len(lines) > self.max_static_preview_lines
+                lines = lines[: self.max_static_preview_lines]
+                write(f"[dim]  · file draft: {esc(filepath)}[/dim]")
+                write_code(lines, self._guess_language(filepath), 2)
+                if truncated:
+                    write_indented("[dim]... (preview truncated) ...[/dim]", 2)
+            return
+        if tool_name not in self.streamed_file_tools:
             return
         content = args.get("content")
         filepath = str(args.get("filepath", ""))
@@ -184,6 +210,36 @@ class LiveToolPreviewManager:
         write_code(lines, self._guess_language(filepath), 2)
         if truncated:
             write_indented("[dim]... (preview truncated) ...[/dim]", 2)
+
+    def write_result_preview(
+        self,
+        tool_name: str,
+        result: Any,
+        write: WriteFn,
+        write_indented: WriteIndentedFn,
+        write_code: WriteCodeFn,
+    ) -> None:
+        if tool_name != "edit_file":
+            return
+        if not isinstance(result, dict):
+            return
+        data = result.get("data")
+        if not isinstance(data, dict):
+            return
+        diff_text = data.get("diff")
+        filepath = str(data.get("filepath", ""))
+        if not isinstance(diff_text, str) or not diff_text.strip():
+            return
+
+        clipped = diff_text[: self.max_static_preview_chars]
+        lines = clipped.splitlines()
+        truncated = len(diff_text) > self.max_static_preview_chars or len(lines) > self.max_static_preview_lines
+        lines = lines[: self.max_static_preview_lines]
+        label = filepath or "edited file"
+        write(f"[dim]  · edit diff: {esc(label)}[/dim]")
+        write_code(lines, "diff", 2)
+        if truncated:
+            write_indented("[dim]... (diff truncated) ...[/dim]", 2)
 
     def _close_state(
         self,

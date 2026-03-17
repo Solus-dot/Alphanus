@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from rich import box
 from rich.markup import escape as esc
 from rich.padding import Padding
 from rich.panel import Panel
@@ -212,7 +213,7 @@ class AlphanusTUI(App):
     #status-bar {
         height: 1;
         layout: horizontal;
-        padding: 0 3;
+        padding: 0 0;
         background: #09090b;
     }
 
@@ -232,7 +233,7 @@ class AlphanusTUI(App):
         height: auto;
         layout: horizontal;
         background: #09090b;
-        padding: 0 3 1 3;
+        padding: 0 0 1 0;
         min-height: 3;
     }
 
@@ -310,7 +311,9 @@ class AlphanusTUI(App):
         self._command_matches: List[CommandEntry] = []
         self._command_anchor_region = None
         self._code_blocks: List[Tuple[str, Optional[str]]] = []
-        self._show_tool_details = False
+        self._show_tool_details = True
+        self._show_historical_tool_details = False
+        self._last_log_was_blank = False
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="topbar"):
@@ -444,14 +447,17 @@ class AlphanusTUI(App):
 
     def _write(self, markup: str) -> None:
         self._log().write(Text.from_markup(markup))
+        self._last_log_was_blank = markup == ""
         self._maybe_scroll_end()
 
     def _write_indented(self, markup: str, indent: int = 2) -> None:
         self._log().write(Padding(Text.from_markup(markup), pad=(0, 0, 0, indent)))
+        self._last_log_was_blank = False
         self._maybe_scroll_end()
 
     def _write_renderable(self, renderable, indent: int = 2) -> None:
         self._log().write(Padding(renderable, pad=(0, 0, 0, indent)))
+        self._last_log_was_blank = False
         self._maybe_scroll_end()
 
     def _partial_markup_renderable(self, markup: str, indent: int = 2):
@@ -476,10 +482,56 @@ class AlphanusTUI(App):
             style="on #121214",
         )
 
-    def _write_tool_call_block(self, command_text: str, *, indent: int = 2) -> None:
+    def _tool_event_panel(
+        self,
+        title: str,
+        title_color: str,
+        border_color: str,
+        name: str,
+        detail: str = "",
+    ) -> Panel:
+        text = Text()
+        text.append(name, style="bold #f4f4f5")
+        if detail:
+            text.append("   ")
+            text.append(detail, style="#a1a1aa")
+        return Panel(
+            text,
+            title=f"[bold {title_color}]{title}[/bold {title_color}]",
+            title_align="left",
+            expand=True,
+            padding=(0, 1),
+            border_style=border_color,
+            style="on #111114",
+            box=box.SQUARE,
+        )
+
+    def _write_tool_event(
+        self,
+        title: str,
+        title_color: str,
+        border_color: str,
+        name: str,
+        detail: str = "",
+        *,
+        indent: int = 2,
+    ) -> None:
+        self._write_renderable(
+            self._tool_event_panel(title, title_color, border_color, name, detail),
+            indent=indent,
+        )
+
+    def _write_tool_call_block(self, name: str, detail: str = "", *, indent: int = 2) -> None:
         if not self._show_tool_details:
             return
-        self._write_indented(f"[#6366f1]│[/#6366f1] [#e4e4e7]> {esc(command_text)}[/#e4e4e7]", indent=indent)
+        self._write_tool_event("tool", "#8b5cf6", "#8b5cf6", name, detail, indent=indent)
+
+    def _write_tool_result_block(self, name: str, ok: bool, detail: str = "", *, indent: int = 2) -> None:
+        title = "done" if ok else "fail"
+        title_color = "#10b981" if ok else "#f87171"
+        border_color = "#10b981" if ok else "#f87171"
+        summary = detail or ("completed" if ok else "failed")
+        self._write_tool_event(title, title_color, border_color, name, summary, indent=indent)
 
     def _show_tool_result_line(self, name: str, ok: bool) -> bool:
         if not ok:
@@ -502,6 +554,32 @@ class AlphanusTUI(App):
             f"[dim]code block {block_index} · /code {block_index} to open copyable view[/dim]",
             indent=indent + 2,
         )
+
+    def _render_static_markdown(self, text: str) -> None:
+        in_fence = False
+        fence_lang: Optional[str] = None
+        fence_lines: List[str] = []
+        for line in text.splitlines() or [""]:
+            if self._is_fence_line(line):
+                if in_fence:
+                    if fence_lines:
+                        self._write_code_block(fence_lines, fence_lang, indent=2)
+                    in_fence = False
+                    fence_lang = None
+                    fence_lines = []
+                else:
+                    in_fence = True
+                    fence_lang = fence_language(line)
+                    fence_lines = []
+                continue
+            if in_fence:
+                fence_lines.append(line)
+                continue
+            rendered, _ = render_md(line, False)
+            self._write_indented(rendered, indent=max(2, hanging_indent(line)))
+
+        if in_fence and fence_lines:
+            self._write_code_block(fence_lines, fence_lang, indent=2)
 
     def _reset_fence_state(self) -> None:
         self._in_fence = False
@@ -581,26 +659,43 @@ class AlphanusTUI(App):
             self._scroll().scroll_end(animate=False)
 
     def _write_info(self, text: str) -> None:
-        self._write(f"[dim]  {esc(text)}[/dim]")
+        self._write(f"  [bold #f59e0b]›[/bold #f59e0b] [#f4f4f5]{esc(text)}[/#f4f4f5]")
 
     def _write_error(self, text: str) -> None:
         self._write(f"[bold red]  ✖ {esc(text)}[/bold red]")
 
-    def _write_section_heading(self, title: str, color: str = "#6366f1") -> None:
+    def _write_section_heading(self, title: str, color: str = "#f59e0b") -> None:
         self._write("")
         self._write(f"[bold {color}]  {esc(title)}[/bold {color}]")
 
     def _write_detail_line(self, label: str, value: str, *, value_markup: bool = False) -> None:
         rendered = value if value_markup else esc(value)
-        self._write(f"  [dim]{esc(label)}:[/dim] {rendered}")
+        self._write(f"  [bold #f59e0b]{esc(label)}:[/bold #f59e0b] [#f4f4f5]{rendered}[/#f4f4f5]" if not value_markup else f"  [bold #f59e0b]{esc(label)}:[/bold #f59e0b] {rendered}")
 
-    def _write_indexed_dim_lines(self, rows: List[str], *, color: str = "yellow") -> None:
+    def _write_indexed_dim_lines(self, rows: List[str], *, color: str = "#f59e0b") -> None:
         for index, row in enumerate(rows):
-            self._write(f"  [{color}]{index}.[/{color}] [dim]{esc(row)}[/dim]")
+            self._write(f"  [{color}]{index}.[/{color}] [#f4f4f5]{esc(row)}[/#f4f4f5]")
+
+    def _write_command_action(self, text: str, *, icon: str = "•", color: str = "#f59e0b") -> None:
+        self._write(f"  [bold {color}]{esc(icon)}[/bold {color}] [#f4f4f5]{esc(text)}[/#f4f4f5]")
+
+    def _write_command_row(self, command: str, desc: str, *, col: int) -> None:
+        gap = max(1, col - len(command))
+        self._write(
+            f"  [bold #f59e0b]{esc(command)}[/bold #f59e0b]{' ' * gap}[#a1a1aa]{esc(desc)}[/#a1a1aa]"
+        )
+
+    def _write_muted_lines(self, rows: List[str]) -> None:
+        for row in rows:
+            self._write(f"  [#a1a1aa]{esc(row)}[/#a1a1aa]")
 
     def _write_usage(self, usage: str) -> bool:
         self._write_error(f"Usage: {usage}")
         return True
+
+    def _ensure_command_gap(self) -> None:
+        if not self._last_log_was_blank:
+            self._write("")
 
     def _reload_skills(self) -> bool:
         self.agent.reload_skills()
@@ -847,7 +942,7 @@ class AlphanusTUI(App):
             self._write_indented(esc(line), indent=2)
 
     def _write_skill_exchanges(self, turn: Turn) -> None:
-        if not self._show_tool_details:
+        if not self._show_historical_tool_details:
             return
         for msg in turn.skill_exchanges:
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
@@ -859,7 +954,7 @@ class AlphanusTUI(App):
                     except Exception:
                         args = raw_args
                     if name not in self._live_preview.streamed_file_tools:
-                        self._write_tool_call_block(f"{name}({self._live_preview.compact_tool_args(name, args)})", indent=2)
+                        self._write_tool_call_block(name, self._live_preview.compact_tool_args(name, args), indent=2)
                     self._live_preview.write_static_preview(
                         name, args, self._write, self._write_indented, self._write_code_block
                     )
@@ -869,13 +964,17 @@ class AlphanusTUI(App):
                     payload = json.loads(msg.get("content", "{}"))
                 except Exception:
                     payload = {"ok": False, "error": {"message": "invalid tool response"}}
+                if payload.get("ok"):
+                    self._live_preview.write_result_preview(
+                        name, payload, self._write, self._write_indented, self._write_code_block
+                    )
                 if not self._show_tool_result_line(name, bool(payload.get("ok"))):
                     continue
                 if payload.get("ok"):
-                    self._write_indented(f"[#10b981]✓ {esc(name)}[/#10b981]", indent=4)
+                    self._write_tool_result_block(name, True, indent=2)
                 else:
                     em = payload.get("error", {}).get("message", "failed")
-                    self._write_indented(f"[#f87171]✗ {esc(name)} · {esc(em)}[/#f87171]", indent=4)
+                    self._write_tool_result_block(name, False, em, indent=2)
 
     def _write_completed_turn_asst(self, turn: Turn) -> None:
         self._write("")
@@ -887,31 +986,7 @@ class AlphanusTUI(App):
         interrupted = state == "cancelled"
         failed = state == "error"
         display = content.replace("\n[interrupted]", "").rstrip()
-
-        in_fence = False
-        fence_lang: Optional[str] = None
-        fence_lines: List[str] = []
-        for line in display.splitlines() or [""]:
-            if self._is_fence_line(line):
-                if in_fence:
-                    if fence_lines:
-                        self._write_code_block(fence_lines, fence_lang, indent=2)
-                    in_fence = False
-                    fence_lang = None
-                    fence_lines = []
-                else:
-                    in_fence = True
-                    fence_lang = fence_language(line)
-                    fence_lines = []
-                continue
-            if in_fence:
-                fence_lines.append(line)
-                continue
-            rendered, _ = render_md(line, False)
-            self._write_indented(rendered, indent=max(2, hanging_indent(line)))
-
-        if in_fence and fence_lines:
-            self._write_code_block(fence_lines, fence_lang, indent=2)
+        self._render_static_markdown(display)
 
         if interrupted:
             self._write("[dim red]  ✖ interrupted[/dim red]")
@@ -935,6 +1010,7 @@ class AlphanusTUI(App):
         self._active_turn_id = turn.id
         self._reply_acc = ""
         self._live_preview.reset()
+        self._last_stream_error_text = ""
         self._reasoning_open = False
         self._content_open = False
         self._done_thinking_rendered = False
@@ -1079,7 +1155,7 @@ class AlphanusTUI(App):
             stream_id = str(event.get("stream_id") or "")
             if self._show_tool_details:
                 if name not in self._live_preview.streamed_file_tools:
-                    self._write_tool_call_block(f"{name}({self._live_preview.compact_tool_args(name, args)})", indent=2)
+                    self._write_tool_call_block(name, self._live_preview.compact_tool_args(name, args), indent=2)
                 streamed = (
                     self._live_preview.close(
                         stream_id, self._write_indented, self._write_code_block, self._clear_partial_preview
@@ -1100,16 +1176,21 @@ class AlphanusTUI(App):
             self._flush_reasoning_buffer()
             name = event.get("name", "tool")
             result = event.get("result", {})
+            if result.get("ok"):
+                self._live_preview.write_result_preview(
+                    name, result, self._write, self._write_indented, self._write_code_block
+                )
             if not self._show_tool_result_line(name, bool(result.get("ok"))):
                 return
             if result.get("ok"):
-                self._write_indented(f"[#10b981]✓ {esc(name)}[/#10b981]", indent=4)
+                self._write_tool_result_block(name, True, indent=2)
             else:
                 msg = result.get("error", {}).get("message", "failed")
-                self._write_indented(f"[#f87171]✗ {esc(name)} · {esc(msg)}[/#f87171]", indent=4)
+                self._write_tool_result_block(name, False, msg, indent=2)
 
         elif etype == "error":
-            self._write_error(str(event.get("text", "Unknown error")))
+            self._last_stream_error_text = str(event.get("text", "Unknown error"))
+            self._write_error(self._last_stream_error_text)
 
         elif etype == "info":
             self._write_info(str(event.get("text", "")))
@@ -1152,30 +1233,7 @@ class AlphanusTUI(App):
 
         reply = result.content if result.content else self._reply_acc
         if result.status == "done" and not self._content_open and reply.strip():
-            in_fence = False
-            fence_lang: Optional[str] = None
-            fence_lines: List[str] = []
-            for line in reply.splitlines() or [""]:
-                if self._is_fence_line(line):
-                    if in_fence:
-                        if fence_lines:
-                            self._write_code_block(fence_lines, fence_lang, indent=2)
-                        in_fence = False
-                        fence_lang = None
-                        fence_lines = []
-                    else:
-                        in_fence = True
-                        fence_lang = fence_language(line)
-                        fence_lines = []
-                    continue
-                if in_fence:
-                    fence_lines.append(line)
-                    continue
-                rendered, _ = render_md(line, False)
-                self._write_indented(rendered, indent=max(2, hanging_indent(line)))
-
-            if in_fence and fence_lines:
-                self._write_code_block(fence_lines, fence_lang, indent=2)
+            self._render_static_markdown(reply)
 
         if turn_id in self.conv_tree.nodes:
             for msg in result.skill_exchanges:
@@ -1189,7 +1247,7 @@ class AlphanusTUI(App):
             self.conv_tree.fail_turn(turn_id, reply)
 
         if result.status != "done":
-            if result.error:
+            if result.error and result.error != self._last_stream_error_text:
                 self._write_error(result.error)
             if result.status == "cancelled":
                 self._write("[bold red]  ✖ interrupted[/bold red]")
@@ -1277,7 +1335,13 @@ class AlphanusTUI(App):
             return
         self.query_one(ChatInput).value = ""
         self._hide_command_popup()
-        if not self._handle_command(text):
+        handled = self._handle_command(text)
+        if handled:
+            cmd = text.split(None, 1)[0].lower()
+            if cmd not in {"/quit", "/exit", "/q", "/config"}:
+                self._ensure_command_gap()
+            return
+        if not handled:
             if not self.streaming:
                 self._send(text)
 
@@ -1365,7 +1429,7 @@ class AlphanusTUI(App):
 
         if cmd == "/details":
             self._show_tool_details = not self._show_tool_details
-            self._write_info(f"Tool details {'shown' if self._show_tool_details else 'hidden'}")
+            self._write_info(f"Live tool details {'shown' if self._show_tool_details else 'hidden'}")
             return True
 
         if cmd == "/think":
@@ -1376,7 +1440,7 @@ class AlphanusTUI(App):
         if cmd == "/branch":
             self.conv_tree.arm_branch(arg)
             label = self.conv_tree._pending_branch_label
-            self._write(f"[#6366f1]  ⎇ Branch armed '{esc(label)}'[/#6366f1]")
+            self._write_command_action(f"Branch armed '{label}'", icon="⎇", color="#8b5cf6")
             self._update_status1()
             self._update_input_placeholder()
             return True
@@ -1384,7 +1448,7 @@ class AlphanusTUI(App):
         if cmd == "/unbranch":
             if self.conv_tree._pending_branch:
                 self.conv_tree.clear_pending_branch()
-                self._write("[#6366f1]  ↩ Disarmed pending branch[/#6366f1]")
+                self._write_command_action("Disarmed pending branch", icon="↩", color="#8b5cf6")
                 self._update_status1()
                 self._update_input_placeholder()
                 return True
@@ -1392,7 +1456,7 @@ class AlphanusTUI(App):
             if moved is None:
                 self._write_error("No branch to leave.")
             else:
-                self._write("[#6366f1]  ↩ Returned to fork point[/#6366f1]")
+                self._write_command_action("Returned to fork point", icon="↩", color="#8b5cf6")
                 self._rebuild_viewport()
                 self._update_sidebar()
             self._update_status1()
@@ -1417,7 +1481,7 @@ class AlphanusTUI(App):
             if not turn:
                 self._write_error(f"No child {idx} at current node")
             else:
-                self._write(f"[yellow]  ↪ Switched to branch {idx}[/yellow]")
+                self._write_command_action(f"Switched to branch {idx}", icon="↪")
                 self._rebuild_viewport()
                 self._update_sidebar()
             return True
@@ -1430,7 +1494,7 @@ class AlphanusTUI(App):
             path = arg or DEFAULT_SAVE
             try:
                 self.conv_tree.save(path)
-                self._write(f"[yellow]  ✓ Saved tree to {esc(path)}[/yellow]")
+                self._write_command_action(f"Saved tree to {path}", icon="✓")
             except Exception as exc:
                 self._write_error(f"Save failed: {exc}")
             return True
@@ -1446,7 +1510,7 @@ class AlphanusTUI(App):
                 self._rebuild_viewport()
                 self._update_sidebar()
                 self._update_status1()
-                self._write(f"[yellow]  ✓ Loaded tree from {esc(path)}[/yellow]")
+                self._write_command_action(f"Loaded tree from {path}", icon="✓")
             except Exception as exc:
                 self._write_error(f"Load failed: {exc}")
             return True
@@ -1475,7 +1539,7 @@ class AlphanusTUI(App):
                 self._write_error("Unsupported file type")
                 return True
             self.pending.append((path, kind))
-            self._write(f"[dim]  attached {kind}: {esc(os.path.basename(path))}[/dim]")
+            self._write_command_action(f"Attached {kind}: {os.path.basename(path)}", icon="+")
             self._update_status1()
             return True
 
@@ -1519,42 +1583,43 @@ class AlphanusTUI(App):
         self._write("")
         col = max((len(command) for _, rows in HELP_SECTIONS for command, _ in rows), default=22) + 2
         for section, rows in HELP_SECTIONS:
-            self._write(f"[bold yellow]  {section}[/bold yellow]")
+            self._write_section_heading(section)
             for c, desc in rows:
-                cmd = esc(c.ljust(col))
-                self._write(f"  [yellow]{cmd}[/yellow][dim]{esc(desc)}[/dim]")
-            self._write("")
+                self._write_command_row(c, desc, col=col)
+        self._write("")
 
     def _cmd_tree(self) -> None:
-        self._write("")
+        self._write_section_heading("Tree")
         for text, tag, active in self.conv_tree.render_tree(width=80):
             if tag == self.conv_tree.current_id:
-                self._write(f"[bold yellow]  {esc(text)}[/bold yellow]")
+                self._write(f"  [bold #8b5cf6]{esc(text)}[/bold #8b5cf6]")
             elif active:
-                self._write(f"[yellow]  {esc(text)}[/yellow]")
+                self._write(f"  [#f59e0b]{esc(text)}[/#f59e0b]")
             else:
-                self._write(f"[dim]  {esc(text)}[/dim]")
+                self._write(f"  [#a1a1aa]{esc(text)}[/#a1a1aa]")
+        self._write("")
 
     def _cmd_skills(self) -> None:
         skills = self.agent.skill_runtime.list_skills()
         self._write_section_heading("Skills")
-        name_col = max((len(skill.id) for skill in skills), default=0) + 2
         for skill in skills:
             state, color = self.agent.skill_runtime.skill_status_label(skill)
             source = self.agent.skill_runtime.skill_source_label(skill)
             provenance = self.agent.skill_runtime.skill_provenance_label(skill)
-            suffix = f" [dim]({esc(provenance)}"
-            if source:
-                suffix += f" · {esc(source)}"
-            suffix += ")[/dim]"
-            skill_id = esc(skill.id.ljust(name_col))
             self._write(
-                f"  [bold]{skill_id}[/bold][dim]({esc(skill.version)})[/dim] "
-                f"[{color}]{state}[/{color}] [dim]{esc(skill.description)}[/dim]{suffix}"
+                f"  [bold #f59e0b]{esc(skill.id)}[/bold #f59e0b] "
+                f"[#a1a1aa]({esc(skill.version)})[/#a1a1aa] "
+                f"[{color}]{state}[/{color}]"
             )
+            self._write(f"    [#a1a1aa]{esc(skill.description)}[/#a1a1aa]")
+            source_bits = provenance
+            if source:
+                source_bits += f" · {source}"
+            self._write(f"    [#71717a]{esc(source_bits)}[/#71717a]")
             if not skill.available and skill.availability_reason:
                 code = esc(skill.availability_code or "blocked")
-                self._write(f"    [yellow]blocked ({code}):[/yellow] [dim]{esc(skill.availability_reason)}[/dim]")
+                self._write(f"    [bold #f59e0b]blocked ({code}):[/bold #f59e0b] [#a1a1aa]{esc(skill.availability_reason)}[/#a1a1aa]")
+        self._write("")
 
     def _cmd_skill(self, arg: str) -> bool:
         parts = arg.split()
@@ -1584,7 +1649,7 @@ class AlphanusTUI(App):
                 self._write_error(f"Skill not found: {parts[1]}")
                 return True
             self._write_section_heading(skill.name)
-            self._write(f"  [dim]{esc(skill.description)}[/dim]")
+            self._write(f"  [#a1a1aa]{esc(skill.description)}[/#a1a1aa]")
             keywords = ", ".join(skill.triggers.get("keywords", [])) or "none"
             file_ext = ", ".join(skill.triggers.get("file_ext", [])) or "none"
             tools = ", ".join(skill.allowed_tools) or "all"
@@ -1600,6 +1665,7 @@ class AlphanusTUI(App):
             self._write_detail_line("keywords", keywords)
             self._write_detail_line("file_ext", file_ext)
             self._write_detail_line("tools", tools)
+            self._write("")
             return True
 
         return self._write_usage("/skill on|off|reload|info <id>")
@@ -1616,6 +1682,7 @@ class AlphanusTUI(App):
             self._write_detail_line("recommended_model", str(stats.get("recommended_model_name", "")))
             self._write_detail_line("dimension", str(stats["dimension"]))
             self._write_detail_line("by_type", json.dumps(stats["by_type"]))
+            self._write("")
             return True
         return self._write_usage("/memory stats")
 
@@ -1638,18 +1705,18 @@ class AlphanusTUI(App):
         self._write_detail_line("search_ready", str(search.get("ready", False)).lower())
         if search.get("reason"):
             self._write_detail_line("search_reason", str(search.get("reason")))
-        self._write("")
-        self._write("  [bold yellow]Skills[/bold yellow]")
+        self._write_section_heading("Skills")
         for skill in report.get("skills", []):
             line = (
-                f"  [bold]{esc(str(skill.get('id', '')))}[/bold] "
-                f"[dim]({esc(str(skill.get('source_tier', '')))} · {esc(str(skill.get('availability_code', 'ready')))})[/dim] "
-                f"[dim]{esc(str(skill.get('status', 'unknown')))}[/dim]"
+                f"  [bold #f59e0b]{esc(str(skill.get('id', '')))}[/bold #f59e0b] "
+                f"[#a1a1aa]({esc(str(skill.get('source_tier', '')))} · {esc(str(skill.get('availability_code', 'ready')))})[/#a1a1aa] "
+                f"[#a1a1aa]{esc(str(skill.get('status', 'unknown')))}[/#a1a1aa]"
             )
             self._write(line)
             reason = str(skill.get("availability_reason", "")).strip()
             if reason and reason != "ready":
-                self._write(f"    [dim]{esc(reason)}[/dim]")
+                self._write(f"    [#a1a1aa]{esc(reason)}[/#a1a1aa]")
+        self._write("")
 
     def _cmd_report(self, arg: str) -> bool:
         path = arg.strip() or "alphanus-support-report.json"
@@ -1667,8 +1734,8 @@ class AlphanusTUI(App):
         if sub == "tree":
             tree = self.agent.skill_runtime.workspace.workspace_tree()
             self._write_section_heading("Workspace Tree")
-            for line in tree.splitlines():
-                self._write(f"[dim]  {esc(line)}[/dim]")
+            self._write_muted_lines(tree.splitlines())
+            self._write("")
             return True
         return self._write_usage("/workspace tree")
 
