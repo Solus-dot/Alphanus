@@ -4,7 +4,6 @@ import json
 import os
 import re
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -70,6 +69,7 @@ class TurnState:
     pass_index: int = 0
     action_depth: int = 0
     forced_search_retry: bool = False
+    forced_action_retry: bool = False
     search_mode: bool = False
     time_sensitive_query: bool = False
     search_failure_count: int = 0
@@ -79,6 +79,8 @@ class TurnState:
     fetched_urls: set[str] = field(default_factory=set)
     tool_counts: Dict[str, int] = field(default_factory=dict)
     tool_budgets: Dict[str, int] = field(default_factory=dict)
+    requires_workspace_action: bool = False
+    batch_workspace_action: bool = False
 
 
 class ToolCallAccumulator:
@@ -386,15 +388,106 @@ class Agent:
         user_input: str,
         branch_labels: List[str],
         attachments: List[str],
+        history_messages: Optional[List[Dict[str, Any]]] = None,
     ) -> SkillContext:
         hits = self.skill_runtime.memory.search(user_input, top_k=3, min_score=0.45)
+        recent_hint, sticky_skill_ids = self._recent_routing_context(history_messages or [])
         return SkillContext(
             user_input=user_input,
             branch_labels=branch_labels,
             attachments=attachments,
             workspace_root=str(self.skill_runtime.workspace.workspace_root),
             memory_hits=hits,
+            recent_routing_hint=recent_hint,
+            sticky_skill_ids=sticky_skill_ids,
         )
+
+    @staticmethod
+    def _message_text(value: Any) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, list):
+            parts: List[str] = []
+            for item in value:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(str(item.get("text", "")).strip())
+            return "\n".join(part for part in parts if part).strip()
+        return str(value or "").strip()
+
+    @staticmethod
+    def _is_confirmation_like(text: str) -> bool:
+        lowered = " ".join(text.strip().lower().split())
+        if not lowered:
+            return False
+        direct = {
+            "yes",
+            "yeah",
+            "yep",
+            "ok",
+            "okay",
+            "sure",
+            "do it",
+            "go ahead",
+            "continue",
+            "proceed",
+            "run it",
+            "do that",
+            "delete them",
+            "delete it",
+            "all of them",
+        }
+        if lowered in direct:
+            return True
+        if len(lowered.split()) <= 3 and lowered in {"please do", "please continue", "yes please"}:
+            return True
+        return False
+
+    def _recent_routing_context(self, history_messages: List[Dict[str, Any]]) -> tuple[str, List[str]]:
+        if not history_messages:
+            return "", []
+        last_user_index = -1
+        for idx in range(len(history_messages) - 1, -1, -1):
+            if str(history_messages[idx].get("role", "")).lower() == "user":
+                last_user_index = idx
+                break
+        if last_user_index < 0:
+            return "", []
+        recent = history_messages[last_user_index:]
+        recent_user = self._message_text(recent[0].get("content", ""))
+        tool_names: List[str] = []
+        seen_tools = set()
+        sticky_skill_ids: List[str] = []
+        seen_skills = set()
+        registry = getattr(self.skill_runtime, "_tool_registry", {})
+        for msg in recent[1:]:
+            role = str(msg.get("role", "")).lower()
+            if role == "assistant":
+                for call in msg.get("tool_calls", []) or []:
+                    name = str(((call or {}).get("function") or {}).get("name", "")).strip()
+                    if not name or name in seen_tools:
+                        continue
+                    tool_names.append(name)
+                    seen_tools.add(name)
+                    reg = registry.get(name)
+                    if reg and reg.skill_id not in seen_skills:
+                        sticky_skill_ids.append(reg.skill_id)
+                        seen_skills.add(reg.skill_id)
+            elif role == "tool":
+                name = str(msg.get("name", "")).strip()
+                if not name or name in seen_tools:
+                    continue
+                tool_names.append(name)
+                seen_tools.add(name)
+                reg = registry.get(name)
+                if reg and reg.skill_id not in seen_skills:
+                    sticky_skill_ids.append(reg.skill_id)
+                    seen_skills.add(reg.skill_id)
+        parts: List[str] = []
+        if recent_user:
+            parts.append(f"previous user request: {recent_user}")
+        if tool_names:
+            parts.append(f"tools just used: {', '.join(tool_names[:4])}")
+        return "\n".join(parts), sticky_skill_ids[:3]
 
     def _get_skill_snapshot(self, force_refresh: bool = False) -> SkillRoutingSnapshot:
         generation = int(getattr(self.skill_runtime, "generation", 0))
@@ -477,6 +570,9 @@ class Agent:
         configured_limit = int(skills_cfg.get("max_active_skills", getattr(self.skill_runtime, "max_active_skills", 2)))
         limit = configured_limit if configured_limit > 0 else 2
         catalog = snapshot.catalog
+        use_recent_hint = self._is_confirmation_like(ctx.user_input) and bool(
+            ctx.recent_routing_hint or ctx.sticky_skill_ids
+        )
         routing_system = (
             "You are selecting local skills for the next assistant turn.\n"
             "Choose the smallest set of skills needed for the user's request.\n"
@@ -485,23 +581,31 @@ class Agent:
             "Return an empty list when no skill is needed.\n"
             "Do not explain your choice."
         )
+        if use_recent_hint:
+            routing_system += (
+                "\nFor short confirmations like yes/continue/do it, use only the immediate prior exchange summary below."
+                "\nDo not infer tools from older conversation context."
+            )
+        user_content = f"User request:\n{ctx.user_input}"
+        if use_recent_hint and ctx.recent_routing_hint:
+            user_content += f"\n\nImmediate prior exchange:\n{ctx.recent_routing_hint}"
+        if use_recent_hint and ctx.sticky_skill_ids:
+            user_content += f"\n\nLikely carry-over skills for this confirmation:\n{', '.join(ctx.sticky_skill_ids[:limit])}"
+        user_content += f"\n\nAvailable skills:\n{catalog}"
         routing_messages = [
             {"role": "system", "content": routing_system},
-            {
-                "role": "user",
-                "content": f"User request:\n{ctx.user_input}\n\nAvailable skills:\n{catalog}",
-            },
+            {"role": "user", "content": user_content},
         ]
         payload = self._build_payload(routing_messages, thinking=False, tools=None)
         try:
             result = self._call_with_retry(payload, stop_event, None, pass_id="skill_route")
         except Exception:
-            return None
+            return self.skill_runtime.skills_by_ids(ctx.sticky_skill_ids[:limit]) if use_recent_hint and ctx.sticky_skill_ids else None
         if result.finish_reason == "cancelled":
             return None
         skill_ids = self._parse_skill_route(result.content, [skill.id for skill in enabled], limit)
         if skill_ids is None:
-            return None
+            return self.skill_runtime.skills_by_ids(ctx.sticky_skill_ids[:limit]) if use_recent_hint and ctx.sticky_skill_ids else None
         return self.skill_runtime.skills_by_ids(skill_ids)
 
     def _select_skills(
@@ -784,6 +888,13 @@ class Agent:
         )
 
     @staticmethod
+    def _workspace_action_failure_answer() -> str:
+        return (
+            "I couldn't complete the requested workspace action in this turn because the model failed to use the "
+            "available workspace tools."
+        )
+
+    @staticmethod
     def _search_fallback_allowed(state: TurnState) -> bool:
         return (
             state.tool_counts.get("web_search", 0) > 0
@@ -796,6 +907,33 @@ class Agent:
     @staticmethod
     def _needs_fetch_evidence(state: TurnState) -> bool:
         return state.search_mode and state.time_sensitive_query and not state.search_has_fetch_content
+
+    @staticmethod
+    def _looks_like_manual_workspace_advice(text: str) -> bool:
+        lowered = text.lower()
+        return (
+            "can't" in lowered
+            or "cannot" in lowered
+            or "manual" in lowered
+            or "terminal" in lowered
+            or "run the following command" in lowered
+            or "rm " in lowered
+            or "rm -rf" in lowered
+        )
+
+    @staticmethod
+    def _looks_like_workspace_action_claim(text: str) -> bool:
+        lowered = text.lower()
+        completed = (
+            "i deleted" in lowered
+            or "deleted the following" in lowered
+            or "workspace is now empty" in lowered
+            or "i created" in lowered
+            or "i updated" in lowered
+            or "i renamed" in lowered
+            or "successfully deleted" in lowered
+        )
+        return completed
 
     @staticmethod
     def _is_time_sensitive_query(text: str) -> bool:
@@ -887,8 +1025,6 @@ class Agent:
         if first_result.status != "done":
             return first_result
         leaked_markup = "<tool_call>" in first.content.lower()
-        if first_result.content and not leaked_markup:
-            return first_result
         if not leaked_markup:
             return first_result
         fallback = self._fallback_answer_from_evidence(state.evidence or self._evidence_from_history(state.dynamic_history))
@@ -1056,9 +1192,55 @@ class Agent:
             evidence=[],
             search_mode=self._is_search_skill_selected(selected),
             time_sensitive_query=self._is_time_sensitive_query(user_input),
+            requires_workspace_action=self._requires_workspace_action(ctx, selected),
+            batch_workspace_action=self._is_batch_workspace_action(ctx, selected),
             tool_counts={},
             tool_budgets=dict(self.default_tool_budgets),
         )
+
+    @staticmethod
+    def _is_workspace_skill_selected(selected: List[Any]) -> bool:
+        return any(getattr(skill, "id", "") == "workspace-ops" for skill in selected)
+
+    def _requires_workspace_action(self, ctx: SkillContext, selected: List[Any]) -> bool:
+        if not self._is_workspace_skill_selected(selected):
+            return False
+        if not self._is_confirmation_like(ctx.user_input):
+            return False
+        hint = (ctx.recent_routing_hint or "").lower()
+        if not hint:
+            return False
+        action_markers = (
+            "delete ",
+            "remove ",
+            "edit ",
+            "write ",
+            "create ",
+            "rename ",
+            "workspace",
+            "file",
+            "folder",
+            "directory",
+        )
+        return any(marker in hint for marker in action_markers)
+
+    def _is_batch_workspace_action(self, ctx: SkillContext, selected: List[Any]) -> bool:
+        if not self._is_workspace_skill_selected(selected):
+            return False
+        text = " ".join(part for part in (ctx.user_input, ctx.recent_routing_hint) if part).lower()
+        if not text:
+            return False
+        destructive = any(term in text for term in ("delete", "remove", "wipe", "clear"))
+        broad_scope = (
+            "all files" in text
+            or "all the files" in text
+            or "everything" in text
+            or "all contents" in text
+            or "entire workspace" in text
+            or "whole workspace" in text
+            or ("workspace" in text and any(term in text for term in ("all", "everything", "files", "contents")))
+        )
+        return destructive and broad_scope
 
     def _finalize_turn(
         self,
@@ -1121,10 +1303,29 @@ class Agent:
             path = str(data.get("filepath", "")).strip()
             if path:
                 return f"I deleted `{path}` from your workspace."
+        if name == "list_memories":
+            memories = data.get("memories")
+            if isinstance(memories, list):
+                if not memories:
+                    return "You don't have any stored memories yet."
+                lines = ["Recent memories:"]
+                for item in memories[:5]:
+                    if not isinstance(item, dict):
+                        continue
+                    memory_id = str(item.get("id", "")).strip()
+                    memory_type = str(item.get("type", "")).strip()
+                    text = str(item.get("text", "")).strip()
+                    prefix = f"- #{memory_id}" if memory_id else "- "
+                    if memory_type:
+                        prefix += f" [{memory_type}]"
+                    if text:
+                        lines.append(f"{prefix} {text}".rstrip())
+                if len(lines) > 1:
+                    return "\n".join(lines)
         if name == "get_weather":
             city = str(data.get("city", "")).strip()
-            temp = str(data.get("temp_c", "")).strip()
-            desc = str(data.get("desc", "")).strip()
+            temp = str(data.get("temp_c", "") or data.get("temperature_c", "")).strip()
+            desc = str(data.get("desc", "") or data.get("condition", "")).strip()
             if city and temp:
                 return f"The current weather in {city} is {temp} C" + (f" with {desc}." if desc else ".")
         return ""
@@ -1154,6 +1355,8 @@ class Agent:
         state.tool_counts[call.name] = state.tool_counts.get(call.name, 0) + 1
         state.evidence.append(ToolEvidence(name=call.name, args=dict(call.arguments), result=result))
         if not state.search_mode:
+            return
+        if call.name not in {"web_search", "fetch_url"}:
             return
         if result.get("ok"):
             state.search_has_success = True
@@ -1224,7 +1427,7 @@ class Agent:
 
         branch_labels = branch_labels or []
         attachments = attachments or []
-        ctx = self._build_skill_context(user_input, branch_labels, attachments)
+        ctx = self._build_skill_context(user_input, branch_labels, attachments, history_messages)
         selected = self._select_skills(ctx, stop_event)
         state = self._build_turn_state(ctx, selected, history_messages, user_input)
 
@@ -1259,6 +1462,18 @@ class Agent:
                     "- You must call web_search before answering.\n"
                     "- Do not answer from memory cutoff or prior knowledge alone.\n"
                     "- If web_search fails, say you could not verify the answer."
+                )
+            if (
+                state.requires_workspace_action
+                and state.forced_action_retry
+                and not state.tool_counts
+            ):
+                system_content += (
+                    "\n\nMandatory action rule:\n"
+                    "- This is a confirmation of an immediate prior workspace action request.\n"
+                    "- Use the available workspace tools to perform the requested action if policy allows.\n"
+                    "- Do not replace an available workspace tool action with manual terminal instructions.\n"
+                    "- Only decline if the required workspace tool is unavailable or policy blocks the action."
                 )
             system_messages = [{"role": "system", "content": system_content}]
 
@@ -1498,11 +1713,13 @@ class Agent:
 
                 if force_finalize_reason:
                     return finish(self._finalize_turn(system_content, state, stop_event, on_event, pass_id, force_finalize_reason))
+                search_tool_called = any(call.name in {"web_search", "fetch_url"} for call in stream_result.tool_calls)
                 if (
-                    not state.search_mode
-                    and len(stream_result.tool_calls) == 1
+                    len(stream_result.tool_calls) == 1
                     and all_tool_success
                     and len(direct_answers) == 1
+                    and (not state.search_mode or not search_tool_called)
+                    and not state.batch_workspace_action
                 ):
                     self.skill_runtime.post_response(state.selected, state.ctx, direct_answers[0])
                     return finish(
@@ -1546,6 +1763,22 @@ class Agent:
                         skill_exchanges=state.skill_exchanges,
                     )
                 )
+            if state.requires_workspace_action and not state.tool_counts:
+                if self._looks_like_manual_workspace_advice(final) or self._looks_like_workspace_action_claim(final):
+                    if not state.forced_action_retry:
+                        state.forced_action_retry = True
+                        continue
+                    return finish(
+                        AgentTurnResult(
+                            status="done",
+                            content=self._workspace_action_failure_answer(),
+                            reasoning=state.full_reasoning,
+                            skill_exchanges=state.skill_exchanges,
+                        )
+                    )
+                if not state.forced_action_retry and not final.strip():
+                    state.forced_action_retry = True
+                    continue
             if self._needs_fetch_evidence(state):
                 return finish(
                     AgentTurnResult(
