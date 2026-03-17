@@ -242,6 +242,27 @@ def test_recall_memory_birthday_query_finds_birthdate_fact(tmp_path: Path):
     assert any("birthdate is august 5, 2005" in str(hit.get("text", "")).lower() for hit in hits)
 
 
+def test_export_memories_relative_path_stays_in_workspace(tmp_path: Path):
+    runtime, ws = _memory_runtime(tmp_path)
+    skill = runtime.get_skill("memory-rag")
+    assert skill is not None
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
+
+    stored = runtime.execute_tool_call("store_memory", {"text": "My favorite editor is Neovim"}, selected=[skill], ctx=ctx)
+    assert stored["ok"] is True
+
+    exported = runtime.execute_tool_call(
+        "export_memories",
+        {"filepath": "exported_memories.txt"},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert exported["ok"] is True
+    target = Path(exported["data"]["filepath"])
+    assert target.parent == Path(ws)
+    assert target.exists()
+
+
 def test_recall_memory_favourite_query_finds_favorite_fact(tmp_path: Path):
     runtime, ws = _memory_runtime(tmp_path)
     skill = runtime.get_skill("memory-rag")

@@ -47,8 +47,20 @@ class WorkspaceManager:
         self.blocked_patterns = list(blocked_patterns or DEFAULT_BLOCKED_PATTERNS)
         self.workspace_root.mkdir(parents=True, exist_ok=True)
 
-    def _resolve_write_path(self, path: str) -> Path:
+    def _normalize_workspace_relative(self, path: str) -> Path:
         raw = Path(os.path.expanduser(path))
+        if raw.is_absolute():
+            parts = raw.parts
+            if len(parts) > 2 and parts[1] == self.workspace_root.name:
+                return Path(*parts[2:])
+            return raw
+        parts = raw.parts
+        if len(parts) > 1 and parts[0] == self.workspace_root.name:
+            return Path(*parts[1:])
+        return raw
+
+    def _resolve_write_path(self, path: str) -> Path:
+        raw = self._normalize_workspace_relative(path)
         candidate = (self.workspace_root / raw) if not raw.is_absolute() else raw
         resolved = candidate.resolve()
         if not self._is_relative_to(resolved, self.workspace_root):
@@ -56,7 +68,7 @@ class WorkspaceManager:
         return resolved
 
     def _resolve_read_path(self, path: str) -> Path:
-        raw = Path(os.path.expanduser(path))
+        raw = self._normalize_workspace_relative(path)
         candidate = (self.workspace_root / raw) if not raw.is_absolute() else raw
         resolved = candidate.resolve()
 
@@ -106,6 +118,11 @@ class WorkspaceManager:
         target = self._resolve_write_path(filepath)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
+        return str(target)
+
+    def create_directory(self, path: str) -> str:
+        target = self._resolve_write_path(path)
+        target.mkdir(parents=True, exist_ok=True)
         return str(target)
 
     def edit_file(self, filepath: str, content: str) -> str:

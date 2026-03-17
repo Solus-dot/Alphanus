@@ -60,6 +60,10 @@ def test_workspace_ops_returns_rich_file_metadata(tmp_path: Path):
     assert edited["data"]["changed_lines"] == 1
     assert edited["data"]["line_count_before"] == 3
     assert edited["data"]["line_count_after"] == 3
+    assert "--- notes.txt (before)" in edited["data"]["diff"]
+    assert "+++ notes.txt (after)" in edited["data"]["diff"]
+    assert "-beta" in edited["data"]["diff"]
+    assert "+gamma" in edited["data"]["diff"]
 
     read = runtime.execute_tool_call(
         "read_file",
@@ -71,6 +75,38 @@ def test_workspace_ops_returns_rich_file_metadata(tmp_path: Path):
     assert read["data"]["content"] == "alpha\ngamma\n"
     assert read["data"]["size_bytes"] > 0
     assert read["data"]["line_count"] == 3
+
+
+def test_workspace_ops_create_directory_and_create_files(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("workspace-ops")
+    assert skill is not None
+
+    ctx = _ctx(str(runtime.workspace.workspace_root))
+    created_dir = runtime.execute_tool_call(
+        "create_directory",
+        {"path": "site/assets"},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert created_dir["ok"] is True
+    assert created_dir["data"]["kind"] == "directory"
+
+    created_files = runtime.execute_tool_call(
+        "create_files",
+        {
+            "files": [
+                {"filepath": "site/index.html", "content": "<!doctype html>"},
+                {"filepath": "site/script.js", "content": "console.log('hi')\n"},
+            ]
+        },
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert created_files["ok"] is True
+    assert created_files["data"]["count"] == 2
+    assert (runtime.workspace.workspace_root / "site" / "index.html").exists()
+    assert (runtime.workspace.workspace_root / "site" / "script.js").exists()
 
 
 def test_workspace_ops_list_delete_and_tree(tmp_path: Path):
@@ -191,3 +227,49 @@ def test_workspace_ops_delete_path_handles_empty_directory(tmp_path: Path):
     assert deleted["ok"] is True
     assert deleted["data"]["kind"] == "directory"
     assert deleted["data"]["file_count"] == 0
+
+
+def test_workspace_ops_accepts_workspace_root_prefixed_relative_paths(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("workspace-ops")
+    assert skill is not None
+
+    nested = runtime.workspace.workspace_root / "nested"
+    nested.mkdir(parents=True)
+    (nested / "file.txt").write_text("alpha", encoding="utf-8")
+
+    ctx = _ctx(str(runtime.workspace.workspace_root))
+    prefixed = f"{runtime.workspace.workspace_root.name}/nested"
+    deleted = runtime.execute_tool_call(
+        "delete_path",
+        {"path": prefixed, "recursive": True},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    assert deleted["ok"] is True
+    assert deleted["data"]["kind"] == "directory"
+    assert not nested.exists()
+
+
+def test_workspace_ops_accepts_workspace_root_prefixed_absolute_like_paths(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("workspace-ops")
+    assert skill is not None
+
+    nested = runtime.workspace.workspace_root / "nested"
+    nested.mkdir(parents=True)
+    (nested / "file.txt").write_text("alpha", encoding="utf-8")
+
+    ctx = _ctx(str(runtime.workspace.workspace_root))
+    prefixed = f"/{runtime.workspace.workspace_root.name}/nested"
+    deleted = runtime.execute_tool_call(
+        "delete_path",
+        {"path": prefixed, "recursive": True},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    assert deleted["ok"] is True
+    assert deleted["data"]["kind"] == "directory"
+    assert not nested.exists()

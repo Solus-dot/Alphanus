@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import difflib
 from pathlib import Path
 from typing import Any, Dict
 
 from core.skills import ToolExecutionEnv
 
 TOOL_SPECS = {
+    "create_directory": {
+        "capability": "workspace_write",
+        "description": "Create a directory in the workspace.",
+        "parameters": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+    },
     "create_file": {
         "capability": "workspace_write",
         "description": "Create or overwrite a file in the workspace.",
@@ -16,6 +26,27 @@ TOOL_SPECS = {
                 "content": {"type": "string"},
             },
             "required": ["filepath", "content"],
+        },
+    },
+    "create_files": {
+        "capability": "workspace_write",
+        "description": "Create multiple files in the workspace in one call.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "filepath": {"type": "string"},
+                            "content": {"type": "string"},
+                        },
+                        "required": ["filepath", "content"],
+                    },
+                }
+            },
+            "required": ["files"],
         },
     },
     "edit_file": {
@@ -122,11 +153,44 @@ def _create_file(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     return data
 
 
+def _create_directory(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+    path_str = env.workspace.create_directory(str(args["path"]))
+    data = _path_info(path_str)
+    data.update({"created": True, "kind": "directory"})
+    return data
+
+
+def _create_files(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+    created: list[Dict[str, Any]] = []
+    for item in args.get("files") or []:
+        if not isinstance(item, dict):
+            continue
+        created.append(
+            _create_file(
+                {
+                    "filepath": str(item.get("filepath", "")),
+                    "content": str(item.get("content", "")),
+                },
+                env,
+            )
+        )
+    return {"created": created, "count": len(created)}
+
+
 def _edit_file(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     filepath = str(args["filepath"])
     before = env.workspace.read_file(filepath)
     after = str(args["content"])
     path_str = env.workspace.edit_file(filepath, after)
+    diff_text = "\n".join(
+        difflib.unified_diff(
+            before.splitlines(),
+            after.splitlines(),
+            fromfile=f"{filepath} (before)",
+            tofile=f"{filepath} (after)",
+            lineterm="",
+        )
+    )
     data = _path_info(path_str)
     data.update(
         {
@@ -137,6 +201,7 @@ def _edit_file(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
             "line_count_before": _line_count(before),
             "line_count_after": _line_count(after),
             "changed_lines": _changed_line_count(before, after),
+            "diff": diff_text,
         }
     )
     return data
@@ -214,8 +279,12 @@ def _workspace_tree(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, An
 
 
 def execute(tool_name: str, args: Dict[str, Any], env: ToolExecutionEnv):
+    if tool_name == "create_directory":
+        return _create_directory(args, env)
     if tool_name == "create_file":
         return _create_file(args, env)
+    if tool_name == "create_files":
+        return _create_files(args, env)
     if tool_name == "edit_file":
         return _edit_file(args, env)
     if tool_name == "read_file":

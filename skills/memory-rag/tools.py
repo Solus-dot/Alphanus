@@ -328,7 +328,11 @@ def _get_memory_stats(_args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str,
 
 def _export_memories(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     workspace_root = Path(env.workspace.workspace_root)
-    path = str(args.get("filepath") or (workspace_root / "memories_export.txt"))
+    requested = str(args.get("filepath") or "").strip()
+    if requested:
+        path = str(env.workspace._resolve_write_path(requested))  # noqa: SLF001
+    else:
+        path = str(workspace_root / "memories_export.txt")
     out = env.memory.export_txt(path)
     return {"filepath": out}
 
