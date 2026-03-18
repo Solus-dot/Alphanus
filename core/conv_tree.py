@@ -279,23 +279,25 @@ class ConvTree:
                 return "○"
             return "·"
 
-        def node_line(node_id: str, depth: int) -> str:
+        def node_line(node_id: str, prefix: str) -> str:
             node = self.nodes[node_id]
             label = f" [{node.label}]" if node.label else (" [branch]" if node.branch_root else "")
             branch = " ⎇" if node.branch_root else ""
-            indent = "  " * max(0, depth)
-            text = node.short(max_len=max(8, width - len(indent) - 10))
-            return f"{indent}{dot(node_id)}{label}{branch} {self._status_marker(node)}  {text}"
+            text = node.short(max_len=max(8, width - len(prefix) - 10))
+            return f"{prefix}{dot(node_id)}{label}{branch} {self._status_marker(node)}  {text}"
 
-        def walk(node_id: str, depth: int) -> None:
-            for child_id in self.nodes[node_id].children:
-                child = self.nodes[child_id]
-                child_depth = depth + (1 if child.branch_root else 0)
-                rows.append((node_line(child_id, child_depth), child_id, child_id in active_ids))
-                walk(child_id, child_depth)
+        def walk(node_id: str, prefix_parts: List[str]) -> None:
+            children = self.nodes[node_id].children
+            for idx, child_id in enumerate(children):
+                is_last = idx == len(children) - 1
+                branch_prefix = "".join(prefix_parts)
+                branch_prefix += "└─" if is_last else "├─"
+                rows.append((node_line(child_id, branch_prefix), child_id, child_id in active_ids))
+                next_prefix = prefix_parts + [("  " if is_last else "│ ")]
+                walk(child_id, next_prefix)
 
         rows.append(("● [root]", "root", True))
-        walk("root", 0)
+        walk("root", [])
         if len(rows) == 1:
             rows.append(("(empty)", "sub", False))
         return rows

@@ -280,6 +280,11 @@ class AlphanusTUI(App):
         Binding("shift+tab", "focus_prev_panel", show=False),
         Binding("ctrl+h", "focus_chat", show=False),
         Binding("ctrl+l", "focus_tree", show=False),
+        Binding("enter", "tree_open", show=False),
+        Binding("g", "tree_top", show=False),
+        Binding("shift+g", "tree_bottom", show=False),
+        Binding("[", "tree_prev_sibling", show=False),
+        Binding("]", "tree_next_sibling", show=False),
         Binding("j", "tree_down", show=False),
         Binding("k", "tree_up", show=False),
         Binding("o", "tree_open", show=False),
@@ -342,6 +347,7 @@ class AlphanusTUI(App):
         self._focused_panel = "input"
         self._tree_cursor_id = "root"
         self._last_log_was_blank = False
+        self._last_model_context_tokens: Optional[int] = None
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="topbar"):
@@ -416,11 +422,8 @@ class AlphanusTUI(App):
                 return turn.label or "branch"
         return "root"
 
-    def _context_token_estimate(self) -> int:
-        try:
-            return int(self.agent.context_mgr.estimate_tokens(self.conv_tree.history_messages()))
-        except Exception:
-            return 0
+    def _context_tokens(self) -> Optional[int]:
+        return self._last_model_context_tokens
 
     def _memory_mode_label(self) -> str:
         try:
@@ -494,6 +497,48 @@ class AlphanusTUI(App):
         self._tree_cursor_id = ids[max(0, current - 1)]
         self._update_sidebar()
         self._update_topbar()
+
+    def action_tree_top(self) -> None:
+        if self._focused_panel != "tree":
+            return
+        ids = [tag for _text, tag, _active in self._tree_rows() if tag in self.conv_tree.nodes]
+        if not ids:
+            return
+        self._tree_cursor_id = ids[0]
+        self._update_sidebar()
+        self._update_topbar()
+
+    def action_tree_bottom(self) -> None:
+        if self._focused_panel != "tree":
+            return
+        ids = [tag for _text, tag, _active in self._tree_rows() if tag in self.conv_tree.nodes]
+        if not ids:
+            return
+        self._tree_cursor_id = ids[-1]
+        self._update_sidebar()
+        self._update_topbar()
+
+    def _move_tree_sibling(self, direction: int) -> None:
+        if self._focused_panel != "tree":
+            return
+        node = self.conv_tree.nodes.get(self._tree_cursor_id)
+        if node is None or node.parent is None:
+            return
+        siblings = self.conv_tree.nodes[node.parent].children
+        if self._tree_cursor_id not in siblings:
+            return
+        idx = siblings.index(self._tree_cursor_id) + direction
+        if idx < 0 or idx >= len(siblings):
+            return
+        self._tree_cursor_id = siblings[idx]
+        self._update_sidebar()
+        self._update_topbar()
+
+    def action_tree_prev_sibling(self) -> None:
+        self._move_tree_sibling(-1)
+
+    def action_tree_next_sibling(self) -> None:
+        self._move_tree_sibling(1)
 
     def action_tree_open(self) -> None:
         if self._focused_panel != "tree":
@@ -605,7 +650,7 @@ class AlphanusTUI(App):
             language or "text",
             theme="github-dark",
             word_wrap=True,
-            background_color="#121214",
+            background_color="#09090b",
             line_numbers=False,
         )
 
@@ -615,7 +660,7 @@ class AlphanusTUI(App):
             expand=True,
             padding=(0, 1),
             border_style="#27272a",
-            style="on #121214",
+            style="on #09090b",
         )
 
     def _reasoning_panel_renderable(self, text: str) -> Panel:
@@ -892,6 +937,7 @@ class AlphanusTUI(App):
             stop_requested=self._stop_event.is_set(),
             esc_pending=self._esc_pending,
             auto_follow_stream=self._auto_follow_stream,
+            focus_panel=self._focused_panel,
         )
         if left == self._last_status_left:
             return
@@ -905,14 +951,12 @@ class AlphanusTUI(App):
             topbar_center(
                 branch_name=self._current_branch_name(),
                 memory_mode=self._memory_mode_label(),
-                focus_panel=self._focused_panel,
             )
         )
         self.query_one("#topbar-right", Static).update(
             topbar_right(
                 endpoint=self.agent.model_endpoint,
-                context_tokens=self._context_token_estimate(),
-                context_limit=self.agent.context_budget_max_tokens,
+                context_tokens=self._context_tokens(),
             )
         )
 
@@ -1388,6 +1432,17 @@ class AlphanusTUI(App):
                 self._buf_r = ""
                 partial.update("")
 
+        elif etype == "usage":
+            usage = event.get("usage") or {}
+            if isinstance(usage, dict):
+                prompt_tokens = usage.get("prompt_tokens")
+                total_tokens = usage.get("total_tokens")
+                if isinstance(prompt_tokens, (int, float)):
+                    self._last_model_context_tokens = int(prompt_tokens)
+                elif isinstance(total_tokens, (int, float)):
+                    self._last_model_context_tokens = int(total_tokens)
+                self._update_topbar()
+
         now = time.monotonic()
         if now - self._last_scroll >= self._scroll_interval:
             self._maybe_scroll_end()
@@ -1421,6 +1476,14 @@ class AlphanusTUI(App):
             self.conv_tree.cancel_turn(turn_id, reply)
         else:
             self.conv_tree.fail_turn(turn_id, reply)
+        usage = result.journal.get("model_usage", {}) if isinstance(result.journal, dict) else {}
+        if isinstance(usage, dict):
+            prompt_tokens = usage.get("prompt_tokens")
+            total_tokens = usage.get("total_tokens")
+            if isinstance(prompt_tokens, (int, float)):
+                self._last_model_context_tokens = int(prompt_tokens)
+            elif isinstance(total_tokens, (int, float)):
+                self._last_model_context_tokens = int(total_tokens)
 
         if result.status != "done":
             if result.error and result.error != self._last_stream_error_text:
@@ -1438,6 +1501,7 @@ class AlphanusTUI(App):
         self._update_status1()
         self._update_status2()
         self._update_sidebar()
+        self._update_topbar()
 
     def _confirm_shell_command(self, command: str) -> bool:
         event = threading.Event()

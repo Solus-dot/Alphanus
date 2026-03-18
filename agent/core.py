@@ -32,6 +32,7 @@ class StreamPassResult:
     content: str = ""
     reasoning: str = ""
     tool_calls: List[ToolCall] = field(default_factory=list)
+    usage: Dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -85,6 +86,7 @@ class TurnState:
     workspace_scaffold_action: bool = False
     workspace_materialization_target: int = 0
     forced_workspace_retry: bool = False
+    model_usage: Dict[str, int] = field(default_factory=dict)
 
 
 class ToolCallAccumulator:
@@ -633,6 +635,7 @@ class Agent:
         payload: Dict[str, Any] = {
             "messages": model_messages,
             "stream": True,
+            "stream_options": {"include_usage": True},
             "chat_template_kwargs": {"enable_thinking": bool(thinking)},
         }
         if self.default_max_tokens is not None:
@@ -1068,6 +1071,7 @@ class Agent:
         tool_acc = ToolCallAccumulator(pass_id=pass_id)
         tool_phase_started = False
         suppress_content_stream = False
+        usage: Dict[str, int] = {}
         self._debug_log("chat_pass_start", pass_id=pass_id, endpoint=self.model_endpoint, payload=payload)
 
         for chunk in stream_chat_completions(
@@ -1083,6 +1087,15 @@ class Agent:
                 self._debug_log("chat_pass_cancelled", pass_id=pass_id)
                 return StreamPassResult(finish_reason="cancelled")
             choices = chunk.get("choices", [])
+            chunk_usage = chunk.get("usage") or {}
+            if isinstance(chunk_usage, dict) and chunk_usage:
+                usage = {
+                    str(key): int(value)
+                    for key, value in chunk_usage.items()
+                    if isinstance(value, (int, float))
+                }
+                if usage:
+                    self._emit(on_event, {"type": "usage", "usage": dict(usage)})
             if not choices:
                 continue
             choice = choices[0]
@@ -1149,6 +1162,7 @@ class Agent:
             content="".join(content_parts),
             reasoning="".join(reasoning_parts),
             tool_calls=tool_calls,
+            usage=usage,
         )
 
     def _call_with_retry(self, payload: Dict[str, Any], stop_event, on_event, pass_id: str):
@@ -1508,6 +1522,7 @@ class Agent:
             "time_sensitive_query": state.time_sensitive_query,
             "search_failures": state.search_failure_count,
             "has_fetch_evidence": state.search_has_fetch_content,
+            "model_usage": dict(state.model_usage),
         }
 
     def _record_tool_effects(self, state: TurnState, call: ToolCall, result: Dict[str, Any]) -> None:
@@ -1704,6 +1719,9 @@ class Agent:
                 )
 
             state.full_reasoning = self._append_reasoning(state.full_reasoning, stream_result.reasoning)
+            stream_usage = getattr(stream_result, "usage", {}) or {}
+            if isinstance(stream_usage, dict) and stream_usage:
+                state.model_usage = dict(stream_usage)
             self._emit(
                 on_event,
                 {

@@ -175,6 +175,46 @@ def test_agent_tool_call_loop(mocker, runtime: SkillRuntime):
     assert "repetition_penalty" not in body
 
 
+def test_agent_records_model_usage_from_stream(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"Done"}}]}',
+                'data: {"choices":[],"usage":{"prompt_tokens":321,"completion_tokens":12,"total_tokens":333}}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "say done"}],
+        user_input="say done",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert result.journal["model_usage"]["prompt_tokens"] == 321
+    assert result.journal["model_usage"]["completion_tokens"] == 12
+
+
 def test_agent_requests_final_answer_if_post_tool_content_empty(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
