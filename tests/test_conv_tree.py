@@ -88,6 +88,28 @@ def test_history_messages_include_skill_exchanges():
     assert msgs[3]["role"] == "assistant"
 
 
+def test_history_messages_refresh_when_switching_current_branch():
+    tree = ConvTree()
+    root = tree.add_turn("root")
+    tree.complete_turn(root.id, "root-done")
+
+    tree.arm_branch("left")
+    left = tree.add_turn("left")
+    tree.complete_turn(left.id, "left-done")
+
+    tree.unbranch()
+    right = tree.add_turn("right")
+    tree.complete_turn(right.id, "right-done")
+
+    tree.current_id = left.id
+    left_msgs = tree.history_messages()
+    assert left_msgs[-1]["content"] == "left-done"
+
+    tree.current_id = right.id
+    right_msgs = tree.history_messages()
+    assert right_msgs[-1]["content"] == "right-done"
+
+
 def test_save_load_roundtrip(tmp_path: Path):
     tree = ConvTree()
     turn = tree.add_turn("hello")

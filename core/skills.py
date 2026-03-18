@@ -175,6 +175,9 @@ class SkillRuntime:
 
         self.skills: Dict[str, SkillManifest] = {}
         self._tool_registry: Dict[str, RegisteredTool] = {}
+        self._list_skills_cache: Optional[Tuple[SkillManifest, ...]] = None
+        self._enabled_skills_cache: Optional[Tuple[SkillManifest, ...]] = None
+        self._skill_catalog_cache: Dict[int, str] = {}
         self._proc_env_base = self._build_proc_env_base()
         self.load_skills()
 
@@ -278,6 +281,11 @@ class SkillRuntime:
             if reg.skill_id == skill_id:
                 self._tool_registry.pop(tool_name, None)
 
+    def _invalidate_skill_caches(self) -> None:
+        self._list_skills_cache = None
+        self._enabled_skills_cache = None
+        self._skill_catalog_cache = {}
+
     def _register_tool(self, tool_name: str, manifest: SkillManifest, spec: Dict[str, Any], **extra: Any) -> bool:
         if tool_name in self._tool_registry:
             if self.debug:
@@ -308,6 +316,7 @@ class SkillRuntime:
         self.generation += 1
         self.skills = {}
         self._tool_registry = {}
+        self._invalidate_skill_caches()
         if not self.skills_dir.exists():
             return
 
@@ -456,7 +465,9 @@ class SkillRuntime:
         return True
 
     def list_skills(self) -> List[SkillManifest]:
-        return sorted(self.skills.values(), key=lambda s: s.id)
+        if self._list_skills_cache is None:
+            self._list_skills_cache = tuple(sorted(self.skills.values(), key=lambda s: s.id))
+        return list(self._list_skills_cache)
 
     def skill_source_label(self, skill: SkillManifest) -> str:
         path = skill.path or skill.doc_path
@@ -480,7 +491,11 @@ class SkillRuntime:
         return "off", "red"
 
     def enabled_skills(self) -> List[SkillManifest]:
-        return [skill for skill in self.list_skills() if skill.enabled and skill.available]
+        if self._enabled_skills_cache is None:
+            self._enabled_skills_cache = tuple(
+                skill for skill in self.list_skills() if skill.enabled and skill.available
+            )
+        return list(self._enabled_skills_cache)
 
     def skills_by_ids(self, skill_ids: List[str]) -> List[SkillManifest]:
         out: List[SkillManifest] = []
@@ -497,6 +512,9 @@ class SkillRuntime:
         return out
 
     def skill_catalog_text(self, max_tags: int = 3) -> str:
+        cached = self._skill_catalog_cache.get(max_tags)
+        if cached is not None:
+            return cached
         lines: List[str] = []
         for skill in self.enabled_skills():
             tags = ", ".join(skill.tags[:max_tags])
@@ -507,7 +525,9 @@ class SkillRuntime:
             location = self.skill_source_label(skill)
             location_text = f" location: {location}." if location else ""
             lines.append(f"- {skill.id}: {skill.description}. source: {tier}.{tag_text}{tool_text}{location_text}")
-        return "\n".join(lines)
+        catalog = "\n".join(lines)
+        self._skill_catalog_cache[max_tags] = catalog
+        return catalog
 
     def skill_health_report(self) -> List[Dict[str, Any]]:
         return [
@@ -529,7 +549,11 @@ class SkillRuntime:
         skill = self.skills.get(skill_id)
         if not skill:
             return False
+        if skill.enabled == enabled:
+            return True
         skill.enabled = enabled
+        self.generation += 1
+        self._invalidate_skill_caches()
         return True
 
     def get_skill(self, skill_id: str) -> Optional[SkillManifest]:

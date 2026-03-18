@@ -377,6 +377,44 @@ Alpha.
     assert snap2.generation == runtime.generation
 
 
+def test_skill_toggle_bumps_generation_and_invalidates_snapshot(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "alpha").mkdir(parents=True)
+
+    (skills / "alpha" / "SKILL.md").write_text(
+        """
+---
+name: alpha
+description: Alpha skill.
+---
+Alpha.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"skills": {"selection_mode": "model", "max_active_skills": 2}},
+    )
+    agent = Agent({"agent": {}}, runtime)
+
+    snap1 = agent._get_skill_snapshot()
+    generation_before = runtime.generation
+
+    assert runtime.set_enabled("alpha", False) is True
+
+    snap2 = agent._get_skill_snapshot()
+    assert runtime.generation == generation_before + 1
+    assert snap2 is not snap1
+    assert snap2.skills == []
+
+
 def test_confirmation_turn_reuses_immediate_prior_skill_context(mocker, runtime: SkillRuntime):
     runtime.config = {"skills": {"selection_mode": "model", "max_active_skills": 2}}
     agent = Agent({"agent": {}}, runtime)
