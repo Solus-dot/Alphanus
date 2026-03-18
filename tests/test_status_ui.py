@@ -2,15 +2,16 @@ from __future__ import annotations
 
 from core.conv_tree import ConvTree
 from tui.sidebar import render_sidebar_markup
-from tui.status import status_left_markup, topbar_center, topbar_left, topbar_right
+from tui.status import status_left_markup, status_right_markup, topbar_center, topbar_left, topbar_right
 
 
 def test_topbar_helpers_include_workspace_branch_and_context() -> None:
-    left = topbar_left("/Users/sohom/Desktop/Alphanus-Workspace")
-    center = topbar_center(branch_name="root", memory_mode="hash")
+    left = topbar_left("/Users/sohom/Desktop/Alphanus-Workspace", width=180)
+    center = topbar_center(branch_name="root", memory_mode="hash", width=180)
     right = topbar_right(
         endpoint="http://127.0.0.1:8080/v1/chat/completions",
         context_tokens=321,
+        width=180,
     )
 
     assert "ALPHANUS" in left
@@ -26,6 +27,7 @@ def test_topbar_right_handles_missing_model_usage() -> None:
     right = topbar_right(
         endpoint="http://127.0.0.1:8080/v1/chat/completions",
         context_tokens=None,
+        width=180,
     )
 
     assert "ctx:" in right
@@ -58,6 +60,7 @@ def test_status_left_changes_with_focused_panel() -> None:
         esc_pending=False,
         auto_follow_stream=True,
         focus_panel="tree",
+        width=180,
     )
     chat_status = status_left_markup(
         await_shell_confirm=False,
@@ -67,8 +70,47 @@ def test_status_left_changes_with_focused_panel() -> None:
         esc_pending=False,
         auto_follow_stream=True,
         focus_panel="chat",
+        width=180,
     )
 
     assert "j/k move" in tree_status
     assert "enter open" in tree_status
     assert "pgup/dn scroll" in chat_status
+
+
+def test_status_helpers_compact_at_small_width() -> None:
+    left = topbar_left("/Users/sohom/Desktop/Alphanus-Workspace", width=90)
+    center = topbar_center(branch_name="very-long-branch-name", memory_mode="hash", width=90)
+    right = topbar_right(
+        endpoint="http://127.0.0.1:8080/v1/chat/completions",
+        context_tokens=321,
+        width=90,
+    )
+    status_right = status_right_markup(
+        pending_count=2,
+        branch_armed=True,
+        branch_label="very-long-branch-name",
+        latest_path="/tmp/example.txt",
+        latest_kind="text",
+        thinking=True,
+        width=80,
+    )
+    status_left = status_left_markup(
+        await_shell_confirm=False,
+        streaming=False,
+        spinner_frame="x",
+        stop_requested=False,
+        esc_pending=False,
+        auto_follow_stream=True,
+        focus_panel="tree",
+        width=90,
+    )
+
+    assert "Alphanus-Work…" in left
+    assert "br:" in center
+    assert "memory:" not in center
+    assert "127.0.0.1:8080" not in right
+    assert "ctx:" in right
+    assert "think:" in status_right
+    assert "example.txt" not in status_right
+    assert "enter" in status_left

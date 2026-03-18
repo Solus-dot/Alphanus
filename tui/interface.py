@@ -943,6 +943,7 @@ class AlphanusTUI(App):
             latest_path=latest_path,
             latest_kind=latest_kind,
             thinking=self.thinking,
+            width=self.size.width,
         )
         if text == self._last_status_right:
             self._update_topbar()
@@ -960,6 +961,7 @@ class AlphanusTUI(App):
             esc_pending=self._esc_pending,
             auto_follow_stream=self._auto_follow_stream,
             focus_panel=self._focused_panel,
+            width=self.size.width,
         )
         if left == self._last_status_left:
             return
@@ -968,17 +970,20 @@ class AlphanusTUI(App):
 
     def _update_topbar(self) -> None:
         workspace_root = str(self.agent.skill_runtime.workspace.workspace_root)
-        self.query_one("#topbar-left", Static).update(topbar_left(workspace_root))
+        width = self.size.width
+        self.query_one("#topbar-left", Static).update(topbar_left(workspace_root, width=width))
         self.query_one("#topbar-center", Static).update(
             topbar_center(
                 branch_name=self._current_branch_name(),
                 memory_mode=self._memory_mode_label(),
+                width=width,
             )
         )
         self.query_one("#topbar-right", Static).update(
             topbar_right(
                 endpoint=self.agent.model_endpoint,
                 context_tokens=self._context_tokens(),
+                width=width,
             )
         )
 

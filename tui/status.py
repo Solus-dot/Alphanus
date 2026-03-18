@@ -7,6 +7,16 @@ from urllib.parse import urlparse
 from rich.markup import escape as esc
 
 
+def _truncate(text: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    if limit <= 1:
+        return text[:limit]
+    return text[: limit - 1] + "…"
+
+
 def _short_endpoint(endpoint: str) -> str:
     parsed = urlparse(endpoint)
     if parsed.scheme and parsed.netloc:
@@ -14,28 +24,40 @@ def _short_endpoint(endpoint: str) -> str:
     return endpoint
 
 
-def topbar_left(workspace_root: str) -> str:
+def topbar_left(workspace_root: str, *, width: int) -> str:
     workspace_name = os.path.basename(workspace_root) or workspace_root
+    if width < 110:
+        workspace_name = _truncate(workspace_name, 14)
+    elif width < 140:
+        workspace_name = _truncate(workspace_name, 20)
     return (
         "[bold #6366f1 on #1a1730] ALPHANUS [/bold #6366f1 on #1a1730] "
         f"[#f4f4f5]{esc(workspace_name)}[/#f4f4f5]"
     )
 
 
-def topbar_center(*, branch_name: str, memory_mode: str) -> str:
+def topbar_center(*, branch_name: str, memory_mode: str, width: int) -> str:
+    if width < 105:
+        return f"[dim]br:[/dim] [#8b5cf6]{esc(_truncate(branch_name, 10))}[/#8b5cf6]"
+    if width < 140:
+        return (
+            f"[dim]branch:[/dim] [#8b5cf6]{esc(_truncate(branch_name, 12))}[/#8b5cf6]   "
+            f"[dim]mem:[/dim] [#10b981]{esc(_truncate(memory_mode, 8))}[/#10b981]"
+        )
     return (
         f"[dim]branch:[/dim] [#8b5cf6]{esc(branch_name)}[/#8b5cf6]   "
         f"[dim]memory:[/dim] [#10b981]{esc(memory_mode)}[/#10b981]"
     )
 
 
-def topbar_right(*, endpoint: str, context_tokens: Optional[int]) -> str:
+def topbar_right(*, endpoint: str, context_tokens: Optional[int], width: int) -> str:
     short_endpoint = _short_endpoint(endpoint)
+    if width < 105:
+        short_endpoint = ""
     ctx_markup = "[#a1a1aa]—[/#a1a1aa]" if context_tokens is None else f"[#6366f1]{context_tokens}[/#6366f1]"
-    return (
-        f"[#a1a1aa]{esc(short_endpoint)}[/#a1a1aa]   "
-        f"[dim]ctx:[/dim] {ctx_markup}"
-    )
+    if not short_endpoint:
+        return f"[dim]ctx:[/dim] {ctx_markup}"
+    return f"[#a1a1aa]{esc(_truncate(short_endpoint, 22 if width < 140 else 28))}[/#a1a1aa]   [dim]ctx:[/dim] {ctx_markup}"
 
 
 def status_right_markup(
@@ -46,21 +68,25 @@ def status_right_markup(
     latest_path: Optional[str],
     latest_kind: Optional[str],
     thinking: bool,
+    width: int,
 ) -> str:
     parts = [f"[dim]files:[/dim] {pending_count}"]
     if branch_armed:
         if branch_label:
-            parts.append(f"[#6366f1]branch: {esc(branch_label)}[/#6366f1]")
+            label = _truncate(branch_label, 10 if width < 120 else 18)
+            parts.append(f"[#6366f1]branch: {esc(label)}[/#6366f1]")
         else:
             parts.append("[#6366f1]branch: armed[/#6366f1]")
     else:
         parts.append("[dim]branch:[/dim] idle")
 
-    if latest_path:
+    if latest_path and width >= 125:
         color = "#6366f1" if latest_kind == "image" else "#10b981"
-        parts.append(f"[{color}]{esc(os.path.basename(latest_path))}[/{color}]")
+        parts.append(f"[{color}]{esc(_truncate(os.path.basename(latest_path), 16))}[/{color}]")
 
     think_label = "auto" if thinking else "off"
+    if width < 90:
+        return f"[dim]think:[/dim] [#6366f1]{think_label}[/#6366f1]"
     parts.append(f"[dim]thinking:[/dim] [#6366f1]{think_label}[/#6366f1]")
     return "  ".join(parts)
 
@@ -74,6 +100,7 @@ def status_left_markup(
     esc_pending: bool,
     auto_follow_stream: bool,
     focus_panel: str,
+    width: int,
 ) -> str:
     if await_shell_confirm:
         return "[bold yellow]approve shell command?[/bold yellow] [dim][y/n][/dim]"
@@ -83,10 +110,12 @@ def status_left_markup(
         if esc_pending:
             return f"[dim]{spinner_frame}[/dim] [dim]generating[/dim] [bold red]esc again to stop[/bold red]"
         if not auto_follow_stream:
-            return "[dim]pgup/dn ·[/dim] [#6366f1]free scroll[/#6366f1]"
+            return "[dim]pgup/dn[/dim] [#6366f1]scroll[/#6366f1]" if width < 110 else "[dim]pgup/dn ·[/dim] [#6366f1]free scroll[/#6366f1]"
         return f"[dim]{spinner_frame}[/dim] [dim]generating[/dim] [dim]esc · stop[/dim]"
     if focus_panel == "tree":
+        if width < 110:
+            return "[dim]j/k move[/dim]   [#6366f1]enter[/#6366f1]"
         return "[dim]j/k move[/dim]   [#6366f1]enter open[/#6366f1]   [dim][/] sib[/dim]   [dim]g/G ends[/dim]"
     if focus_panel == "chat":
-        return "[dim]pgup/dn scroll[/dim]   [dim]tab panel[/dim]"
-    return "[dim]esc clear[/dim]   [dim]tab panel[/dim]"
+        return "[dim]pgup/dn scroll[/dim]   [dim]tab panel[/dim]" if width >= 110 else "[dim]tab panel[/dim]"
+    return "[dim]esc clear[/dim]   [dim]tab panel[/dim]" if width >= 110 else "[dim]esc clear[/dim]"
