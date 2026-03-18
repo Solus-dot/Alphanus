@@ -59,6 +59,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_active_skills": 2,
         "strict_capability_policy": False
     },
+    "tools": {
+        "core_exposure_policy": "coding_core",
+    },
     "search": {
         "provider": "tavily",
     },

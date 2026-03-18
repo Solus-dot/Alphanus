@@ -36,6 +36,9 @@
     "max_active_skills": 2,
     "strict_capability_policy": false
   },
+  "tools": {
+    "core_exposure_policy": "coding_core"
+  },
   "search": {
     "provider": "tavily"
   }

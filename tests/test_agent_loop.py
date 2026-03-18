@@ -769,7 +769,7 @@ def test_batch_workspace_delete_does_not_stop_after_first_successful_tool(mocker
         "execute_tool_call",
         return_value={"ok": True, "data": {"filepath": "/tmp/a.txt", "kind": "file"}, "error": None, "meta": {}},
     )
-    mocker.patch.object(runtime, "tools_for_skills", return_value=[{"type": "function", "function": {"name": "delete_file"}}])
+    mocker.patch.object(runtime, "tools_for_turn", return_value=[{"type": "function", "function": {"name": "delete_file"}}])
 
     result = agent.run_turn(
         history_messages=[{"role": "user", "content": "delete all files in workspace"}],
@@ -833,7 +833,7 @@ def test_workspace_scaffold_does_not_stop_after_create_directory(mocker, runtime
     mocker.patch.object(runtime, "execute_tool_call", side_effect=wrapped_execute)
     mocker.patch.object(
         runtime,
-        "tools_for_skills",
+        "tools_for_turn",
         return_value=[
             {"type": "function", "function": {"name": "create_directory"}},
             {"type": "function", "function": {"name": "create_files"}},
@@ -902,7 +902,7 @@ def test_workspace_folder_and_single_file_does_not_stop_after_create_directory(m
     mocker.patch.object(runtime, "execute_tool_call", side_effect=wrapped_execute)
     mocker.patch.object(
         runtime,
-        "tools_for_skills",
+        "tools_for_turn",
         return_value=[
             {"type": "function", "function": {"name": "create_directory"}},
             {"type": "function", "function": {"name": "create_file"}},
@@ -973,7 +973,7 @@ def test_local_workspace_tasks_reject_shell_and_fetch_tools(mocker, runtime: Ski
     mocker.patch.object(runtime, "execute_tool_call", side_effect=wrapped_execute)
     mocker.patch.object(
         runtime,
-        "tools_for_skills",
+        "tools_for_turn",
         return_value=[
             {"type": "function", "function": {"name": "create_directory"}},
             {"type": "function", "function": {"name": "create_files"}},
@@ -1617,7 +1617,7 @@ def execute(tool_name, args, env):
         if len(chat_reqs) == 2:
             payload = json.loads(req.data.decode("utf-8"))
             tool_names = [tool["function"]["name"] for tool in payload.get("tools", [])]
-            assert tool_names == ["web_search"]
+            assert tool_names == ["create_directory", "create_file", "create_files", "web_search"]
             return FakeResponse(
                 [
                     'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"meta latest acquisitions\\\"}"}}]}}]}',
@@ -1678,7 +1678,8 @@ def test_model_skill_router_respects_explicit_empty_selection(mocker, runtime: S
                 ]
             )
         payload = json.loads(req.data.decode("utf-8"))
-        assert "tools" not in payload
+        tool_names = [tool["function"]["name"] for tool in payload.get("tools", [])]
+        assert tool_names == ["create_directory", "create_file", "create_files"]
         return FakeResponse(
             [
                 'data: {"choices":[{"delta":{"content":"Hello"}}]}',

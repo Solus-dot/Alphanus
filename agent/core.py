@@ -446,6 +446,9 @@ class Agent:
             return True
         if len(lowered.split()) <= 3 and lowered in {"please do", "please continue", "yes please"}:
             return True
+        affirmative_prefixes = ("yes ", "yeah ", "yep ", "ok ", "okay ", "sure ")
+        if len(lowered.split()) <= 6 and any(lowered.startswith(prefix) for prefix in affirmative_prefixes):
+            return True
         return False
 
     def _recent_routing_context(self, history_messages: List[Dict[str, Any]]) -> tuple[str, List[str]]:
@@ -461,6 +464,7 @@ class Agent:
         recent = history_messages[last_user_index:]
         recent_user = self._message_text(recent[0].get("content", ""))
         tool_names: List[str] = []
+        assistant_text = ""
         seen_tools = set()
         sticky_skill_ids: List[str] = []
         seen_skills = set()
@@ -468,6 +472,9 @@ class Agent:
         for msg in recent[1:]:
             role = str(msg.get("role", "")).lower()
             if role == "assistant":
+                text = self._message_text(msg.get("content", ""))
+                if text:
+                    assistant_text = text
                 for call in msg.get("tool_calls", []) or []:
                     name = str(((call or {}).get("function") or {}).get("name", "")).strip()
                     if not name or name in seen_tools:
@@ -491,6 +498,11 @@ class Agent:
         parts: List[str] = []
         if recent_user:
             parts.append(f"previous user request: {recent_user}")
+        if assistant_text:
+            compact_assistant = " ".join(assistant_text.split())
+            if len(compact_assistant) > 240:
+                compact_assistant = compact_assistant[:237].rstrip() + "..."
+            parts.append(f"assistant just said: {compact_assistant}")
         if tool_names:
             parts.append(f"tools just used: {', '.join(tool_names[:4])}")
         return "\n".join(parts), sticky_skill_ids[:3]
@@ -623,8 +635,30 @@ class Agent:
             snapshot = self._get_skill_snapshot()
             routed = self._route_skills_with_model(ctx, snapshot, stop_event)
             if routed is not None:
+                if routed:
+                    return routed
+                fallback = self._contextual_skill_fallback(ctx)
+                if fallback:
+                    return fallback
                 return routed
         return self.skill_runtime.select_skills(ctx)
+
+    def _contextual_skill_fallback(self, ctx: SkillContext) -> List[Any]:
+        if not self._should_use_recent_routing_hint(ctx):
+            return []
+        merged_text = "\n".join(part for part in (ctx.user_input, ctx.recent_routing_hint) if part).strip()
+        if not merged_text:
+            return []
+        merged_ctx = SkillContext(
+            user_input=merged_text,
+            branch_labels=list(ctx.branch_labels),
+            attachments=list(ctx.attachments),
+            workspace_root=ctx.workspace_root,
+            memory_hits=list(ctx.memory_hits),
+            recent_routing_hint=ctx.recent_routing_hint,
+            sticky_skill_ids=list(ctx.sticky_skill_ids),
+        )
+        return self.skill_runtime.select_skills(merged_ctx)
 
     def _build_payload(
         self,
@@ -1690,7 +1724,7 @@ class Agent:
             system_messages = [{"role": "system", "content": system_content}]
 
             model_messages = self.context_mgr.prune(system_messages + state.dynamic_history, self.context_budget_max_tokens)
-            tools = self.skill_runtime.tools_for_skills(state.selected)
+            tools = self.skill_runtime.tools_for_turn(state.selected)
             payload = self._build_payload(model_messages, thinking=thinking, tools=tools or None)
 
             try:

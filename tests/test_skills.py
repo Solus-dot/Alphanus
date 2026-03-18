@@ -113,13 +113,91 @@ description: test
 version: 1.0.0
 tools:
   allowed-tools:
-    - create_file
+    - write_blob
 ---
 Workspace only
 """.strip(),
         encoding="utf-8",
     )
     (skills / "s1" / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "write_blob": {
+    "capability": "workspace_write",
+    "description": "Create file",
+    "parameters": {
+      "type": "object",
+      "properties": {"filepath": {"type": "string"}, "content": {"type": "string"}},
+      "required": ["filepath", "content"]
+    }
+  },
+  "read_blob": {
+    "capability": "workspace_read",
+    "description": "Read file",
+    "parameters": {
+      "type": "object",
+      "properties": {"filepath": {"type": "string"}},
+      "required": ["filepath"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    if tool_name == "write_blob":
+        path = env.workspace.create_file(args["filepath"], args["content"])
+        return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
+    if tool_name == "read_blob":
+        content = env.workspace.read_file(args["filepath"])
+        return {"ok": True, "data": {"content": content}, "error": None, "meta": {}}
+    return {"ok": False, "data": None, "error": {"code": "E_UNSUPPORTED", "message": "nope"}, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    ctx = SkillContext(
+        user_input="read a file",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+    selected = runtime.select_skills(ctx)
+    out = runtime.execute_tool_call("read_blob", {"filepath": "a.txt"}, selected=selected, ctx=ctx)
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_UNSUPPORTED"
+
+
+def test_tools_for_turn_includes_core_tools_without_selected_skill(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "workspace-ops").mkdir(parents=True)
+    (skills / "search-ops").mkdir(parents=True)
+
+    (skills / "workspace-ops" / "SKILL.md").write_text(
+        """
+---
+name: workspace-ops
+description: workspace core tools
+version: 1.0.0
+tools:
+  allowed-tools:
+    - create_file
+    - read_file
+---
+Workspace core.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "workspace-ops" / "tools.py").write_text(
         """
 TOOL_SPECS = {
   "create_file": {
@@ -153,6 +231,39 @@ def execute(tool_name, args, env):
 """.strip(),
         encoding="utf-8",
     )
+    (skills / "search-ops" / "SKILL.md").write_text(
+        """
+---
+name: search-ops
+description: search the web
+version: 1.0.0
+tools:
+  allowed-tools:
+    - web_search
+---
+Search skill.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "search-ops" / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "web_search": {
+    "capability": "web_search",
+    "description": "Search the web",
+    "parameters": {
+      "type": "object",
+      "properties": {"query": {"type": "string"}},
+      "required": ["query"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    return {"ok": True, "data": {"query": args.get("query", "")}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
@@ -160,17 +271,79 @@ def execute(tool_name, args, env):
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
+    core_tool_names = [tool["function"]["name"] for tool in runtime.tools_for_turn([])]
+    assert core_tool_names == ["create_file", "read_file"]
+
+    search_skill = runtime.get_skill("search-ops")
+    assert search_skill is not None
+    merged_tool_names = [tool["function"]["name"] for tool in runtime.tools_for_turn([search_skill])]
+    assert merged_tool_names == ["create_file", "read_file", "web_search"]
+
+
+def test_core_tool_executes_without_selected_skill(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "workspace-ops").mkdir(parents=True)
+
+    (skills / "workspace-ops" / "SKILL.md").write_text(
+        """
+---
+name: workspace-ops
+description: workspace core tools
+version: 1.0.0
+tools:
+  allowed-tools:
+    - create_file
+---
+Workspace core.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "workspace-ops" / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "create_file": {
+    "capability": "workspace_write",
+    "description": "Create file",
+    "parameters": {
+      "type": "object",
+      "properties": {"filepath": {"type": "string"}, "content": {"type": "string"}},
+      "required": ["filepath", "content"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    path = env.workspace.create_file(args["filepath"], args["content"])
+    return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
     ctx = SkillContext(
-        user_input="read a file",
+        user_input="write a file",
         branch_labels=[],
         attachments=[],
         workspace_root=str(ws),
         memory_hits=[],
     )
-    selected = runtime.select_skills(ctx)
-    out = runtime.execute_tool_call("read_file", {"filepath": "a.txt"}, selected=selected, ctx=ctx)
-    assert out["ok"] is False
-    assert out["error"]["code"] == "E_UNSUPPORTED"
+
+    out = runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "hello.txt", "content": "hi"},
+        selected=[],
+        ctx=ctx,
+    )
+
+    assert out["ok"] is True
 
 
 def test_tools_py_is_not_imported_until_execution(tmp_path: Path):

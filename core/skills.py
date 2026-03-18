@@ -67,6 +67,64 @@ _TIME_SENSITIVE_TOKENS = {
     "news",
 }
 
+_PERSONAL_MEMORY_TERMS = {
+    "address",
+    "age",
+    "birthday",
+    "birthdate",
+    "birthyear",
+    "city",
+    "editor",
+    "favourite",
+    "favorite",
+    "home",
+    "ide",
+    "job",
+    "like",
+    "likes",
+    "live",
+    "location",
+    "name",
+    "occupation",
+    "personal",
+    "preference",
+    "preferences",
+    "prefer",
+    "profile",
+    "role",
+    "work",
+}
+
+_SHELL_TERMS = {
+    "bash",
+    "cli",
+    "cmd",
+    "command",
+    "commands",
+    "console",
+    "powershell",
+    "shell",
+    "terminal",
+    "zsh",
+}
+
+_CORE_TOOL_NAMES = frozenset(
+    {
+        "shell_command",
+        "read_file",
+        "list_files",
+        "workspace_tree",
+        "create_directory",
+        "create_file",
+        "create_files",
+        "edit_file",
+    }
+)
+
+_CORE_EXPOSURE_POLICIES = {
+    "coding_core": _CORE_TOOL_NAMES,
+}
+
 
 def _ok(data: Any, duration_ms: int) -> Dict[str, Any]:
     return {"ok": True, "data": data, "error": None, "meta": {"duration_ms": duration_ms}}
@@ -142,6 +200,7 @@ class ToolExecutionEnv:
 class RegisteredTool:
     name: str
     skill_id: str
+    tool_scope: str
     capability: str
     description: str
     parameters: Dict[str, Any]
@@ -169,8 +228,14 @@ class SkillRuntime:
         self.config = config or {}
         self.debug = debug
         self.skills_cfg = self.config.get("skills", {})
+        self.tools_cfg = self.config.get("tools", {})
         self.selection_mode = str(self.skills_cfg.get("selection_mode", "all_enabled"))
         self.max_active_skills = int(self.skills_cfg.get("max_active_skills", 6))
+        raw_core_policy = self.tools_cfg.get(
+            "core_exposure_policy",
+            self.skills_cfg.get("core_exposure_policy", "coding_core"),
+        )
+        self.core_exposure_policy = str(raw_core_policy or "coding_core").strip().lower()
         self.generation = 0
 
         self.skills: Dict[str, SkillManifest] = {}
@@ -304,12 +369,24 @@ class SkillRuntime:
         self._tool_registry[tool_name] = RegisteredTool(
             name=tool_name,
             skill_id=manifest.id,
+            tool_scope=self._tool_scope_for_name(tool_name),
             capability=capability,
             description=description,
             parameters=parameters,
             **extra,
         )
         return True
+
+    @staticmethod
+    def _tool_scope_for_name(tool_name: str) -> str:
+        return "core" if tool_name in _CORE_TOOL_NAMES else "skill"
+
+    def _core_policy_names(self) -> frozenset[str]:
+        policy = self.core_exposure_policy or "coding_core"
+        names = _CORE_EXPOSURE_POLICIES.get(policy)
+        if names is None:
+            return _CORE_EXPOSURE_POLICIES["coding_core"]
+        return names
 
     def load_skills(self) -> None:
         previous_enabled = {skill_id: skill.enabled for skill_id, skill in self.skills.items()}
@@ -569,6 +646,44 @@ class SkillRuntime:
             tokens.append(normalized)
         return tokens
 
+    @staticmethod
+    def _looks_like_memory_request(text: str, query_tokens: set[str]) -> bool:
+        lowered = text.lower()
+        if any(term in query_tokens for term in {"memory", "recall", "remember"}):
+            return True
+        if re.search(r"\b(?:my|user(?:'s)?)\s+[a-z][a-z0-9 _-]{0,40}\s+is\b", lowered):
+            return True
+        if re.search(r"\bi\s+(?:am|'m)\b", lowered):
+            return True
+        if not re.search(r"\bmy\b", lowered):
+            return False
+        if query_tokens & _PERSONAL_MEMORY_TERMS:
+            return True
+        return bool(
+            re.search(r"\b(?:what(?:'s| is)|tell me|do you know|do you remember|recall)\s+my\b", lowered)
+        )
+
+    @staticmethod
+    def _looks_like_shell_request(text: str, query_tokens: set[str]) -> bool:
+        lowered = text.lower()
+        if query_tokens & _SHELL_TERMS:
+            return True
+        if "`" in text:
+            return True
+        if re.search(r"\b(?:run|execute)\b", lowered):
+            return True
+        if query_tokens & {"latest", "recent", "current", "today", "news"}:
+            return False
+        if "version" not in query_tokens and "installed" not in query_tokens:
+            return False
+        if re.search(r"\bdo i have\b", lowered):
+            return True
+        if "installed" in query_tokens:
+            return True
+        if re.search(r"\bon my (?:machine|system|computer|mac|pc)\b", lowered):
+            return True
+        return bool(re.search(r"\bmy\b", lowered) and re.search(r"\b(?:check|show|tell|what(?:'s| is)?)\b", lowered))
+
     def score_skills(self, ctx: SkillContext) -> List[Tuple[int, SkillManifest]]:
         text = ctx.user_input.lower()
         attachments = " ".join(ctx.attachments).lower()
@@ -582,8 +697,14 @@ class SkillRuntime:
             score = 0
 
             for kw in skill.triggers.get("keywords", []):
-                if kw.lower() in text:
-                    score += 30
+                kw_lower = kw.lower()
+                if kw_lower not in text:
+                    continue
+                if skill.id == "memory-rag" and kw_lower == "my":
+                    if self._looks_like_memory_request(text, query_tokens):
+                        score += 30
+                    continue
+                score += 30
 
             for ext in skill.triggers.get("file_ext", []):
                 ext_lower = ext.lower()
@@ -608,6 +729,10 @@ class SkillRuntime:
 
             if "memory" in skill.id and ctx.memory_hits:
                 score += 10
+            if skill.id == "memory-rag" and self._looks_like_memory_request(text, query_tokens):
+                score += 16
+            if skill.id == "shell-ops" and self._looks_like_shell_request(text, query_tokens):
+                score += 28
 
             scored.append((score, skill))
 
@@ -710,10 +835,22 @@ class SkillRuntime:
             clipped = clipped.rsplit("```", 1)[0].rstrip()
         return clipped
 
-    def allowed_tool_names(self, selected: List[SkillManifest]) -> List[str]:
+    def core_tool_names(self) -> List[str]:
+        policy_names = self._core_policy_names()
+        if not policy_names:
+            return []
+        return sorted(
+            reg.name
+            for reg in self._tool_registry.values()
+            if reg.tool_scope == "core" and reg.name in policy_names
+        )
+
+    def optional_tool_names(self, selected: List[SkillManifest]) -> List[str]:
         selected_map = {skill.id: skill for skill in selected}
         allowed: List[str] = []
         for tool_name, reg in self._tool_registry.items():
+            if reg.tool_scope == "core":
+                continue
             skill = selected_map.get(reg.skill_id)
             if not skill:
                 continue
@@ -724,8 +861,12 @@ class SkillRuntime:
             allowed.append(tool_name)
         return sorted(allowed)
 
-    def tools_for_skills(self, selected: List[SkillManifest]) -> List[Dict[str, Any]]:
-        names = self.allowed_tool_names(selected)
+    def allowed_tool_names(self, selected: List[SkillManifest]) -> List[str]:
+        names = self.core_tool_names()
+        names.extend(self.optional_tool_names(selected))
+        return sorted(dict.fromkeys(names))
+
+    def _tool_schemas(self, names: List[str]) -> List[Dict[str, Any]]:
         tools = []
         for name in names:
             reg = self._tool_registry[name]
@@ -740,6 +881,12 @@ class SkillRuntime:
                 }
             )
         return tools
+
+    def tools_for_skills(self, selected: List[SkillManifest]) -> List[Dict[str, Any]]:
+        return self._tool_schemas(self.optional_tool_names(selected))
+
+    def tools_for_turn(self, selected: List[SkillManifest]) -> List[Dict[str, Any]]:
+        return self._tool_schemas(self.allowed_tool_names(selected))
 
     def _run_pre_action_hooks(
         self,
@@ -855,10 +1002,13 @@ class SkillRuntime:
         self,
         tool_name: str,
         selected: List[SkillManifest],
-    ) -> Tuple[RegisteredTool, SkillManifest]:
+    ) -> Tuple[RegisteredTool, Optional[SkillManifest]]:
         reg = self._tool_registry.get(tool_name)
         if not reg:
             raise LookupError(f"No adapter for tool '{tool_name}'")
+
+        if reg.tool_scope == "core":
+            return reg, self.skills.get(reg.skill_id)
 
         selected_map = {skill.id: skill for skill in selected}
         owner = selected_map.get(reg.skill_id)

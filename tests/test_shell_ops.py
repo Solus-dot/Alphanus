@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
+from agent.core import Agent
 from core.memory import VectorMemory
 from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
@@ -116,3 +118,85 @@ def test_shell_command_recovers_from_raw_argument_payload(tmp_path: Path):
     assert out["ok"] is True
     assert out["data"]["returncode"] == 0
     assert out["data"]["stdout"].strip() == "hi"
+
+
+def test_shell_command_executes_as_core_tool_without_selected_skill(tmp_path: Path):
+    runtime = _runtime(
+        tmp_path,
+        {
+            "capabilities": {
+                "shell_require_confirmation": True,
+                "dangerously_skip_permissions": False,
+            }
+        },
+    )
+
+    out = runtime.execute_tool_call(
+        "shell_command",
+        {"command": "echo hi"},
+        selected=[],
+        ctx=_ctx(str(runtime.workspace.workspace_root)),
+        confirm_shell=lambda _: True,
+    )
+
+    assert out["ok"] is True
+    assert out["data"]["returncode"] == 0
+    assert out["data"]["stdout"].strip() == "hi"
+
+
+def test_shell_skill_selected_for_local_version_checks(tmp_path: Path):
+    runtime = _runtime(tmp_path, {"skills": {"selection_mode": "heuristic", "max_active_skills": 2}})
+    ctx = SkillContext(
+        user_input="check my go version",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(runtime.workspace.workspace_root),
+        memory_hits=[],
+    )
+
+    selected = runtime.select_skills(ctx)
+
+    assert selected
+    assert selected[0].id == "shell-ops"
+
+
+def test_memory_skill_still_selected_for_personal_fact_queries(tmp_path: Path):
+    runtime = _runtime(tmp_path, {"skills": {"selection_mode": "heuristic", "max_active_skills": 2}})
+    ctx = SkillContext(
+        user_input="what's my birthday",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(runtime.workspace.workspace_root),
+        memory_hits=[],
+    )
+
+    selected = runtime.select_skills(ctx)
+
+    assert selected
+    assert selected[0].id == "memory-rag"
+
+
+def test_shell_confirmation_reuses_recent_assistant_action_context(mocker, tmp_path: Path):
+    runtime = _runtime(tmp_path, {"skills": {"selection_mode": "model", "max_active_skills": 2}})
+    agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        assert pass_id == "skill_route"
+        return type("R", (), {"finish_reason": "stop", "content": '{"skills": []}'})()
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+
+    history_messages = [
+        {"role": "user", "content": "how do i check my go version"},
+        {"role": "assistant", "content": "I can run `go version` in the workspace if you want."},
+    ]
+
+    ctx = agent._build_skill_context("Yeah check my version", [], [], history_messages)
+
+    assert "assistant just said:" in ctx.recent_routing_hint
+    assert "go version" in ctx.recent_routing_hint
+
+    selected = agent._select_skills(ctx, threading.Event())
+
+    assert selected
+    assert selected[0].id == "shell-ops"
