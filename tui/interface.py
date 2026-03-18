@@ -43,6 +43,9 @@ MAX_REPLY_ACC_CHARS = 24000
 SHELL_CONFIRM_TIMEOUT_S = 60
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 GLOBAL_CONFIG_PATH = PROJECT_ROOT / "config" / "global_config.json"
+ACCENT_COLOR = "#8b5cf6"
+
+
 class ChatInput(Input):
     BINDINGS = [
         Binding("ctrl+u", "clear_all", show=False),
@@ -878,30 +881,34 @@ class AlphanusTUI(App):
             self._scroll().scroll_end(animate=False)
 
     def _write_info(self, text: str) -> None:
-        self._write(f"  [bold #f59e0b]›[/bold #f59e0b] [#f4f4f5]{esc(text)}[/#f4f4f5]")
+        self._write(f"  [bold {ACCENT_COLOR}]›[/bold {ACCENT_COLOR}] [#f4f4f5]{esc(text)}[/#f4f4f5]")
 
     def _write_error(self, text: str) -> None:
         self._write(f"[bold red]  ✖ {esc(text)}[/bold red]")
 
-    def _write_section_heading(self, title: str, color: str = "#f59e0b") -> None:
+    def _write_section_heading(self, title: str, color: str = ACCENT_COLOR) -> None:
         self._write("")
         self._write(f"[bold {color}]  {esc(title)}[/bold {color}]")
 
     def _write_detail_line(self, label: str, value: str, *, value_markup: bool = False) -> None:
         rendered = value if value_markup else esc(value)
-        self._write(f"  [bold #f59e0b]{esc(label)}:[/bold #f59e0b] [#f4f4f5]{rendered}[/#f4f4f5]" if not value_markup else f"  [bold #f59e0b]{esc(label)}:[/bold #f59e0b] {rendered}")
+        self._write(
+            f"  [bold {ACCENT_COLOR}]{esc(label)}:[/bold {ACCENT_COLOR}] [#f4f4f5]{rendered}[/#f4f4f5]"
+            if not value_markup
+            else f"  [bold {ACCENT_COLOR}]{esc(label)}:[/bold {ACCENT_COLOR}] {rendered}"
+        )
 
-    def _write_indexed_dim_lines(self, rows: List[str], *, color: str = "#f59e0b") -> None:
+    def _write_indexed_dim_lines(self, rows: List[str], *, color: str = ACCENT_COLOR) -> None:
         for index, row in enumerate(rows):
             self._write(f"  [{color}]{index}.[/{color}] [#f4f4f5]{esc(row)}[/#f4f4f5]")
 
-    def _write_command_action(self, text: str, *, icon: str = "•", color: str = "#f59e0b") -> None:
+    def _write_command_action(self, text: str, *, icon: str = "•", color: str = ACCENT_COLOR) -> None:
         self._write(f"  [bold {color}]{esc(icon)}[/bold {color}] [#f4f4f5]{esc(text)}[/#f4f4f5]")
 
     def _write_command_row(self, command: str, desc: str, *, col: int) -> None:
         gap = max(1, col - len(command))
         self._write(
-            f"  [bold #f59e0b]{esc(command)}[/bold #f59e0b]{' ' * gap}[#a1a1aa]{esc(desc)}[/#a1a1aa]"
+            f"  [bold {ACCENT_COLOR}]{esc(command)}[/bold {ACCENT_COLOR}]{' ' * gap}[#a1a1aa]{esc(desc)}[/#a1a1aa]"
         )
 
     def _write_muted_lines(self, rows: List[str]) -> None:
@@ -1861,7 +1868,7 @@ class AlphanusTUI(App):
             if tag == self.conv_tree.current_id:
                 self._write(f"  [bold #8b5cf6]{esc(text)}[/bold #8b5cf6]")
             elif active:
-                self._write(f"  [#f59e0b]{esc(text)}[/#f59e0b]")
+                self._write(f"  [{ACCENT_COLOR}]{esc(text)}[/{ACCENT_COLOR}]")
             else:
                 self._write(f"  [#a1a1aa]{esc(text)}[/#a1a1aa]")
         self._write("")
@@ -1874,7 +1881,7 @@ class AlphanusTUI(App):
             source = self.agent.skill_runtime.skill_source_label(skill)
             provenance = self.agent.skill_runtime.skill_provenance_label(skill)
             self._write(
-                f"  [bold #f59e0b]{esc(skill.id)}[/bold #f59e0b] "
+                f"  [bold {ACCENT_COLOR}]{esc(skill.id)}[/bold {ACCENT_COLOR}] "
                 f"[#a1a1aa]({esc(skill.version)})[/#a1a1aa] "
                 f"[{color}]{state}[/{color}]"
             )
@@ -1885,7 +1892,7 @@ class AlphanusTUI(App):
             self._write(f"    [#71717a]{esc(source_bits)}[/#71717a]")
             if not skill.available and skill.availability_reason:
                 code = esc(skill.availability_code or "blocked")
-                self._write(f"    [bold #f59e0b]blocked ({code}):[/bold #f59e0b] [#a1a1aa]{esc(skill.availability_reason)}[/#a1a1aa]")
+                self._write(f"    [bold {ACCENT_COLOR}]blocked ({code}):[/bold {ACCENT_COLOR}] [#a1a1aa]{esc(skill.availability_reason)}[/#a1a1aa]")
         self._write("")
 
     def _cmd_skill(self, arg: str) -> bool:
@@ -1975,7 +1982,7 @@ class AlphanusTUI(App):
         self._write_section_heading("Skills")
         for skill in report.get("skills", []):
             line = (
-                f"  [bold #f59e0b]{esc(str(skill.get('id', '')))}[/bold #f59e0b] "
+                f"  [bold {ACCENT_COLOR}]{esc(str(skill.get('id', '')))}[/bold {ACCENT_COLOR}] "
                 f"[#a1a1aa]({esc(str(skill.get('source_tier', '')))} · {esc(str(skill.get('availability_code', 'ready')))})[/#a1a1aa] "
                 f"[#a1a1aa]{esc(str(skill.get('status', 'unknown')))}[/#a1a1aa]"
             )
