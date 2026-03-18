@@ -280,6 +280,7 @@ class AlphanusTUI(App):
         Binding("shift+tab", "focus_prev_panel", show=False),
         Binding("ctrl+h", "focus_chat", show=False),
         Binding("ctrl+l", "focus_tree", show=False),
+        Binding("question_mark", "show_keymap", show=False),
         Binding("enter", "tree_open", show=False),
         Binding("g", "tree_top", show=False),
         Binding("shift+g", "tree_bottom", show=False),
@@ -549,6 +550,27 @@ class AlphanusTUI(App):
         self._rebuild_viewport()
         self._update_sidebar()
         self._update_topbar()
+
+    def action_show_keymap(self) -> None:
+        self._write_section_heading("Keymap")
+        self._write_command_row("Tab / Shift+Tab", "Cycle active panels", col=20)
+        self._write_command_row("Ctrl+H / Ctrl+L", "Focus transcript or tree", col=20)
+        self._write_command_row("?", "Show this keymap", col=20)
+        self._write_command_row("/", "Open slash command palette", col=20)
+        self._write("")
+        self._write_section_heading("Transcript")
+        self._write_command_row("PgUp / PgDn", "Scroll transcript", col=20)
+        self._write("")
+        self._write_section_heading("Tree")
+        self._write_command_row("j / k", "Move selection", col=20)
+        self._write_command_row("Enter / o", "Open selected node", col=20)
+        self._write_command_row("[ / ]", "Jump sibling branches", col=20)
+        self._write_command_row("g / G", "Jump top or bottom", col=20)
+        self._write("")
+        self._write_section_heading("Input")
+        self._write_command_row("Enter", "Send message", col=20)
+        self._write_command_row("Esc", "Clear input or stop stream", col=20)
+        self._write("")
 
     def _apply_tree_compaction_policy(self, tree: ConvTree) -> ConvTree:
         tree.set_compaction_policy(

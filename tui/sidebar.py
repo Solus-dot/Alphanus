@@ -19,13 +19,13 @@ def render_sidebar_markup(tree: ConvTree, width: int = 30, selected_id: str | No
             style = "#f4f4f5" if tag == selected else "#a1a1aa"
             lines.append(f"[{style}]{line}[/{style}]")
         elif tag == selected and tag == current:
-            lines.append(f"[bold reverse #09090b on #8b5cf6]{line}[/bold reverse #09090b on #8b5cf6]")
+            lines.append(f"[bold #f4f4f5]{line}[/bold #f4f4f5]")
         elif tag == selected:
-            lines.append(f"[bold reverse #09090b on #f59e0b]{line}[/bold reverse #09090b on #f59e0b]")
+            lines.append(f"[#f4f4f5]{line}[/#f4f4f5]")
         elif tag == current:
             lines.append(f"[bold #6366f1]{line}[/bold #6366f1]")
         elif active:
-            lines.append(f"[#8b5cf6]{line}[/#8b5cf6]")
+            lines.append(f"[#71717a]{line}[/#71717a]")
         else:
             lines.append(f"[dim]{line}[/dim]")
 

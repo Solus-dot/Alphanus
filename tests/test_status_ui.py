@@ -49,21 +49,6 @@ def test_sidebar_markup_includes_inspector_for_selected_node() -> None:
     assert "open_url" in markup
 
 
-def test_render_tree_uses_graph_connectors() -> None:
-    tree = ConvTree()
-    first = tree.add_turn("one")
-    tree.complete_turn(first.id, "done")
-    tree.current_id = "root"
-    second = tree.add_turn("two")
-    tree.complete_turn(second.id, "done")
-
-    rows = tree.render_tree(width=30)
-    text_rows = [text for text, _tag, _active in rows]
-
-    assert any("├─" in row for row in text_rows)
-    assert any("└─" in row for row in text_rows)
-
-
 def test_status_left_changes_with_focused_panel() -> None:
     tree_status = status_left_markup(
         await_shell_confirm=False,

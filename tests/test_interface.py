@@ -158,3 +158,18 @@ def test_file_tool_success_lines_stay_hidden() -> None:
     assert tui._show_tool_result_line("create_file", True) is False
     assert tui._show_tool_result_line("edit_file", True) is False
     assert tui._show_tool_result_line("workspace_tree", True) is True
+
+
+def test_show_keymap_writes_expected_sections() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    lines: list[str] = []
+    tui._write = lines.append
+    tui._write_section_heading = lambda text: lines.append(f"SECTION:{text}")
+    tui._write_command_row = lambda command, desc, *, col: lines.append(f"ROW:{command}:{desc}:{col}")
+
+    tui.action_show_keymap()
+
+    assert "SECTION:Keymap" in lines
+    assert any("Tab / Shift+Tab" in line for line in lines)
+    assert any("SECTION:Tree" == line for line in lines)
+    assert any("Enter / o" in line for line in lines)
