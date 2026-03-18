@@ -2,19 +2,57 @@ from __future__ import annotations
 
 import os
 from typing import Optional
+from urllib.parse import urlparse
 
 from rich.markup import escape as esc
 
 
-def topbar_left(endpoint: str) -> str:
+def _short_workspace(path: str) -> str:
+    path = os.path.abspath(path)
+    home = os.path.expanduser("~")
+    if path.startswith(home):
+        path = "~" + path[len(home) :]
+    return path
+
+
+def _short_endpoint(endpoint: str) -> str:
+    parsed = urlparse(endpoint)
+    if parsed.scheme and parsed.netloc:
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        if parsed.path and parsed.path != "/":
+            return base + parsed.path
+        return base
+    return endpoint
+
+
+def topbar_left(workspace_root: str) -> str:
+    short_ws = _short_workspace(workspace_root)
     return (
         "[bold #6366f1 on #1a1730] ALPHANUS [/bold #6366f1 on #1a1730] "
-        f"[#a1a1aa]{esc(endpoint)}[/#a1a1aa]"
+        f"[#f4f4f5]{esc(os.path.basename(workspace_root) or workspace_root)}[/#f4f4f5] "
+        f"[#71717a]{esc(short_ws)}[/#71717a]"
     )
 
 
-def topbar_right() -> str:
-    return "[#a1a1aa]Session active[/#a1a1aa]"
+def topbar_center(*, branch_name: str, memory_mode: str, focus_panel: str) -> str:
+    focus_label = {
+        "chat": "transcript",
+        "tree": "tree",
+        "input": "input",
+    }.get(focus_panel, focus_panel)
+    return (
+        f"[dim]branch:[/dim] [#8b5cf6]{esc(branch_name)}[/#8b5cf6]   "
+        f"[dim]memory:[/dim] [#10b981]{esc(memory_mode)}[/#10b981]   "
+        f"[dim]focus:[/dim] [#f59e0b]{esc(focus_label)}[/#f59e0b]"
+    )
+
+
+def topbar_right(*, endpoint: str, context_tokens: int, context_limit: int) -> str:
+    short_endpoint = _short_endpoint(endpoint)
+    return (
+        f"[#a1a1aa]{esc(short_endpoint)}[/#a1a1aa]   "
+        f"[dim]ctx:[/dim] [#6366f1]{context_tokens}[/#6366f1][dim]/[/dim][#a1a1aa]{context_limit}[/#a1a1aa]"
+    )
 
 
 def status_right_markup(

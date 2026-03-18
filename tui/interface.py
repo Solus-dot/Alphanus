@@ -37,7 +37,7 @@ from tui.live_tool_preview import LiveToolPreviewManager
 from tui.markdown_utils import fence_language, hanging_indent, render_md
 from tui.popups import CodeViewerModal, ConfigEditorModal
 from tui.sidebar import render_sidebar_markup
-from tui.status import status_left_markup, status_right_markup, topbar_left, topbar_right
+from tui.status import status_left_markup, status_right_markup, topbar_center, topbar_left, topbar_right
 
 MAX_REPLY_ACC_CHARS = 24000
 SHELL_CONFIRM_TIMEOUT_S = 60
@@ -80,6 +80,13 @@ class AlphanusTUI(App):
         content-align: left middle;
     }
 
+    #topbar-center {
+        width: auto;
+        min-width: 40;
+        height: 3;
+        content-align: center middle;
+    }
+
     #topbar-right {
         width: auto;
         height: 3;
@@ -105,6 +112,10 @@ class AlphanusTUI(App):
         scrollbar-color-hover: #52525b;
         scrollbar-color-active: #6366f1;
         scrollbar-corner-color: #121214;
+    }
+
+    #chat-scroll.-active-panel {
+        border: round #6366f1;
     }
 
     #chat-log {
@@ -138,6 +149,10 @@ class AlphanusTUI(App):
         scrollbar-color-hover: #52525b;
         scrollbar-color-active: #6366f1;
         scrollbar-corner-color: #121214;
+    }
+
+    #sidebar.-active-panel {
+        border-left: solid #6366f1;
     }
 
     #sidebar-content {
@@ -249,6 +264,10 @@ class AlphanusTUI(App):
         border: round #6366f1;
         background: #18181b;
     }
+
+    #input-row.-active-panel ChatInput {
+        border: round #6366f1;
+    }
     """
 
     BINDINGS = [
@@ -257,6 +276,13 @@ class AlphanusTUI(App):
         Binding("escape", "handle_esc", show=False),
         Binding("pageup", "scroll_up", show=False),
         Binding("pagedown", "scroll_down", show=False),
+        Binding("tab", "focus_next_panel", show=False),
+        Binding("shift+tab", "focus_prev_panel", show=False),
+        Binding("ctrl+h", "focus_chat", show=False),
+        Binding("ctrl+l", "focus_tree", show=False),
+        Binding("j", "tree_down", show=False),
+        Binding("k", "tree_up", show=False),
+        Binding("o", "tree_open", show=False),
     ]
 
     thinking: reactive[bool] = reactive(True)
@@ -313,11 +339,14 @@ class AlphanusTUI(App):
         self._show_tool_details = True
         self._show_historical_tool_details = False
         self._pending_tool_details: List[Tuple[str, str]] = []
+        self._focused_panel = "input"
+        self._tree_cursor_id = "root"
         self._last_log_was_blank = False
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="topbar"):
             yield Static("", id="topbar-left")
+            yield Static("", id="topbar-center")
             yield Static("", id="topbar-right")
         with Horizontal(id="main-area"):
             with ScrollableContainer(id="chat-scroll"):
@@ -347,6 +376,8 @@ class AlphanusTUI(App):
     def on_mount(self) -> None:
         self.thinking = bool(self.agent.config.get("agent", {}).get("enable_thinking", True))
         self.set_interval(0.1, self._tick)
+        self._sync_tree_cursor()
+        self._apply_focus_classes()
         self._update_topbar()
         self._update_status1()
         self._update_status2()
@@ -368,6 +399,111 @@ class AlphanusTUI(App):
             inactive_tool_argument_char_limit=self._inactive_tool_argument_char_limit,
             inactive_tool_content_char_limit=self._inactive_tool_content_char_limit,
         )
+
+    def _tree_rows(self) -> List[Tuple[str, str, bool]]:
+        return self.conv_tree.render_tree(width=30)
+
+    def _sync_tree_cursor(self) -> None:
+        if self._tree_cursor_id in self.conv_tree.nodes:
+            return
+        self._tree_cursor_id = self.conv_tree.current_id
+
+    def _current_branch_name(self) -> str:
+        if self.conv_tree._pending_branch and self.conv_tree._pending_branch_label:
+            return self.conv_tree._pending_branch_label
+        for turn in reversed(self.conv_tree.active_path):
+            if turn.branch_root:
+                return turn.label or "branch"
+        return "root"
+
+    def _context_token_estimate(self) -> int:
+        try:
+            return int(self.agent.context_mgr.estimate_tokens(self.conv_tree.history_messages()))
+        except Exception:
+            return 0
+
+    def _memory_mode_label(self) -> str:
+        try:
+            return str(self.agent.skill_runtime.memory.embedding_backend)
+        except Exception:
+            return "unknown"
+
+    def _apply_focus_classes(self) -> None:
+        chat = self.query_one("#chat-scroll", ScrollableContainer)
+        sidebar = self.query_one("#sidebar", ScrollableContainer)
+        input_row = self.query_one("#input-row", Horizontal)
+        chat.remove_class("-active-panel")
+        sidebar.remove_class("-active-panel")
+        input_row.remove_class("-active-panel")
+        if self._focused_panel == "chat":
+            chat.add_class("-active-panel")
+        elif self._focused_panel == "tree":
+            sidebar.add_class("-active-panel")
+        else:
+            input_row.add_class("-active-panel")
+
+    def _set_focused_panel(self, panel: str) -> None:
+        if panel == "tree" and not self.query_one("#sidebar", ScrollableContainer).display:
+            panel = "chat"
+        self._focused_panel = panel
+        if panel == "input":
+            self.query_one(ChatInput).focus()
+        self._apply_focus_classes()
+        self._update_topbar()
+
+    def action_focus_next_panel(self) -> None:
+        order = ["chat", "tree", "input"]
+        if not self.query_one("#sidebar", ScrollableContainer).display:
+            order = ["chat", "input"]
+        current = order.index(self._focused_panel) if self._focused_panel in order else 0
+        self._set_focused_panel(order[(current + 1) % len(order)])
+
+    def action_focus_prev_panel(self) -> None:
+        order = ["chat", "tree", "input"]
+        if not self.query_one("#sidebar", ScrollableContainer).display:
+            order = ["chat", "input"]
+        current = order.index(self._focused_panel) if self._focused_panel in order else 0
+        self._set_focused_panel(order[(current - 1) % len(order)])
+
+    def action_focus_chat(self) -> None:
+        self._set_focused_panel("chat")
+
+    def action_focus_tree(self) -> None:
+        self._set_focused_panel("tree")
+
+    def action_tree_down(self) -> None:
+        if self._focused_panel != "tree":
+            return
+        rows = self._tree_rows()
+        ids = [tag for _text, tag, _active in rows if tag in self.conv_tree.nodes]
+        if not ids:
+            return
+        current = ids.index(self._tree_cursor_id) if self._tree_cursor_id in ids else 0
+        self._tree_cursor_id = ids[min(len(ids) - 1, current + 1)]
+        self._update_sidebar()
+        self._update_topbar()
+
+    def action_tree_up(self) -> None:
+        if self._focused_panel != "tree":
+            return
+        rows = self._tree_rows()
+        ids = [tag for _text, tag, _active in rows if tag in self.conv_tree.nodes]
+        if not ids:
+            return
+        current = ids.index(self._tree_cursor_id) if self._tree_cursor_id in ids else 0
+        self._tree_cursor_id = ids[max(0, current - 1)]
+        self._update_sidebar()
+        self._update_topbar()
+
+    def action_tree_open(self) -> None:
+        if self._focused_panel != "tree":
+            return
+        if self._tree_cursor_id not in self.conv_tree.nodes:
+            return
+        self.conv_tree.current_id = self._tree_cursor_id
+        self._rebuild_viewport()
+        self._update_sidebar()
+        self._update_topbar()
 
     def _apply_tree_compaction_policy(self, tree: ConvTree) -> ConvTree:
         tree.set_compaction_policy(
@@ -742,9 +878,11 @@ class AlphanusTUI(App):
             thinking=self.thinking,
         )
         if text == self._last_status_right:
+            self._update_topbar()
             return
         self._last_status_right = text
         self.query_one("#status-right", Static).update(text)
+        self._update_topbar()
 
     def _update_status2(self) -> None:
         left = status_left_markup(
@@ -761,8 +899,22 @@ class AlphanusTUI(App):
         self.query_one("#status-left", Static).update(left)
 
     def _update_topbar(self) -> None:
-        self.query_one("#topbar-left", Static).update(topbar_left(self.agent.model_endpoint))
-        self.query_one("#topbar-right", Static).update(topbar_right())
+        workspace_root = str(self.agent.skill_runtime.workspace.workspace_root)
+        self.query_one("#topbar-left", Static).update(topbar_left(workspace_root))
+        self.query_one("#topbar-center", Static).update(
+            topbar_center(
+                branch_name=self._current_branch_name(),
+                memory_mode=self._memory_mode_label(),
+                focus_panel=self._focused_panel,
+            )
+        )
+        self.query_one("#topbar-right", Static).update(
+            topbar_right(
+                endpoint=self.agent.model_endpoint,
+                context_tokens=self._context_token_estimate(),
+                context_limit=self.agent.context_budget_max_tokens,
+            )
+        )
 
     def _update_input_placeholder(self) -> None:
         self.query_one(ChatInput).placeholder = (
@@ -945,7 +1097,13 @@ class AlphanusTUI(App):
         sidebar = self.query_one("#sidebar", ScrollableContainer)
         if not sidebar.display:
             return
-        self.query_one("#sidebar-content", Static).update(render_sidebar_markup(self.conv_tree, width=30))
+        if self._focused_panel != "tree":
+            self._tree_cursor_id = self.conv_tree.current_id
+        else:
+            self._sync_tree_cursor()
+        self.query_one("#sidebar-content", Static).update(
+            render_sidebar_markup(self.conv_tree, width=30, selected_id=self._tree_cursor_id)
+        )
 
     def _write_turn_user(self, turn: Turn) -> None:
         self._write("")
