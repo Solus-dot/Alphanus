@@ -286,7 +286,6 @@ class AlphanusTUI(App):
 
         self._reasoning_open = False
         self._content_open = False
-        self._done_thinking_rendered = False
         self._buf_r = ""
         self._buf_c = ""
         self._in_fence = False
@@ -313,6 +312,7 @@ class AlphanusTUI(App):
         self._code_blocks: List[Tuple[str, Optional[str]]] = []
         self._show_tool_details = True
         self._show_historical_tool_details = False
+        self._pending_tool_details: List[Tuple[str, str]] = []
         self._last_log_was_blank = False
 
     def compose(self) -> ComposeResult:
@@ -482,6 +482,19 @@ class AlphanusTUI(App):
             style="on #121214",
         )
 
+    def _reasoning_panel_renderable(self, text: str) -> Panel:
+        rendered, _ = render_md(text, False)
+        return Panel(
+            Text.from_markup(f"[dim]{rendered}[/dim]"),
+            title="[dim #6366f1]thinking[/dim #6366f1]",
+            title_align="left",
+            expand=True,
+            padding=(0, 1),
+            border_style="#27272a",
+            style="on #09090b",
+            box=box.SQUARE,
+        )
+
     def _tool_event_panel(
         self,
         title: str,
@@ -502,36 +515,32 @@ class AlphanusTUI(App):
             expand=True,
             padding=(0, 1),
             border_style=border_color,
-            style="on #111114",
+            style="on #09090b",
             box=box.SQUARE,
         )
 
-    def _write_tool_event(
+    def _tool_lifecycle_panel(
         self,
-        title: str,
-        title_color: str,
-        border_color: str,
         name: str,
-        detail: str = "",
+        detail: str,
         *,
-        indent: int = 2,
-    ) -> None:
-        self._write_renderable(
-            self._tool_event_panel(title, title_color, border_color, name, detail),
-            indent=indent,
+        ok: bool,
+    ) -> Panel:
+        return self._tool_event_panel(
+            "tool → done" if ok else "tool → fail",
+            "#10b981" if ok else "#f87171",
+            "#10b981" if ok else "#f87171",
+            name,
+            detail,
         )
 
-    def _write_tool_call_block(self, name: str, detail: str = "", *, indent: int = 2) -> None:
-        if not self._show_tool_details:
-            return
-        self._write_tool_event("tool", "#8b5cf6", "#8b5cf6", name, detail, indent=indent)
+    def _update_tool_call_partial(self, name: str, detail: str = "", *, indent: int = 2) -> None:
+        partial = self._partial()
+        partial.display = True
+        partial.update(Padding(self._tool_event_panel("tool", "#8b5cf6", "#8b5cf6", name, detail), (0, 0, 0, indent)))
 
-    def _write_tool_result_block(self, name: str, ok: bool, detail: str = "", *, indent: int = 2) -> None:
-        title = "done" if ok else "fail"
-        title_color = "#10b981" if ok else "#f87171"
-        border_color = "#10b981" if ok else "#f87171"
-        summary = detail or ("completed" if ok else "failed")
-        self._write_tool_event(title, title_color, border_color, name, summary, indent=indent)
+    def _write_tool_lifecycle_block(self, name: str, ok: bool, detail: str = "", *, indent: int = 2) -> None:
+        self._write_renderable(self._tool_lifecycle_panel(name, detail or ("completed" if ok else "failed"), ok=ok), indent=indent)
 
     def _show_tool_result_line(self, name: str, ok: bool) -> bool:
         if not ok:
@@ -539,6 +548,13 @@ class AlphanusTUI(App):
         if name in self._live_preview.streamed_file_tools:
             return False
         return self._show_tool_details
+
+    def _take_pending_tool_detail(self, name: str) -> str:
+        for idx, (pending_name, pending_detail) in enumerate(self._pending_tool_details):
+            if pending_name == name:
+                self._pending_tool_details.pop(idx)
+                return pending_detail
+        return ""
 
     def _remember_code_block(self, code: str, language: Optional[str]) -> int:
         self._code_blocks.append((code, language))
@@ -944,6 +960,7 @@ class AlphanusTUI(App):
     def _write_skill_exchanges(self, turn: Turn) -> None:
         if not self._show_historical_tool_details:
             return
+        pending_details: List[Tuple[str, str]] = []
         for msg in turn.skill_exchanges:
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 for call in msg["tool_calls"]:
@@ -954,7 +971,7 @@ class AlphanusTUI(App):
                     except Exception:
                         args = raw_args
                     if name not in self._live_preview.streamed_file_tools:
-                        self._write_tool_call_block(name, self._live_preview.compact_tool_args(name, args), indent=2)
+                        pending_details.append((name, self._live_preview.compact_tool_args(name, args)))
                     self._live_preview.write_static_preview(
                         name, args, self._write, self._write_indented, self._write_code_block
                     )
@@ -970,11 +987,17 @@ class AlphanusTUI(App):
                     )
                 if not self._show_tool_result_line(name, bool(payload.get("ok"))):
                     continue
+                detail = ""
+                for idx, (pending_name, pending_detail) in enumerate(pending_details):
+                    if pending_name == name:
+                        detail = pending_detail
+                        pending_details.pop(idx)
+                        break
                 if payload.get("ok"):
-                    self._write_tool_result_block(name, True, indent=2)
+                    self._write_tool_lifecycle_block(name, True, detail or "completed", indent=2)
                 else:
                     em = payload.get("error", {}).get("message", "failed")
-                    self._write_tool_result_block(name, False, em, indent=2)
+                    self._write_tool_lifecycle_block(name, False, f"{detail}   {em}".strip(), indent=2)
 
     def _write_completed_turn_asst(self, turn: Turn) -> None:
         self._write("")
@@ -1010,10 +1033,10 @@ class AlphanusTUI(App):
         self._active_turn_id = turn.id
         self._reply_acc = ""
         self._live_preview.reset()
+        self._pending_tool_details = []
         self._last_stream_error_text = ""
         self._reasoning_open = False
         self._content_open = False
-        self._done_thinking_rendered = False
         self._buf_r = ""
         self._buf_c = ""
         self._reset_fence_state()
@@ -1059,12 +1082,17 @@ class AlphanusTUI(App):
             return
         text = self._buf_r
         self._buf_r = ""
+        filtered_lines = [line for line in text.splitlines() if not self._is_tool_trace_line(line)]
         self._partial().update("")
-        for line in text.splitlines():
-            if self._is_tool_trace_line(line):
-                continue
-            rendered, _ = render_md(line, False)
-            self._write_indented(f"[dim]{rendered}[/dim]", indent=4)
+        if filtered_lines:
+            self._write_renderable(self._reasoning_panel_renderable("\n".join(filtered_lines)), indent=2)
+
+    def _close_reasoning_section(self) -> bool:
+        if not self._reasoning_open:
+            return False
+        self._flush_reasoning_buffer()
+        self._reasoning_open = False
+        return True
 
     def _flush_content_buffer(self, include_partial: bool = False) -> None:
         while "\n" in self._buf_c:
@@ -1093,12 +1121,8 @@ class AlphanusTUI(App):
     def _handle_content_token(self, token: str) -> None:
         if not self._content_open:
             self._content_open = True
-            if self._reasoning_open:
-                self._flush_reasoning_buffer()
-                if not self._done_thinking_rendered:
-                    self._write("[bold #6366f1]· done thinking[/bold #6366f1]")
-                    self._write("")
-                    self._done_thinking_rendered = True
+            if self._close_reasoning_section():
+                self._write("")
         self._buf_c += token
         self._append_reply_token(token)
         self._flush_content_buffer(include_partial=False)
@@ -1111,7 +1135,6 @@ class AlphanusTUI(App):
             token = event.get("text", "")
             if not self._reasoning_open:
                 self._reasoning_open = True
-                self._write("[bold #6366f1]· thinking[/bold #6366f1]")
             self._buf_r += token
             display = self._buf_r
             if "\n" in display:
@@ -1121,8 +1144,7 @@ class AlphanusTUI(App):
             elif self._is_tool_trace_line(display):
                 display = ""
             if display:
-                rendered, _ = render_md(display, False)
-                partial.update(self._partial_markup_renderable(f"[dim]{rendered}[/dim]", indent=4))
+                partial.update(Padding(self._reasoning_panel_renderable(display), (0, 0, 0, 2)))
             else:
                 partial.update("")
 
@@ -1132,8 +1154,7 @@ class AlphanusTUI(App):
 
         elif etype == "tool_phase_started":
             # Preserve in-progress text before tool call deltas start.
-            if self._reasoning_open:
-                self._flush_reasoning_buffer()
+            self._close_reasoning_section()
             self._flush_content_buffer(include_partial=True)
             self._content_open = False
 
@@ -1149,13 +1170,15 @@ class AlphanusTUI(App):
                 )
 
         elif etype == "tool_call":
-            self._flush_reasoning_buffer()
+            self._close_reasoning_section()
             name = event.get("name", "tool")
             args = event.get("arguments", {})
             stream_id = str(event.get("stream_id") or "")
+            detail = self._live_preview.compact_tool_args(name, args)
             if self._show_tool_details:
                 if name not in self._live_preview.streamed_file_tools:
-                    self._write_tool_call_block(name, self._live_preview.compact_tool_args(name, args), indent=2)
+                    self._pending_tool_details.append((name, detail))
+                    self._update_tool_call_partial(name, detail, indent=2)
                 streamed = (
                     self._live_preview.close(
                         stream_id, self._write_indented, self._write_code_block, self._clear_partial_preview
@@ -1173,20 +1196,22 @@ class AlphanusTUI(App):
                 )
 
         elif etype == "tool_result":
-            self._flush_reasoning_buffer()
+            self._close_reasoning_section()
             name = event.get("name", "tool")
             result = event.get("result", {})
             if result.get("ok"):
                 self._live_preview.write_result_preview(
                     name, result, self._write, self._write_indented, self._write_code_block
                 )
+            self._clear_partial_preview()
             if not self._show_tool_result_line(name, bool(result.get("ok"))):
                 return
+            detail = self._take_pending_tool_detail(name)
             if result.get("ok"):
-                self._write_tool_result_block(name, True, indent=2)
+                self._write_tool_lifecycle_block(name, True, detail or "completed", indent=2)
             else:
                 msg = result.get("error", {}).get("message", "failed")
-                self._write_tool_result_block(name, False, msg, indent=2)
+                self._write_tool_lifecycle_block(name, False, f"{detail}   {msg}".strip(), indent=2)
 
         elif etype == "error":
             self._last_stream_error_text = str(event.get("text", "Unknown error"))
@@ -1218,16 +1243,9 @@ class AlphanusTUI(App):
         self._live_preview.close_all(self._write_indented, self._write_code_block, self._clear_partial_preview)
 
         if self._buf_r and not self._content_open:
-            if not self._is_tool_trace_line(self._buf_r):
-                rendered, _ = render_md(self._buf_r, False)
-                self._write_indented(f"[dim]{rendered}[/dim]", indent=4)
-            self._buf_r = ""
-
-        if self._reasoning_open and not self._content_open:
-            if not self._done_thinking_rendered:
-                self._write("[bold #6366f1]· done thinking[/bold #6366f1]")
-                self._write("")
-                self._done_thinking_rendered = True
+            self._close_reasoning_section()
+        elif self._reasoning_open and not self._content_open:
+            self._close_reasoning_section()
 
         self._flush_content_buffer(include_partial=True)
 

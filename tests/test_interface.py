@@ -133,3 +133,28 @@ def test_live_tool_preview_shows_edit_file_diff() -> None:
     assert code_blocks
     assert code_blocks[0][1] == "diff"
     assert "-beta" in "\n".join(code_blocks[0][0])
+
+
+def test_take_pending_tool_detail_is_fifo_by_name() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._pending_tool_details = [
+        ("web_search", "q=one"),
+        ("workspace_tree", "max_depth=5"),
+        ("web_search", "q=two"),
+    ]
+
+    assert tui._take_pending_tool_detail("web_search") == "q=one"
+    assert tui._take_pending_tool_detail("workspace_tree") == "max_depth=5"
+    assert tui._take_pending_tool_detail("web_search") == "q=two"
+    assert tui._take_pending_tool_detail("web_search") == ""
+
+
+def test_file_tool_success_lines_stay_hidden() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._show_tool_details = True
+    tui._live_preview = SimpleNamespace(streamed_file_tools={"create_file", "edit_file", "create_files"})
+
+    assert tui._show_tool_result_line("create_files", True) is False
+    assert tui._show_tool_result_line("create_file", True) is False
+    assert tui._show_tool_result_line("edit_file", True) is False
+    assert tui._show_tool_result_line("workspace_tree", True) is True
