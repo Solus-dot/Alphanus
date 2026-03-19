@@ -489,6 +489,90 @@ def test_session_row_label_highlights_active_session() -> None:
     assert "[25e4a7bf]" in label
 
 
+def test_activate_session_state_moves_non_empty_root_session_to_latest_leaf() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tree = ConvTree()
+    first = tree.add_turn("first")
+    tree.complete_turn(first.id, "one")
+    second = tree.add_turn("second")
+    tree.complete_turn(second.id, "two")
+    tree.current_id = "root"
+
+    session = ChatSession(
+        id="sess-2",
+        title="Loaded Session",
+        created_at="2026-03-20T10:00:00+00:00",
+        updated_at="2026-03-20T10:05:00+00:00",
+        tree=tree,
+    )
+    tui._apply_tree_compaction_policy = lambda current_tree: current_tree
+
+    tui._activate_session_state(session)
+
+    assert tui.conv_tree.current_id == second.id
+    assert tui._tree_cursor_id == second.id
+
+
+def test_activate_session_state_preserves_root_when_pending_branch_is_armed() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tree = ConvTree()
+    first = tree.add_turn("first")
+    tree.complete_turn(first.id, "one")
+    tree.current_id = "root"
+    tree.arm_branch("new-root-branch")
+
+    session = ChatSession(
+        id="sess-2",
+        title="Loaded Session",
+        created_at="2026-03-20T10:00:00+00:00",
+        updated_at="2026-03-20T10:05:00+00:00",
+        tree=tree,
+    )
+    tui._apply_tree_compaction_policy = lambda current_tree: current_tree
+
+    tui._activate_session_state(session)
+
+    assert tui.conv_tree.current_id == "root"
+    assert tui.conv_tree._pending_branch is True
+    assert tui._tree_cursor_id == "root"
+
+
+def test_activate_session_state_uses_newest_leaf_not_rightmost_descendant() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tree = ConvTree()
+    root_turn = tree.add_turn("root turn")
+    tree.complete_turn(root_turn.id, "root done")
+
+    tree.current_id = root_turn.id
+    tree.arm_branch("left")
+    left = tree.add_turn("left")
+    tree.complete_turn(left.id, "left done")
+
+    tree.current_id = root_turn.id
+    tree.arm_branch("right")
+    right = tree.add_turn("right")
+    tree.complete_turn(right.id, "right done")
+
+    tree.current_id = left.id
+    newest = tree.add_turn("latest under left")
+    tree.complete_turn(newest.id, "latest done")
+    tree.current_id = "root"
+
+    session = ChatSession(
+        id="sess-3",
+        title="Branched Session",
+        created_at="2026-03-20T10:00:00+00:00",
+        updated_at="2026-03-20T10:05:00+00:00",
+        tree=tree,
+    )
+    tui._apply_tree_compaction_policy = lambda current_tree: current_tree
+
+    tui._activate_session_state(session)
+
+    assert tui.conv_tree.current_id == newest.id
+    assert tui._tree_cursor_id == newest.id
+
+
 def test_session_picker_name_submit_creates_new_session() -> None:
     modal = SessionPickerModal([], "sess-1", "Session 1")
     dismissed: list[dict[str, str]] = []

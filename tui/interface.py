@@ -428,7 +428,13 @@ class AlphanusTUI(App):
         self._session_id = session.id
         self._session_title = session.title
         self._session_created_at = session.created_at
-        self.conv_tree = self._apply_tree_compaction_policy(session.tree)
+        tree = self._apply_tree_compaction_policy(session.tree)
+        if tree.current_id == "root" and tree.nodes["root"].children and not tree._pending_branch:
+            for node_id in reversed(list(tree.nodes.keys())):
+                if node_id != "root" and not tree.nodes[node_id].children:
+                    tree.current_id = node_id
+                    break
+        self.conv_tree = tree
         self._tree_cursor_id = self.conv_tree.current_id
 
     def _save_active_session(self, rename_to: Optional[str] = None) -> ChatSession:
