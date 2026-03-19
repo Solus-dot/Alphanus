@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -106,11 +104,11 @@ class CodeViewerModal(ModalScreen[None]):
 
     @on(Button.Pressed, "#code-copy")
     def _copy_all(self) -> None:
-        self.app.copy_to_clipboard(self._code)
+        self.action_copy_all()
 
     @on(Button.Pressed, "#code-close")
     def _close(self) -> None:
-        self.dismiss(None)
+        self.action_cancel()
 
 
 class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
@@ -223,11 +221,11 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
 
     @on(Button.Pressed, "#config-save")
     def _save_button(self) -> None:
-        self._save()
+        self.action_save()
 
     @on(Button.Pressed, "#config-cancel")
     def _cancel_button(self) -> None:
-        self.dismiss(None)
+        self.action_cancel()
 
     def _save(self) -> None:
         editor = self.query_one("#config-modal-editor", TextArea)

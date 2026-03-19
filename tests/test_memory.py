@@ -380,7 +380,6 @@ def test_transformer_runtime_reembeds_hash_payload(monkeypatch, tmp_path: Path):
     with path.open("rb") as handle:
         payload = pickle.load(handle)
     assert payload["embedding_backend"] == "transformer"
-    assert payload["configured_embedding_backend"] == "transformer"
     assert payload["model_name"] == "toy-transformer"
 
 

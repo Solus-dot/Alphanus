@@ -1380,10 +1380,6 @@ class Agent:
             term in text for term in multi_file_terms
         )
 
-    @staticmethod
-    def _has_workspace_file_materialization(state: TurnState) -> bool:
-        return any(name in state.tool_counts for name in {"create_file", "create_files", "edit_file"})
-
     def _workspace_materialization_target(self, ctx: SkillContext, selected: List[Any]) -> int:
         if not self._is_workspace_skill_selected(selected):
             return 0

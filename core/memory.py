@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import os
 import pickle
 import tempfile
@@ -86,7 +84,6 @@ class VectorMemory:
         self._all_index_cache: Optional[np.ndarray] = None
         self._embedding_space_ready = False
         self._stored_embedding_backend: Optional[str] = None
-        self._stored_configured_embedding_backend: Optional[str] = None
         self._stored_model_name: Optional[str] = None
         self._encoder_status = "uninitialized"
         self._encoder_source = ""
@@ -180,10 +177,7 @@ class VectorMemory:
         if self.configured_embedding_backend == "hash":
             self.encoder = _HashEncoder(dim=384)
             self._set_encoder_state("ready", "hash", "deterministic hash encoder")
-        elif self.configured_embedding_backend == "transformer":
-            self.encoder = self._load_transformer_encoder(self.model_name)
         else:
-            # "auto" preserves prior behavior while still lazily loading.
             self.encoder = self._load_transformer_encoder(self.model_name)
         if isinstance(self.encoder, _HashEncoder):
             self.embedding_backend = "hash"
@@ -192,12 +186,8 @@ class VectorMemory:
                 if self.configured_embedding_backend != "hash":
                     detail = "transformer unavailable; using hash fallback"
                 self._set_encoder_state("ready" if self.configured_embedding_backend == "hash" else "fallback", "hash", detail)
-        elif self.configured_embedding_backend == "auto":
-            self.embedding_backend = "transformer"
-            if self._encoder_status == "uninitialized":
-                self._set_encoder_state("ready", "transformer", "semantic transformer encoder")
         else:
-            self.embedding_backend = self.configured_embedding_backend
+            self.embedding_backend = "transformer"
             if self._encoder_status == "uninitialized":
                 self._set_encoder_state("ready", "transformer", "semantic transformer encoder")
         self.dimension = int(getattr(self.encoder, "dim", 384))
@@ -232,10 +222,7 @@ class VectorMemory:
         return len(dims) == 1
 
     def _stored_backend_matches_current_space(self) -> bool:
-        stored_backend = self._normalize_backend(
-            self._stored_embedding_backend or self._stored_configured_embedding_backend or "",
-            default="",
-        )
+        stored_backend = self._normalize_backend(self._stored_embedding_backend or "", default="")
         if not stored_backend:
             return False
         if stored_backend == "auto":
@@ -272,15 +259,8 @@ class VectorMemory:
         else:
             self.dimension = int(self.memories[0].vector.shape[0])
         self._stored_embedding_backend = self.embedding_backend
-        self._stored_configured_embedding_backend = self.configured_embedding_backend
         self._stored_model_name = self.model_name
         self._embedding_space_ready = True
-
-    def _resolve_runtime_state(self) -> None:
-        if self.memories:
-            self._ensure_embedding_space()
-            return
-        self._ensure_encoder()
 
     def _append_to_index_cache(self, item: MemoryItem) -> bool:
         if self._matrix_cache is None or self._norm_cache is None or self._all_index_cache is None:
@@ -319,10 +299,6 @@ class VectorMemory:
 
         if isinstance(payload, dict):
             self._stored_embedding_backend = self._normalize_backend(payload.get("embedding_backend", ""), default="")
-            self._stored_configured_embedding_backend = self._normalize_backend(
-                payload.get("configured_embedding_backend", ""),
-                default="",
-            )
             raw_model_name = str(payload.get("model_name", "")).strip()
             self._stored_model_name = raw_model_name or None
         raw_memories = payload.get("memories", []) if isinstance(payload, dict) else []
@@ -356,7 +332,6 @@ class VectorMemory:
             "schema_version": "1.0.0",
             "model_name": self.model_name,
             "embedding_backend": self.embedding_backend,
-            "configured_embedding_backend": self.configured_embedding_backend,
             "memories": [
                 {
                     "id": m.id,
@@ -433,7 +408,6 @@ class VectorMemory:
         self._next_id += 1
         self.memories.append(item)
         self._stored_embedding_backend = self.embedding_backend
-        self._stored_configured_embedding_backend = self.configured_embedding_backend
         self._stored_model_name = self.model_name
         self._embedding_space_ready = True
         if not self._append_to_index_cache(item):
@@ -524,7 +498,10 @@ class VectorMemory:
         return changed
 
     def stats(self) -> Dict[str, Any]:
-        self._resolve_runtime_state()
+        if self.memories:
+            self._ensure_embedding_space()
+        else:
+            self._ensure_encoder()
         by_type: Dict[str, int] = {}
         for m in self.memories:
             by_type[m.type] = by_type.get(m.type, 0) + 1
