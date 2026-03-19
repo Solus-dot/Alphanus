@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Tuple
 
-DEFAULT_SAVE = "llamachat_tree.json"
-
 
 @dataclass(frozen=True)
 class CommandEntry:
@@ -22,6 +20,11 @@ HELP_SECTIONS = [
             ("/details", "Toggle tool execution details"),
             ("/think", "Toggle thinking mode"),
             ("/clear", "Clear tree and chat log"),
+            ("/sessions", "List saved sessions"),
+            ("/new [name]", "Create and switch to a new session"),
+            ("/rename <name>", "Rename the active session"),
+            ("/save [name]", "Save the active session"),
+            ("/load", "Open the session picker"),
             ("/file <path>", "Attach image/text file to next message"),
             ("/quit /exit /q", "Exit app"),
         ],
@@ -56,8 +59,8 @@ HELP_SECTIONS = [
             ("/config", "Edit global config in a popup"),
             ("/report [file]", "Save a support bundle JSON"),
             ("/code [n|last]", "Open a copyable code block viewer"),
-            ("/save [file]", f"Save tree JSON (default {DEFAULT_SAVE})"),
-            ("/load [file]", f"Load tree JSON (default {DEFAULT_SAVE})"),
+            ("/export", "Export current session into .alphanus/exports"),
+            ("/import", "Open the export picker"),
         ],
     ),
 ]
@@ -68,6 +71,11 @@ COMMAND_ENTRIES = [
     CommandEntry("/details", "/details", "Toggle tool execution details"),
     CommandEntry("/think", "/think", "Toggle thinking mode"),
     CommandEntry("/clear", "/clear", "Clear tree and chat log"),
+    CommandEntry("/sessions", "/sessions", "List saved sessions"),
+    CommandEntry("/new [name]", "/new ", "Create and switch to a new session"),
+    CommandEntry("/rename <name>", "/rename ", "Rename the active session"),
+    CommandEntry("/save [name]", "/save ", "Save the active session"),
+    CommandEntry("/load", "/load", "Open the session picker"),
     CommandEntry("/file <path>", "/file ", "Attach a file to the next message"),
     CommandEntry("/branch [label]", "/branch ", "Arm the next user message as a branch"),
     CommandEntry("/unbranch", "/unbranch", "Return to the nearest branch fork"),
@@ -86,8 +94,8 @@ COMMAND_ENTRIES = [
     CommandEntry("/config", "/config", "Edit the global config in a popup"),
     CommandEntry("/report [file]", "/report ", "Save a support bundle JSON"),
     CommandEntry("/code [n|last]", "/code ", "Open a copyable code block viewer"),
-    CommandEntry("/save [file]", "/save ", f"Save tree JSON (default {DEFAULT_SAVE})"),
-    CommandEntry("/load [file]", "/load ", f"Load tree JSON (default {DEFAULT_SAVE})"),
+    CommandEntry("/export", "/export", "Export current session into .alphanus/exports"),
+    CommandEntry("/import", "/import", "Open the export picker"),
     CommandEntry("/quit", "/quit", "Exit app", aliases=("/exit", "/q")),
 ]
 

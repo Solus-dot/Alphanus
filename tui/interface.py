@@ -25,9 +25,9 @@ from textual.widgets.option_list import Option
 from agent.core import Agent, AgentTurnResult
 from core.attachments import build_content, classify_attachment
 from core.conv_tree import ConvTree, Turn
+from core.sessions import ChatSession, ExportSummary, SessionStore, SessionSummary
 from tui.commands import (
     HELP_SECTIONS,
-    DEFAULT_SAVE,
     CommandEntry,
     command_entries_for_query,
     command_label,
@@ -35,7 +35,14 @@ from tui.commands import (
 )
 from tui.live_tool_preview import LiveToolPreviewManager
 from tui.markdown_utils import fence_language, hanging_indent, render_md
-from tui.popups import CodeViewerModal, ConfigEditorModal
+from tui.popups import (
+    CodeViewerModal,
+    ConfigEditorModal,
+    SelectionPickerModal,
+    SessionPickerModal,
+    export_picker_items,
+    session_picker_items,
+)
 from tui.sidebar import render_sidebar_markup
 from tui.status import status_left_markup, status_right_markup, topbar_center, topbar_left, topbar_right
 
@@ -311,7 +318,12 @@ class AlphanusTUI(App):
         self._inactive_tool_argument_char_limit = int(tree_cfg.get("inactive_tool_argument_char_limit", 5000))
         self._inactive_tool_content_char_limit = int(tree_cfg.get("inactive_tool_content_char_limit", 8000))
 
+        self._session_store = SessionStore(self.agent.skill_runtime.workspace.workspace_root)
+        self._session_id = ""
+        self._session_title = ""
+        self._session_created_at = ""
         self.conv_tree = self._new_conv_tree()
+        self._activate_session_state(self._session_store.bootstrap())
         self.pending: List[Tuple[str, str]] = []
 
         self._stop_event = threading.Event()
@@ -352,6 +364,7 @@ class AlphanusTUI(App):
         self._tree_cursor_id = "root"
         self._last_log_was_blank = False
         self._last_model_context_tokens: Optional[int] = None
+        self._startup_session_prompt_opened = False
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="topbar"):
@@ -393,6 +406,7 @@ class AlphanusTUI(App):
         self._update_status2()
         self._update_sidebar()
         self.query_one(ChatInput).focus()
+        self.call_after_refresh(self._open_startup_session_picker)
 
     def on_resize(self, event) -> None:
         sidebar = self.query_one("#sidebar", ScrollableContainer)
@@ -409,6 +423,164 @@ class AlphanusTUI(App):
             inactive_tool_argument_char_limit=self._inactive_tool_argument_char_limit,
             inactive_tool_content_char_limit=self._inactive_tool_content_char_limit,
         )
+
+    def _activate_session_state(self, session: ChatSession) -> None:
+        self._session_id = session.id
+        self._session_title = session.title
+        self._session_created_at = session.created_at
+        self.conv_tree = self._apply_tree_compaction_policy(session.tree)
+        self._tree_cursor_id = self.conv_tree.current_id
+
+    def _save_active_session(self, rename_to: Optional[str] = None) -> ChatSession:
+        title = (rename_to or self._session_title or "").strip() or self._session_title or "Untitled Session"
+        session = self._session_store.save_tree(
+            self._session_id,
+            title,
+            self.conv_tree,
+            created_at=self._session_created_at,
+            activate=True,
+        )
+        self._session_title = session.title
+        self._session_created_at = session.created_at
+        return session
+
+    def _session_timestamp_label(self, value: str) -> str:
+        text = str(value or "").replace("T", " ").replace("+00:00", "Z")
+        return text[:16] if len(text) >= 16 else text
+
+    def _session_row_label(self, summary: SessionSummary) -> str:
+        status = (
+            "[bold #8b5cf6]active[/bold #8b5cf6]"
+            if summary.is_active
+            else "[#71717a]saved[/#71717a]"
+        )
+        title = (
+            f"[bold #c4b5fd]{esc(summary.title)}[/bold #c4b5fd]"
+            if summary.is_active
+            else f"[#f4f4f5]{esc(summary.title)}[/#f4f4f5]"
+        )
+        turns = "turn" if summary.turn_count == 1 else "turns"
+        branches = "branch" if summary.branch_count == 1 else "branches"
+        return (
+            f"{status}  {title} [#a1a1aa][{esc(summary.id)}][/#a1a1aa]  "
+            f"[#f4f4f5]{summary.turn_count} {turns}[/#f4f4f5]  "
+            f"[#f4f4f5]{summary.branch_count} {branches}[/#f4f4f5]  "
+            f"[#a1a1aa]{esc(self._session_timestamp_label(summary.updated_at))}[/#a1a1aa]"
+        )
+
+    def _cmd_sessions(self) -> None:
+        sessions = self._session_store.list_sessions()
+        self._write_section_heading("Sessions")
+        if not sessions:
+            self._write_info("No saved sessions yet.")
+            return
+        self._write_indexed_dim_lines(
+            [self._session_row_label(summary) for summary in sessions],
+            color="#a1a1aa",
+            allow_markup=True,
+        )
+
+    def _open_load_session_picker(self) -> None:
+        sessions = self._session_store.list_sessions()
+        self.push_screen(
+            SelectionPickerModal(
+                title="Load Session",
+                subtitle="Choose a saved session to open.",
+                confirm_label="Load Session",
+                empty_text="No saved sessions available.",
+                items=session_picker_items(sessions),
+            ),
+            self._on_load_session_picker_close,
+        )
+
+    def _on_load_session_picker_close(self, result: Optional[Dict[str, str]]) -> None:
+        session_id = str((result or {}).get("id") or "").strip()
+        if not session_id:
+            return
+        try:
+            self._save_active_session()
+            loaded = self._session_store.load_session(session_id)
+            self._switch_to_session(loaded)
+            self._write_command_action(f"Loaded session '{loaded.title}'", icon="✓")
+        except Exception as exc:
+            self._write_error(f"Load failed: {exc}")
+
+    def _open_import_picker(self) -> None:
+        exports = self._session_store.list_exports()
+        self.push_screen(
+            SelectionPickerModal(
+                title="Import Export",
+                subtitle="Choose a stored export to import as a new session.",
+                confirm_label="Import Export",
+                empty_text="No exports found in .alphanus/exports.",
+                items=export_picker_items(exports),
+            ),
+            self._on_import_picker_close,
+        )
+
+    def _on_import_picker_close(self, result: Optional[Dict[str, str]]) -> None:
+        export_id = str((result or {}).get("id") or "").strip()
+        if not export_id:
+            return
+        try:
+            self._save_active_session()
+            path = self._session_store.resolve_export_path(export_id)
+            imported = self._session_store.import_tree(path)
+            self._switch_to_session(imported)
+            self._write_command_action(f"Imported session '{imported.title}'", icon="✓")
+        except Exception as exc:
+            self._write_error(f"Import failed: {exc}")
+
+    def _current_session_is_blank(self) -> bool:
+        return (
+            self.conv_tree.current_id == "root"
+            and len(self.conv_tree.nodes) == 1
+            and not self.conv_tree.current.children
+            and not self.conv_tree._pending_branch
+        )
+
+    def _open_new_session(self, title: str = "") -> ChatSession:
+        normalized = title.strip()
+        if self._current_session_is_blank():
+            return self._save_active_session(rename_to=normalized or None)
+        self._save_active_session()
+        return self._session_store.create_session(normalized)
+
+    def _open_startup_session_picker(self) -> None:
+        if self._startup_session_prompt_opened:
+            return
+        self._startup_session_prompt_opened = True
+        sessions = self._session_store.list_sessions()
+        self.push_screen(
+            SessionPickerModal(sessions, self._session_id, self._session_title),
+            self._on_startup_session_picker_close,
+        )
+
+    def _on_startup_session_picker_close(self, result: Optional[Dict[str, str]]) -> None:
+        action = str((result or {}).get("action") or "continue")
+        if action == "load":
+            selector = str((result or {}).get("selector") or "").strip()
+            if not selector:
+                return
+            try:
+                session = self._session_store.load_session(selector)
+                self._switch_to_session(session)
+            except Exception as exc:
+                self._write_error(f"Load failed: {exc}")
+            return
+        if action == "new":
+            session = self._open_new_session(str((result or {}).get("title") or ""))
+            self._switch_to_session(session)
+
+    def _switch_to_session(self, session: ChatSession, *, clear_pending: bool = True) -> None:
+        self._activate_session_state(session)
+        if clear_pending:
+            self.pending.clear()
+        self._rebuild_viewport()
+        self._update_sidebar()
+        self._update_status1()
+        self._update_status2()
+        self._update_input_placeholder()
 
     def _tree_rows(self) -> List[Tuple[str, str, bool]]:
         return self.conv_tree.render_tree(width=30)
@@ -550,6 +722,7 @@ class AlphanusTUI(App):
         if self._tree_cursor_id not in self.conv_tree.nodes:
             return
         self.conv_tree.current_id = self._tree_cursor_id
+        self._save_active_session()
         self._rebuild_viewport()
         self._update_sidebar()
         self._update_topbar()
@@ -917,9 +1090,12 @@ class AlphanusTUI(App):
             else f"  [bold {ACCENT_COLOR}]{esc(label)}:[/bold {ACCENT_COLOR}] {rendered}"
         )
 
-    def _write_indexed_dim_lines(self, rows: List[str], *, color: str = ACCENT_COLOR) -> None:
+    def _write_indexed_dim_lines(self, rows: List[str], *, color: str = ACCENT_COLOR, allow_markup: bool = False) -> None:
         for index, row in enumerate(rows):
-            self._write(f"  [{color}]{index}.[/{color}] [#f4f4f5]{esc(row)}[/#f4f4f5]")
+            if allow_markup:
+                self._write(f"  [{color}]{index}.[/{color}] {row}")
+            else:
+                self._write(f"  [{color}]{index}.[/{color}] [#f4f4f5]{esc(row)}[/#f4f4f5]")
 
     def _write_command_action(self, text: str, *, icon: str = "•", color: str = ACCENT_COLOR) -> None:
         self._write(f"  [bold {color}]{esc(icon)}[/bold {color}] [#f4f4f5]{esc(text)}[/#f4f4f5]")
@@ -1000,6 +1176,7 @@ class AlphanusTUI(App):
         self.query_one("#topbar-left", Static).update(topbar_left(workspace_root, width=width))
         self.query_one("#topbar-center", Static).update(
             topbar_center(
+                session_name=self._session_title or "Session",
                 branch_name=self._current_branch_name(),
                 memory_mode=self._memory_mode_label(),
                 width=width,
@@ -1487,7 +1664,7 @@ class AlphanusTUI(App):
             finish_reason = str(event.get("finish_reason") or "")
             has_content = bool(event.get("has_content"))
             has_tool_calls = bool(event.get("has_tool_calls"))
-            # Some llama-server/model passes end with reasoning-only stop and no
+            # Some model passes end with reasoning-only stop and no
             # visible output. Drop that provisional reasoning so it doesn't leak.
             if finish_reason in {"stop", "length"} and not has_content and not has_tool_calls:
                 self._buf_r = ""
@@ -1552,6 +1729,7 @@ class AlphanusTUI(App):
             if result.status == "cancelled":
                 self._write("[bold red]  ✖ interrupted[/bold red]")
 
+        self._save_active_session()
         self._write("")
         self._maybe_scroll_end()
         self.streaming = False
@@ -1618,6 +1796,7 @@ class AlphanusTUI(App):
         self.pending.clear()
         content = build_content(text, attachments)
         turn = self.conv_tree.add_turn(content)
+        self._save_active_session()
         self._write_turn_user(turn)
         self._update_status1()
         self._update_status2()
@@ -1738,8 +1917,31 @@ class AlphanusTUI(App):
             self._write_info(f"Thinking {'enabled' if self.thinking else 'disabled'}")
             return True
 
+        if cmd == "/sessions":
+            self._cmd_sessions()
+            return True
+
+        if self.streaming and cmd in {"/new", "/load", "/import", "/clear"}:
+            self._write_error("Stop the active response before changing sessions.")
+            return True
+
+        if cmd == "/new":
+            session = self._open_new_session(arg)
+            self._switch_to_session(session)
+            self._write_command_action(f"Opened session '{session.title}'", icon="✓")
+            return True
+
+        if cmd == "/rename":
+            if not arg:
+                return self._write_usage("/rename <name>")
+            session = self._save_active_session(rename_to=arg)
+            self._update_topbar()
+            self._write_command_action(f"Renamed session to '{session.title}'", icon="✓")
+            return True
+
         if cmd == "/branch":
             self.conv_tree.arm_branch(arg)
+            self._save_active_session()
             label = self.conv_tree._pending_branch_label
             self._write_command_action(f"Branch armed '{label}'", icon="⎇", color="#8b5cf6")
             self._update_status1()
@@ -1749,6 +1951,7 @@ class AlphanusTUI(App):
         if cmd == "/unbranch":
             if self.conv_tree._pending_branch:
                 self.conv_tree.clear_pending_branch()
+                self._save_active_session()
                 self._write_command_action("Disarmed pending branch", icon="↩", color="#8b5cf6")
                 self._update_status1()
                 self._update_input_placeholder()
@@ -1757,6 +1960,7 @@ class AlphanusTUI(App):
             if moved is None:
                 self._write_error("No branch to leave.")
             else:
+                self._save_active_session()
                 self._write_command_action("Returned to fork point", icon="↩", color="#8b5cf6")
                 self._rebuild_viewport()
                 self._update_sidebar()
@@ -1782,6 +1986,7 @@ class AlphanusTUI(App):
             if not turn:
                 self._write_error(f"No child {idx} at current node")
             else:
+                self._save_active_session()
                 self._write_command_action(f"Switched to branch {idx}", icon="↪")
                 self._rebuild_viewport()
                 self._update_sidebar()
@@ -1792,28 +1997,28 @@ class AlphanusTUI(App):
             return True
 
         if cmd == "/save":
-            path = arg or DEFAULT_SAVE
             try:
-                self.conv_tree.save(path)
-                self._write_command_action(f"Saved tree to {path}", icon="✓")
+                session = self._save_active_session(rename_to=arg or None)
+                self._update_topbar()
+                self._write_command_action(f"Saved session '{session.title}'", icon="✓")
             except Exception as exc:
                 self._write_error(f"Save failed: {exc}")
             return True
 
         if cmd == "/load":
-            path = arg or DEFAULT_SAVE
-            if not os.path.isfile(path):
-                self._write_error(f"File not found: {path}")
-                return True
+            self._open_load_session_picker()
+            return True
+
+        if cmd == "/export":
             try:
-                loaded = ConvTree.load(path)
-                self.conv_tree = self._apply_tree_compaction_policy(loaded)
-                self._rebuild_viewport()
-                self._update_sidebar()
-                self._update_status1()
-                self._write_command_action(f"Loaded tree from {path}", icon="✓")
+                path = self._session_store.export_session_tree(self._session_title, self.conv_tree)
+                self._write_command_action(f"Exported session to {path.name}", icon="✓")
             except Exception as exc:
-                self._write_error(f"Load failed: {exc}")
+                self._write_error(f"Export failed: {exc}")
+            return True
+
+        if cmd == "/import":
+            self._open_import_picker()
             return True
 
         if cmd == "/clear":
@@ -1821,6 +2026,7 @@ class AlphanusTUI(App):
             self.pending.clear()
             self._log().clear()
             self._partial().update("")
+            self._save_active_session()
             self._update_status1()
             self._update_status2()
             self._update_sidebar()

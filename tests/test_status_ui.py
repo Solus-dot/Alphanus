@@ -7,7 +7,7 @@ from tui.status import status_left_markup, status_right_markup, topbar_center, t
 
 def test_topbar_helpers_include_workspace_branch_and_context() -> None:
     left = topbar_left("/Users/sohom/Desktop/Alphanus-Workspace", width=180)
-    center = topbar_center(branch_name="root", memory_mode="hash", width=180)
+    center = topbar_center(session_name="Session 1", branch_name="root", memory_mode="hash", width=180)
     right = topbar_right(
         endpoint="http://127.0.0.1:8080/v1/chat/completions",
         context_tokens=321,
@@ -16,6 +16,7 @@ def test_topbar_helpers_include_workspace_branch_and_context() -> None:
 
     assert "ALPHANUS" in left
     assert "Alphanus-Workspace" in left
+    assert "session:" in center
     assert "branch:" in center
     assert "memory:" in center
     assert "ctx:" in right
@@ -30,6 +31,7 @@ def test_topbar_right_handles_missing_model_usage() -> None:
         width=180,
     )
 
+    assert right.startswith("  ")
     assert "ctx:" in right
     assert "—" in right
 
@@ -80,7 +82,12 @@ def test_status_left_changes_with_focused_panel() -> None:
 
 def test_status_helpers_compact_at_small_width() -> None:
     left = topbar_left("/Users/sohom/Desktop/Alphanus-Workspace", width=90)
-    center = topbar_center(branch_name="very-long-branch-name", memory_mode="hash", width=90)
+    center = topbar_center(
+        session_name="Very Long Session Name",
+        branch_name="very-long-branch-name",
+        memory_mode="hash",
+        width=90,
+    )
     right = topbar_right(
         endpoint="http://127.0.0.1:8080/v1/chat/completions",
         context_tokens=321,
@@ -107,6 +114,7 @@ def test_status_helpers_compact_at_small_width() -> None:
     )
 
     assert "Alphanus-Work…" in left
+    assert "ss:" in center
     assert "br:" in center
     assert "memory:" not in center
     assert "127.0.0.1:8080" not in right

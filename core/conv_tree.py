@@ -342,6 +342,8 @@ class ConvTree:
         return {
             "schema_version": SCHEMA_VERSION,
             "current_id": self.current_id,
+            "pending_branch": self._pending_branch,
+            "pending_branch_label": self._pending_branch_label,
             "nodes": {key: node.to_dict() for key, node in self.nodes.items()},
         }
 
@@ -356,8 +358,8 @@ class ConvTree:
         tree = ConvTree.__new__(ConvTree)
         tree.nodes = {key: Turn.from_dict(value) for key, value in data["nodes"].items()}
         tree.current_id = data["current_id"]
-        tree._pending_branch = False
-        tree._pending_branch_label = ""
+        tree._pending_branch = bool(data.get("pending_branch", False))
+        tree._pending_branch_label = str(data.get("pending_branch_label") or "")
         tree._compact_inactive_branches = True
         tree._inactive_assistant_char_limit = 12000
         tree._inactive_tool_argument_char_limit = 5000

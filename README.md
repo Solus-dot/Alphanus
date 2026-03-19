@@ -16,7 +16,7 @@ Current behavior and architecture:
 - built-in workspace, shell, memory, search, and utility skills
 - workspace-safe read/write/delete tools plus constrained verification runners
 - persistent vector memory with transformer embeddings and deterministic hash fallback
-- branchable conversation tree with save/load and inactive-branch compaction
+- branchable conversation tree with named multi-session save/load plus inactive-branch compaction
 - TUI support for config editing, live tool previews, support bundle export, and code-block popups
 
 Bundled skills:
@@ -72,6 +72,11 @@ Conversation and view:
 - `/details`
 - `/think`
 - `/clear`
+- `/sessions`
+- `/new [name]`
+- `/rename <name>`
+- `/save [name]`
+- `/load`
 - `/code [n|last]`
 - `/quit`, `/exit`, `/q`
 
@@ -100,8 +105,19 @@ Memory, workspace, and support:
 - `/workspace tree`
 - `/config`
 - `/report [file]`
-- `/save [file]`
-- `/load [file]`
+- `/export`
+- `/import`
+
+Session notes:
+- Startup opens a session picker before chat input so you can load an existing session or start a new one immediately.
+- Sessions are stored under `.alphanus/sessions/` in the current workspace.
+- Managed exports are stored under `.alphanus/exports/` in the current workspace.
+- Each saved session keeps its own `ConvTree`, active node, and branch structure.
+- The active session is autosaved to disk on each turn.
+- `/save` persists the active session and can optionally rename it.
+- `/load` opens a picker of saved sessions.
+- `/export` writes the current session tree into `.alphanus/exports`.
+- `/import` opens a picker of stored exports and imports the selected export as a new session.
 
 ## Config
 

@@ -124,6 +124,18 @@ def test_save_load_roundtrip(tmp_path: Path):
     assert "[interrupted]" in (loaded.nodes[turn.id].assistant_content or "")
 
 
+def test_save_load_roundtrip_preserves_pending_branch_state(tmp_path: Path):
+    tree = ConvTree()
+    tree.arm_branch("alt-path")
+
+    path = tmp_path / "tree.json"
+    tree.save(str(path))
+    loaded = ConvTree.load(str(path))
+
+    assert loaded._pending_branch is True
+    assert loaded._pending_branch_label == "alt-path"
+
+
 def test_user_text_strips_inline_attachment_blocks():
     tree = ConvTree()
     content = [

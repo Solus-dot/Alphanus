@@ -34,15 +34,19 @@ def topbar_left(workspace_root: str, *, width: int) -> str:
     )
 
 
-def topbar_center(*, branch_name: str, memory_mode: str, width: int) -> str:
+def topbar_center(*, session_name: str, branch_name: str, memory_mode: str, width: int) -> str:
     if width < 105:
-        return f"[dim]br:[/dim] [#8b5cf6]{esc(_truncate(branch_name, 10))}[/#8b5cf6]"
+        return (
+            f"[dim]ss:[/dim] [#f4f4f5]{esc(_truncate(session_name, 10))}[/#f4f4f5]   "
+            f"[dim]br:[/dim] [#8b5cf6]{esc(_truncate(branch_name, 10))}[/#8b5cf6]"
+        )
     if width < 140:
         return (
-            f"[dim]branch:[/dim] [#8b5cf6]{esc(_truncate(branch_name, 12))}[/#8b5cf6]   "
-            f"[dim]mem:[/dim] [#10b981]{esc(_truncate(memory_mode, 8))}[/#10b981]"
+            f"[dim]session:[/dim] [#f4f4f5]{esc(_truncate(session_name, 14))}[/#f4f4f5]   "
+            f"[dim]branch:[/dim] [#8b5cf6]{esc(_truncate(branch_name, 12))}[/#8b5cf6]"
         )
     return (
+        f"[dim]session:[/dim] [#f4f4f5]{esc(session_name)}[/#f4f4f5]   "
         f"[dim]branch:[/dim] [#8b5cf6]{esc(branch_name)}[/#8b5cf6]   "
         f"[dim]memory:[/dim] [#10b981]{esc(memory_mode)}[/#10b981]"
     )
@@ -54,8 +58,8 @@ def topbar_right(*, endpoint: str, context_tokens: Optional[int], width: int) ->
         short_endpoint = ""
     ctx_markup = "[#a1a1aa]—[/#a1a1aa]" if context_tokens is None else f"[#6366f1]{context_tokens}[/#6366f1]"
     if not short_endpoint:
-        return f"[dim]ctx:[/dim] {ctx_markup}"
-    return f"[#a1a1aa]{esc(_truncate(short_endpoint, 22 if width < 140 else 28))}[/#a1a1aa]   [dim]ctx:[/dim] {ctx_markup}"
+        return f"  [dim]ctx:[/dim] {ctx_markup}"
+    return f"  [#a1a1aa]{esc(_truncate(short_endpoint, 22 if width < 140 else 28))}[/#a1a1aa]   [dim]ctx:[/dim] {ctx_markup}"
 
 
 def status_right_markup(

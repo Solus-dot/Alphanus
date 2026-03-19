@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from core.conv_tree import ConvTree
+from core.sessions import ChatSession
 from tui.live_tool_preview import LiveToolPreviewManager
 from tui.commands import command_entries_for_query
 from tui.interface import AlphanusTUI
+from tui.popups import SessionPickerModal
 
 
 def test_command_entries_match_quit_aliases() -> None:
@@ -267,3 +270,230 @@ def test_show_keymap_writes_expected_sections() -> None:
     assert any("Tab / Shift+Tab" in line for line in lines)
     assert any("SECTION:Tree" == line for line in lines)
     assert any("Enter / o" in line for line in lines)
+
+
+def test_handle_save_renames_and_persists_active_session() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tree = ConvTree()
+    saved_calls: list[tuple[str, str, str]] = []
+    actions: list[str] = []
+    errors: list[str] = []
+    tui._id = "app"
+    tui._reactive_streaming = False
+
+    def save_tree(session_id: str, title: str, saved_tree: ConvTree, *, created_at: str, activate: bool = True) -> ChatSession:
+        saved_calls.append((session_id, title, created_at))
+        assert saved_tree is tree
+        assert activate is True
+        return ChatSession(
+            id=session_id,
+            title=title,
+            created_at=created_at,
+            updated_at="2026-03-20T10:30:00+00:00",
+            tree=saved_tree,
+        )
+
+    tui._session_store = SimpleNamespace(save_tree=save_tree)
+    tui._session_id = "sess-1"
+    tui._session_title = "Session 1"
+    tui._session_created_at = "2026-03-20T10:00:00+00:00"
+    tui.conv_tree = tree
+    tui._write_command_action = lambda text, **_kwargs: actions.append(text)
+    tui._write_error = errors.append
+    tui._update_topbar = lambda: None
+
+    assert tui._handle_command("/save Backend Work") is True
+    assert saved_calls == [("sess-1", "Backend Work", "2026-03-20T10:00:00+00:00")]
+    assert tui._session_title == "Backend Work"
+    assert errors == []
+    assert actions == ["Saved session 'Backend Work'"]
+
+
+def test_handle_load_switches_sessions_and_rebuilds_view() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    opened: list[str] = []
+    tui._open_load_session_picker = lambda: opened.append("load")
+
+    assert tui._handle_command("/load") is True
+    assert opened == ["load"]
+
+
+def test_open_new_session_reuses_blank_current_session() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui.conv_tree = ConvTree()
+    reused = ChatSession(
+        id="sess-1",
+        title="Fresh Session",
+        created_at="2026-03-20T10:00:00+00:00",
+        updated_at="2026-03-20T10:01:00+00:00",
+        tree=tui.conv_tree,
+    )
+    titles: list[str | None] = []
+
+    tui._save_active_session = lambda rename_to=None: titles.append(rename_to) or reused
+    tui._session_store = SimpleNamespace(create_session=lambda _title: (_ for _ in ()).throw(AssertionError("should not create")))
+
+    session = tui._open_new_session("Fresh Session")
+
+    assert session is reused
+    assert titles == ["Fresh Session"]
+
+
+def test_startup_session_picker_close_loads_selected_session() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    loaded = ChatSession(
+        id="sess-2",
+        title="Loaded Session",
+        created_at="2026-03-20T10:00:00+00:00",
+        updated_at="2026-03-20T10:01:00+00:00",
+        tree=ConvTree(),
+    )
+    switched: list[ChatSession] = []
+
+    tui._session_store = SimpleNamespace(load_session=lambda selector: loaded if selector == "sess-2" else None)
+    tui._switch_to_session = lambda session, clear_pending=True: switched.append(session)
+
+    tui._on_startup_session_picker_close({"action": "load", "selector": "sess-2"})
+
+    assert switched == [loaded]
+
+
+def test_startup_session_picker_close_reports_load_failure() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    errors: list[str] = []
+    switched: list[ChatSession] = []
+
+    def load_session(_selector: str) -> ChatSession:
+        raise ValueError("broken session file")
+
+    tui._session_store = SimpleNamespace(load_session=load_session)
+    tui._switch_to_session = lambda session, clear_pending=True: switched.append(session)
+    tui._write_error = errors.append
+
+    tui._on_startup_session_picker_close({"action": "load", "selector": "sess-2"})
+
+    assert switched == []
+    assert errors == ["Load failed: broken session file"]
+
+
+def test_load_session_picker_close_switches_sessions() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    current_tree = ConvTree()
+    loaded_tree = ConvTree()
+    loaded_turn = loaded_tree.add_turn("loaded")
+    loaded_tree.complete_turn(loaded_turn.id, "done")
+    events: list[str] = []
+    errors: list[str] = []
+
+    def save_tree(session_id: str, title: str, tree: ConvTree, *, created_at: str, activate: bool = True) -> ChatSession:
+        assert tree is current_tree
+        return ChatSession(
+            id=session_id,
+            title=title,
+            created_at=created_at,
+            updated_at="2026-03-20T10:05:00+00:00",
+            tree=tree,
+        )
+
+    def load_session(selector: str) -> ChatSession:
+        assert selector == "sess-2"
+        return ChatSession(
+            id="sess-2",
+            title="Loaded Session",
+            created_at="2026-03-20T10:06:00+00:00",
+            updated_at="2026-03-20T10:07:00+00:00",
+            tree=loaded_tree,
+        )
+
+    tui._session_store = SimpleNamespace(save_tree=save_tree, load_session=load_session)
+    tui._session_id = "sess-1"
+    tui._session_title = "Session 1"
+    tui._session_created_at = "2026-03-20T10:00:00+00:00"
+    tui.conv_tree = current_tree
+    tui.pending = [("/tmp/example.txt", "text")]
+    tui._switch_to_session = lambda session, clear_pending=True: events.append(session.title)
+    tui._write_command_action = lambda text, **_kwargs: events.append(text)
+    tui._write_error = errors.append
+
+    tui._on_load_session_picker_close({"id": "sess-2"})
+
+    assert errors == []
+    assert events == ["Loaded Session", "Loaded session 'Loaded Session'"]
+
+
+def test_import_picker_close_imports_selected_export() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    current_tree = ConvTree()
+    imported_tree = ConvTree()
+    imported_turn = imported_tree.add_turn("imported")
+    imported_tree.complete_turn(imported_turn.id, "done")
+    events: list[str] = []
+    errors: list[str] = []
+
+    def save_tree(session_id: str, title: str, tree: ConvTree, *, created_at: str, activate: bool = True) -> ChatSession:
+        assert tree is current_tree
+        return ChatSession(
+            id=session_id,
+            title=title,
+            created_at=created_at,
+            updated_at="2026-03-20T10:05:00+00:00",
+            tree=tree,
+        )
+
+    def import_tree(path, title: str = "", activate: bool = True) -> ChatSession:
+        assert str(path).endswith("export.json")
+        return ChatSession(
+            id="sess-3",
+            title="Imported Session",
+            created_at="2026-03-20T10:06:00+00:00",
+            updated_at="2026-03-20T10:07:00+00:00",
+            tree=imported_tree,
+        )
+
+    tui._session_store = SimpleNamespace(
+        save_tree=save_tree,
+        resolve_export_path=lambda selector: selector,
+        import_tree=import_tree,
+    )
+    tui._session_id = "sess-1"
+    tui._session_title = "Session 1"
+    tui._session_created_at = "2026-03-20T10:00:00+00:00"
+    tui.conv_tree = current_tree
+    tui._switch_to_session = lambda session, clear_pending=True: events.append(session.title)
+    tui._write_command_action = lambda text, **_kwargs: events.append(text)
+    tui._write_error = errors.append
+
+    tui._on_import_picker_close({"id": "export.json"})
+
+    assert errors == []
+    assert events == ["Imported Session", "Imported session 'Imported Session'"]
+
+
+def test_session_row_label_highlights_active_session() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    label = tui._session_row_label(
+        SimpleNamespace(
+            is_active=True,
+            title="Test123",
+            id="25e4a7bf",
+            turn_count=0,
+            branch_count=0,
+            updated_at="2026-03-19T21:14:00+00:00",
+        )
+    )
+
+    assert "active" in label
+    assert "#c4b5fd" in label
+    assert "[25e4a7bf]" in label
+
+
+def test_session_picker_name_submit_creates_new_session() -> None:
+    modal = SessionPickerModal([], "sess-1", "Session 1")
+    dismissed: list[dict[str, str]] = []
+    modal.dismiss = lambda payload=None: dismissed.append(payload)
+
+    modal._new_name_submitted(SimpleNamespace(value="Backend Work"))
+
+    assert dismissed == [{"action": "new", "title": "Backend Work"}]
