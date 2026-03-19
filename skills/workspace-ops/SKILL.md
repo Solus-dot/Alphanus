@@ -36,6 +36,8 @@ Rules:
 - Use `create_directory` for explicit folder creation inside the workspace.
 - Use `create_files` when creating several new files for the same local scaffold or feature.
 - Use `read_file` before `edit_file` when patching existing files.
+- Prefer `edit_file` with `old_string` and `new_string` for small localized edits.
+- Use `edit_file` with full `content` only when replacing most or all of a file.
 - Use `create_file` only when the user explicitly wants a new file or a workspace change.
 - Use `delete_path` for directory deletion or recursive cleanup inside the workspace.
 - Do not use `shell_command` to create folders or inspect local workspace files when a workspace tool can do it.

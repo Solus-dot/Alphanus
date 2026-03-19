@@ -14,3 +14,10 @@ def test_system_prompt_includes_current_date_and_workspace(tmp_path: Path):
 
     assert f"- Current date: {expected_date}" in prompt
     assert f"- Primary workspace: {ws.resolve()}" in prompt
+
+
+def test_system_prompt_prefers_localized_edit_file_calls(tmp_path: Path):
+    prompt = build_system_prompt(str(tmp_path / "workspace"))
+
+    assert "prefer localized `edit_file` calls with `old_string` and `new_string`" in prompt
+    assert "use full `content` only when replacing most of the file" in prompt

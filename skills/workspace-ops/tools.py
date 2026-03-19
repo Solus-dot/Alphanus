@@ -51,14 +51,18 @@ TOOL_SPECS = {
     },
     "edit_file": {
         "capability": "workspace_edit",
-        "description": "Replace content of an existing workspace file.",
+        "description": "Edit an existing workspace file. Prefer localized replacement with old_string/new_string; use content only for full-file replacement.",
         "parameters": {
             "type": "object",
             "properties": {
                 "filepath": {"type": "string"},
                 "content": {"type": "string"},
+                "old_string": {"type": "string"},
+                "new_string": {"type": "string"},
+                "replace_all": {"type": "boolean"},
             },
-            "required": ["filepath", "content"],
+            "required": ["filepath"],
+            "additionalProperties": False,
         },
     },
     "read_file": {
@@ -180,7 +184,35 @@ def _create_files(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]
 def _edit_file(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     filepath = str(args["filepath"])
     before = env.workspace.read_file(filepath)
-    after = str(args["content"])
+    if "content" in args:
+        after = str(args["content"])
+        edit_mode = "replace_full"
+        replacements_applied = None
+    else:
+        has_old = "old_string" in args
+        has_new = "new_string" in args
+        if has_old != has_new:
+            raise ValueError("edit_file requires both old_string and new_string when content is omitted")
+
+        old_string = str(args.get("old_string", ""))
+        new_string = str(args.get("new_string", ""))
+        if not old_string:
+            raise ValueError("edit_file old_string must be non-empty")
+
+        match_count = before.count(old_string)
+        if match_count == 0:
+            raise ValueError("edit_file old_string was not found in the file")
+
+        replace_all = bool(args.get("replace_all", False))
+        if match_count > 1 and not replace_all:
+            raise ValueError(
+                "edit_file old_string matched multiple locations; provide a more specific old_string or set replace_all=true"
+            )
+
+        replacements_applied = match_count if replace_all else 1
+        after = before.replace(old_string, new_string, -1 if replace_all else 1)
+        edit_mode = "replace_all" if replace_all else "replace_one"
+
     path_str = env.workspace.edit_file(filepath, after)
     diff_text = "\n".join(
         difflib.unified_diff(
@@ -201,6 +233,8 @@ def _edit_file(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
             "line_count_before": _line_count(before),
             "line_count_after": _line_count(after),
             "changed_lines": _changed_line_count(before, after),
+            "edit_mode": edit_mode,
+            "replacements_applied": replacements_applied,
             "diff": diff_text,
         }
     )

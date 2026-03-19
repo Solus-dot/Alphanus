@@ -77,6 +77,84 @@ def test_workspace_ops_returns_rich_file_metadata(tmp_path: Path):
     assert read["data"]["line_count"] == 3
 
 
+def test_workspace_ops_edit_file_supports_localized_replacement(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("workspace-ops")
+    assert skill is not None
+
+    ctx = _ctx(str(runtime.workspace.workspace_root))
+    runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "notes.txt", "content": "alpha\nbeta\n"},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    edited = runtime.execute_tool_call(
+        "edit_file",
+        {"filepath": "notes.txt", "old_string": "beta", "new_string": "gamma"},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    assert edited["ok"] is True
+    assert edited["data"]["edit_mode"] == "replace_one"
+    assert edited["data"]["replacements_applied"] == 1
+    assert runtime.workspace.read_file("notes.txt") == "alpha\ngamma\n"
+
+
+def test_workspace_ops_edit_file_rejects_ambiguous_localized_replacement(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("workspace-ops")
+    assert skill is not None
+
+    ctx = _ctx(str(runtime.workspace.workspace_root))
+    runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "notes.txt", "content": "beta\nalpha\nbeta\n"},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    edited = runtime.execute_tool_call(
+        "edit_file",
+        {"filepath": "notes.txt", "old_string": "beta", "new_string": "gamma"},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    assert edited["ok"] is False
+    assert edited["error"]["message"] == (
+        "edit_file old_string matched multiple locations; provide a more specific old_string or set replace_all=true"
+    )
+
+
+def test_workspace_ops_edit_file_supports_replace_all(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("workspace-ops")
+    assert skill is not None
+
+    ctx = _ctx(str(runtime.workspace.workspace_root))
+    runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "notes.txt", "content": "beta\nalpha\nbeta\n"},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    edited = runtime.execute_tool_call(
+        "edit_file",
+        {"filepath": "notes.txt", "old_string": "beta", "new_string": "gamma", "replace_all": True},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    assert edited["ok"] is True
+    assert edited["data"]["edit_mode"] == "replace_all"
+    assert edited["data"]["replacements_applied"] == 2
+    assert runtime.workspace.read_file("notes.txt") == "gamma\nalpha\ngamma\n"
+
+
 def test_workspace_ops_create_directory_and_create_files(tmp_path: Path):
     runtime = _runtime(tmp_path)
     skill = runtime.get_skill("workspace-ops")

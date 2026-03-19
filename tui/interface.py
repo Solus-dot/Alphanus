@@ -751,8 +751,6 @@ class AlphanusTUI(App):
     def _show_tool_result_line(self, name: str, ok: bool) -> bool:
         if not ok:
             return True
-        if name in self._live_preview.streamed_file_tools:
-            return False
         return self._show_tool_details
 
     def _take_pending_tool_detail(self, name: str) -> str:
@@ -1206,8 +1204,7 @@ class AlphanusTUI(App):
                         args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
                     except Exception:
                         args = raw_args
-                    if name not in self._live_preview.streamed_file_tools:
-                        pending_details.append((name, self._live_preview.compact_tool_args(name, args)))
+                    pending_details.append((name, self._live_preview.compact_tool_args(name, args)))
                     self._live_preview.write_static_preview(
                         name, args, self._write, self._write_indented, self._write_code_block
                     )
@@ -1312,16 +1309,23 @@ class AlphanusTUI(App):
         )
         self.call_from_thread(self._on_stream_end, turn_id, result)
 
+    def _visible_reasoning_text(self, text: str) -> str:
+        if not text:
+            return ""
+        filtered_lines = [line for line in text.splitlines() if not self._is_tool_trace_line(line)]
+        visible = "\n".join(filtered_lines).strip()
+        return visible
+
     def _flush_reasoning_buffer(self) -> None:
         if not self._buf_r:
             self._partial().update("")
             return
         text = self._buf_r
         self._buf_r = ""
-        filtered_lines = [line for line in text.splitlines() if not self._is_tool_trace_line(line)]
+        visible = self._visible_reasoning_text(text)
         self._partial().update("")
-        if filtered_lines:
-            self._write_renderable(self._reasoning_panel_renderable("\n".join(filtered_lines)), indent=2)
+        if visible:
+            self._write_renderable(self._reasoning_panel_renderable(visible), indent=2)
 
     def _close_reasoning_section(self) -> bool:
         if not self._reasoning_open:
@@ -1372,13 +1376,7 @@ class AlphanusTUI(App):
             if not self._reasoning_open:
                 self._reasoning_open = True
             self._buf_r += token
-            display = self._buf_r
-            if "\n" in display:
-                prefix, last = display.rsplit("\n", 1)
-                if self._is_tool_trace_line(last):
-                    display = prefix + ("\n" if prefix else "")
-            elif self._is_tool_trace_line(display):
-                display = ""
+            display = self._visible_reasoning_text(self._buf_r)
             if display:
                 partial.update(Padding(self._reasoning_panel_renderable(display), (0, 0, 0, 2)))
             else:
@@ -1412,9 +1410,8 @@ class AlphanusTUI(App):
             stream_id = str(event.get("stream_id") or "")
             detail = self._live_preview.compact_tool_args(name, args)
             if self._show_tool_details:
-                if name not in self._live_preview.streamed_file_tools:
-                    self._pending_tool_details.append((name, detail))
-                    self._update_tool_call_partial(name, detail, indent=2)
+                self._pending_tool_details.append((name, detail))
+                self._update_tool_call_partial(name, detail, indent=2)
                 streamed = (
                     self._live_preview.close(
                         stream_id, self._write_indented, self._write_code_block, self._clear_partial_preview

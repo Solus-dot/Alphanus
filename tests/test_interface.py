@@ -135,6 +135,27 @@ def test_live_tool_preview_shows_edit_file_diff() -> None:
     assert "-beta" in "\n".join(code_blocks[0][0])
 
 
+def test_live_tool_preview_skips_static_edit_file_request_preview() -> None:
+    preview = LiveToolPreviewManager()
+    lines: list[str] = []
+    code_blocks: list[tuple[list[str], str | None, int]] = []
+
+    preview.write_static_preview(
+        "edit_file",
+        {
+            "filepath": "notes.txt",
+            "old_string": "beta",
+            "new_string": "gamma",
+        },
+        lines.append,
+        lambda markup, _indent=0: lines.append(markup),
+        lambda code, language, indent=0: code_blocks.append((code, language, indent)),
+    )
+
+    assert lines == []
+    assert code_blocks == []
+
+
 def test_take_pending_tool_detail_is_fifo_by_name() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._pending_tool_details = [
@@ -149,14 +170,31 @@ def test_take_pending_tool_detail_is_fifo_by_name() -> None:
     assert tui._take_pending_tool_detail("web_search") == ""
 
 
-def test_file_tool_success_lines_stay_hidden() -> None:
+def test_flush_reasoning_buffer_skips_whitespace_only_panel() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    writes: list[tuple[object, int]] = []
+    partial_updates: list[object] = []
+    tui._buf_r = "\n   \n"
+    tui._partial = lambda: SimpleNamespace(update=partial_updates.append)
+    tui._write_renderable = lambda renderable, indent=2: writes.append((renderable, indent))
+    tui._reasoning_panel_renderable = lambda text: text
+    tui._is_tool_trace_line = lambda _line: False
+
+    tui._flush_reasoning_buffer()
+
+    assert writes == []
+    assert partial_updates == [""]
+    assert tui._buf_r == ""
+
+
+def test_file_tool_success_lines_use_standard_tool_blocks() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._show_tool_details = True
     tui._live_preview = SimpleNamespace(streamed_file_tools={"create_file", "edit_file", "create_files"})
 
-    assert tui._show_tool_result_line("create_files", True) is False
-    assert tui._show_tool_result_line("create_file", True) is False
-    assert tui._show_tool_result_line("edit_file", True) is False
+    assert tui._show_tool_result_line("create_files", True) is True
+    assert tui._show_tool_result_line("create_file", True) is True
+    assert tui._show_tool_result_line("edit_file", True) is True
     assert tui._show_tool_result_line("workspace_tree", True) is True
 
 

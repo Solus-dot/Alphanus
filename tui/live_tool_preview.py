@@ -38,6 +38,7 @@ class LiveToolPreviewManager:
         max_static_preview_lines: int = 140,
     ) -> None:
         self.streamed_file_tools = set(streamed_file_tools or {"create_file", "edit_file", "create_files"})
+        self.draft_preview_tools = {name for name in self.streamed_file_tools if name != "edit_file"}
         self.max_live_preview_chars = int(max_live_preview_chars)
         self.max_live_preview_lines = int(max_live_preview_lines)
         self.max_static_preview_chars = int(max_static_preview_chars)
@@ -56,6 +57,18 @@ class LiveToolPreviewManager:
             if isinstance(files, list):
                 return f"{len(files)} files"
             return "files=?"
+
+        if tool_name == "edit_file":
+            filepath = str(args.get("filepath", ""))
+            if "content" in args:
+                content = args.get("content", "")
+                n_chars = len(content) if isinstance(content, str) else 0
+                return f'filepath="{filepath}", content={n_chars} chars'
+            if "old_string" in args and "new_string" in args:
+                replace_all = bool(args.get("replace_all", False))
+                mode = "replace_all" if replace_all else "replace_one"
+                return f'filepath="{filepath}", mode={mode}'
+            return f'filepath="{filepath}"'
 
         if tool_name in self.streamed_file_tools:
             filepath = str(args.get("filepath", ""))
@@ -80,7 +93,7 @@ class LiveToolPreviewManager:
         write: WriteFn,
         update_preview: UpdatePreviewFn,
     ) -> None:
-        if name not in self.streamed_file_tools:
+        if name not in self.draft_preview_tools:
             return
         if not raw_arguments:
             return
@@ -205,7 +218,7 @@ class LiveToolPreviewManager:
                 if truncated:
                     write_indented("[dim]... (preview truncated) ...[/dim]", 2)
             return
-        if tool_name not in self.streamed_file_tools:
+        if tool_name not in self.draft_preview_tools:
             return
         content = args.get("content")
         filepath = str(args.get("filepath", ""))
