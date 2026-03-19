@@ -18,6 +18,7 @@ ClearPreviewFn = Callable[[], None]
 class LivePreviewState:
     name: str
     filepath: str = ""
+    item_index: int = 0
     opened: bool = False
     closed: bool = False
     printed_len: int = 0
@@ -26,6 +27,8 @@ class LivePreviewState:
     rendered_lines: int = 0
     truncated: bool = False
     preview_lines: List[str] = field(default_factory=list)
+    flushed_item_count: int = 0
+    rendered_filepaths: Set[str] = field(default_factory=set)
 
 
 class LiveToolPreviewManager:
@@ -92,6 +95,9 @@ class LiveToolPreviewManager:
         raw_arguments: str,
         write: WriteFn,
         update_preview: UpdatePreviewFn,
+        write_indented: Optional[WriteIndentedFn] = None,
+        write_code: Optional[WriteCodeFn] = None,
+        clear_preview: Optional[ClearPreviewFn] = None,
     ) -> None:
         if name not in self.draft_preview_tools:
             return
@@ -106,20 +112,37 @@ class LiveToolPreviewManager:
             state.name = name
 
         if name == "create_files":
-            filepath, content = self._extract_latest_partial_file_entry(raw_arguments)
+            entries = self._extract_partial_file_entries(raw_arguments)
+            if not entries:
+                return
+
+            completed_count = max(0, len(entries) - 1)
+            if write_indented and write_code:
+                for idx in range(state.flushed_item_count, completed_count):
+                    filepath_i, content_i, _complete_i = entries[idx]
+                    self._write_file_preview(filepath_i, content_i, write, write_indented, write_code)
+                    state.rendered_filepaths.add(filepath_i)
+                state.flushed_item_count = max(state.flushed_item_count, completed_count)
+
+            current_index = len(entries) - 1
+            filepath, content, _content_complete = entries[current_index]
         else:
+            current_index = 0
             filepath, _ = self._extract_partial_json_string_field(raw_arguments, "filepath")
             content, _ = self._extract_partial_json_string_field(raw_arguments, "content")
 
-        if filepath and filepath != state.filepath:
-            if state.opened:
+        if filepath and (filepath != state.filepath or current_index != state.item_index):
+            if state.opened and write_indented and write_code and clear_preview:
+                self._flush_state_preview(state, write_indented, write_code, clear_preview)
                 state.printed_len = 0
                 state.line_buf = ""
                 state.preview_lines = []
                 state.rendered_chars = 0
                 state.rendered_lines = 0
                 state.truncated = False
+                state.opened = False
             state.filepath = filepath
+            state.item_index = current_index
 
         if content is None:
             return
@@ -209,14 +232,7 @@ class LiveToolPreviewManager:
                 content = item.get("content")
                 if not isinstance(content, str) or not content.strip():
                     continue
-                clipped = content[: self.max_static_preview_chars]
-                lines = clipped.splitlines()
-                truncated = len(content) > self.max_static_preview_chars or len(lines) > self.max_static_preview_lines
-                lines = lines[: self.max_static_preview_lines]
-                write(f"[dim]  · file draft: {esc(filepath)}[/dim]")
-                write_code(lines, self._guess_language(filepath), 2)
-                if truncated:
-                    write_indented("[dim]... (preview truncated) ...[/dim]", 2)
+                self._write_file_preview(filepath, content, write, write_indented, write_code)
             return
         if tool_name not in self.draft_preview_tools:
             return
@@ -230,6 +246,23 @@ class LiveToolPreviewManager:
         truncated = len(content) > self.max_static_preview_chars or len(lines) > self.max_static_preview_lines
         lines = lines[: self.max_static_preview_lines]
 
+        write(f"[dim]  · file draft: {esc(filepath)}[/dim]")
+        write_code(lines, self._guess_language(filepath), 2)
+        if truncated:
+            write_indented("[dim]... (preview truncated) ...[/dim]", 2)
+
+    def _write_file_preview(
+        self,
+        filepath: str,
+        content: str,
+        write: WriteFn,
+        write_indented: WriteIndentedFn,
+        write_code: WriteCodeFn,
+    ) -> None:
+        clipped = content[: self.max_static_preview_chars]
+        lines = clipped.splitlines()
+        truncated = len(content) > self.max_static_preview_chars or len(lines) > self.max_static_preview_lines
+        lines = lines[: self.max_static_preview_lines]
         write(f"[dim]  · file draft: {esc(filepath)}[/dim]")
         write_code(lines, self._guess_language(filepath), 2)
         if truncated:
@@ -265,7 +298,32 @@ class LiveToolPreviewManager:
         if truncated:
             write_indented("[dim]... (diff truncated) ...[/dim]", 2)
 
+    def rendered_filepaths(self, stream_id: str) -> Set[str]:
+        state = self._streams.get(stream_id)
+        if state is None:
+            return set()
+        rendered = set(state.rendered_filepaths)
+        if state.filepath:
+            rendered.add(state.filepath)
+        return rendered
+
+    def mark_rendered_filepaths(self, stream_id: str, filepaths: Set[str]) -> None:
+        state = self._streams.get(stream_id)
+        if state is None:
+            return
+        state.rendered_filepaths.update(filepaths)
+
     def _close_state(
+        self,
+        state: LivePreviewState,
+        write_indented: WriteIndentedFn,
+        write_code: WriteCodeFn,
+        clear_preview: ClearPreviewFn,
+    ) -> None:
+        self._flush_state_preview(state, write_indented, write_code, clear_preview)
+        state.closed = True
+
+    def _flush_state_preview(
         self,
         state: LivePreviewState,
         write_indented: WriteIndentedFn,
@@ -283,10 +341,11 @@ class LiveToolPreviewManager:
             state.line_buf = ""
         if state.preview_lines:
             write_code(state.preview_lines, self._guess_language(state.filepath), 2)
+            if state.filepath:
+                state.rendered_filepaths.add(state.filepath)
         if state.truncated:
             write_indented("[dim]... (live preview truncated) ...[/dim]", 2)
         clear_preview()
-        state.closed = True
 
     @staticmethod
     def _guess_language(filepath: str) -> Optional[str]:
@@ -374,18 +433,16 @@ class LiveToolPreviewManager:
         return "".join(out), False, i
 
     @classmethod
-    def _extract_latest_partial_file_entry(cls, raw: str) -> Tuple[Optional[str], Optional[str]]:
+    def _extract_partial_file_entries(cls, raw: str) -> List[Tuple[str, str, bool]]:
         pos = 0
-        latest_path: Optional[str] = None
-        latest_content: Optional[str] = None
+        entries: List[Tuple[str, str, bool]] = []
         while True:
             filepath, _complete, filepath_end = cls._extract_partial_json_string_field_from(raw, "filepath", pos)
             if filepath is None:
                 break
-            content, _content_complete, content_end = cls._extract_partial_json_string_field_from(raw, "content", filepath_end)
+            content, content_complete, content_end = cls._extract_partial_json_string_field_from(raw, "content", filepath_end)
             if content is None:
                 break
-            latest_path = filepath
-            latest_content = content
+            entries.append((filepath, content, content_complete))
             pos = max(content_end, filepath_end) + 1
-        return latest_path, latest_content
+        return entries

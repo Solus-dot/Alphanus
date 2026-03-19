@@ -920,6 +920,70 @@ def test_workspace_folder_and_single_file_does_not_stop_after_create_directory(m
     assert calls == ["pass_1", "pass_2", "pass_3"]
 
 
+def test_multifile_scaffold_prompt_prefers_create_file_over_batched_create_files(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    mocker.patch.object(agent, "ensure_ready", return_value=True)
+    selected = [runtime.get_skill("workspace-ops")]
+    mocker.patch.object(agent, "_select_skills", return_value=selected)
+    mocker.patch.object(
+        runtime,
+        "tools_for_turn",
+        return_value=[
+            {"type": "function", "function": {"name": "create_directory"}},
+            {"type": "function", "function": {"name": "create_file"}},
+            {"type": "function", "function": {"name": "create_files"}},
+        ],
+    )
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        system_text = payload["messages"][0]["content"]
+        assert "For multi-file scaffolds or programs, prefer separate create_file calls" in system_text
+        assert "Avoid batching the whole scaffold into one create_files call" in system_text
+        return type("R", (), {"finish_reason": "stop", "content": "Done.", "reasoning": "", "tool_calls": []})()
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+
+    result = agent.run_turn(
+        history_messages=[],
+        user_input="Make a university login page using html js and css and save it in a folder called x",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+
+
+def test_multifile_python_program_prompt_prefers_create_file_over_create_files(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    mocker.patch.object(agent, "ensure_ready", return_value=True)
+    selected = [runtime.get_skill("workspace-ops")]
+    mocker.patch.object(agent, "_select_skills", return_value=selected)
+    mocker.patch.object(
+        runtime,
+        "tools_for_turn",
+        return_value=[
+            {"type": "function", "function": {"name": "create_directory"}},
+            {"type": "function", "function": {"name": "create_file"}},
+            {"type": "function", "function": {"name": "create_files"}},
+        ],
+    )
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        system_text = payload["messages"][0]["content"]
+        assert "For multi-file scaffolds or programs, prefer separate create_file calls" in system_text
+        assert "Use create_files only when batching is acceptable" in system_text
+        return type("R", (), {"finish_reason": "stop", "content": "Done.", "reasoning": "", "tool_calls": []})()
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+
+    result = agent.run_turn(
+        history_messages=[],
+        user_input="Create a Python package with main.py, parser.py, and models.py in a folder called toolkit",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+
+
 def test_local_workspace_tasks_reject_shell_and_fetch_tools(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)

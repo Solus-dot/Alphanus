@@ -753,6 +753,30 @@ class AlphanusTUI(App):
             return True
         return self._show_tool_details
 
+    def _write_create_files_preview_from_args(self, stream_id: str, args: Any) -> None:
+        if not isinstance(args, dict):
+            return
+        files = args.get("files")
+        if not isinstance(files, list):
+            return
+        rendered = self._live_preview.rendered_filepaths(stream_id) if stream_id else set()
+        newly_rendered: set[str] = set()
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            filepath = str(item.get("filepath", ""))
+            content = item.get("content")
+            if not filepath or not isinstance(content, str) or not content.strip():
+                continue
+            if filepath in rendered:
+                continue
+            self._write(f"[dim]  · file draft: {esc(filepath)}[/dim]")
+            self._write_code_block(content.splitlines(), self._live_preview._guess_language(filepath), 2)
+            rendered.add(filepath)
+            newly_rendered.add(filepath)
+        if stream_id and newly_rendered:
+            self._live_preview.mark_rendered_filepaths(stream_id, newly_rendered)
+
     def _take_pending_tool_detail(self, name: str) -> str:
         for idx, (pending_name, pending_detail) in enumerate(self._pending_tool_details):
             if pending_name == name:
@@ -1400,7 +1424,14 @@ class AlphanusTUI(App):
             raw_arguments = str(event.get("raw_arguments") or "")
             if stream_id and name:
                 self._live_preview.update(
-                    stream_id, name, raw_arguments, self._write, self._update_live_preview_partial
+                    stream_id,
+                    name,
+                    raw_arguments,
+                    self._write,
+                    self._update_live_preview_partial,
+                    self._write_indented,
+                    self._write_code_block,
+                    self._clear_partial_preview,
                 )
 
         elif etype == "tool_call":
@@ -1412,6 +1443,8 @@ class AlphanusTUI(App):
             if self._show_tool_details:
                 self._pending_tool_details.append((name, detail))
                 self._update_tool_call_partial(name, detail, indent=2)
+                if name == "create_files":
+                    self._write_create_files_preview_from_args(stream_id, args)
                 streamed = (
                     self._live_preview.close(
                         stream_id, self._write_indented, self._write_code_block, self._clear_partial_preview

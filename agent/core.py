@@ -1327,6 +1327,12 @@ class Agent:
             "folder",
             "directory",
             "file",
+            "files",
+            ".py",
+            "python",
+            "program",
+            "package",
+            "module",
             "html",
             "css",
             "js",
@@ -1370,12 +1376,28 @@ class Agent:
             "css",
             "javascript",
             "js",
+            "python",
+            ".py",
+            "program",
+            "package",
+            "module",
             "website",
             "web page",
             "page",
             "scaffold",
         )
-        multi_file_terms = ("folder", "directory", "files", "html css", "html, css", "css and javascript", "html css and javascript")
+        multi_file_terms = (
+            "folder",
+            "directory",
+            "files",
+            " file",
+            ".py",
+            "main.py",
+            "html css",
+            "html, css",
+            "css and javascript",
+            "html css and javascript",
+        )
         return any(term in text for term in build_terms) and any(term in text for term in artifact_terms) and any(
             term in text for term in multi_file_terms
         )
@@ -1689,7 +1711,9 @@ class Agent:
                     "\n\nWorkspace scaffold rule:\n"
                     "- This request requires creating a local scaffold, not just a directory.\n"
                     "- Do not stop after create_directory alone.\n"
-                    "- Use create_files or create_file to materialize the requested HTML, CSS, and JavaScript files."
+                    "- Materialize the requested files with workspace file tools.\n"
+                    "- For multi-file scaffolds or programs, prefer separate create_file calls, one file at a time.\n"
+                    "- Avoid batching the whole scaffold into one create_files call unless the user explicitly asks for batching."
                 )
             elif state.workspace_materialization_target > 0:
                 system_content += (
@@ -1718,7 +1742,8 @@ class Agent:
                     "- This request is about local workspace files or folders.\n"
                     "- Use native workspace tools for local file creation, reading, editing, and folder creation.\n"
                     "- Prefer create_directory for folder creation.\n"
-                    "- Prefer create_files when creating several new files for one scaffold.\n"
+                    "- For multi-file scaffolds or programs, prefer create_file one file at a time so progress stays visible in the UI.\n"
+                    "- Use create_files only when batching is acceptable and per-file progress is not important.\n"
                     "- Do not use shell_command to create folders or inspect local files.\n"
                     "- Do not use web_search, fetch_url, open_url, or play_youtube for local workspace file tasks."
                 )

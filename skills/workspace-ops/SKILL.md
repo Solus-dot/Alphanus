@@ -34,7 +34,8 @@ Prefer workspace-scoped operations for coding tasks.
 Rules:
 - If the user asks for code, an example, or a snippet without explicitly asking to save, create, or modify a file, answer inline and do not call workspace tools.
 - Use `create_directory` for explicit folder creation inside the workspace.
-- Use `create_files` when creating several new files for the same local scaffold or feature.
+- For multi-file scaffolds or programs, prefer separate `create_file` calls so progress is visible file by file.
+- Use `create_files` when batching several new files is acceptable and live per-file visibility is not important.
 - Use `read_file` before `edit_file` when patching existing files.
 - Use `read_files` when you need to inspect several local files together.
 - Prefer `edit_file` with `old_string` and `new_string` for small localized edits.
