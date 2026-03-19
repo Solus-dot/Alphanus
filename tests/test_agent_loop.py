@@ -1057,6 +1057,71 @@ def test_local_workspace_tasks_reject_shell_and_fetch_tools(mocker, runtime: Ski
     assert calls == ["pass_1", "pass_2", "pass_3"]
 
 
+def test_explicit_external_path_disables_local_workspace_routing(runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    selected = [runtime.get_skill("workspace-ops")]
+    other_path = str(Path(runtime.workspace.home_root) / "other-project")
+    ctx = SkillContext(
+        user_input=f"Update the packages in {other_path}, it uses uv",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(runtime.workspace.workspace_root),
+        memory_hits=[],
+    )
+
+    assert agent._explicit_path_outside_workspace(ctx.user_input) == other_path
+    assert agent._prefers_local_workspace_tools(ctx, selected) is False
+
+
+def test_explicit_external_path_adds_prompt_rule_and_skips_local_workspace_rule(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    mocker.patch.object(agent, "ensure_ready", return_value=True)
+    selected = [runtime.get_skill("workspace-ops")]
+    mocker.patch.object(agent, "_select_skills", return_value=selected)
+    mocker.patch.object(runtime, "tools_for_turn", return_value=[])
+    other_path = str(Path(runtime.workspace.home_root) / "other-project")
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        system_text = payload["messages"][0]["content"]
+        assert "Explicit path rule:" in system_text
+        assert other_path in system_text
+        assert "Local workspace tool rule:" not in system_text
+        return type("R", (), {"finish_reason": "stop", "content": "Need confirmation.", "reasoning": "", "tool_calls": []})()
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+
+    result = agent.run_turn(
+        history_messages=[],
+        user_input=f"Update the packages in {other_path}, it uses uv",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert result.content == "Need confirmation."
+
+
+def test_explicit_external_path_ignores_urls(runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+
+    assert agent._explicit_path_outside_workspace("Use https://example.com as inspiration for the landing page") == ""
+
+
+def test_explicit_external_path_supports_quoted_paths_with_spaces(runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    selected = [runtime.get_skill("workspace-ops")]
+    other_path = str(Path(runtime.workspace.home_root) / "Other Project")
+    ctx = SkillContext(
+        user_input=f'Update the packages in "{other_path}", it uses uv',
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(runtime.workspace.workspace_root),
+        memory_hits=[],
+    )
+
+    assert agent._explicit_path_outside_workspace(ctx.user_input) == other_path
+    assert agent._prefers_local_workspace_tools(ctx, selected) is False
+
+
 def test_finalization_falls_back_immediately_when_model_leaks_tool_markup(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {

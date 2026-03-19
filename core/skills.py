@@ -886,9 +886,6 @@ class SkillRuntime:
             )
         return tools
 
-    def tools_for_skills(self, selected: List[SkillManifest]) -> List[Dict[str, Any]]:
-        return self._tool_schemas(self.optional_tool_names(selected))
-
     def tools_for_turn(self, selected: List[SkillManifest]) -> List[Dict[str, Any]]:
         return self._tool_schemas(self.allowed_tool_names(selected))
 

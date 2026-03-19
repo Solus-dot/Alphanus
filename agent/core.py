@@ -83,6 +83,7 @@ class TurnState:
     requires_workspace_action: bool = False
     batch_workspace_action: bool = False
     prefer_local_workspace_tools: bool = False
+    explicit_external_path: str = ""
     workspace_scaffold_action: bool = False
     workspace_materialization_target: int = 0
     forced_workspace_retry: bool = False
@@ -1239,6 +1240,7 @@ class Agent:
         history_messages: List[Dict[str, Any]],
         user_input: str,
     ) -> TurnState:
+        explicit_external_path = self._explicit_path_outside_workspace(ctx.user_input)
         return TurnState(
             ctx=ctx,
             selected=selected,
@@ -1250,6 +1252,7 @@ class Agent:
             requires_workspace_action=self._requires_workspace_action(ctx, selected),
             batch_workspace_action=self._is_batch_workspace_action(ctx, selected),
             prefer_local_workspace_tools=self._prefers_local_workspace_tools(ctx, selected),
+            explicit_external_path=explicit_external_path,
             workspace_scaffold_action=self._is_workspace_scaffold_action(ctx, selected),
             workspace_materialization_target=self._workspace_materialization_target(ctx, selected),
             tool_counts={},
@@ -1315,6 +1318,8 @@ class Agent:
     def _prefers_local_workspace_tools(self, ctx: SkillContext, selected: List[Any]) -> bool:
         if not self._is_workspace_skill_selected(selected):
             return False
+        if self._explicit_path_outside_workspace(ctx.user_input):
+            return False
         text = " ".join(part for part in (ctx.user_input, ctx.recent_routing_hint) if part).lower()
         if not text:
             return False
@@ -1344,6 +1349,30 @@ class Agent:
             "component",
         )
         return any(marker in text for marker in local_markers)
+
+    def _explicit_path_outside_workspace(self, text: str) -> str:
+        workspace_root = Path(self.skill_runtime.workspace.workspace_root)
+        seen: set[str] = set()
+        path_pattern = re.compile(
+            r'(?P<quoted>(?P<quote>["\'`])(?P<quoted_path>(?:~/|/)[^"\'`]+?)(?P=quote))'
+            r"|(?P<plain>(?<![:/\w])(?P<plain_path>(?:~/|/)[^\s\"'`]+))"
+        )
+        for match in path_pattern.finditer(text or ""):
+            raw = match.group("quoted_path") or match.group("plain_path") or ""
+            cleaned = raw if match.group("quoted_path") else raw.rstrip(".,:;!?)]}")
+            expanded = Path(os.path.expanduser(cleaned))
+            if not expanded.is_absolute():
+                continue
+            resolved = expanded.resolve(strict=False)
+            resolved_str = str(resolved)
+            if resolved_str in seen:
+                continue
+            seen.add(resolved_str)
+            try:
+                resolved.relative_to(workspace_root)
+            except ValueError:
+                return resolved_str
+        return ""
 
     def _is_batch_workspace_action(self, ctx: SkillContext, selected: List[Any]) -> bool:
         if not self._is_workspace_skill_selected(selected):
@@ -1735,6 +1764,15 @@ class Agent:
                     "- The previous pass stopped before creating the requested file content.\n"
                     "- Continue with workspace file-creation tools now.\n"
                     "- Do not claim completion until the requested file content exists."
+                )
+            if state.explicit_external_path:
+                system_content += (
+                    "\n\nExplicit path rule:\n"
+                    f"- The user explicitly named a filesystem path outside the current workspace: {state.explicit_external_path}\n"
+                    "- Do not silently substitute the current workspace root for that path.\n"
+                    "- Acknowledge the mismatch if you need to reference the current workspace.\n"
+                    "- If a tool can safely operate on the explicit path, pass that path directly.\n"
+                    "- If the task requires running a command in that other directory, use a single shell command that targets the explicit path instead of assuming the current workspace."
                 )
             if state.prefer_local_workspace_tools:
                 system_content += (
