@@ -74,6 +74,21 @@ TOOL_SPECS = {
             "required": ["filepath"],
         },
     },
+    "read_files": {
+        "capability": "workspace_read",
+        "description": "Read multiple files under home/workspace policy with per-file truncation metadata.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "max_chars_per_file": {"type": "integer"},
+            },
+            "required": ["paths"],
+        },
+    },
     "list_files": {
         "capability": "workspace_read",
         "description": "List files in a directory.",
@@ -81,6 +96,22 @@ TOOL_SPECS = {
             "type": "object",
             "properties": {"path": {"type": "string"}},
             "required": [],
+        },
+    },
+    "search_code": {
+        "capability": "workspace_read",
+        "description": "Search the workspace codebase with ripgrep when available.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "path": {"type": "string"},
+                "glob": {"type": "string"},
+                "max_results": {"type": "integer"},
+                "case_sensitive": {"type": "boolean"},
+                "fixed_strings": {"type": "boolean"},
+            },
+            "required": ["query"],
         },
     },
     "delete_file": {
@@ -111,6 +142,23 @@ TOOL_SPECS = {
             "type": "object",
             "properties": {"max_depth": {"type": "integer"}},
             "required": [],
+        },
+    },
+    "run_checks": {
+        "capability": "workspace_execute",
+        "description": "Run tests, lint, or other verification commands with explicit argv.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "args": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "path": {"type": "string"},
+                "timeout_s": {"type": "integer"},
+            },
+            "required": ["command"],
         },
     },
 }
@@ -255,10 +303,28 @@ def _read_file(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     return data
 
 
+def _read_files(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+    max_chars = int(args.get("max_chars_per_file", 20000))
+    paths = [str(item) for item in args.get("paths") or []]
+    files = env.workspace.read_files(paths, max_chars_per_file=max_chars)
+    return {"files": files, "count": len(files), "max_chars_per_file": max_chars}
+
+
 def _list_files(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     path = str(args.get("path", "."))
     names = env.workspace.list_files(path)
     return {"path": path, "files": names, "count": len(names)}
+
+
+def _search_code(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+    return env.workspace.search_code(
+        str(args["query"]),
+        path=str(args.get("path", ".")),
+        glob=str(args["glob"]) if "glob" in args and args.get("glob") is not None else None,
+        max_results=int(args.get("max_results", 50)),
+        case_sensitive=bool(args.get("case_sensitive", False)),
+        fixed_strings=bool(args.get("fixed_strings", True)),
+    )
 
 
 def _delete_file(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
@@ -312,6 +378,15 @@ def _workspace_tree(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, An
     return {"tree": tree, "max_depth": max_depth}
 
 
+def _run_checks(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+    return env.workspace.run_checks(
+        str(args["command"]),
+        args=[str(item) for item in args.get("args") or []],
+        path=str(args.get("path", ".")),
+        timeout_s=int(args.get("timeout_s", 120)),
+    )
+
+
 def execute(tool_name: str, args: Dict[str, Any], env: ToolExecutionEnv):
     if tool_name == "create_directory":
         return _create_directory(args, env)
@@ -323,12 +398,18 @@ def execute(tool_name: str, args: Dict[str, Any], env: ToolExecutionEnv):
         return _edit_file(args, env)
     if tool_name == "read_file":
         return _read_file(args, env)
+    if tool_name == "read_files":
+        return _read_files(args, env)
     if tool_name == "list_files":
         return _list_files(args, env)
+    if tool_name == "search_code":
+        return _search_code(args, env)
     if tool_name == "delete_file":
         return _delete_file(args, env)
     if tool_name == "delete_path":
         return _delete_path(args, env)
     if tool_name == "workspace_tree":
         return _workspace_tree(args, env)
+    if tool_name == "run_checks":
+        return _run_checks(args, env)
     raise ValueError(f"Unsupported tool: {tool_name}")

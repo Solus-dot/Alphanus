@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import re
 import shlex
@@ -8,7 +9,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Any, Iterable, List, Optional
 
 DEFAULT_BLOCKED_PATTERNS = [
     ".ssh",
@@ -33,6 +34,19 @@ DANGEROUS_SHELL_PATTERNS = [
 ]
 
 METACHAR_BLOCKLIST = ["&&", "||", ";", "`", "$(", "\n", "\r"]
+MAX_TOOL_TEXT_BYTES = 20000
+SAFE_CHECK_RUNNERS = {
+    "pytest",
+    "ruff",
+    "mypy",
+    "pyright",
+    "eslint",
+    "tsc",
+    "vitest",
+    "jest",
+    "tox",
+    "nox",
+}
 
 
 class WorkspaceManager:
@@ -114,6 +128,25 @@ class WorkspaceManager:
             raise FileNotFoundError(str(target))
         return target.read_text(encoding="utf-8")
 
+    def read_files(self, paths: Iterable[str], max_chars_per_file: int = MAX_TOOL_TEXT_BYTES) -> List[dict[str, Any]]:
+        limit = max(1, int(max_chars_per_file))
+        files: List[dict[str, Any]] = []
+        for raw_path in paths:
+            path = str(raw_path)
+            content = self.read_file(path)
+            truncated = content[:limit]
+            files.append(
+                {
+                    "filepath": path,
+                    "content": truncated,
+                    "size_bytes": len(content.encode("utf-8")),
+                    "line_count": content.count("\n") + (1 if content else 0),
+                    "truncated": truncated != content,
+                    "returned_chars": len(truncated),
+                }
+            )
+        return files
+
     def create_file(self, filepath: str, content: str) -> str:
         target = self._resolve_write_path(filepath)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -187,6 +220,241 @@ class WorkspaceManager:
         walk(self.workspace_root, "", 1)
         return "\n".join(lines)
 
+    @staticmethod
+    def _clip_text(text: str, max_bytes: int = MAX_TOOL_TEXT_BYTES) -> tuple[str, bool]:
+        encoded = text.encode("utf-8")
+        if len(encoded) <= max_bytes:
+            return text, False
+        clipped = encoded[:max_bytes].decode("utf-8", errors="ignore")
+        return clipped, True
+
+    def _run_argv(
+        self,
+        argv: List[str],
+        *,
+        timeout_s: int = 30,
+        cwd: Optional[Path] = None,
+        max_output_bytes: int = MAX_TOOL_TEXT_BYTES,
+    ) -> dict[str, Any]:
+        start = time.perf_counter()
+        proc = subprocess.run(
+            argv,
+            shell=False,
+            cwd=str(cwd or self.workspace_root),
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+        stdout, stdout_truncated = self._clip_text(proc.stdout, max_output_bytes)
+        stderr, stderr_truncated = self._clip_text(proc.stderr, max_output_bytes)
+        return {
+            "command": argv[0] if argv else "",
+            "argv": argv,
+            "stdout": stdout,
+            "stderr": stderr,
+            "stdout_truncated": stdout_truncated,
+            "stderr_truncated": stderr_truncated,
+            "returncode": proc.returncode,
+            "cwd": str(cwd or self.workspace_root),
+            "duration_ms": int((time.perf_counter() - start) * 1000),
+        }
+
+    def _resolve_workspace_subpath(self, path: str) -> Path:
+        return self._resolve_read_path(path or ".")
+
+    def _is_searchable_path(self, path: Path) -> bool:
+        try:
+            resolved = self._resolve_read_path(str(path))
+        except (PermissionError, FileNotFoundError):
+            return False
+        return resolved.exists() and ".git" not in resolved.parts
+
+    def _iter_searchable_files(self, target: Path, glob: Optional[str]) -> Iterable[Path]:
+        if target.is_file():
+            if self._is_searchable_path(target) and (not glob or fnmatch.fnmatch(target.name, glob)):
+                yield target
+            return
+
+        for root, dirnames, filenames in os.walk(target, topdown=True):
+            root_path = Path(root)
+            allowed_dirs = []
+            for dirname in dirnames:
+                candidate = root_path / dirname
+                if self._is_searchable_path(candidate):
+                    allowed_dirs.append(dirname)
+            dirnames[:] = allowed_dirs
+
+            for filename in filenames:
+                candidate = root_path / filename
+                if glob and not fnmatch.fnmatch(filename, glob):
+                    continue
+                if not self._is_searchable_path(candidate):
+                    continue
+                yield candidate
+
+    def search_code(
+        self,
+        query: str,
+        *,
+        path: str = ".",
+        glob: Optional[str] = None,
+        max_results: int = 50,
+        case_sensitive: bool = False,
+        fixed_strings: bool = True,
+    ) -> dict[str, Any]:
+        needle = str(query)
+        if not needle.strip():
+            raise ValueError("search_code query must be non-empty")
+
+        target = self._resolve_workspace_subpath(path)
+        limit = max(1, int(max_results))
+        searchable_files = list(self._iter_searchable_files(target, glob))
+        rg_path = shutil.which("rg")
+        if rg_path and searchable_files:
+            results: List[dict[str, Any]] = []
+            truncated = False
+            chunk_size = 200
+            for start in range(0, len(searchable_files), chunk_size):
+                chunk = searchable_files[start : start + chunk_size]
+                argv = [
+                    rg_path,
+                    "--json",
+                    "--line-number",
+                    "--column",
+                    "--hidden",
+                ]
+                if not case_sensitive:
+                    argv.append("-i")
+                if fixed_strings:
+                    argv.append("-F")
+                argv.append(needle)
+                argv.extend(str(item) for item in chunk)
+                proc = subprocess.run(
+                    argv,
+                    shell=False,
+                    cwd=str(self.workspace_root),
+                    capture_output=True,
+                    text=True,
+                )
+                if proc.returncode not in (0, 1):
+                    raise RuntimeError(proc.stderr.strip() or "rg search failed")
+
+                for line in proc.stdout.splitlines():
+                    if not line.strip():
+                        continue
+                    event = json.loads(line)
+                    if event.get("type") != "match":
+                        continue
+                    data = event.get("data") or {}
+                    path_data = data.get("path") or {}
+                    lines_data = data.get("lines") or {}
+                    submatches = []
+                    for match in data.get("submatches") or []:
+                        text_data = match.get("match") or {}
+                        submatches.append(
+                            {
+                                "match": str(text_data.get("text", "")),
+                                "start": int(match.get("start", 0)),
+                                "end": int(match.get("end", 0)),
+                            }
+                        )
+                    results.append(
+                        {
+                            "filepath": str(path_data.get("text", "")),
+                            "line_number": int(data.get("line_number", 0)),
+                            "line": str(lines_data.get("text", "")).rstrip("\n"),
+                            "submatches": submatches,
+                        }
+                    )
+                    if len(results) >= limit:
+                        truncated = True
+                        break
+                if truncated:
+                    break
+
+            return {
+                "query": needle,
+                "path": str(target),
+                "glob": glob,
+                "count": len(results),
+                "results": results,
+                "truncated": truncated,
+                "backend": "rg",
+            }
+
+        pattern = needle if case_sensitive else needle.lower()
+        results = []
+        for file_path in searchable_files:
+            try:
+                content = file_path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            for line_number, line in enumerate(content.splitlines(), start=1):
+                haystack = line if case_sensitive else line.lower()
+                if pattern in haystack:
+                    start = haystack.find(pattern)
+                    results.append(
+                        {
+                            "filepath": str(file_path),
+                            "line_number": line_number,
+                            "line": line,
+                            "submatches": [{"match": needle, "start": start, "end": start + len(needle)}],
+                        }
+                    )
+                    if len(results) >= limit:
+                        return {
+                            "query": needle,
+                            "path": str(target),
+                            "glob": glob,
+                            "count": len(results),
+                            "results": results,
+                            "truncated": True,
+                            "backend": "python",
+                        }
+        return {
+            "query": needle,
+            "path": str(target),
+            "glob": glob,
+            "count": len(results),
+            "results": results,
+            "truncated": False,
+            "backend": "python",
+        }
+
+    def run_checks(
+        self,
+        command: str,
+        *,
+        args: Optional[Iterable[str]] = None,
+        path: str = ".",
+        timeout_s: int = 120,
+    ) -> dict[str, Any]:
+        executable = str(command).strip()
+        if not executable:
+            raise ValueError("run_checks command must be non-empty")
+        if re.search(r"[\\/\s]", executable):
+            raise ValueError("run_checks command must be a single executable name")
+
+        argv = [executable]
+        for item in args or []:
+            value = str(item)
+            if "\n" in value or "\r" in value:
+                raise ValueError("run_checks args must not contain newlines")
+            argv.append(value)
+
+        if executable == "uv":
+            if len(argv) < 3 or argv[1] != "run" or argv[2] not in SAFE_CHECK_RUNNERS:
+                raise PermissionError("run_checks only allows 'uv run' with approved verification runners")
+        elif executable not in SAFE_CHECK_RUNNERS:
+            raise PermissionError("run_checks only supports approved verification runners")
+
+        cwd = self._resolve_workspace_subpath(path)
+        if cwd.is_file():
+            cwd = cwd.parent
+        run = self._run_argv(argv, timeout_s=max(1, int(timeout_s)), cwd=cwd)
+        run["passed"] = run["returncode"] == 0
+        return run
+
     def _validate_shell_command(self, command: str) -> None:
         trimmed = command.strip()
         if not trimmed:
@@ -212,26 +480,21 @@ class WorkspaceManager:
         try:
             self._validate_shell_command(command)
             argv = self._parse_command_argv(command)
-            proc = subprocess.run(
-                argv,
-                shell=False,
-                cwd=self.workspace_root,
-                capture_output=True,
-                text=True,
-                timeout=timeout_s,
-            )
+            run = self._run_argv(argv, timeout_s=timeout_s)
             return {
                 "ok": True,
                 "data": {
                     "command": command,
-                    "argv": argv,
-                    "stdout": proc.stdout,
-                    "stderr": proc.stderr,
-                    "returncode": proc.returncode,
-                    "cwd": str(self.workspace_root),
+                    "argv": run["argv"],
+                    "stdout": run["stdout"],
+                    "stderr": run["stderr"],
+                    "returncode": run["returncode"],
+                    "cwd": run["cwd"],
+                    "stdout_truncated": run["stdout_truncated"],
+                    "stderr_truncated": run["stderr_truncated"],
                 },
                 "error": None,
-                "meta": {"duration_ms": int((time.perf_counter() - start) * 1000)},
+                "meta": {"duration_ms": run["duration_ms"]},
             }
         except subprocess.TimeoutExpired:
             return {

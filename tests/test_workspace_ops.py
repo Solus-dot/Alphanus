@@ -351,3 +351,102 @@ def test_workspace_ops_accepts_workspace_root_prefixed_absolute_like_paths(tmp_p
     assert deleted["ok"] is True
     assert deleted["data"]["kind"] == "directory"
     assert not nested.exists()
+
+
+def test_workspace_ops_read_files_search_code_and_run_checks(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("workspace-ops")
+    assert skill is not None
+
+    ctx = _ctx(str(runtime.workspace.workspace_root))
+    runtime.execute_tool_call(
+        "create_files",
+        {
+            "files": [
+                {
+                    "filepath": "src/app.py",
+                    "content": "def greet(name):\n    return f'hello {name}'\n",
+                },
+                {
+                    "filepath": "src/util.py",
+                    "content": "VALUE = '" + ("x" * 80) + "'\n",
+                },
+            ]
+        },
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    search = runtime.execute_tool_call(
+        "search_code",
+        {"query": "greet(", "path": "src", "glob": "*.py"},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert search["ok"] is True
+    assert search["data"]["count"] == 1
+    assert search["data"]["results"][0]["filepath"].endswith("src/app.py")
+    assert search["data"]["results"][0]["line_number"] == 1
+
+    read_many = runtime.execute_tool_call(
+        "read_files",
+        {"paths": ["src/app.py", "src/util.py"], "max_chars_per_file": 20},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert read_many["ok"] is True
+    assert read_many["data"]["count"] == 2
+    assert read_many["data"]["files"][0]["truncated"] is True
+    assert read_many["data"]["files"][0]["returned_chars"] == 20
+
+    checks = runtime.execute_tool_call(
+        "run_checks",
+        {"command": "pytest", "args": ["--version"]},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert checks["ok"] is True
+    assert checks["data"]["passed"] is True
+    assert "pytest" in checks["data"]["stdout"].lower()
+
+
+def test_workspace_ops_search_code_skips_blocked_home_descendants(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("workspace-ops")
+    assert skill is not None
+
+    home = runtime.workspace.home_root
+    (home / ".ssh").mkdir(parents=True, exist_ok=True)
+    (home / ".ssh" / "id_rsa").write_text("topsecret\n", encoding="utf-8")
+    (home / ".env").write_text("API_KEY=topsecret\n", encoding="utf-8")
+    (home / "notes.txt").write_text("topsecret is only here\n", encoding="utf-8")
+
+    ctx = _ctx(str(runtime.workspace.workspace_root))
+    search = runtime.execute_tool_call(
+        "search_code",
+        {"query": "topsecret", "path": str(home)},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert search["ok"] is True
+    assert search["data"]["count"] == 1
+    assert search["data"]["results"][0]["filepath"].endswith("notes.txt")
+    assert ".ssh" not in search["data"]["results"][0]["filepath"]
+    assert ".env" not in search["data"]["results"][0]["filepath"]
+
+
+def test_workspace_ops_run_checks_rejects_non_verification_commands(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("workspace-ops")
+    assert skill is not None
+
+    ctx = _ctx(str(runtime.workspace.workspace_root))
+    out = runtime.execute_tool_call(
+        "run_checks",
+        {"command": "python3", "args": ["-c", "print('hi')"]},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_POLICY"
+    assert out["error"]["message"] == "run_checks only supports approved verification runners"

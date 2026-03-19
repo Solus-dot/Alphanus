@@ -112,12 +112,16 @@ _CORE_TOOL_NAMES = frozenset(
     {
         "shell_command",
         "read_file",
+        "read_files",
         "list_files",
+        "search_code",
         "workspace_tree",
         "create_directory",
         "create_file",
         "create_files",
         "edit_file",
+        "delete_path",
+        "run_checks",
     }
 )
 
