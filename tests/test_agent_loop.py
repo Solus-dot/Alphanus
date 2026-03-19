@@ -745,7 +745,7 @@ def test_batch_workspace_delete_does_not_stop_after_first_successful_tool(mocker
                         type(
                             "Call",
                             (),
-                            {"stream_id": "1", "index": 0, "id": "call_1", "name": "delete_file", "arguments": {"filepath": "a.txt"}},
+                            {"stream_id": "1", "index": 0, "id": "call_1", "name": "delete_path", "arguments": {"path": "a.txt"}},
                         )()
                     ],
                 },
@@ -769,7 +769,7 @@ def test_batch_workspace_delete_does_not_stop_after_first_successful_tool(mocker
         "execute_tool_call",
         return_value={"ok": True, "data": {"filepath": "/tmp/a.txt", "kind": "file"}, "error": None, "meta": {}},
     )
-    mocker.patch.object(runtime, "tools_for_turn", return_value=[{"type": "function", "function": {"name": "delete_file"}}])
+    mocker.patch.object(runtime, "tools_for_turn", return_value=[{"type": "function", "function": {"name": "delete_path"}}])
 
     result = agent.run_turn(
         history_messages=[{"role": "user", "content": "delete all files in workspace"}],

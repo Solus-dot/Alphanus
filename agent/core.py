@@ -1558,10 +1558,6 @@ class Agent:
             kind = str(data.get("kind", "path")).strip()
             if path:
                 return f"I deleted the {kind} `{path}` from your workspace."
-        if name == "delete_file":
-            path = str(data.get("filepath", "")).strip()
-            if path:
-                return f"I deleted `{path}` from your workspace."
         if name == "list_memories":
             memories = data.get("memories")
             if isinstance(memories, list):

@@ -666,9 +666,6 @@ class AlphanusTUI(App):
         self._last_log_was_blank = False
         self._maybe_scroll_end()
 
-    def _partial_markup_renderable(self, markup: str, indent: int = 2):
-        return Padding(Text.from_markup(markup), pad=(0, 0, 0, indent))
-
     def _syntax_renderable(self, code: str, language: Optional[str]) -> Syntax:
         return Syntax(
             code,
@@ -872,7 +869,7 @@ class AlphanusTUI(App):
             partial.update("")
             return
         rendered, _ = render_md(self._buf_c, False)
-        partial.update(self._partial_markup_renderable(rendered, indent=max(2, hanging_indent(self._buf_c))))
+        partial.update(Padding(Text.from_markup(rendered), pad=(0, 0, 0, max(2, hanging_indent(self._buf_c)))))
 
     def _update_live_preview_partial(self, lines: List[str], language: Optional[str]) -> None:
         partial = self._partial()

@@ -114,15 +114,6 @@ TOOL_SPECS = {
             "required": ["query"],
         },
     },
-    "delete_file": {
-        "capability": "workspace_delete",
-        "description": "Delete a workspace file.",
-        "parameters": {
-            "type": "object",
-            "properties": {"filepath": {"type": "string"}},
-            "required": ["filepath"],
-        },
-    },
     "delete_path": {
         "capability": "workspace_delete",
         "description": "Delete a workspace file or directory inside the workspace.",
@@ -327,22 +318,6 @@ def _search_code(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     )
 
 
-def _delete_file(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
-    filepath = str(args["filepath"])
-    target = env.workspace._resolve_read_path(filepath)
-    size_bytes = target.stat().st_size
-    path_str = env.workspace.delete_file(filepath)
-    data = _path_info(path_str)
-    data.update(
-        {
-            "deleted": True,
-            "size_bytes": size_bytes,
-            "kind": "file",
-        }
-    )
-    return data
-
-
 def _delete_path(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     path = str(args["path"])
     recursive = bool(args.get("recursive", False))
@@ -404,8 +379,6 @@ def execute(tool_name: str, args: Dict[str, Any], env: ToolExecutionEnv):
         return _list_files(args, env)
     if tool_name == "search_code":
         return _search_code(args, env)
-    if tool_name == "delete_file":
-        return _delete_file(args, env)
     if tool_name == "delete_path":
         return _delete_path(args, env)
     if tool_name == "workspace_tree":

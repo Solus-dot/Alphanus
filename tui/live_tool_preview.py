@@ -203,7 +203,8 @@ class LiveToolPreviewManager:
         if not state or not state.opened:
             return False
         if not state.closed:
-            self._close_state(state, write_indented, write_code, clear_preview)
+            self._flush_state_preview(state, write_indented, write_code, clear_preview)
+            state.closed = True
         self._streams.pop(stream_id, None)
         return True
 
@@ -312,16 +313,6 @@ class LiveToolPreviewManager:
         if state is None:
             return
         state.rendered_filepaths.update(filepaths)
-
-    def _close_state(
-        self,
-        state: LivePreviewState,
-        write_indented: WriteIndentedFn,
-        write_code: WriteCodeFn,
-        clear_preview: ClearPreviewFn,
-    ) -> None:
-        self._flush_state_preview(state, write_indented, write_code, clear_preview)
-        state.closed = True
 
     def _flush_state_preview(
         self,

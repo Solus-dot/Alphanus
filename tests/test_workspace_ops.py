@@ -221,8 +221,8 @@ def test_workspace_ops_list_delete_and_tree(tmp_path: Path):
     assert "app.py" in tree["data"]["tree"]
 
     deleted = runtime.execute_tool_call(
-        "delete_file",
-        {"filepath": "src/app.py"},
+        "delete_path",
+        {"path": "src/app.py"},
         selected=[skill],
         ctx=ctx,
     )
@@ -232,7 +232,7 @@ def test_workspace_ops_list_delete_and_tree(tmp_path: Path):
     assert deleted["data"]["kind"] == "file"
 
 
-def test_workspace_ops_delete_file_supports_binary_files(tmp_path: Path):
+def test_workspace_ops_delete_path_supports_binary_files(tmp_path: Path):
     runtime = _runtime(tmp_path)
     skill = runtime.get_skill("workspace-ops")
     assert skill is not None
@@ -242,8 +242,8 @@ def test_workspace_ops_delete_file_supports_binary_files(tmp_path: Path):
 
     ctx = _ctx(str(runtime.workspace.workspace_root))
     deleted = runtime.execute_tool_call(
-        "delete_file",
-        {"filepath": ".DS_Store"},
+        "delete_path",
+        {"path": ".DS_Store"},
         selected=[skill],
         ctx=ctx,
     )

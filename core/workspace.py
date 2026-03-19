@@ -165,15 +165,6 @@ class WorkspaceManager:
         target.write_text(content, encoding="utf-8")
         return str(target)
 
-    def delete_file(self, filepath: str) -> str:
-        target = self._resolve_write_path(filepath)
-        if not target.exists():
-            raise FileNotFoundError(str(target))
-        if target.is_dir():
-            raise IsADirectoryError(str(target))
-        target.unlink()
-        return str(target)
-
     def delete_path(self, path: str, recursive: bool = False) -> str:
         target = self._resolve_write_path(path)
         if not target.exists():
