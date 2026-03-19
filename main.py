@@ -9,7 +9,7 @@ from typing import Any, Dict
 from urllib.parse import urlparse
 
 from agent.core import Agent
-from core.memory import VectorMemory
+from core.memory import RECOMMENDED_EMBEDDING_MODEL_NAME, VectorMemory
 from core.skills import SkillRuntime
 from core.workspace import WorkspaceManager
 from tui.interface import AlphanusTUI
@@ -42,8 +42,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "memory": {
         "path": "./memories/memory.pkl",
-        "embedding_backend": "hash",
+        "embedding_backend": "transformer",
+        "model_name": RECOMMENDED_EMBEDDING_MODEL_NAME,
         "eager_load_encoder": False,
+        "allow_model_download": True,
     },
     "context": {
         "context_limit": 8192,
@@ -175,9 +177,10 @@ def main() -> int:
     memory_cfg = config.get("memory", {})
     memory = VectorMemory(
         storage_path=memory_path,
-        model_name=str(memory_cfg.get("model_name", "BAAI/bge-small-en-v1.5")),
-        embedding_backend=str(memory_cfg.get("embedding_backend", "hash")),
+        model_name=str(memory_cfg.get("model_name", RECOMMENDED_EMBEDDING_MODEL_NAME)),
+        embedding_backend=str(memory_cfg.get("embedding_backend", "transformer")),
         eager_load_encoder=bool(memory_cfg.get("eager_load_encoder", False)),
+        allow_model_download=bool(memory_cfg.get("allow_model_download", True)),
     )
     runtime = SkillRuntime(
         skills_dir=str(project_root / "skills"),
@@ -193,10 +196,13 @@ def main() -> int:
 
     if not config.get("agent", {}).get("tls_verify", True):
         print("[warning] TLS verification is disabled (agent.tls_verify=false)")
+    memory_stats = memory.stats()
     print(
-        f"[info] memory mode: {memory.embedding_backend}"
-        + (f" ({memory.model_name})" if memory.embedding_backend in {"transformer", "auto"} else " (hash fallback)")
+        f"[info] memory mode: {memory_stats['embedding_backend']}"
+        + (f" ({memory.model_name})" if memory_stats["embedding_backend"] == "transformer" else " (hash fallback)")
     )
+    if memory_stats.get("encoder_status") == "fallback" and memory_stats.get("encoder_detail"):
+        print(f"[warning] memory encoder fallback: {memory_stats['encoder_detail']}")
     print("[info] use /doctor inside the TUI for readiness and health diagnostics.")
 
     # Readiness is validated before first generation too; this startup check

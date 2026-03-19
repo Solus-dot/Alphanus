@@ -30,7 +30,12 @@ def _build_agent(root: Path, workspace_root: Path, memory_path: Path) -> tuple[A
         DEFAULT_CONFIG,
         {
             "workspace": {"path": str(workspace_root)},
-            "memory": {"path": str(memory_path), "embedding_backend": "hash"},
+            "memory": {
+                "path": str(memory_path),
+                "embedding_backend": "transformer",
+                "model_name": "BAAI/bge-small-en-v1.5",
+                "allow_model_download": True,
+            },
             "capabilities": {
                 "dangerously_skip_permissions": True,
                 "shell_require_confirmation": False,
@@ -49,7 +54,12 @@ def _build_agent(root: Path, workspace_root: Path, memory_path: Path) -> tuple[A
         },
     )
     workspace = WorkspaceManager(workspace_root=str(workspace_root), home_root=str(Path.home()))
-    memory = VectorMemory(storage_path=str(memory_path), embedding_backend="hash")
+    memory = VectorMemory(
+        storage_path=str(memory_path),
+        embedding_backend="transformer",
+        model_name="BAAI/bge-small-en-v1.5",
+        allow_model_download=True,
+    )
     runtime = SkillRuntime(
         skills_dir=str(root / "skills"),
         workspace=workspace,

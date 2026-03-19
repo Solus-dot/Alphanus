@@ -70,8 +70,9 @@ Edit `config/global_config.json`:
 ```json
 {
   "memory": {
-    "embedding_backend": "hash",
-    "model_name": "BAAI/bge-small-en-v1.5"
+    "embedding_backend": "transformer",
+    "model_name": "BAAI/bge-small-en-v1.5",
+    "allow_model_download": true
   },
   "tui": {
     "chat_log_max_lines": 5000,
@@ -86,9 +87,11 @@ Edit `config/global_config.json`:
 ```
 
 Notes:
-- `memory.embedding_backend: "hash"` is lowest RAM usage.
-- `memory.embedding_backend: "transformer"` is the recommended semantic mode.
+- `memory.embedding_backend: "transformer"` is the default and recommended semantic mode.
+- `memory.embedding_backend: "hash"` is the lowest-RAM fallback.
 - Recommended transformer model: `BAAI/bge-small-en-v1.5`.
+- `memory.allow_model_download` controls whether the app may fetch uncached embedding weights on first use.
+- Existing memories are automatically re-embedded when you switch backend/model so recall stays consistent.
 - `hash` mode is a low-resource fallback, not the recommended public-facing quality mode.
 - `tui.chat_log_max_lines` bounds RichLog memory growth.
 - Tree compaction is lossy for inactive branches; disable it if you need full historical payload fidelity when switching back.

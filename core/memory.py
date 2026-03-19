@@ -11,6 +11,9 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+RECOMMENDED_EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
+_SUPPORTED_EMBEDDING_BACKENDS = {"hash", "transformer", "auto"}
+
 
 class _HashEncoder:
     """Fallback deterministic encoder when sentence-transformers is unavailable."""
@@ -50,26 +53,27 @@ class VectorMemory:
     def __init__(
         self,
         storage_path: str,
-        model_name: str = "BAAI/bge-small-en-v1.5",
+        model_name: str = RECOMMENDED_EMBEDDING_MODEL_NAME,
         embedding_backend: str = "hash",
         min_score: float = 0.3,
         persist_access_updates: bool = False,
         autosave_interval_s: float = 2.0,
         autosave_every: int = 24,
         eager_load_encoder: bool = False,
+        allow_model_download: bool = True,
     ) -> None:
         self.storage_path = Path(os.path.expanduser(storage_path)).resolve()
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.model_name = model_name
-        backend = str(embedding_backend or "hash").strip().lower()
-        if backend not in {"hash", "transformer", "auto"}:
-            backend = "hash"
+        backend = self._normalize_backend(embedding_backend, default="hash")
+        self.configured_embedding_backend = backend
         self.embedding_backend = backend
         self.min_score = float(min_score)
         self.persist_access_updates = bool(persist_access_updates)
         self.autosave_interval_s = max(0.0, float(autosave_interval_s))
         self.autosave_every = max(1, int(autosave_every))
         self.eager_load_encoder = bool(eager_load_encoder)
+        self.allow_model_download = bool(allow_model_download)
 
         self.memories: List[MemoryItem] = []
         self._next_id = 1
@@ -80,18 +84,37 @@ class VectorMemory:
         self._norm_cache: Optional[np.ndarray] = None
         self._type_index_cache: Dict[str, np.ndarray] = {}
         self._all_index_cache: Optional[np.ndarray] = None
+        self._embedding_space_ready = False
+        self._stored_embedding_backend: Optional[str] = None
+        self._stored_configured_embedding_backend: Optional[str] = None
+        self._stored_model_name: Optional[str] = None
+        self._encoder_status = "uninitialized"
+        self._encoder_source = ""
+        self._encoder_detail = ""
 
         self.encoder = None
         self.dimension = 384
         self._load()
         if self.eager_load_encoder:
-            self._ensure_encoder()
+            self._ensure_embedding_space()
+
+    @staticmethod
+    def _normalize_backend(value: Any, default: str) -> str:
+        backend = str(value or default).strip().lower()
+        if backend not in _SUPPORTED_EMBEDDING_BACKENDS:
+            return default
+        return backend
 
     def _invalidate_index_cache(self) -> None:
         self._matrix_cache = None
         self._norm_cache = None
         self._type_index_cache = {}
         self._all_index_cache = None
+
+    def _set_encoder_state(self, status: str, source: str, detail: str = "") -> None:
+        self._encoder_status = status
+        self._encoder_source = source
+        self._encoder_detail = detail.strip()
 
     def _ensure_index_cache(self) -> None:
         if self._matrix_cache is not None and self._norm_cache is not None and self._all_index_cache is not None:
@@ -119,33 +142,167 @@ class VectorMemory:
     def _load_transformer_encoder(self, model_name: str):
         try:
             from sentence_transformers import SentenceTransformer  # type: ignore
+        except Exception as exc:
+            self._set_encoder_state(
+                "fallback",
+                "hash-fallback",
+                f"sentence-transformers unavailable: {exc.__class__.__name__}",
+            )
+            return _HashEncoder(dim=384)
 
-            try:
-                model = SentenceTransformer(model_name, local_files_only=True)
-            except Exception:
-                # First run may require a one-time cache download.
-                model = SentenceTransformer(model_name, local_files_only=False)
+        try:
+            model = SentenceTransformer(model_name, local_files_only=True)
+            self._set_encoder_state("ready", "transformer-local", "loaded from local cache")
             return model
-        except Exception:
+        except Exception as local_exc:
+            if not self.allow_model_download:
+                self._set_encoder_state(
+                    "fallback",
+                    "hash-fallback",
+                    f"model not cached locally and allow_model_download=false: {local_exc.__class__.__name__}",
+                )
+                return _HashEncoder(dim=384)
+        try:
+            model = SentenceTransformer(model_name, local_files_only=False)
+            self._set_encoder_state("ready", "transformer-download", "loaded with download fallback enabled")
+            return model
+        except Exception as remote_exc:
+            self._set_encoder_state(
+                "fallback",
+                "hash-fallback",
+                f"transformer load failed: {remote_exc.__class__.__name__}",
+            )
             return _HashEncoder(dim=384)
 
     def _ensure_encoder(self):
         if self.encoder is not None:
             return self.encoder
-        if self.embedding_backend == "hash":
+        if self.configured_embedding_backend == "hash":
             self.encoder = _HashEncoder(dim=384)
-        elif self.embedding_backend == "transformer":
+            self._set_encoder_state("ready", "hash", "deterministic hash encoder")
+        elif self.configured_embedding_backend == "transformer":
             self.encoder = self._load_transformer_encoder(self.model_name)
         else:
             # "auto" preserves prior behavior while still lazily loading.
             self.encoder = self._load_transformer_encoder(self.model_name)
+        if isinstance(self.encoder, _HashEncoder):
+            self.embedding_backend = "hash"
+            if self._encoder_status == "uninitialized":
+                detail = "deterministic hash encoder"
+                if self.configured_embedding_backend != "hash":
+                    detail = "transformer unavailable; using hash fallback"
+                self._set_encoder_state("ready" if self.configured_embedding_backend == "hash" else "fallback", "hash", detail)
+        elif self.configured_embedding_backend == "auto":
+            self.embedding_backend = "transformer"
+            if self._encoder_status == "uninitialized":
+                self._set_encoder_state("ready", "transformer", "semantic transformer encoder")
+        else:
+            self.embedding_backend = self.configured_embedding_backend
+            if self._encoder_status == "uninitialized":
+                self._set_encoder_state("ready", "transformer", "semantic transformer encoder")
         self.dimension = int(getattr(self.encoder, "dim", 384))
         return self.encoder
 
-    def _encode(self, text: str) -> np.ndarray:
+    def _encode_many(self, texts: List[str]) -> np.ndarray:
+        if not texts:
+            return np.empty((0, self.dimension), dtype=np.float32)
         encoder = self._ensure_encoder()
-        emb = encoder.encode([text], normalize_embeddings=True)
-        return np.asarray(emb[0], dtype=np.float32)
+        emb = encoder.encode(texts, normalize_embeddings=True)
+        matrix = np.asarray(emb, dtype=np.float32)
+        if matrix.ndim == 1:
+            matrix = matrix.reshape(1, -1)
+        if matrix.ndim != 2:
+            raise ValueError("Encoder returned an invalid embedding matrix")
+        self.dimension = int(matrix.shape[1])
+        return matrix
+
+    def _encode(self, text: str) -> np.ndarray:
+        return self._encode_many([text])[0]
+
+    def _memories_have_consistent_dimensions(self) -> bool:
+        if not self.memories:
+            return True
+        dims = {
+            int(item.vector.shape[0])
+            for item in self.memories
+            if isinstance(item.vector, np.ndarray) and item.vector.ndim == 1
+        }
+        if len(dims) != len(self.memories):
+            return False
+        return len(dims) == 1
+
+    def _stored_backend_matches_current_space(self) -> bool:
+        stored_backend = self._normalize_backend(
+            self._stored_embedding_backend or self._stored_configured_embedding_backend or "",
+            default="",
+        )
+        if not stored_backend:
+            return False
+        if stored_backend == "auto":
+            return False
+        if stored_backend != self.embedding_backend:
+            return False
+        if self.embedding_backend == "transformer":
+            return self._stored_model_name == self.model_name
+        return True
+
+    def _needs_reembed(self) -> bool:
+        if not self.memories:
+            return False
+        if not self._memories_have_consistent_dimensions():
+            return True
+        current_dim = int(self.memories[0].vector.shape[0])
+        if current_dim != self.dimension:
+            return True
+        return not self._stored_backend_matches_current_space()
+
+    def _ensure_embedding_space(self) -> None:
+        if self._embedding_space_ready:
+            return
+        self._ensure_encoder()
+        if not self.memories:
+            self._embedding_space_ready = True
+            return
+        if self._needs_reembed():
+            vectors = self._encode_many([item.text for item in self.memories])
+            for item, vector in zip(self.memories, vectors):
+                item.vector = vector
+            self._invalidate_index_cache()
+            self._mark_dirty(force=False)
+        else:
+            self.dimension = int(self.memories[0].vector.shape[0])
+        self._stored_embedding_backend = self.embedding_backend
+        self._stored_configured_embedding_backend = self.configured_embedding_backend
+        self._stored_model_name = self.model_name
+        self._embedding_space_ready = True
+
+    def _resolve_runtime_state(self) -> None:
+        if self.memories:
+            self._ensure_embedding_space()
+            return
+        self._ensure_encoder()
+
+    def _append_to_index_cache(self, item: MemoryItem) -> bool:
+        if self._matrix_cache is None or self._norm_cache is None or self._all_index_cache is None:
+            return False
+        if self._matrix_cache.ndim != 2 or item.vector.ndim != 1:
+            return False
+        if self._matrix_cache.shape[1] != item.vector.shape[0]:
+            return False
+
+        row = item.vector.reshape(1, -1)
+        norm = np.asarray([np.linalg.norm(item.vector)], dtype=np.float32)
+        new_index = np.asarray([len(self.memories) - 1], dtype=np.int32)
+        self._matrix_cache = np.concatenate((self._matrix_cache, row), axis=0)
+        self._norm_cache = np.concatenate((self._norm_cache, norm))
+        self._all_index_cache = np.concatenate((self._all_index_cache, new_index))
+
+        existing = self._type_index_cache.get(item.type)
+        if existing is None:
+            self._type_index_cache[item.type] = new_index
+        else:
+            self._type_index_cache[item.type] = np.concatenate((existing, new_index))
+        return True
 
     def _load(self) -> None:
         if not self.storage_path.exists():
@@ -160,6 +317,14 @@ class VectorMemory:
             self._next_id = 1
             return
 
+        if isinstance(payload, dict):
+            self._stored_embedding_backend = self._normalize_backend(payload.get("embedding_backend", ""), default="")
+            self._stored_configured_embedding_backend = self._normalize_backend(
+                payload.get("configured_embedding_backend", ""),
+                default="",
+            )
+            raw_model_name = str(payload.get("model_name", "")).strip()
+            self._stored_model_name = raw_model_name or None
         raw_memories = payload.get("memories", []) if isinstance(payload, dict) else []
         loaded: List[MemoryItem] = []
         for item in raw_memories:
@@ -183,6 +348,7 @@ class VectorMemory:
         self._dirty = False
         self._pending_writes = 0
         self._last_save_ts = time.time()
+        self._embedding_space_ready = False
         self._invalidate_index_cache()
 
     def _save(self) -> None:
@@ -190,6 +356,7 @@ class VectorMemory:
             "schema_version": "1.0.0",
             "model_name": self.model_name,
             "embedding_backend": self.embedding_backend,
+            "configured_embedding_backend": self.configured_embedding_backend,
             "memories": [
                 {
                     "id": m.id,
@@ -231,6 +398,8 @@ class VectorMemory:
 
     def flush(self) -> None:
         if self._dirty:
+            if self.memories:
+                self._ensure_embedding_space()
             self._save()
 
     def add_memory(
@@ -240,15 +409,21 @@ class VectorMemory:
         metadata: Optional[Dict[str, Any]] = None,
         importance: Optional[float] = None,
     ) -> Dict[str, Any]:
+        if self.memories:
+            self._ensure_embedding_space()
         now = time.time()
         md = dict(metadata or {})
         if importance is not None:
             md["importance"] = float(importance)
+        vector = np.asarray(self._encode(text), dtype=np.float32)
+        if vector.ndim != 1:
+            raise ValueError("Encoder returned an invalid embedding vector")
+        self.dimension = int(vector.shape[0])
 
         item = MemoryItem(
             id=self._next_id,
             text=text,
-            vector=self._encode(text),
+            vector=vector,
             metadata=md,
             type=memory_type,
             timestamp=now,
@@ -257,7 +432,12 @@ class VectorMemory:
         )
         self._next_id += 1
         self.memories.append(item)
-        self._invalidate_index_cache()
+        self._stored_embedding_backend = self.embedding_backend
+        self._stored_configured_embedding_backend = self.configured_embedding_backend
+        self._stored_model_name = self.model_name
+        self._embedding_space_ready = True
+        if not self._append_to_index_cache(item):
+            self._invalidate_index_cache()
         self._mark_dirty(force=False)
         return self._to_public(item)
 
@@ -271,6 +451,7 @@ class VectorMemory:
         if not self.memories:
             return []
 
+        self._ensure_embedding_space()
         threshold = self.min_score if min_score is None else float(min_score)
         q = self._encode(query)
         q_norm = float(np.linalg.norm(q))
@@ -335,11 +516,15 @@ class VectorMemory:
         self.memories = [m for m in self.memories if m.id != int(memory_id)]
         changed = len(self.memories) != before
         if changed:
+            self._embedding_space_ready = False
             self._invalidate_index_cache()
+            if self.memories:
+                self._ensure_embedding_space()
             self._mark_dirty(force=False)
         return changed
 
     def stats(self) -> Dict[str, Any]:
+        self._resolve_runtime_state()
         by_type: Dict[str, int] = {}
         for m in self.memories:
             by_type[m.type] = by_type.get(m.type, 0) + 1
@@ -352,8 +537,13 @@ class VectorMemory:
             "dimension": self.dimension,
             "model_name": self.model_name,
             "embedding_backend": self.embedding_backend,
-            "mode_label": "semantic" if self.embedding_backend in {"transformer", "auto"} else "fallback-hash",
-            "recommended_model_name": "BAAI/bge-small-en-v1.5",
+            "configured_embedding_backend": self.configured_embedding_backend,
+            "allow_model_download": self.allow_model_download,
+            "encoder_status": self._encoder_status,
+            "encoder_source": self._encoder_source,
+            "encoder_detail": self._encoder_detail,
+            "mode_label": "semantic" if self.embedding_backend == "transformer" else "fallback-hash",
+            "recommended_model_name": RECOMMENDED_EMBEDDING_MODEL_NAME,
         }
 
     def export_txt(self, path: str) -> str:

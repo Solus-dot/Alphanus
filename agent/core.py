@@ -367,6 +367,11 @@ class Agent:
             },
             "memory": {
                 "backend": memory_stats.get("embedding_backend"),
+                "configured_backend": memory_stats.get("configured_embedding_backend"),
+                "allow_model_download": memory_stats.get("allow_model_download"),
+                "encoder_status": memory_stats.get("encoder_status"),
+                "encoder_source": memory_stats.get("encoder_source"),
+                "encoder_detail": memory_stats.get("encoder_detail"),
                 "mode": memory_stats.get("mode_label"),
                 "model_name": memory_stats.get("model_name"),
                 "recommended_model_name": memory_stats.get("recommended_model_name"),

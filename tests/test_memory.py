@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import pickle
+import sys
 import time
+import types
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +25,42 @@ def _fake_encode(self, text: str):
     return vec
 
 
+class _ToyTransformerEncoder:
+    dim = 24
+
+    def encode(self, texts, normalize_embeddings: bool = True) -> np.ndarray:
+        vectors = []
+        for text in texts:
+            vec = np.zeros(self.dim, dtype=np.float32)
+            for token in text.lower().split():
+                idx = sum(token.encode("utf-8")) % self.dim
+                vec[idx] += 1.0
+            if normalize_embeddings:
+                norm = np.linalg.norm(vec)
+                if norm > 0:
+                    vec /= norm
+            vectors.append(vec)
+        return np.asarray(vectors, dtype=np.float32)
+
+
+class _ToyTransformerEncoder384:
+    dim = 384
+
+    def encode(self, texts, normalize_embeddings: bool = True) -> np.ndarray:
+        vectors = []
+        for text in texts:
+            vec = np.zeros(self.dim, dtype=np.float32)
+            for token in text.lower().split():
+                idx = (sum(token.encode("utf-8")) * 7) % self.dim
+                vec[idx] += 1.0
+            if normalize_embeddings:
+                norm = np.linalg.norm(vec)
+                if norm > 0:
+                    vec /= norm
+            vectors.append(vec)
+        return np.asarray(vectors, dtype=np.float32)
+
+
 def _memory_runtime(tmp_path: Path) -> tuple[SkillRuntime, str]:
     repo_root = Path(__file__).resolve().parents[1]
     home = tmp_path / "home"
@@ -31,7 +70,7 @@ def _memory_runtime(tmp_path: Path) -> tuple[SkillRuntime, str]:
     runtime = SkillRuntime(
         skills_dir=str(repo_root / "skills"),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl"), embedding_backend="hash"),
         config={},
     )
     return runtime, str(ws)
@@ -314,3 +353,195 @@ def test_transformer_backend_is_lazy(monkeypatch, tmp_path: Path):
     assert called["count"] == 0
     mem.add_memory("trigger encoder load")
     assert called["count"] == 1
+
+
+def test_transformer_runtime_reembeds_hash_payload(monkeypatch, tmp_path: Path):
+    path = tmp_path / "mem.pkl"
+    legacy = VectorMemory(storage_path=str(path), embedding_backend="hash")
+    legacy.add_memory("favorite editor is neovim", memory_type="preference")
+    legacy.flush()
+
+    monkeypatch.setattr(
+        VectorMemory,
+        "_load_transformer_encoder",
+        lambda self, _model_name: _ToyTransformerEncoder(),
+        raising=True,
+    )
+    migrated = VectorMemory(storage_path=str(path), embedding_backend="transformer", model_name="toy-transformer")
+
+    hits = migrated.search("favorite editor", top_k=1, min_score=0.0)
+
+    assert hits
+    assert migrated.embedding_backend == "transformer"
+    assert migrated.dimension == _ToyTransformerEncoder.dim
+    assert all(item.vector.shape == (_ToyTransformerEncoder.dim,) for item in migrated.memories)
+
+    migrated.flush()
+    with path.open("rb") as handle:
+        payload = pickle.load(handle)
+    assert payload["embedding_backend"] == "transformer"
+    assert payload["configured_embedding_backend"] == "transformer"
+    assert payload["model_name"] == "toy-transformer"
+
+
+def test_transformer_fallback_reports_actual_hash_backend(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        VectorMemory,
+        "_load_transformer_encoder",
+        lambda self, _model_name: _HashEncoder(dim=384),
+        raising=True,
+    )
+    mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"), embedding_backend="transformer")
+
+    mem.add_memory("fallback to hash")
+    stats = mem.stats()
+
+    assert mem.embedding_backend == "hash"
+    assert stats["embedding_backend"] == "hash"
+    assert stats["configured_embedding_backend"] == "transformer"
+
+
+def test_stats_resolves_fallback_before_first_memory_operation(monkeypatch, tmp_path: Path):
+    calls: list[tuple[str, bool]] = []
+
+    class _FakeSentenceTransformer:
+        def __init__(self, model_name: str, local_files_only: bool) -> None:
+            calls.append((model_name, local_files_only))
+            raise OSError("missing local weights")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        types.SimpleNamespace(SentenceTransformer=_FakeSentenceTransformer),
+    )
+    mem = VectorMemory(
+        storage_path=str(tmp_path / "mem.pkl"),
+        embedding_backend="transformer",
+        model_name="toy-model",
+        allow_model_download=False,
+    )
+
+    stats = mem.stats()
+
+    assert calls == [("toy-model", True)]
+    assert stats["embedding_backend"] == "hash"
+    assert stats["encoder_status"] == "fallback"
+    assert stats["encoder_source"] == "hash-fallback"
+
+
+def test_transformer_respects_allow_model_download_false(monkeypatch, tmp_path: Path):
+    calls: list[tuple[str, bool]] = []
+
+    class _FakeSentenceTransformer:
+        def __init__(self, model_name: str, local_files_only: bool) -> None:
+            calls.append((model_name, local_files_only))
+            raise OSError("missing local weights")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        types.SimpleNamespace(SentenceTransformer=_FakeSentenceTransformer),
+    )
+    mem = VectorMemory(
+        storage_path=str(tmp_path / "mem.pkl"),
+        embedding_backend="transformer",
+        model_name="toy-model",
+        allow_model_download=False,
+    )
+
+    mem.add_memory("offline transformer request")
+    stats = mem.stats()
+
+    assert calls == [("toy-model", True)]
+    assert mem.embedding_backend == "hash"
+    assert stats["encoder_status"] == "fallback"
+    assert stats["encoder_source"] == "hash-fallback"
+    assert "allow_model_download=false" in stats["encoder_detail"]
+
+
+def test_transformer_can_retry_with_download_enabled(monkeypatch, tmp_path: Path):
+    calls: list[tuple[str, bool]] = []
+
+    class _DownloadedEncoder:
+        dim = 12
+
+        def encode(self, texts, normalize_embeddings: bool = True) -> np.ndarray:
+            vectors = np.ones((len(texts), self.dim), dtype=np.float32)
+            if normalize_embeddings:
+                norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+                vectors = vectors / norms
+            return vectors
+
+    class _FakeSentenceTransformer:
+        def __init__(self, model_name: str, local_files_only: bool) -> None:
+            calls.append((model_name, local_files_only))
+            if local_files_only:
+                raise OSError("missing local weights")
+            self._delegate = _DownloadedEncoder()
+            self.dim = self._delegate.dim
+
+        def encode(self, texts, normalize_embeddings: bool = True) -> np.ndarray:
+            return self._delegate.encode(texts, normalize_embeddings=normalize_embeddings)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        types.SimpleNamespace(SentenceTransformer=_FakeSentenceTransformer),
+    )
+    mem = VectorMemory(
+        storage_path=str(tmp_path / "mem.pkl"),
+        embedding_backend="transformer",
+        model_name="toy-model",
+        allow_model_download=True,
+    )
+
+    mem.add_memory("download-enabled transformer request")
+    stats = mem.stats()
+
+    assert calls == [("toy-model", True), ("toy-model", False)]
+    assert mem.embedding_backend == "transformer"
+    assert stats["encoder_status"] == "ready"
+    assert stats["encoder_source"] == "transformer-download"
+
+
+def test_add_memory_keeps_warm_cache_incremental(monkeypatch, tmp_path: Path):
+    mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"), embedding_backend="hash")
+    monkeypatch.setattr(VectorMemory, "_encode", _fake_encode, raising=False)
+
+    mem.add_memory("alpha beta", memory_type="note")
+    assert mem.search("alpha", top_k=1, min_score=0.0)
+    assert mem._matrix_cache is not None  # noqa: SLF001
+
+    mem.add_memory("gamma delta", memory_type="note")
+
+    assert mem._matrix_cache is not None  # noqa: SLF001
+    assert mem._matrix_cache.shape == (2, 16)  # noqa: SLF001
+    assert mem._all_index_cache.tolist() == [0, 1]  # noqa: SLF001
+    assert mem._type_index_cache["note"].tolist() == [0, 1]  # noqa: SLF001
+
+
+def test_forget_reembeds_remaining_legacy_hash_memories_before_save(monkeypatch, tmp_path: Path):
+    path = tmp_path / "mem.pkl"
+    legacy = VectorMemory(storage_path=str(path), embedding_backend="hash")
+    first = legacy.add_memory("legacy alpha", memory_type="note")
+    second = legacy.add_memory("legacy beta", memory_type="note")
+    legacy.flush()
+
+    monkeypatch.setattr(
+        VectorMemory,
+        "_load_transformer_encoder",
+        lambda self, _model_name: _ToyTransformerEncoder384(),
+        raising=True,
+    )
+    migrated = VectorMemory(storage_path=str(path), embedding_backend="transformer", model_name="toy-384")
+
+    assert migrated.forget(int(first["id"])) is True
+    migrated.flush()
+
+    with path.open("rb") as handle:
+        payload = pickle.load(handle)
+    assert payload["embedding_backend"] == "transformer"
+    expected = _ToyTransformerEncoder384().encode(["legacy beta"], normalize_embeddings=True)[0]
+    persisted = np.asarray(payload["memories"][0]["vector"], dtype=np.float32)
+    assert payload["memories"][0]["id"] == int(second["id"])
+    assert np.allclose(persisted, expected)

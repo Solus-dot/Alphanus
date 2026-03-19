@@ -1103,7 +1103,7 @@ class AlphanusTUI(App):
         if isinstance(search_cfg, dict):
             search_cfg.pop("tavily_api_key", None)
         memory_cfg = cleaned.get("memory")
-        if isinstance(memory_cfg, dict) and str(memory_cfg.get("embedding_backend", "hash")).strip().lower() == "hash":
+        if isinstance(memory_cfg, dict) and str(memory_cfg.get("embedding_backend", "transformer")).strip().lower() == "hash":
             memory_cfg.pop("model_name", None)
         return cleaned
 
@@ -1949,6 +1949,12 @@ class AlphanusTUI(App):
             self._write_detail_line("count", str(stats["count"]))
             self._write_detail_line("mode", str(stats.get("mode_label", stats["embedding_backend"])))
             self._write_detail_line("backend", str(stats["embedding_backend"]))
+            self._write_detail_line("configured_backend", str(stats.get("configured_embedding_backend", "")))
+            self._write_detail_line("allow_model_download", str(stats.get("allow_model_download", False)).lower())
+            self._write_detail_line("encoder_status", str(stats.get("encoder_status", "")))
+            self._write_detail_line("encoder_source", str(stats.get("encoder_source", "")))
+            if stats.get("encoder_detail"):
+                self._write_detail_line("encoder_detail", str(stats.get("encoder_detail", "")))
             self._write_detail_line("model", str(stats["model_name"]))
             self._write_detail_line("recommended_model", str(stats.get("recommended_model_name", "")))
             self._write_detail_line("dimension", str(stats["dimension"]))
@@ -1970,6 +1976,13 @@ class AlphanusTUI(App):
         self._write_detail_line("workspace", str(workspace.get("path", "")))
         self._write_detail_line("workspace_writable", str(workspace.get("writable", False)).lower())
         self._write_detail_line("memory_mode", str(memory.get("mode", "")))
+        self._write_detail_line("memory_backend", str(memory.get("backend", "")))
+        self._write_detail_line("memory_configured_backend", str(memory.get("configured_backend", "")))
+        self._write_detail_line("memory_allow_model_download", str(memory.get("allow_model_download", False)).lower())
+        self._write_detail_line("memory_encoder_status", str(memory.get("encoder_status", "")))
+        self._write_detail_line("memory_encoder_source", str(memory.get("encoder_source", "")))
+        if memory.get("encoder_detail"):
+            self._write_detail_line("memory_encoder_detail", str(memory.get("encoder_detail", "")))
         self._write_detail_line("memory_model", str(memory.get("model_name", "")))
         self._write_detail_line("recommended_model", str(memory.get("recommended_model_name", "")))
         self._write_detail_line("search_provider", str(search.get("provider", "")))
