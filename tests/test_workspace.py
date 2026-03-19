@@ -95,3 +95,17 @@ def test_shell_command_runs_with_argv_not_shell(tmp_path: Path):
     assert res["ok"] is True
     assert res["data"]["stdout"].strip() == "ok"
     assert res["data"]["argv"][0] == "python3"
+
+
+def test_shell_command_nonzero_exit_is_reported_as_failure(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("python3 -c \"raise SystemExit(7)\"")
+    assert res["ok"] is False
+    assert res["error"]["code"] == "E_SHELL"
+    assert "code 7" in res["error"]["message"]
+    assert res["data"]["returncode"] == 7

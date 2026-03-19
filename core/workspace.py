@@ -472,6 +472,26 @@ class WorkspaceManager:
             self._validate_shell_command(command)
             argv = self._parse_command_argv(command)
             run = self._run_argv(argv, timeout_s=timeout_s)
+            if run["returncode"] != 0:
+                detail = (run["stderr"] or run["stdout"] or "").strip()
+                message = f"Command exited with code {run['returncode']}"
+                if detail:
+                    message += f": {detail}"
+                return {
+                    "ok": False,
+                    "data": {
+                        "command": command,
+                        "argv": run["argv"],
+                        "stdout": run["stdout"],
+                        "stderr": run["stderr"],
+                        "returncode": run["returncode"],
+                        "cwd": run["cwd"],
+                        "stdout_truncated": run["stdout_truncated"],
+                        "stderr_truncated": run["stderr_truncated"],
+                    },
+                    "error": {"code": "E_SHELL", "message": message},
+                    "meta": {"duration_ms": run["duration_ms"]},
+                }
             return {
                 "ok": True,
                 "data": {

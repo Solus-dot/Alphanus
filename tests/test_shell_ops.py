@@ -144,6 +144,31 @@ def test_shell_command_executes_as_core_tool_without_selected_skill(tmp_path: Pa
     assert out["data"]["stdout"].strip() == "hi"
 
 
+def test_shell_command_nonzero_exit_bubbles_up_as_tool_failure(tmp_path: Path):
+    runtime = _runtime(
+        tmp_path,
+        {
+            "capabilities": {
+                "shell_require_confirmation": True,
+                "dangerously_skip_permissions": False,
+            }
+        },
+    )
+
+    out = runtime.execute_tool_call(
+        "shell_command",
+        {"command": "python3 -c \"raise SystemExit(3)\""},
+        selected=[],
+        ctx=_ctx(str(runtime.workspace.workspace_root)),
+        confirm_shell=lambda _: True,
+    )
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_SHELL"
+    assert "code 3" in out["error"]["message"]
+    assert out["data"]["returncode"] == 3
+
+
 def test_shell_skill_selected_for_local_version_checks(tmp_path: Path):
     runtime = _runtime(tmp_path, {"skills": {"selection_mode": "heuristic", "max_active_skills": 2}})
     ctx = SkillContext(
