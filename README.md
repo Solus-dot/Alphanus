@@ -1,30 +1,35 @@
 # Alphanus
 
-Alphanus is a local-first coding assistant with a Textual TUI, an OpenAI-compatible chat-completions client, a modular `SKILL.md` skill runtime, persistent vector memory, and a branchable conversation tree.
+Alphanus is a local-first coding assistant with a Textual TUI, an OpenAI-compatible chat-completions loop, modular `SKILL.md` skills, persistent vector memory, and a branchable conversation tree.
 
 Status:
 - public alpha / power-user tooling
 - local-first
-- secrets come from environment variables, not editable config fields
+- secrets are environment variables (not editable config fields)
 
 ## Current State
 
 Current behavior and architecture:
 - streaming agent loop with separate reasoning/content rendering
-- OpenAI-style `tool_calls` execution loop
+- OpenAI-style `tool_calls` execution
 - model-routed skill selection by default (`skills.selection_mode = "model"`)
-- built-in workspace, shell, memory, search, and utility skills
-- workspace-safe read/write/delete tools plus constrained verification runners
+- bundled workspace, shell, memory, search, and utility skills
+- workspace-safe file operations and constrained verification runners
 - persistent vector memory with transformer embeddings and deterministic hash fallback
-- branchable conversation tree with named multi-session save/load plus inactive-branch compaction
+- branchable conversation tree with named multi-session save/load and inactive-branch compaction
 - TUI support for config editing, live tool previews, support bundle export, and code-block popups
 
 Bundled skills:
 - `workspace-ops`: create/read/edit/search/delete workspace files and run checks
 - `memory-rag`: store, recall, forget, inspect, and export persistent memories
-- `search-ops`: web search plus page fetch for current or verified answers
+- `search-ops`: web search plus page fetch for up-to-date answers
 - `shell-ops`: confirmed workspace shell commands
 - `utilities`: weather lookup, home file search, URL open, and YouTube open/play helpers
+
+## Requirements
+
+- Python `>=3.11`
+- [uv](https://docs.astral.sh/uv/)
 
 ## Quick Start
 
@@ -49,21 +54,24 @@ Useful flags:
 - `--dangerously-skip-permissions` disables interactive shell approval prompts
 
 Optional environment variables:
-- `TAVILY_API_KEY` for `search-ops`
+- `TAVILY_API_KEY` for `search-ops` when `search.provider = "tavily"`
 - `BRAVE_SEARCH_API_KEY` for `search-ops` when `search.provider = "brave"`
 - `ALPHANUS_AUTH_HEADER` for authenticated model endpoints (`Header-Name: value`)
+- `AUTH_HEADER` fallback if `ALPHANUS_AUTH_HEADER` is unset
 
-At startup, Alphanus performs a models-endpoint handshake and prints readiness status, for example:
-- `waiting for endpoint <...>/v1/models handshake...`
+Notes:
+- `.env` at repo root is auto-loaded on startup (without overriding already-set environment variables).
+- On startup, Alphanus performs a models-endpoint handshake and prints readiness status.
 
 ## Runtime Notes
 
 - `agent.max_tokens` defaults to `null`, so no explicit `max_tokens` cap is sent unless configured.
 - The system prompt includes the current local date.
-- The app validates that `agent.model_endpoint` and `agent.models_endpoint` share a host unless `allow_cross_host_endpoints` is enabled.
+- Endpoint host policy is enforced: `agent.model_endpoint` and `agent.models_endpoint` must share host unless `allow_cross_host_endpoints = true`.
 - Shell commands require confirmation by default.
-- Current-info answers are expected to come from fetched web evidence; otherwise the agent will decline to speculate.
-- Workspace deletes are handled through `delete_path`, which supports both files and directories.
+- Current-info answers are expected to come from fetched web evidence; otherwise Alphanus will decline to speculate.
+- `delete_path` supports both files and directories.
+- `run_checks` is intentionally constrained to approved verification runners (`pytest`, `ruff`, `mypy`, `pyright`, `eslint`, `tsc`, `vitest`, `jest`, `tox`, `nox`) and `uv run <approved-runner>`.
 
 ## TUI Commands
 
@@ -81,8 +89,8 @@ Conversation and view:
 - `/quit`, `/exit`, `/q`
 
 Attachments:
-- `/file <path>`
-- `/image <path>`
+- `/file <path>` (image or text)
+- `/image <path>` (alias of `/file`)
 
 Branching:
 - `/branch [label]`
@@ -121,50 +129,60 @@ Session notes:
 
 ## Config
 
-Global config lives at `config/global_config.json`. Missing keys are merged from the built-in defaults at startup.
+Global config lives at `config/global_config.json`. Missing keys are merged from built-in defaults at startup.
 
-Key defaults:
+Built-in defaults:
 
 ```json
 {
+  "schema_version": "1.0.0",
   "agent": {
     "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
     "models_endpoint": "http://127.0.0.1:8080/v1/models",
+    "request_timeout_s": 180,
+    "readiness_timeout_s": 30,
+    "readiness_poll_s": 0.5,
     "enable_thinking": true,
+    "tls_verify": true,
+    "ca_bundle_path": "",
+    "allow_cross_host_endpoints": false,
     "max_tokens": null,
     "context_budget_max_tokens": 2048,
-    "max_action_depth": 10
+    "max_action_depth": 10,
+    "max_tool_result_chars": 12000,
+    "max_reasoning_chars": 20000,
+    "compact_tool_results_in_history": false,
+    "compact_tool_result_tools": []
+  },
+  "workspace": {
+    "path": "~/Desktop/Alphanus-Workspace"
   },
   "memory": {
+    "path": "./memories/memory.pkl",
     "embedding_backend": "transformer",
     "model_name": "BAAI/bge-small-en-v1.5",
+    "eager_load_encoder": false,
     "allow_model_download": true
+  },
+  "context": {
+    "context_limit": 8192,
+    "keep_last_n": 10,
+    "safety_margin": 500
+  },
+  "capabilities": {
+    "shell_require_confirmation": true,
+    "dangerously_skip_permissions": false
   },
   "skills": {
     "selection_mode": "model",
-    "max_active_skills": 2
+    "max_active_skills": 2,
+    "strict_capability_policy": false
   },
   "tools": {
     "core_exposure_policy": "coding_core"
   },
   "search": {
     "provider": "tavily"
-  }
-}
-```
-
-The TUI also exposes `/config`, which opens a modal editor for the global config. Secret values are intentionally omitted there.
-
-## Memory and RAM Tuning
-
-Edit `config/global_config.json`:
-
-```json
-{
-  "memory": {
-    "embedding_backend": "transformer",
-    "model_name": "BAAI/bge-small-en-v1.5",
-    "allow_model_download": true
   },
   "tui": {
     "chat_log_max_lines": 5000,
@@ -178,31 +196,36 @@ Edit `config/global_config.json`:
 }
 ```
 
+The TUI also exposes `/config`, which opens a modal editor for global config. Secret values are intentionally omitted there.
+
+## Memory and RAM Tuning
+
 Notes:
 - `memory.embedding_backend: "transformer"` is the default and recommended semantic mode.
 - `memory.embedding_backend: "hash"` is the lowest-RAM fallback.
 - Recommended transformer model: `BAAI/bge-small-en-v1.5`.
-- `memory.allow_model_download` controls whether the app may fetch uncached embedding weights on first use.
-- Existing memories are automatically re-embedded when you switch backend/model so recall stays consistent.
-- `hash` mode is a low-resource fallback, not the recommended public-facing quality mode.
+- `memory.allow_model_download` controls whether uncached embedding weights may be downloaded on first use.
+- Existing memories are automatically re-embedded when you switch backend/model, so recall stays consistent.
 - `tui.chat_log_max_lines` bounds RichLog memory growth.
 - Tree compaction is lossy for inactive branches; disable it if you need full historical payload fidelity when switching back.
 
-## Search And Current-Info Behavior
+## Search and Current-Info Behavior
 
 - `search-ops` supports `tavily` and `brave` providers.
-- Time-sensitive answers require fetched-source evidence; otherwise Alphanus will decline to speculate.
-- Configure search credentials with environment variables only.
-- Search loops are intentionally short: search first, fetch only what is needed, then answer from the gathered evidence.
+- Time-sensitive answers require fetched-source evidence; otherwise Alphanus declines to speculate.
+- Search credentials are environment variables only.
+- Search loops are intentionally short (default per-turn tool budgets: `web_search=2`, `fetch_url=2`).
 
 ## Skills
 
 See [SKILLS_GUIDE.md](./SKILLS_GUIDE.md).
 
 Skills live under `skills/<skill-id>/SKILL.md` and can expose tools via:
-- `metadata.tools.definitions` command entries (preferred)
+- `metadata.tools.definitions` command entries
 - `tools.py` (`TOOL_SPECS` + `execute`) native tool modules
-- optional `hooks.py` for `pre_prompt`, `pre_action`, and `post_response`
+- optional `hooks.py` (`pre_prompt`, `pre_action`, `post_response`)
+
+Skill loading also supports requirement gating (`os`, `env`, `commands`) and marks blocked skills in `/skills` and `/doctor`.
 
 ## Tests
 
@@ -227,5 +250,5 @@ uv run python scripts/live_smoke.py --include-browser --json
 
 Notes:
 - `--include-browser` exercises `open_url` and `play_youtube`.
-- The script uses a temporary workspace under the repo and a temporary memory file, then runs real `Agent.run_turn(...)` scenarios against the live endpoint.
+- The script uses a temporary workspace and temporary memory file, then runs real `Agent.run_turn(...)` scenarios against the live endpoint.
 - Browser scenarios are optional because they trigger desktop-side effects.
