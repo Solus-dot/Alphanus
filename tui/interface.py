@@ -24,6 +24,12 @@ from textual.widgets.option_list import Option
 
 from agent.core import Agent, AgentTurnResult
 from core.attachments import build_content, classify_attachment
+from core.configuration import (
+    config_for_editor_view,
+    load_or_create_global_config,
+    normalize_config,
+    validate_endpoint_policy,
+)
 from core.conv_tree import ConvTree, Turn
 from core.sessions import ChatSession, ExportSummary, SessionStore, SessionSummary
 from tui.commands import (
@@ -1299,23 +1305,20 @@ class AlphanusTUI(App):
 
     @staticmethod
     def _config_for_editor(config: Dict[str, Any]) -> Dict[str, Any]:
-        cleaned = json.loads(json.dumps(config))
-        agent_cfg = cleaned.get("agent")
-        if isinstance(agent_cfg, dict):
-            agent_cfg.pop("auth_header", None)
-        search_cfg = cleaned.get("search")
-        if isinstance(search_cfg, dict):
-            search_cfg.pop("tavily_api_key", None)
-        memory_cfg = cleaned.get("memory")
-        if isinstance(memory_cfg, dict) and str(memory_cfg.get("embedding_backend", "transformer")).strip().lower() == "hash":
-            memory_cfg.pop("model_name", None)
-        return cleaned
+        return config_for_editor_view(config)
 
     def _open_config_editor(self) -> None:
-        raw = json.loads(GLOBAL_CONFIG_PATH.read_text(encoding="utf-8"))
+        warnings: List[str] = []
+        try:
+            raw = load_or_create_global_config(GLOBAL_CONFIG_PATH, warnings=warnings)
+        except Exception as exc:  # noqa: BLE001
+            self._write_error(f"Config load failed: {exc}")
+            return
         safe = self._config_for_editor(raw if isinstance(raw, dict) else {})
         text = json.dumps(safe, indent=2) + "\n"
         self.push_screen(ConfigEditorModal(GLOBAL_CONFIG_PATH, text), self._on_config_editor_close)
+        for warning in warnings:
+            self._write_info(f"Config warning: {warning}")
 
     def _merge_live_config(self, base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
         merged: Dict[str, Any] = dict(base)
@@ -1347,24 +1350,30 @@ class AlphanusTUI(App):
     def _on_config_editor_close(self, result: Optional[Dict[str, Any]]) -> None:
         if not result:
             return
-        text = str(result.get("text", ""))
         parsed = result.get("config")
         if not isinstance(parsed, dict):
             self._write_error("Config save failed: invalid config payload")
             return
 
-        cleaned = self._config_for_editor(parsed)
-        text = json.dumps(cleaned, indent=2) + "\n"
-        GLOBAL_CONFIG_PATH.write_text(text, encoding="utf-8")
-        merged = self._merge_live_config(self.agent.config, cleaned)
+        try:
+            normalized, warnings = normalize_config(parsed)
+            validate_endpoint_policy(normalized)
+        except Exception as exc:  # noqa: BLE001
+            self._write_error(f"Config save failed: {exc}")
+            return
+
+        cleaned = self._config_for_editor(normalized)
+        GLOBAL_CONFIG_PATH.write_text(json.dumps(cleaned, indent=2) + "\n", encoding="utf-8")
+        merged = self._merge_live_config(self.agent.config, normalized)
         self.agent.config = merged
         self.agent.skill_runtime.config = merged
         self.thinking = bool(merged.get("agent", {}).get("enable_thinking", self.thinking))
         self._update_topbar()
         self._apply_tui_config()
-        self._write_info(
-            "Saved global config. Use environment variables for secrets like TAVILY_API_KEY or BRAVE_SEARCH_API_KEY."
-        )
+        suffix = f" ({len(warnings)} normalization warning{'s' if len(warnings) != 1 else ''})." if warnings else "."
+        self._write_info("Saved global config. Use environment variables for secrets like TAVILY_API_KEY or BRAVE_SEARCH_API_KEY" + suffix)
+        for warning in warnings:
+            self._write_info(f"Config warning: {warning}")
 
     def _open_code_block(self, index: int) -> None:
         if index < 1 or index > len(self._code_blocks):

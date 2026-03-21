@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from agent.context import ContextWindowManager
 from agent.prompts import build_system_prompt
+from core.configuration import validate_endpoint_policy
 from core.skills import SkillContext, SkillRuntime
 from core.streaming import build_ssl_context, should_retry, stream_chat_completions
 
@@ -334,10 +335,18 @@ class Agent:
         return False
 
     def _validate_endpoints(self) -> Optional[str]:
-        model_host = urllib.parse.urlparse(self.model_endpoint).netloc
-        models_host = urllib.parse.urlparse(self.models_endpoint).netloc
-        if model_host != models_host and not self.allow_cross_host:
-            return "agent.model_endpoint and agent.models_endpoint must share host"
+        try:
+            validate_endpoint_policy(
+                {
+                    "agent": {
+                        "model_endpoint": self.model_endpoint,
+                        "models_endpoint": self.models_endpoint,
+                        "allow_cross_host_endpoints": self.allow_cross_host,
+                    }
+                }
+            )
+        except ValueError as exc:
+            return str(exc)
         return None
 
     def doctor_report(self) -> Dict[str, Any]:

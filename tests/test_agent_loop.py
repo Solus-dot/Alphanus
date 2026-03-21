@@ -619,6 +619,44 @@ def test_non_search_tool_success_does_not_mark_search_evidence(runtime: SkillRun
     assert state.search_has_fetch_content is False
 
 
+def test_run_turn_allows_same_host_endpoints_with_different_ports(mocker, runtime: SkillRuntime):
+    agent = Agent(
+        {
+            "agent": {
+                "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+                "models_endpoint": "http://127.0.0.1:9000/v1/models",
+                "allow_cross_host_endpoints": False,
+            },
+            "skills": {"selection_mode": "all_enabled", "max_active_skills": 2},
+        },
+        runtime,
+    )
+    mocker.patch.object(agent, "ensure_ready", return_value=True)
+    mocker.patch.object(
+        agent,
+        "_call_with_retry",
+        return_value=type(
+            "R",
+            (),
+            {
+                "finish_reason": "stop",
+                "content": "ok",
+                "reasoning": "",
+                "tool_calls": [],
+            },
+        )(),
+    )
+
+    result = agent.run_turn(
+        history_messages=[],
+        user_input="hello",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert result.content == "ok"
+
+
 def test_single_non_search_tool_can_use_direct_answer_even_if_search_skill_is_selected(mocker, runtime: SkillRuntime):
     utilities = runtime.skills_dir / "utilities"
     utilities.mkdir(parents=True)

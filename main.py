@@ -1,146 +1,18 @@
 import argparse
-import copy
-import json
-import os
 from pathlib import Path
-from typing import Any, Dict
-from urllib.parse import urlparse
 
 from agent.core import Agent
+from core.configuration import (
+    load_dotenv,
+    load_or_create_global_config,
+    normalize_config,
+    resolve_path,
+    validate_endpoint_policy,
+)
 from core.memory import RECOMMENDED_EMBEDDING_MODEL_NAME, VectorMemory
 from core.skills import SkillRuntime
 from core.workspace import WorkspaceManager
 from tui.interface import AlphanusTUI
-
-SCHEMA_VERSION = "1.0.0"
-
-
-DEFAULT_CONFIG: Dict[str, Any] = {
-    "schema_version": SCHEMA_VERSION,
-    "agent": {
-        "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-        "models_endpoint": "http://127.0.0.1:8080/v1/models",
-        "request_timeout_s": 180,
-        "readiness_timeout_s": 30,
-        "readiness_poll_s": 0.5,
-        "enable_thinking": True,
-        "tls_verify": True,
-        "ca_bundle_path": "",
-        "allow_cross_host_endpoints": False,
-        "max_tokens": None,
-        "context_budget_max_tokens": 2048,
-        "max_action_depth": 10,
-        "max_tool_result_chars": 12000,
-        "max_reasoning_chars": 20000,
-        "compact_tool_results_in_history": False,
-        "compact_tool_result_tools": [],
-    },
-    "workspace": {
-        "path": "~/Desktop/Alphanus-Workspace",
-    },
-    "memory": {
-        "path": "./memories/memory.pkl",
-        "embedding_backend": "transformer",
-        "model_name": RECOMMENDED_EMBEDDING_MODEL_NAME,
-        "eager_load_encoder": False,
-        "allow_model_download": True,
-    },
-    "context": {
-        "context_limit": 8192,
-        "keep_last_n": 10,
-        "safety_margin": 500,
-    },
-    "capabilities": {
-        "shell_require_confirmation": True,
-        "dangerously_skip_permissions": False,
-    },
-    "skills": {
-        "selection_mode": "model",
-        "max_active_skills": 2,
-        "strict_capability_policy": False
-    },
-    "tools": {
-        "core_exposure_policy": "coding_core",
-    },
-    "search": {
-        "provider": "tavily",
-    },
-    "tui": {
-        "chat_log_max_lines": 5000,
-        "tree_compaction": {
-            "enabled": True,
-            "inactive_assistant_char_limit": 12000,
-            "inactive_tool_argument_char_limit": 5000,
-            "inactive_tool_content_char_limit": 8000,
-        },
-    },
-}
-
-
-def deep_merge(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
-    out = copy.deepcopy(base)
-    for key, value in updates.items():
-        if isinstance(value, dict) and isinstance(out.get(key), dict):
-            out[key] = deep_merge(out[key], value)
-        else:
-            out[key] = copy.deepcopy(value)
-    return out
-
-
-def load_or_create_global_config(path: Path) -> Dict[str, Any]:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        path.write_text(json.dumps(DEFAULT_CONFIG, indent=2), encoding="utf-8")
-        return copy.deepcopy(DEFAULT_CONFIG)
-
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    schema = raw.get("schema_version", "1.0.0")
-    if int(schema.split(".", 1)[0]) != int(SCHEMA_VERSION.split(".", 1)[0]):
-        raise ValueError(f"Unsupported config schema_version: {schema}")
-
-    merged = deep_merge(DEFAULT_CONFIG, raw)
-    merged["schema_version"] = schema
-    agent_cfg = merged.get("agent", {})
-    if isinstance(agent_cfg, dict):
-        agent_cfg.pop("auth_header", None)
-    search_cfg = merged.get("search", {})
-    if isinstance(search_cfg, dict):
-        search_cfg.pop("tavily_api_key", None)
-    return merged
-
-
-def load_dotenv(path: Path) -> None:
-    if not path.exists():
-        return
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip("'").strip('"')
-        if key and key not in os.environ:
-            os.environ[key] = value
-
-
-def resolve_path(path_str: str, root: Path) -> str:
-    path = Path(os.path.expanduser(path_str))
-    if not path.is_absolute():
-        path = (root / path).resolve()
-    return str(path)
-
-
-def validate_endpoint_policy(config: Dict[str, Any]) -> None:
-    agent_cfg = config.get("agent", {})
-    model_endpoint = agent_cfg.get("model_endpoint", "")
-    models_endpoint = agent_cfg.get("models_endpoint", "")
-    allow_cross = bool(agent_cfg.get("allow_cross_host_endpoints", False))
-
-    host_a = urlparse(model_endpoint).netloc
-    host_b = urlparse(models_endpoint).netloc
-    if host_a != host_b and not allow_cross:
-        raise ValueError("agent.model_endpoint and agent.models_endpoint must share host")
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Alphanus")
@@ -155,7 +27,8 @@ def main() -> int:
     project_root = Path(__file__).resolve().parent
     load_dotenv(project_root / ".env")
     config_path = project_root / "config" / "global_config.json"
-    config = load_or_create_global_config(config_path)
+    config_warnings: list[str] = []
+    config = load_or_create_global_config(config_path, warnings=config_warnings)
     if args.debug:
         debug_dir = project_root / "logs"
         debug_dir.mkdir(parents=True, exist_ok=True)
@@ -166,7 +39,11 @@ def main() -> int:
         caps["dangerously_skip_permissions"] = True
         caps["shell_require_confirmation"] = False
 
+    config, normalization_warnings = normalize_config(config)
+    config_warnings.extend(normalization_warnings)
     validate_endpoint_policy(config)
+    for warning in config_warnings:
+        print(f"[warning] config: {warning}")
 
     workspace_root = resolve_path(config["workspace"]["path"], project_root)
     memory_path = resolve_path(config["memory"]["path"], project_root)

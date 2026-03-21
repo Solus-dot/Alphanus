@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from agent.context import ContextWindowManager
-from main import DEFAULT_CONFIG, deep_merge
+from core.configuration import DEFAULT_CONFIG, deep_merge
 
 
 def test_prune_keeps_single_leading_system_message():

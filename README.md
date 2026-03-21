@@ -63,6 +63,35 @@ Notes:
 - `.env` at repo root is auto-loaded on startup (without overriding already-set environment variables).
 - On startup, Alphanus performs a models-endpoint handshake and prints readiness status.
 
+### Tavily Setup for Web Search
+
+Use this when you want `search-ops` to run public web lookups via Tavily.
+
+1. Get a Tavily API key from [tavily.com](https://tavily.com/).
+2. Set the key in your shell or `.env`:
+
+```bash
+export TAVILY_API_KEY="tvly-..."
+```
+
+3. Ensure your global config uses Tavily:
+
+```json
+{
+  "search": {
+    "provider": "tavily"
+  }
+}
+```
+
+4. Start Alphanus:
+
+```bash
+uv run main.py
+```
+
+5. In chat, ask a time-sensitive question (example: `latest NVIDIA earnings summary`) and Alphanus will use `web_search`/`fetch_url` via `search-ops`.
+
 ## Runtime Notes
 
 - `agent.max_tokens` defaults to `null`, so no explicit `max_tokens` cap is sent unless configured.
@@ -130,6 +159,8 @@ Session notes:
 ## Config
 
 Global config lives at `config/global_config.json`. Missing keys are merged from built-in defaults at startup.
+Config values are normalized and type-checked at load/save time, with invalid values falling back to safe defaults.
+Secret-like keys are stripped from config (credentials must stay in environment variables).
 
 Built-in defaults:
 

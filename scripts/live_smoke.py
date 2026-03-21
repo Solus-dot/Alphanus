@@ -13,10 +13,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from agent.core import Agent
+from core.configuration import DEFAULT_CONFIG, deep_merge
 from core.memory import VectorMemory
 from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
-from main import DEFAULT_CONFIG, deep_merge
 
 
 @dataclass
