@@ -19,7 +19,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.geometry import Offset
 from textual.reactive import reactive
-from textual.widgets import Input, OptionList, RichLog, Static
+from textual.widgets import Button, Input, OptionList, RichLog, Static
 from textual.widgets.option_list import Option
 
 from agent.core import Agent, AgentTurnResult
@@ -44,6 +44,7 @@ from tui.markdown_utils import fence_language, hanging_indent, render_md
 from tui.popups import (
     CodeViewerModal,
     ConfigEditorModal,
+    PickerItem,
     SelectionPickerModal,
     SessionPickerModal,
     export_picker_items,
@@ -262,27 +263,64 @@ class AlphanusTUI(App):
 
     #input-row {
         height: auto;
-        layout: horizontal;
+        layout: vertical;
         background: #09090b;
         padding: 0 0 1 0;
         min-height: 3;
     }
 
+    #composer-shell {
+        width: 1fr;
+        height: 3;
+        layout: horizontal;
+        background: #18181b;
+        border: round #3f3f46;
+        padding: 0 1;
+        align: left middle;
+    }
+
     ChatInput {
         width: 1fr;
         height: 3;
-        border: round #3f3f46;
-        background: #18181b;
+        border: none;
+        background: transparent;
         color: #e4e4e7;
     }
 
     ChatInput:focus {
-        border: round #6366f1;
-        background: #18181b;
+        border: none;
+        background: transparent;
     }
 
-    #input-row.-active-panel ChatInput {
+    #input-row.-active-panel #composer-shell {
         border: round #6366f1;
+    }
+
+    #input-accessories {
+        width: auto;
+        height: 1;
+        layout: horizontal;
+        align: right middle;
+        padding-left: 1;
+    }
+
+    #pending-attachments {
+        width: auto;
+        max-width: 44;
+        height: 1;
+        content-align: right middle;
+        padding-right: 1;
+    }
+
+    #attach-file {
+        width: auto;
+        min-width: 8;
+        height: 1;
+        background: #1a1730;
+        color: #6366f1;
+        border: none;
+        text-style: bold;
+        padding: 0 1;
     }
     """
 
@@ -401,7 +439,11 @@ class AlphanusTUI(App):
                 yield Static("type to filter · tab to insert", id="command-popup-hint")
                 yield OptionList(id="command-options")
             with Horizontal(id="input-row"):
-                yield ChatInput(id="chat-input", placeholder="Type a message…")
+                with Horizontal(id="composer-shell"):
+                    yield ChatInput(id="chat-input", placeholder="Type a message…")
+                    with Horizontal(id="input-accessories"):
+                        yield Static("", id="pending-attachments", markup=True)
+                        yield Button("+ File", id="attach-file")
             with Horizontal(id="status-bar"):
                 yield Static("", id="status-left")
                 yield Static("", id="status-right")
@@ -415,6 +457,7 @@ class AlphanusTUI(App):
         self._update_status1()
         self._update_status2()
         self._update_sidebar()
+        self._update_pending_attachments()
         self._maybe_refresh_model_name(force=True)
         self.query_one(ChatInput).focus()
         self.call_after_refresh(self._open_startup_session_picker)
@@ -595,6 +638,7 @@ class AlphanusTUI(App):
             self.pending.clear()
         self._rebuild_viewport()
         self._update_sidebar()
+        self._update_pending_attachments()
         self._update_status1()
         self._update_status2()
         self._update_input_placeholder()
@@ -819,6 +863,10 @@ class AlphanusTUI(App):
 
     def watch_streaming(self, value: bool) -> None:
         self.query_one(ChatInput).disabled = value
+        try:
+            self.query_one("#attach-file", Button).disabled = value
+        except Exception:
+            pass
         if value:
             self._hide_command_popup()
         self._update_status2()
@@ -1154,15 +1202,10 @@ class AlphanusTUI(App):
         return "tool call:" in s
 
     def _update_status1(self) -> None:
-        latest_path = self.pending[-1][0] if self.pending else None
-        latest_kind = self.pending[-1][1] if self.pending else None
         text = status_right_markup(
             model_name=self._model_name,
-            pending_count=len(self.pending),
             branch_armed=bool(self.conv_tree._pending_branch),
             branch_label=self.conv_tree._pending_branch_label,
-            latest_path=latest_path,
-            latest_kind=latest_kind,
             thinking=self.thinking,
             width=self.size.width,
         )
@@ -1233,6 +1276,161 @@ class AlphanusTUI(App):
         self.query_one(ChatInput).placeholder = (
             "Type to start branch…" if self.conv_tree._pending_branch else "Type a message…"
         )
+
+    def _update_pending_attachments(self) -> None:
+        try:
+            self.query_one("#pending-attachments", Static).update(self._pending_attachment_markup())
+        except Exception:
+            return
+
+    def _pending_attachment_markup(self) -> str:
+        if not self.pending:
+            return ""
+        chips: List[str] = []
+        visible = self.pending[:3]
+        for path, _kind in visible:
+            chips.append(f"[#f4f4f5 on #1a1730] {esc(os.path.basename(path))} [/#f4f4f5 on #1a1730]")
+        overflow = len(self.pending) - len(visible)
+        if overflow > 0:
+            chips.append(f"[#a1a1aa on #1a1730] +{overflow} more [/#a1a1aa on #1a1730]")
+        return " ".join(chips)
+
+    def _workspace_root(self) -> Path:
+        return Path(str(self.agent.skill_runtime.workspace.workspace_root)).resolve()
+
+    def _home_root(self) -> Path:
+        home_root = getattr(self.agent.skill_runtime.workspace, "home_root", None)
+        if home_root:
+            return Path(str(home_root)).resolve()
+        return Path.home().resolve()
+
+    def _attachment_root_path(self, root_id: str) -> Path:
+        if root_id == "home":
+            return self._home_root()
+        return self._workspace_root()
+
+    def _attachment_root_label(self, root_id: str) -> str:
+        return "Home" if root_id == "home" else "Workspace"
+
+    def _root_relative_label(self, path: Path, root: Path) -> str:
+        try:
+            relative = path.resolve().relative_to(root)
+            text = relative.as_posix()
+            return text if text else "."
+        except Exception:
+            return path.as_posix()
+
+    def _resolve_attachment_path(self, raw_path: str) -> Path:
+        candidate = Path(os.path.expanduser(raw_path.strip()))
+        if candidate.is_absolute():
+            resolved = candidate.resolve()
+            if resolved.is_file():
+                return resolved
+            raise FileNotFoundError(str(resolved))
+
+        workspace_candidate = (self._workspace_root() / candidate).resolve()
+        cwd_candidate = (Path.cwd() / candidate).resolve()
+        for resolved in (workspace_candidate, cwd_candidate):
+            if resolved.is_file():
+                return resolved
+        raise FileNotFoundError(str(workspace_candidate))
+
+    def _attach_file_path(self, path: str | Path) -> bool:
+        resolved = Path(path).resolve()
+        if not resolved.is_file():
+            self._write_error(f"File not found: {resolved}")
+            return False
+        kind = classify_attachment(str(resolved))
+        if kind == "unknown":
+            self._write_error("Unsupported file type")
+            return False
+        normalized = str(resolved)
+        if any(existing_path == normalized for existing_path, _existing_kind in self.pending):
+            self._write_info(f"Already attached: {resolved.name}")
+            return False
+        self.pending.append((normalized, kind))
+        self._update_pending_attachments()
+        self._update_status1()
+        return True
+
+    def _attachment_picker_items(self, relative_dir: str = ".", *, root_id: str = "workspace") -> List[PickerItem]:
+        items: List[PickerItem] = []
+        current = Path(relative_dir)
+        for candidate_root in ("workspace", "home"):
+            if candidate_root == root_id:
+                continue
+            items.append(
+                PickerItem(
+                    id=f"root:{candidate_root}:.",
+                    prompt=(
+                        f"[bold {ACCENT_COLOR}]switch → {self._attachment_root_label(candidate_root).lower()}[/bold {ACCENT_COLOR}]"
+                    ),
+                )
+            )
+        if relative_dir not in {".", ""}:
+            parent = current.parent.as_posix()
+            if parent == "":
+                parent = "."
+            items.append(PickerItem(id=f"nav:{parent}", prompt=f"[dim]{esc('../')}[/dim] [#a1a1aa]parent[/#a1a1aa]"))
+
+        root_path = self._attachment_root_path(root_id)
+        list_target = str(root_path if relative_dir in {".", ""} else (root_path / relative_dir))
+        entries = self.agent.skill_runtime.workspace.list_files(list_target)
+        for entry in entries:
+            target = (current / entry.rstrip("/")).as_posix()
+            if entry.endswith("/"):
+                items.append(
+                    PickerItem(
+                        id=f"nav:{target}",
+                        prompt=f"[bold {ACCENT_COLOR}]{esc(entry)}[/bold {ACCENT_COLOR}] [dim]open[/dim]",
+                    )
+                )
+                continue
+            target_path = root_path / target
+            kind = classify_attachment(str(target_path))
+            if kind == "unknown":
+                continue
+            items.append(
+                PickerItem(
+                    id=f"file:{target}",
+                    prompt=f"[#f4f4f5]{esc(entry)}[/#f4f4f5] [dim]{kind}[/dim]",
+                )
+            )
+        return items
+
+    def _open_attachment_picker(self, relative_dir: str = ".", root_id: str = "workspace") -> None:
+        clean_dir = relative_dir or "."
+        root_path = self._attachment_root_path(root_id)
+        title = f"Attach File · {self._attachment_root_label(root_id)}"
+        subtitle = self._root_relative_label(root_path / clean_dir, root_path)
+        items = self._attachment_picker_items(clean_dir, root_id=root_id)
+        self.push_screen(
+            SelectionPickerModal(
+                title=title,
+                subtitle=subtitle,
+                confirm_label="Open / Attach",
+                empty_text="No attachable files in this folder.",
+                items=items,
+            ),
+            lambda result: self._on_attachment_picker_close(root_id, clean_dir, result),
+        )
+
+    def _on_attachment_picker_close(self, root_id: str, current_dir: str, result: Optional[Dict[str, str]]) -> None:
+        selection = str((result or {}).get("id") or "").strip()
+        if not selection:
+            self.query_one(ChatInput).focus()
+            return
+        if selection.startswith("root:"):
+            _, next_root, next_dir = selection.split(":", 2)
+            self._open_attachment_picker(next_dir or ".", root_id=next_root or "workspace")
+            return
+        if selection.startswith("nav:"):
+            self._open_attachment_picker(selection[4:] or ".", root_id=root_id)
+            return
+        if selection.startswith("file:"):
+            target = selection[5:]
+            self._attach_file_path(self._attachment_root_path(root_id) / target)
+        self.query_one(ChatInput).focus()
 
     def _refresh_command_popup(self, value: str) -> None:
         popup = self._command_popup()
@@ -1429,6 +1627,9 @@ class AlphanusTUI(App):
             label = f" ⎇  {esc(turn.label)}" if turn.label else " ⎇  branch"
             self._write(f"[dim #6366f1]{label}[/dim #6366f1]")
         self._write(f"[bold {ACCENT_COLOR}]You[/bold {ACCENT_COLOR}]")
+        attachment_summary = turn.attachment_summary()
+        if attachment_summary:
+            self._write_indented(f"[dim]attachments:[/dim] [#a1a1aa]{esc(attachment_summary)}[/#a1a1aa]", indent=2)
         body = turn.user_text()
         for line in body.splitlines() or [""]:
             self._write_indented(esc(line), indent=2)
@@ -1842,6 +2043,7 @@ class AlphanusTUI(App):
         turn = self.conv_tree.add_turn(content)
         self._save_active_session()
         self._write_turn_user(turn)
+        self._update_pending_attachments()
         self._update_status1()
         self._update_status2()
         self._update_input_placeholder()
@@ -1872,6 +2074,13 @@ class AlphanusTUI(App):
     @on(Input.Changed, "#chat-input")
     def on_input_changed(self, event: Input.Changed) -> None:
         self._refresh_command_popup(event.value)
+
+    @on(Button.Pressed, "#attach-file")
+    def on_attach_file_pressed(self) -> None:
+        if self.streaming:
+            return
+        self._hide_command_popup()
+        self._open_attachment_picker(".")
 
     @on(OptionList.OptionSelected, "#command-options")
     def on_command_option_selected(self, event: OptionList.OptionSelected) -> None:
@@ -2071,6 +2280,7 @@ class AlphanusTUI(App):
             self._log().clear()
             self._partial().update("")
             self._save_active_session()
+            self._update_pending_attachments()
             self._update_status1()
             self._update_status2()
             self._update_sidebar()
@@ -2079,19 +2289,14 @@ class AlphanusTUI(App):
 
         if cmd in {"/file", "/image"}:
             if not arg:
-                self._write_error(f"{cmd} requires a path")
+                self._open_attachment_picker(".")
                 return True
-            path = os.path.expanduser(arg)
-            if not os.path.isfile(path):
-                self._write_error(f"File not found: {path}")
+            try:
+                path = self._resolve_attachment_path(arg)
+            except FileNotFoundError:
+                self._write_error(f"File not found: {arg}")
                 return True
-            kind = classify_attachment(path)
-            if kind == "unknown":
-                self._write_error("Unsupported file type")
-                return True
-            self.pending.append((path, kind))
-            self._write_command_action(f"Attached {kind}: {os.path.basename(path)}", icon="+")
-            self._update_status1()
+            self._attach_file_path(path)
             return True
 
         if cmd == "/skills":

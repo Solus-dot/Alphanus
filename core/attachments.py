@@ -88,8 +88,10 @@ def build_content(text: str, attachments: List[Tuple[str, str]]):
 
     parts = []
     prefix = ""
+    summary_items: List[str] = []
     for path, kind in attachments:
         name = os.path.basename(path)
+        summary_items.append(f"{name} ({kind})")
         if kind == "image":
             data, mime = encode_image(path)
             parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
@@ -99,5 +101,6 @@ def build_content(text: str, attachments: List[Tuple[str, str]]):
             fence = f"```{ext}\n{body}\n```" if ext else f"```\n{body}\n```"
             prefix += f"[File: {name}]\n{fence}\n\n"
 
-    parts.append({"type": "text", "text": prefix + text})
+    summary = f"[Attachments: {', '.join(summary_items)}]\n\n" if summary_items else ""
+    parts.append({"type": "text", "text": summary + prefix + text})
     return parts

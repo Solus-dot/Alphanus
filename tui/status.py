@@ -65,11 +65,8 @@ def topbar_right(*, endpoint: str, context_tokens: Optional[int], width: int) ->
 def status_right_markup(
     *,
     model_name: Optional[str],
-    pending_count: int,
     branch_armed: bool,
     branch_label: Optional[str],
-    latest_path: Optional[str],
-    latest_kind: Optional[str],
     thinking: bool,
     width: int,
 ) -> str:
@@ -79,7 +76,7 @@ def status_right_markup(
     if width < 90:
         return model_markup
 
-    parts = [model_markup, f"[dim]files:[/dim] {pending_count}"]
+    parts = [model_markup]
     if branch_armed:
         if branch_label:
             label = _truncate(branch_label, 10 if width < 120 else 18)
@@ -88,10 +85,6 @@ def status_right_markup(
             parts.append("[#6366f1]branch: armed[/#6366f1]")
     else:
         parts.append("[dim]branch:[/dim] idle")
-
-    if latest_path and width >= 125:
-        color = "#6366f1" if latest_kind == "image" else "#10b981"
-        parts.append(f"[{color}]{esc(_truncate(os.path.basename(latest_path), 16))}[/{color}]")
 
     think_label = "auto" if thinking else "off"
     parts.append(f"[dim]thinking:[/dim] [#6366f1]{think_label}[/#6366f1]")

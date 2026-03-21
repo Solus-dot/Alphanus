@@ -148,6 +148,20 @@ def test_user_text_strips_inline_attachment_blocks():
     assert turn.user_text() == "Please refactor this."
 
 
+def test_attachment_summary_is_preserved_while_hidden_from_user_text():
+    tree = ConvTree()
+    content = [
+        {
+            "type": "text",
+            "text": "[Attachments: foo.py (text), chart.png (image)]\n\n[File: foo.py]\n```py\nprint('x')\n```\n\nPlease refactor this.",
+        }
+    ]
+    turn = tree.add_turn(content)
+
+    assert turn.attachment_summary() == "foo.py (text), chart.png (image)"
+    assert turn.user_text() == "Please refactor this."
+
+
 def test_inactive_branch_compaction_truncates_large_payloads_only_when_inactive():
     tree = ConvTree(
         compact_inactive_branches=True,

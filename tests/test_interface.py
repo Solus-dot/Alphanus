@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from core.conv_tree import ConvTree
 from core.sessions import ChatSession
+from core.workspace import WorkspaceManager
 from tui.live_tool_preview import LiveToolPreviewManager
 from tui.commands import command_entries_for_query
 from tui.interface import AlphanusTUI
@@ -318,6 +320,56 @@ def test_handle_load_switches_sessions_and_rebuilds_view() -> None:
 
     assert tui._handle_command("/load") is True
     assert opened == ["load"]
+
+
+def test_handle_file_without_path_opens_attachment_picker() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    opened: list[str] = []
+    tui._open_attachment_picker = lambda relative_dir=".": opened.append(relative_dir)
+
+    assert tui._handle_command("/file") is True
+    assert opened == ["."]
+
+
+def test_handle_file_resolves_workspace_relative_path(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    target = workspace_root / "notes.txt"
+    target.write_text("hello", encoding="utf-8")
+
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    tui.agent = SimpleNamespace(skill_runtime=SimpleNamespace(workspace=SimpleNamespace(workspace_root=str(workspace_root))))
+    tui.pending = []
+    tui._write_error = lambda *_args, **_kwargs: None
+    tui._write_info = lambda *_args, **_kwargs: None
+    tui._write_command_action = lambda *_args, **_kwargs: None
+    tui._update_pending_attachments = lambda: None
+    tui._update_status1 = lambda: None
+
+    assert tui._handle_command("/file notes.txt") is True
+    assert tui.pending == [(str(target.resolve()), "text")]
+
+
+def test_attachment_picker_items_include_home_source_and_home_files(tmp_path: Path) -> None:
+    home_root = tmp_path / "home"
+    workspace_root = home_root / "workspace"
+    downloads = home_root / "Downloads"
+    workspace_root.mkdir(parents=True)
+    downloads.mkdir(parents=True)
+    (downloads / "notes.txt").write_text("hello", encoding="utf-8")
+
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui.agent = SimpleNamespace(skill_runtime=SimpleNamespace(workspace=WorkspaceManager(str(workspace_root), home_root=str(home_root))))
+
+    workspace_items = tui._attachment_picker_items(".", root_id="workspace")
+    home_items = tui._attachment_picker_items("Downloads", root_id="home")
+
+    assert any(item.id == "root:home:." for item in workspace_items)
+    assert any(item.id == "file:Downloads/notes.txt" for item in home_items)
 
 
 def test_open_new_session_reuses_blank_current_session() -> None:

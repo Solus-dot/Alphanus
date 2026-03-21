@@ -95,11 +95,8 @@ def test_status_helpers_compact_at_small_width() -> None:
     )
     status_right = status_right_markup(
         model_name="llama-3.2-3b-instruct",
-        pending_count=2,
         branch_armed=True,
         branch_label="very-long-branch-name",
-        latest_path="/tmp/example.txt",
-        latest_kind="text",
         thinking=True,
         width=80,
     )
@@ -122,18 +119,15 @@ def test_status_helpers_compact_at_small_width() -> None:
     assert "ctx:" in right
     assert "model:" in status_right
     assert "llama-3.2-3b-instruct" in status_right
-    assert "example.txt" not in status_right
+    assert "files:" not in status_right
     assert "enter" in status_left
 
 
 def test_status_right_markup_includes_model_label_and_value() -> None:
     status_right = status_right_markup(
         model_name="Meta-Llama-3.1-8B-Instruct-Q4_K_M",
-        pending_count=1,
         branch_armed=False,
         branch_label=None,
-        latest_path=None,
-        latest_kind=None,
         thinking=True,
         width=180,
     )

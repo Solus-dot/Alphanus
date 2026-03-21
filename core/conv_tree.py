@@ -46,6 +46,11 @@ class Turn:
         i = 0
         while i < len(lines):
             line = lines[i]
+            if line.startswith("[Attachments: ") and line.endswith("]"):
+                i += 1
+                while i < len(lines) and not lines[i].strip():
+                    i += 1
+                continue
             if line.startswith("[File: ") and line.endswith("]"):
                 i += 1
                 if i < len(lines) and lines[i].startswith("```"):
@@ -70,6 +75,23 @@ class Turn:
             combined = "\n".join(c for c in chunks if c).strip()
             return self._strip_attachment_blocks(combined)
         return str(self.user_content or "")
+
+    def attachment_summary(self) -> str:
+        def _extract(text: str) -> str:
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("[Attachments: ") and stripped.endswith("]"):
+                    return stripped[len("[Attachments: ") : -1].strip()
+            return ""
+
+        if isinstance(self.user_content, list):
+            for part in self.user_content:
+                if part.get("type") == "text":
+                    summary = _extract(str(part.get("text", "")))
+                    if summary:
+                        return summary
+            return ""
+        return _extract(str(self.user_content or ""))
 
     def short(self, max_len: int = 45) -> str:
         text = self.user_text().replace("\n", " ").strip()
