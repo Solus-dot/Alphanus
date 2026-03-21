@@ -50,7 +50,7 @@ from tui.popups import (
     export_picker_items,
     session_picker_items,
 )
-from tui.sidebar import render_sidebar_markup
+from tui.sidebar import render_sidebar_inspector_markup, render_sidebar_tree_markup
 from tui.status import status_left_markup, status_right_markup, topbar_center, topbar_left, topbar_right
 
 MAX_REPLY_ACC_CHARS = 24000
@@ -159,6 +159,37 @@ class AlphanusTUI(App):
         background: #121214;
         display: none;
         padding: 0;
+        layout: vertical;
+    }
+
+    #sidebar-tree-section {
+        width: 1fr;
+        height: 1fr;
+        layout: vertical;
+        min-height: 5;
+    }
+
+    #sidebar-tree-header,
+    #sidebar-inspector-header {
+        width: 1fr;
+        height: auto;
+        color: #a1a1aa;
+        text-style: bold;
+        padding: 1 2 0 2;
+    }
+
+    #sidebar-tree-meta {
+        width: 1fr;
+        height: auto;
+        color: #71717a;
+        padding: 0 2 1 2;
+    }
+
+    #sidebar-tree-scroll {
+        width: 1fr;
+        height: 1fr;
+        background: #121214;
+        padding: 0 2 1 2;
         scrollbar-background: #121214;
         scrollbar-background-hover: #18181b;
         scrollbar-background-active: #18181b;
@@ -172,11 +203,39 @@ class AlphanusTUI(App):
         border-left: solid #6366f1;
     }
 
-    #sidebar-content {
+    #sidebar-tree-content {
         width: 1fr;
         height: auto;
         background: #121214;
-        padding: 1 2;
+    }
+
+    #sidebar-inspector-section {
+        width: 1fr;
+        height: auto;
+        border-top: solid #27272a;
+        background: #121214;
+        layout: vertical;
+    }
+
+    #sidebar-inspector-scroll {
+        width: 1fr;
+        height: auto;
+        max-height: 12;
+        background: #121214;
+        padding: 0 2 1 2;
+        scrollbar-background: #121214;
+        scrollbar-background-hover: #18181b;
+        scrollbar-background-active: #18181b;
+        scrollbar-color: #3f3f46;
+        scrollbar-color-hover: #52525b;
+        scrollbar-color-active: #6366f1;
+        scrollbar-corner-color: #121214;
+    }
+
+    #sidebar-inspector-content {
+        width: 1fr;
+        height: auto;
+        background: #121214;
     }
 
     #footer {
@@ -429,8 +488,16 @@ class AlphanusTUI(App):
                     max_lines=self._chat_log_max_lines,
                 )
                 yield Static("", id="partial", markup=True)
-            with ScrollableContainer(id="sidebar"):
-                yield Static("", id="sidebar-content", markup=True)
+            with Vertical(id="sidebar"):
+                with Vertical(id="sidebar-tree-section"):
+                    yield Static("Conversation Tree", id="sidebar-tree-header")
+                    yield Static("0 turns", id="sidebar-tree-meta")
+                    with ScrollableContainer(id="sidebar-tree-scroll"):
+                        yield Static("", id="sidebar-tree-content", markup=True)
+                with Vertical(id="sidebar-inspector-section"):
+                    yield Static("Inspector", id="sidebar-inspector-header")
+                    with ScrollableContainer(id="sidebar-inspector-scroll"):
+                        yield Static("", id="sidebar-inspector-content", markup=True)
 
         with Vertical(id="footer"):
             yield Static("", id="footer-sep")
@@ -463,7 +530,7 @@ class AlphanusTUI(App):
         self.call_after_refresh(self._open_startup_session_picker)
 
     def on_resize(self, event) -> None:
-        sidebar = self.query_one("#sidebar", ScrollableContainer)
+        sidebar = self.query_one("#sidebar", Vertical)
         sidebar.display = event.size.width >= 120
         self._update_sidebar()
         if self._command_popup_active():
@@ -670,7 +737,7 @@ class AlphanusTUI(App):
 
     def _apply_focus_classes(self) -> None:
         chat = self.query_one("#chat-scroll", ScrollableContainer)
-        sidebar = self.query_one("#sidebar", ScrollableContainer)
+        sidebar = self.query_one("#sidebar", Vertical)
         input_row = self.query_one("#input-row", Horizontal)
         chat.remove_class("-active-panel")
         sidebar.remove_class("-active-panel")
@@ -683,7 +750,7 @@ class AlphanusTUI(App):
             input_row.add_class("-active-panel")
 
     def _set_focused_panel(self, panel: str) -> None:
-        if panel == "tree" and not self.query_one("#sidebar", ScrollableContainer).display:
+        if panel == "tree" and not self.query_one("#sidebar", Vertical).display:
             panel = "chat"
         self._focused_panel = panel
         if panel == "input":
@@ -693,14 +760,14 @@ class AlphanusTUI(App):
 
     def action_focus_next_panel(self) -> None:
         order = ["chat", "tree", "input"]
-        if not self.query_one("#sidebar", ScrollableContainer).display:
+        if not self.query_one("#sidebar", Vertical).display:
             order = ["chat", "input"]
         current = order.index(self._focused_panel) if self._focused_panel in order else 0
         self._set_focused_panel(order[(current + 1) % len(order)])
 
     def action_focus_prev_panel(self) -> None:
         order = ["chat", "tree", "input"]
-        if not self.query_one("#sidebar", ScrollableContainer).display:
+        if not self.query_one("#sidebar", Vertical).display:
             order = ["chat", "input"]
         current = order.index(self._focused_panel) if self._focused_panel in order else 0
         self._set_focused_panel(order[(current - 1) % len(order)])
@@ -1610,15 +1677,19 @@ class AlphanusTUI(App):
         self.push_screen(CodeViewerModal(code, language, title=f"Code Block {index}"))
 
     def _update_sidebar(self) -> None:
-        sidebar = self.query_one("#sidebar", ScrollableContainer)
+        sidebar = self.query_one("#sidebar", Vertical)
         if not sidebar.display:
             return
         if self._focused_panel != "tree":
             self._tree_cursor_id = self.conv_tree.current_id
         else:
             self._sync_tree_cursor()
-        self.query_one("#sidebar-content", Static).update(
-            render_sidebar_markup(self.conv_tree, width=30, selected_id=self._tree_cursor_id)
+        self.query_one("#sidebar-tree-meta", Static).update(f"{self.conv_tree.turn_count()} turns")
+        self.query_one("#sidebar-tree-content", Static).update(
+            render_sidebar_tree_markup(self.conv_tree, width=30, selected_id=self._tree_cursor_id)
+        )
+        self.query_one("#sidebar-inspector-content", Static).update(
+            render_sidebar_inspector_markup(self.conv_tree, width=30, selected_id=self._tree_cursor_id)
         )
 
     def _write_turn_user(self, turn: Turn) -> None:

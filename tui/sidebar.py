@@ -5,12 +5,8 @@ from rich.markup import escape as esc
 from core.conv_tree import ConvTree
 
 
-def render_sidebar_markup(tree: ConvTree, width: int = 30, selected_id: str | None = None) -> str:
-    lines = [
-        "[bold #a1a1aa]Conversation Tree[/bold #a1a1aa]",
-        f"[dim]{tree.turn_count()} turns[/dim]",
-        "",
-    ]
+def render_sidebar_tree_markup(tree: ConvTree, width: int = 30, selected_id: str | None = None) -> str:
+    lines: list[str] = []
     current = tree.current_id
     selected = selected_id or current
     for text, tag, active in tree.render_tree(width=width):
@@ -28,6 +24,12 @@ def render_sidebar_markup(tree: ConvTree, width: int = 30, selected_id: str | No
             lines.append(f"[#71717a]{line}[/#71717a]")
         else:
             lines.append(f"[dim]{line}[/dim]")
+    return "\n".join(lines)
+
+
+def render_sidebar_inspector_markup(tree: ConvTree, width: int = 30, selected_id: str | None = None) -> str:
+    lines: list[str] = []
+    selected = selected_id or tree.current_id
 
     node = tree.nodes.get(selected) if selected else None
     if node is not None:
@@ -46,8 +48,6 @@ def render_sidebar_markup(tree: ConvTree, width: int = 30, selected_id: str | No
             tool_summary += ", …"
         lines.extend(
             [
-                "",
-                "[bold #a1a1aa]Inspector[/bold #a1a1aa]",
                 f"[dim]id:[/dim] [#f4f4f5]{esc(node.id)}[/#f4f4f5]",
                 f"[dim]state:[/dim] [#f4f4f5]{esc(node.assistant_state)}[/#f4f4f5]",
                 f"[dim]parent:[/dim] [#f4f4f5]{esc(parent)}[/#f4f4f5]",
@@ -64,3 +64,17 @@ def render_sidebar_markup(tree: ConvTree, width: int = 30, selected_id: str | No
                 f"[dim]assistant:[/dim] [#f4f4f5]{len(node.assistant_content)} chars[/#f4f4f5]"
             )
     return "\n".join(lines)
+
+
+def render_sidebar_markup(tree: ConvTree, width: int = 30, selected_id: str | None = None) -> str:
+    tree_markup = render_sidebar_tree_markup(tree, width=width, selected_id=selected_id)
+    inspector_markup = render_sidebar_inspector_markup(tree, width=width, selected_id=selected_id)
+    sections = [
+        "[bold #a1a1aa]Conversation Tree[/bold #a1a1aa]",
+        f"[dim]{tree.turn_count()} turns[/dim]",
+        tree_markup,
+        "",
+        "[bold #a1a1aa]Inspector[/bold #a1a1aa]",
+        inspector_markup,
+    ]
+    return "\n".join(section for section in sections if section is not None)
