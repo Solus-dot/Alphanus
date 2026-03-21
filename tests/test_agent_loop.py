@@ -27,6 +27,9 @@ class FakeResponse:
     def __iter__(self):
         return iter(self.lines)
 
+    def read(self):
+        return b"".join(self.lines)
+
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> SkillRuntime:
@@ -2234,6 +2237,92 @@ def test_doctor_report_supports_brave_provider(mocker, runtime: SkillRuntime, mo
     assert report["search"]["provider"] == "brave"
     assert report["search"]["ready"] is True
     assert report["search"]["reason"] == ""
+
+
+def test_fetch_model_name_reads_first_model_id(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    def fake_urlopen(req, timeout=None, context=None):
+        assert req.full_url.endswith("/v1/models")
+        return FakeResponse(['{"data":[{"id":"llama-3.2-3b-instruct"}]}'])
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    assert agent.fetch_model_name() == "llama-3.2-3b-instruct"
+
+
+def test_fetch_model_name_accepts_top_level_model_field(runtime: SkillRuntime):
+    assert Agent._extract_model_name({"model": "qwen2.5-coder-7b"}) == "qwen2.5-coder-7b"
+
+
+def test_reload_config_resets_readiness_state(runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+        },
+        "context": {"context_limit": 8192, "keep_last_n": 10, "safety_margin": 500},
+    }
+    agent = Agent(cfg, runtime)
+    agent._ready_checked = True
+
+    agent.reload_config(
+        {
+            "agent": {
+                **cfg["agent"],
+                "model_endpoint": "http://127.0.0.1:8081/v1/chat/completions",
+                "models_endpoint": "http://127.0.0.1:8081/v1/models",
+            },
+            "context": cfg["context"],
+        }
+    )
+
+    assert agent.model_endpoint == "http://127.0.0.1:8081/v1/chat/completions"
+    assert agent.models_endpoint == "http://127.0.0.1:8081/v1/models"
+    assert agent._ready_checked is False
+
+
+def test_reload_config_rebuilds_context_manager(runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+        },
+        "context": {"context_limit": 8192, "keep_last_n": 10, "safety_margin": 500},
+    }
+    agent = Agent(cfg, runtime)
+
+    agent.reload_config(
+        {
+            "agent": cfg["agent"],
+            "context": {"context_limit": 4096, "keep_last_n": 4, "safety_margin": 200},
+        }
+    )
+
+    assert agent.context_mgr.context_limit == 4096
+    assert agent.context_mgr.keep_last_n == 4
+    assert agent.context_mgr.safety_margin == 200
 
 
 def test_time_sensitive_search_without_fetch_evidence_declines(mocker, tmp_path: Path, monkeypatch):

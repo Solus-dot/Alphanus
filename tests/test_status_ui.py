@@ -94,6 +94,7 @@ def test_status_helpers_compact_at_small_width() -> None:
         width=90,
     )
     status_right = status_right_markup(
+        model_name="llama-3.2-3b-instruct",
         pending_count=2,
         branch_armed=True,
         branch_label="very-long-branch-name",
@@ -119,6 +120,24 @@ def test_status_helpers_compact_at_small_width() -> None:
     assert "memory:" not in center
     assert "127.0.0.1:8080" not in right
     assert "ctx:" in right
-    assert "think:" in status_right
+    assert "model:" in status_right
+    assert "llama-3.2-3b-instruct" in status_right
     assert "example.txt" not in status_right
     assert "enter" in status_left
+
+
+def test_status_right_markup_includes_model_label_and_value() -> None:
+    status_right = status_right_markup(
+        model_name="Meta-Llama-3.1-8B-Instruct-Q4_K_M",
+        pending_count=1,
+        branch_armed=False,
+        branch_label=None,
+        latest_path=None,
+        latest_kind=None,
+        thinking=True,
+        width=180,
+    )
+
+    assert "model:" in status_right
+    assert "Meta-Llama-3.1-8B-Instruct-Q4_K_M" in status_right
+    assert "#6366f1" in status_right

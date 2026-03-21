@@ -485,7 +485,7 @@ def test_session_row_label_highlights_active_session() -> None:
     )
 
     assert "active" in label
-    assert "#c4b5fd" in label
+    assert "#6366f1" in label
     assert "[25e4a7bf]" in label
 
 

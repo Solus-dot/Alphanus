@@ -38,16 +38,16 @@ def topbar_center(*, session_name: str, branch_name: str, memory_mode: str, widt
     if width < 105:
         return (
             f"[dim]ss:[/dim] [#f4f4f5]{esc(_truncate(session_name, 10))}[/#f4f4f5]   "
-            f"[dim]br:[/dim] [#8b5cf6]{esc(_truncate(branch_name, 10))}[/#8b5cf6]"
+            f"[dim]br:[/dim] [#6366f1]{esc(_truncate(branch_name, 10))}[/#6366f1]"
         )
     if width < 140:
         return (
             f"[dim]session:[/dim] [#f4f4f5]{esc(_truncate(session_name, 14))}[/#f4f4f5]   "
-            f"[dim]branch:[/dim] [#8b5cf6]{esc(_truncate(branch_name, 12))}[/#8b5cf6]"
+            f"[dim]branch:[/dim] [#6366f1]{esc(_truncate(branch_name, 12))}[/#6366f1]"
         )
     return (
         f"[dim]session:[/dim] [#f4f4f5]{esc(session_name)}[/#f4f4f5]   "
-        f"[dim]branch:[/dim] [#8b5cf6]{esc(branch_name)}[/#8b5cf6]   "
+        f"[dim]branch:[/dim] [#6366f1]{esc(branch_name)}[/#6366f1]   "
         f"[dim]memory:[/dim] [#10b981]{esc(memory_mode)}[/#10b981]"
     )
 
@@ -64,6 +64,7 @@ def topbar_right(*, endpoint: str, context_tokens: Optional[int], width: int) ->
 
 def status_right_markup(
     *,
+    model_name: Optional[str],
     pending_count: int,
     branch_armed: bool,
     branch_label: Optional[str],
@@ -72,7 +73,13 @@ def status_right_markup(
     thinking: bool,
     width: int,
 ) -> str:
-    parts = [f"[dim]files:[/dim] {pending_count}"]
+    model_limit = 24 if width < 120 else 40
+    model_label = _truncate(model_name or "—", model_limit)
+    model_markup = f"[dim]model:[/dim] [#6366f1]{esc(model_label)}[/#6366f1]"
+    if width < 90:
+        return model_markup
+
+    parts = [model_markup, f"[dim]files:[/dim] {pending_count}"]
     if branch_armed:
         if branch_label:
             label = _truncate(branch_label, 10 if width < 120 else 18)
@@ -87,8 +94,6 @@ def status_right_markup(
         parts.append(f"[{color}]{esc(_truncate(os.path.basename(latest_path), 16))}[/{color}]")
 
     think_label = "auto" if thinking else "off"
-    if width < 90:
-        return f"[dim]think:[/dim] [#6366f1]{think_label}[/#6366f1]"
     parts.append(f"[dim]thinking:[/dim] [#6366f1]{think_label}[/#6366f1]")
     return "  ".join(parts)
 

@@ -143,7 +143,7 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
     }
 
     #config-modal-note {
-        color: #c4b5fd;
+        color: #6366f1;
         padding: 0 0 1 0;
     }
 
@@ -280,7 +280,7 @@ class SessionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
 
     #session-modal-list-label,
     #session-modal-new-label {
-        color: #c4b5fd;
+        color: #6366f1;
         padding: 1 0 0 0;
     }
 
@@ -295,7 +295,7 @@ class SessionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
 
     #session-modal-list > .option-list--option-highlighted {
         color: #ffffff;
-        background: #312e81;
+        background: #1a1730;
     }
 
     #session-modal-name {
@@ -369,12 +369,12 @@ class SessionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
         options: list[Option] = []
         for index, session in enumerate(self._sessions, start=1):
             marker = (
-                "[bold #8b5cf6]active[/bold #8b5cf6]"
+                "[bold #6366f1]active[/bold #6366f1]"
                 if session.is_active
                 else "[#71717a]saved[/#71717a]"
             )
             title = (
-                f"[bold #c4b5fd]{esc(session.title)}[/bold #c4b5fd]"
+                f"[bold #6366f1]{esc(session.title)}[/bold #6366f1]"
                 if session.is_active
                 else f"[#f4f4f5]{esc(session.title)}[/#f4f4f5]"
             )
@@ -476,7 +476,7 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
 
     #picker-modal-list > .option-list--option-highlighted {
         color: #ffffff;
-        background: #312e81;
+        background: #1a1730;
     }
 
     #picker-modal-empty {
@@ -574,12 +574,12 @@ def session_picker_items(sessions: list[SessionSummary]) -> list[PickerItem]:
     items: list[PickerItem] = []
     for index, session in enumerate(sessions, start=1):
         marker = (
-            "[bold #8b5cf6]active[/bold #8b5cf6]"
+            "[bold #6366f1]active[/bold #6366f1]"
             if session.is_active
             else "[#71717a]saved[/#71717a]"
         )
         title = (
-            f"[bold #c4b5fd]{esc(session.title)}[/bold #c4b5fd]"
+            f"[bold #6366f1]{esc(session.title)}[/bold #6366f1]"
             if session.is_active
             else f"[#f4f4f5]{esc(session.title)}[/#f4f4f5]"
         )

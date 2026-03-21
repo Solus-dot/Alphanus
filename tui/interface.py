@@ -56,7 +56,7 @@ MAX_REPLY_ACC_CHARS = 24000
 SHELL_CONFIRM_TIMEOUT_S = 60
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 GLOBAL_CONFIG_PATH = PROJECT_ROOT / "config" / "global_config.json"
-ACCENT_COLOR = "#8b5cf6"
+ACCENT_COLOR = "#6366f1"
 
 
 class ChatInput(Input):
@@ -232,7 +232,7 @@ class AlphanusTUI(App):
 
     #command-options:focus > .option-list--option-highlighted {
         color: #ffffff;
-        background: #312e81;
+        background: #1a1730;
         text-style: bold;
     }
 
@@ -350,6 +350,10 @@ class AlphanusTUI(App):
         self._last_status_left = ""
         self._last_status_right = ""
         self._auto_follow_stream = True
+        self._model_name: Optional[str] = None
+        self._model_refresh_inflight = False
+        self._last_model_refresh = 0.0
+        self._model_refresh_interval_s = 5.0
 
         self._esc_pending = False
         self._esc_ts = 0.0
@@ -411,6 +415,7 @@ class AlphanusTUI(App):
         self._update_status1()
         self._update_status2()
         self._update_sidebar()
+        self._maybe_refresh_model_name(force=True)
         self.query_one(ChatInput).focus()
         self.call_after_refresh(self._open_startup_session_picker)
 
@@ -462,12 +467,12 @@ class AlphanusTUI(App):
 
     def _session_row_label(self, summary: SessionSummary) -> str:
         status = (
-            "[bold #8b5cf6]active[/bold #8b5cf6]"
+            f"[bold {ACCENT_COLOR}]active[/bold {ACCENT_COLOR}]"
             if summary.is_active
             else "[#71717a]saved[/#71717a]"
         )
         title = (
-            f"[bold #c4b5fd]{esc(summary.title)}[/bold #c4b5fd]"
+            f"[bold {ACCENT_COLOR}]{esc(summary.title)}[/bold {ACCENT_COLOR}]"
             if summary.is_active
             else f"[#f4f4f5]{esc(summary.title)}[/#f4f4f5]"
         )
@@ -796,6 +801,7 @@ class AlphanusTUI(App):
             event.stop()
 
     def _tick(self) -> None:
+        self._maybe_refresh_model_name()
         if self._esc_pending and time.monotonic() - self._esc_ts > 3.0:
             self._esc_pending = False
             self._update_status2()
@@ -925,7 +931,7 @@ class AlphanusTUI(App):
     def _update_tool_call_partial(self, name: str, detail: str = "", *, indent: int = 2) -> None:
         partial = self._partial()
         partial.display = True
-        partial.update(Padding(self._tool_event_panel("tool", "#8b5cf6", "#8b5cf6", name, detail), (0, 0, 0, indent)))
+        partial.update(Padding(self._tool_event_panel("tool", ACCENT_COLOR, ACCENT_COLOR, name, detail), (0, 0, 0, indent)))
 
     def _write_tool_lifecycle_block(self, name: str, ok: bool, detail: str = "", *, indent: int = 2) -> None:
         self._write_renderable(self._tool_lifecycle_panel(name, detail or ("completed" if ok else "failed"), ok=ok), indent=indent)
@@ -1151,6 +1157,7 @@ class AlphanusTUI(App):
         latest_path = self.pending[-1][0] if self.pending else None
         latest_kind = self.pending[-1][1] if self.pending else None
         text = status_right_markup(
+            model_name=self._model_name,
             pending_count=len(self.pending),
             branch_armed=bool(self.conv_tree._pending_branch),
             branch_label=self.conv_tree._pending_branch_label,
@@ -1165,6 +1172,26 @@ class AlphanusTUI(App):
         self._last_status_right = text
         self.query_one("#status-right", Static).update(text)
         self._update_topbar()
+
+    def _maybe_refresh_model_name(self, *, force: bool = False) -> None:
+        if self._model_refresh_inflight:
+            return
+        now = time.monotonic()
+        if not force and now - self._last_model_refresh < self._model_refresh_interval_s:
+            return
+        self._last_model_refresh = now
+        self._model_refresh_inflight = True
+        self._refresh_model_name_worker()
+
+    @work(thread=True, exclusive=True)
+    def _refresh_model_name_worker(self) -> None:
+        model_name = self.agent.fetch_model_name(timeout_s=min(self.agent.connect_timeout_s, 2.0))
+        self.call_from_thread(self._apply_model_name_refresh, model_name)
+
+    def _apply_model_name_refresh(self, model_name: Optional[str]) -> None:
+        self._model_refresh_inflight = False
+        self._model_name = model_name
+        self._update_status1()
 
     def _update_status2(self) -> None:
         left = status_left_markup(
@@ -1365,11 +1392,13 @@ class AlphanusTUI(App):
         cleaned = self._config_for_editor(normalized)
         GLOBAL_CONFIG_PATH.write_text(json.dumps(cleaned, indent=2) + "\n", encoding="utf-8")
         merged = self._merge_live_config(self.agent.config, normalized)
-        self.agent.config = merged
+        self.agent.reload_config(merged)
         self.agent.skill_runtime.config = merged
         self.thinking = bool(merged.get("agent", {}).get("enable_thinking", self.thinking))
+        self._model_name = None
         self._update_topbar()
         self._apply_tui_config()
+        self._maybe_refresh_model_name(force=True)
         suffix = f" ({len(warnings)} normalization warning{'s' if len(warnings) != 1 else ''})." if warnings else "."
         self._write_info("Saved global config. Use environment variables for secrets like TAVILY_API_KEY or BRAVE_SEARCH_API_KEY" + suffix)
         for warning in warnings:
@@ -1399,7 +1428,7 @@ class AlphanusTUI(App):
         if turn.branch_root:
             label = f" ⎇  {esc(turn.label)}" if turn.label else " ⎇  branch"
             self._write(f"[dim #6366f1]{label}[/dim #6366f1]")
-        self._write("[bold #8b5cf6]You[/bold #8b5cf6]")
+        self._write(f"[bold {ACCENT_COLOR}]You[/bold {ACCENT_COLOR}]")
         body = turn.user_text()
         for line in body.splitlines() or [""]:
             self._write_indented(esc(line), indent=2)
@@ -1958,7 +1987,7 @@ class AlphanusTUI(App):
             self.conv_tree.arm_branch(arg)
             self._save_active_session()
             label = self.conv_tree._pending_branch_label
-            self._write_command_action(f"Branch armed '{label}'", icon="⎇", color="#8b5cf6")
+            self._write_command_action(f"Branch armed '{label}'", icon="⎇", color=ACCENT_COLOR)
             self._update_status1()
             self._update_input_placeholder()
             return True
@@ -1967,7 +1996,7 @@ class AlphanusTUI(App):
             if self.conv_tree._pending_branch:
                 self.conv_tree.clear_pending_branch()
                 self._save_active_session()
-                self._write_command_action("Disarmed pending branch", icon="↩", color="#8b5cf6")
+                self._write_command_action("Disarmed pending branch", icon="↩", color=ACCENT_COLOR)
                 self._update_status1()
                 self._update_input_placeholder()
                 return True
@@ -1976,7 +2005,7 @@ class AlphanusTUI(App):
                 self._write_error("No branch to leave.")
             else:
                 self._save_active_session()
-                self._write_command_action("Returned to fork point", icon="↩", color="#8b5cf6")
+                self._write_command_action("Returned to fork point", icon="↩", color=ACCENT_COLOR)
                 self._rebuild_viewport()
                 self._update_sidebar()
             self._update_status1()
@@ -2114,7 +2143,7 @@ class AlphanusTUI(App):
         self._write_section_heading("Tree")
         for text, tag, active in self.conv_tree.render_tree(width=80):
             if tag == self.conv_tree.current_id:
-                self._write(f"  [bold #8b5cf6]{esc(text)}[/bold #8b5cf6]")
+                self._write(f"  [bold {ACCENT_COLOR}]{esc(text)}[/bold {ACCENT_COLOR}]")
             elif active:
                 self._write(f"  [{ACCENT_COLOR}]{esc(text)}[/{ACCENT_COLOR}]")
             else:

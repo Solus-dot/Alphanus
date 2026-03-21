@@ -157,32 +157,51 @@ class Agent:
         skill_runtime: SkillRuntime,
         debug: bool = False,
     ) -> None:
-        self.config = config
         self.skill_runtime = skill_runtime
         self.debug = debug
-
-        agent_cfg = config.get("agent", {})
-        self.model_endpoint = agent_cfg.get("model_endpoint", "http://127.0.0.1:8080/v1/chat/completions")
-        self.models_endpoint = agent_cfg.get("models_endpoint", "http://127.0.0.1:8080/v1/models")
         self.auth_header = (
             os.environ.get("ALPHANUS_AUTH_HEADER", "").strip()
             or os.environ.get("AUTH_HEADER", "").strip()
             or None
         )
+        self.connect_timeout_s = 10
+        self.per_turn_retries = 1
+        self.retry_backoff_s = 0.5
+        self.system_prompt = build_system_prompt(self.skill_runtime.workspace.workspace_root)
+
+        context_cfg = config.get("context", {})
+        self.context_mgr = ContextWindowManager(
+            context_limit=int(context_cfg.get("context_limit", 8192)),
+            keep_last_n=int(context_cfg.get("keep_last_n", 10)),
+            safety_margin=int(context_cfg.get("safety_margin", 500)),
+        )
+
+        self._ready_checked = False
+        self._skill_snapshot: Optional[SkillRoutingSnapshot] = None
+        self.reload_config(config)
+
+    def reload_config(self, config: Dict[str, Any]) -> None:
+        self.config = config
+        context_cfg = config.get("context", {})
+        self.context_mgr = ContextWindowManager(
+            context_limit=int(context_cfg.get("context_limit", 8192)),
+            keep_last_n=int(context_cfg.get("keep_last_n", 10)),
+            safety_margin=int(context_cfg.get("safety_margin", 500)),
+        )
+
+        agent_cfg = config.get("agent", {})
+        self.model_endpoint = agent_cfg.get("model_endpoint", "http://127.0.0.1:8080/v1/chat/completions")
+        self.models_endpoint = agent_cfg.get("models_endpoint", "http://127.0.0.1:8080/v1/models")
         self.tls_verify = bool(agent_cfg.get("tls_verify", True))
         self.ca_bundle_path = agent_cfg.get("ca_bundle_path")
         self.allow_cross_host = bool(agent_cfg.get("allow_cross_host_endpoints", False))
-
-        self.connect_timeout_s = 10
         self.request_timeout_s = float(agent_cfg.get("request_timeout_s", 180))
         self.readiness_timeout_s = float(agent_cfg.get("readiness_timeout_s", 30))
         self.readiness_poll_s = float(agent_cfg.get("readiness_poll_s", 0.5))
-        self.per_turn_retries = 1
-        self.retry_backoff_s = 0.5
 
         raw_max_tokens = agent_cfg.get("max_tokens")
         if raw_max_tokens in (None, "", 0):
-            self.default_max_tokens: Optional[int] = None
+            self.default_max_tokens = None
         else:
             value = int(raw_max_tokens)
             self.default_max_tokens = value if value > 0 else None
@@ -200,18 +219,8 @@ class Agent:
         else:
             self.compact_tool_result_tools = set()
         self.debug_log_path = str(agent_cfg.get("debug_log_path", "")).strip()
-        self.system_prompt = build_system_prompt(self.skill_runtime.workspace.workspace_root)
-
-        context_cfg = config.get("context", {})
-        self.context_mgr = ContextWindowManager(
-            context_limit=int(context_cfg.get("context_limit", 8192)),
-            keep_last_n=int(context_cfg.get("keep_last_n", 10)),
-            safety_margin=int(context_cfg.get("safety_margin", 500)),
-        )
-
         self.ssl_context = build_ssl_context(self.tls_verify, self.ca_bundle_path)
-        self._ready_checked = False
-        self._skill_snapshot: Optional[SkillRoutingSnapshot] = None
+
         budgets = agent_cfg.get("tool_budgets", {})
         self.default_tool_budgets = {
             "web_search": 2,
@@ -224,6 +233,8 @@ class Agent:
                     self.default_tool_budgets[str(key)] = max(1, int(value))
                 except Exception:
                     continue
+
+        self._ready_checked = False
 
     def _headers(self) -> Dict[str, str]:
         headers = {}
@@ -333,6 +344,52 @@ class Agent:
         self._ready_checked = False
         self._debug_log("readiness_failed", endpoint=self.models_endpoint)
         return False
+
+    @staticmethod
+    def _extract_model_name(payload: Any) -> Optional[str]:
+        def _candidate(value: Any) -> Optional[str]:
+            text = str(value or "").strip()
+            return text or None
+
+        def _from_item(item: Any) -> Optional[str]:
+            if isinstance(item, dict):
+                for key in ("id", "name", "model"):
+                    candidate = _candidate(item.get(key))
+                    if candidate:
+                        return candidate
+            return _candidate(item)
+
+        if isinstance(payload, dict):
+            data = payload.get("data")
+            if isinstance(data, list):
+                for item in data:
+                    candidate = _from_item(item)
+                    if candidate:
+                        return candidate
+            elif data is not None:
+                candidate = _from_item(data)
+                if candidate:
+                    return candidate
+            return _from_item(payload)
+
+        if isinstance(payload, list):
+            for item in payload:
+                candidate = _from_item(item)
+                if candidate:
+                    return candidate
+        return None
+
+    def fetch_model_name(self, timeout_s: Optional[float] = None) -> Optional[str]:
+        headers = self._headers()
+        request = urllib.request.Request(self.models_endpoint, headers=headers, method="GET")
+        timeout = self.connect_timeout_s if timeout_s is None else max(0.1, float(timeout_s))
+        try:
+            with urllib.request.urlopen(request, timeout=timeout, context=self.ssl_context) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            self._debug_log("model_fetch_failed", endpoint=self.models_endpoint, error=str(exc))
+            return None
+        return self._extract_model_name(payload)
 
     def _validate_endpoints(self) -> Optional[str]:
         try:
