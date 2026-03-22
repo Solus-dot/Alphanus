@@ -106,6 +106,7 @@ uv run main.py
 
 Conversation and view:
 - `/help`
+- `/keyboard-shortcuts` (`/shortcuts`, `/keymap`, `/keys`)
 - `/details`
 - `/think`
 - `/clear`
@@ -144,6 +145,15 @@ Memory, workspace, and support:
 - `/report [file]`
 - `/export`
 - `/import`
+
+Keyboard shortcuts:
+- `F1` or `?` shows the keyboard shortcut reference
+- `Ctrl+P` opens the slash-command palette
+- `Ctrl+G` focuses the composer
+- `F2` toggles live tool details
+- `F3` toggles thinking mode
+- `Ctrl+U` clears the full draft
+- `Ctrl+K` deletes from cursor to end of line
 
 Session notes:
 - Startup opens a session picker before chat input so you can load an existing session or start a new one immediately.

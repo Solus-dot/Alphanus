@@ -8,7 +8,7 @@ from core.sessions import ChatSession
 from core.workspace import WorkspaceManager
 from tui.live_tool_preview import LiveToolPreviewManager
 from tui.commands import command_entries_for_query
-from tui.interface import AlphanusTUI
+from tui.interface import AlphanusTUI, ChatInput
 from tui.popups import SessionPickerModal
 
 
@@ -18,6 +18,24 @@ def test_command_entries_match_quit_aliases() -> None:
 
     assert "/quit" in quit_matches
     assert "/quit" in exit_matches
+
+
+def test_command_entries_match_keyboard_shortcuts_aliases() -> None:
+    shortcut_matches = [entry.prompt for entry in command_entries_for_query("/short")]
+    keymap_matches = [entry.prompt for entry in command_entries_for_query("/keym")]
+
+    assert "/keyboard-shortcuts" in shortcut_matches
+    assert "/keyboard-shortcuts" in keymap_matches
+
+
+def test_chat_input_binds_new_shortcuts_locally() -> None:
+    bindings = {binding.key: binding.action for binding in ChatInput.BINDINGS}
+
+    assert bindings["ctrl+g"] == "focus_input"
+    assert bindings["ctrl+p"] == "open_command_palette"
+    assert bindings["f1"] == "show_keymap"
+    assert bindings["f2"] == "toggle_details"
+    assert bindings["f3"] == "toggle_thinking"
 
 
 def test_config_editor_view_omits_secrets_and_unused_minilm() -> None:
@@ -269,9 +287,23 @@ def test_show_keymap_writes_expected_sections() -> None:
     tui.action_show_keymap()
 
     assert "SECTION:Keymap" in lines
+    assert any("F1 / ?" in line for line in lines)
+    assert any("Ctrl+P / /" in line for line in lines)
     assert any("Tab / Shift+Tab" in line for line in lines)
     assert any("SECTION:Tree" == line for line in lines)
+    assert any("SECTION:Slash Palette" == line for line in lines)
     assert any("Enter / o" in line for line in lines)
+
+
+def test_handle_keyboard_shortcuts_command_renders_keymap() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    rendered: list[str] = []
+    tui._show_keyboard_shortcuts = lambda: rendered.append("keymap")
+
+    assert tui._handle_command("/keyboard-shortcuts") is True
+    assert rendered == ["keymap"]
 
 
 def test_handle_save_renames_and_persists_active_session() -> None:

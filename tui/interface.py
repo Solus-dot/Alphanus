@@ -64,6 +64,11 @@ class ChatInput(Input):
     BINDINGS = [
         Binding("ctrl+u", "clear_all", show=False),
         Binding("ctrl+k", "kill_to_end", show=False),
+        Binding("ctrl+g", "focus_input", show=False),
+        Binding("ctrl+p", "open_command_palette", show=False),
+        Binding("f1", "show_keymap", show=False),
+        Binding("f2", "toggle_details", show=False),
+        Binding("f3", "toggle_thinking", show=False),
     ]
 
     def action_clear_all(self) -> None:
@@ -71,6 +76,26 @@ class ChatInput(Input):
 
     def action_kill_to_end(self) -> None:
         self.value = self.value[: self.cursor_position]
+
+    def _invoke_app_action(self, action_name: str) -> None:
+        action = getattr(self.app, action_name, None)
+        if callable(action):
+            action()
+
+    def action_focus_input(self) -> None:
+        self._invoke_app_action("action_focus_input")
+
+    def action_open_command_palette(self) -> None:
+        self._invoke_app_action("action_open_command_palette")
+
+    def action_show_keymap(self) -> None:
+        self._invoke_app_action("action_show_keymap")
+
+    def action_toggle_details(self) -> None:
+        self._invoke_app_action("action_toggle_details")
+
+    def action_toggle_thinking(self) -> None:
+        self._invoke_app_action("action_toggle_thinking")
 
 
 class AlphanusTUI(App):
@@ -387,8 +412,13 @@ class AlphanusTUI(App):
         Binding("ctrl+c", "quit", show=False),
         Binding("ctrl+d", "quit", show=False),
         Binding("escape", "handle_esc", show=False),
+        Binding("f1", "show_keymap", show=False),
+        Binding("f2", "toggle_details", show=False),
+        Binding("f3", "toggle_thinking", show=False),
         Binding("pageup", "scroll_up", show=False),
         Binding("pagedown", "scroll_down", show=False),
+        Binding("ctrl+g", "focus_input", show=False),
+        Binding("ctrl+p", "open_command_palette", show=False),
         Binding("tab", "focus_next_panel", show=False),
         Binding("shift+tab", "focus_prev_panel", show=False),
         Binding("ctrl+h", "focus_chat", show=False),
@@ -778,6 +808,9 @@ class AlphanusTUI(App):
     def action_focus_tree(self) -> None:
         self._set_focused_panel("tree")
 
+    def action_focus_input(self) -> None:
+        self._set_focused_panel("input")
+
     def action_tree_down(self) -> None:
         if self._focused_panel != "tree":
             return
@@ -855,12 +888,16 @@ class AlphanusTUI(App):
         self._update_sidebar()
         self._update_topbar()
 
-    def action_show_keymap(self) -> None:
+    def _show_keyboard_shortcuts(self) -> None:
         self._write_section_heading("Keymap")
+        self._write_command_row("F1 / ?", "Show keyboard shortcuts", col=24)
+        self._write_command_row("Ctrl+P / /", "Open slash command palette", col=24)
+        self._write_command_row("Ctrl+G", "Focus composer", col=24)
         self._write_command_row("Tab / Shift+Tab", "Cycle active panels", col=20)
         self._write_command_row("Ctrl+H / Ctrl+L", "Focus transcript or tree", col=20)
-        self._write_command_row("?", "Show this keymap", col=20)
-        self._write_command_row("/", "Open slash command palette", col=20)
+        self._write_command_row("F2", "Toggle live tool details", col=24)
+        self._write_command_row("F3", "Toggle thinking mode", col=24)
+        self._write_command_row("Ctrl+C / Ctrl+D", "Quit app", col=24)
         self._write("")
         self._write_section_heading("Transcript")
         self._write_command_row("PgUp / PgDn", "Scroll transcript", col=20)
@@ -874,7 +911,45 @@ class AlphanusTUI(App):
         self._write_section_heading("Input")
         self._write_command_row("Enter", "Send message", col=20)
         self._write_command_row("Esc", "Clear input or stop stream", col=20)
+        self._write_command_row("Ctrl+U", "Clear the full draft", col=20)
+        self._write_command_row("Ctrl+K", "Delete to end of line", col=20)
         self._write("")
+        self._write_section_heading("Slash Palette")
+        self._write_command_row("Up / Down", "Move command selection", col=20)
+        self._write_command_row("Tab", "Insert highlighted command", col=20)
+        self._write_command_row("Esc", "Close command palette", col=20)
+        self._write("")
+
+    def action_show_keymap(self) -> None:
+        self._show_keyboard_shortcuts()
+
+    def _toggle_tool_details(self) -> None:
+        self._show_tool_details = not self._show_tool_details
+        self._write_info(f"Live tool details {'shown' if self._show_tool_details else 'hidden'}")
+
+    def action_toggle_details(self) -> None:
+        self._toggle_tool_details()
+
+    def _toggle_thinking_mode(self) -> None:
+        self.thinking = not self.thinking
+        self._write_info(f"Thinking {'enabled' if self.thinking else 'disabled'}")
+
+    def action_toggle_thinking(self) -> None:
+        self._toggle_thinking_mode()
+
+    def action_open_command_palette(self) -> None:
+        if self.streaming or self._await_shell_confirm:
+            return
+        chat_input = self.query_one(ChatInput)
+        self._set_focused_panel("input")
+        current = chat_input.value
+        if current.strip() and not current.lstrip().startswith("/"):
+            self._write_info("Command palette opens on an empty draft or an existing slash command.")
+            return
+        if not current.strip():
+            chat_input.value = "/"
+            chat_input.cursor_position = len(chat_input.value)
+        self._refresh_command_popup(chat_input.value)
 
     def _apply_tree_compaction_policy(self, tree: ConvTree) -> ConvTree:
         tree.set_compaction_policy(
@@ -2231,14 +2306,16 @@ class AlphanusTUI(App):
             self._cmd_help()
             return True
 
+        if cmd in {"/keyboard-shortcuts", "/shortcuts", "/keymap", "/keys"}:
+            self._show_keyboard_shortcuts()
+            return True
+
         if cmd == "/details":
-            self._show_tool_details = not self._show_tool_details
-            self._write_info(f"Live tool details {'shown' if self._show_tool_details else 'hidden'}")
+            self._toggle_tool_details()
             return True
 
         if cmd == "/think":
-            self.thinking = not self.thinking
-            self._write_info(f"Thinking {'enabled' if self.thinking else 'disabled'}")
+            self._toggle_thinking_mode()
             return True
 
         if cmd == "/sessions":

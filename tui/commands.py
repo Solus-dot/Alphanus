@@ -17,6 +17,7 @@ HELP_SECTIONS = [
         "CONVERSATION",
         [
             ("/help", "Show this help"),
+            ("/keyboard-shortcuts /shortcuts", "Show keyboard shortcuts"),
             ("/details", "Toggle tool execution details"),
             ("/think", "Toggle thinking mode"),
             ("/clear", "Clear tree and chat log"),
@@ -68,6 +69,12 @@ HELP_SECTIONS = [
 
 COMMAND_ENTRIES = [
     CommandEntry("/help", "/help", "Show this help"),
+    CommandEntry(
+        "/keyboard-shortcuts",
+        "/keyboard-shortcuts",
+        "Show keyboard shortcuts",
+        aliases=("/shortcuts", "/keymap", "/keys"),
+    ),
     CommandEntry("/details", "/details", "Toggle tool execution details"),
     CommandEntry("/think", "/think", "Toggle thinking mode"),
     CommandEntry("/clear", "/clear", "Clear tree and chat log"),
