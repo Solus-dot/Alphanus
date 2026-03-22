@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from core.conv_tree import ConvTree
-from tui.sidebar import render_sidebar_markup
+from tui.sidebar import render_sidebar_inspector_markup, render_sidebar_tree_markup
 from tui.status import status_left_markup, status_right_markup, topbar_center, topbar_left, topbar_right
 
 
@@ -36,21 +36,20 @@ def test_topbar_right_handles_missing_model_usage() -> None:
     assert "—" in right
 
 
-def test_sidebar_markup_includes_inspector_for_selected_node() -> None:
+def test_sidebar_renderers_include_tree_and_inspector_details() -> None:
     tree = ConvTree()
     turn = tree.add_turn("hello")
     tree.complete_turn(turn.id, "world")
     tree.append_skill_exchange(turn.id, {"role": "tool", "name": "open_url", "content": "ok"})
 
-    markup = render_sidebar_markup(tree, width=30, selected_id=turn.id)
+    tree_markup = render_sidebar_tree_markup(tree, width=30, selected_id=turn.id)
+    inspector_markup = render_sidebar_inspector_markup(tree, width=30, selected_id=turn.id)
 
-    assert "Conversation Tree" in markup
-    assert "Inspector" in markup
-    assert turn.id in markup
-    assert "assistant:" in markup
-    assert "user:" in markup
-    assert "calls:" in markup
-    assert "open_url" in markup
+    assert "hello" in tree_markup
+    assert "assistant:" in inspector_markup
+    assert "user:" in inspector_markup
+    assert "calls:" in inspector_markup
+    assert "open_url" in inspector_markup
 
 
 def test_status_left_changes_with_focused_panel() -> None:

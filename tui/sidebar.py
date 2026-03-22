@@ -64,17 +64,3 @@ def render_sidebar_inspector_markup(tree: ConvTree, width: int = 30, selected_id
                 f"[dim]assistant:[/dim] [#f4f4f5]{len(node.assistant_content)} chars[/#f4f4f5]"
             )
     return "\n".join(lines)
-
-
-def render_sidebar_markup(tree: ConvTree, width: int = 30, selected_id: str | None = None) -> str:
-    tree_markup = render_sidebar_tree_markup(tree, width=width, selected_id=selected_id)
-    inspector_markup = render_sidebar_inspector_markup(tree, width=width, selected_id=selected_id)
-    sections = [
-        "[bold #a1a1aa]Conversation Tree[/bold #a1a1aa]",
-        f"[dim]{tree.turn_count()} turns[/dim]",
-        tree_markup,
-        "",
-        "[bold #a1a1aa]Inspector[/bold #a1a1aa]",
-        inspector_markup,
-    ]
-    return "\n".join(section for section in sections if section is not None)
