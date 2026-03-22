@@ -11,7 +11,6 @@
     "ca_bundle_path": "",
     "allow_cross_host_endpoints": false,
     "max_tokens": null,
-    "context_budget_max_tokens": 2048,
     "max_action_depth": 10
   },
   "workspace": {
@@ -25,9 +24,7 @@
     "allow_model_download": true
   },
   "context": {
-    "context_limit": 8192,
-    "keep_last_n": 10,
-    "safety_margin": 500
+    "keep_last_n": 10
   },
   "capabilities": {
     "shell_require_confirmation": true,

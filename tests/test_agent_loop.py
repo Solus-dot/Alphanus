@@ -2262,8 +2262,65 @@ def test_fetch_model_name_reads_first_model_id(mocker, runtime: SkillRuntime):
     assert agent.fetch_model_name() == "llama-3.2-3b-instruct"
 
 
+def test_fetch_model_metadata_reads_model_id_and_context_window(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    def fake_urlopen(req, timeout=None, context=None):
+        assert req.full_url.endswith("/v1/models")
+        return FakeResponse(['{"data":[{"id":"llama-3.2-3b-instruct","metadata":{"n_ctx_slot":40960}}]}'])
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    assert agent.fetch_model_metadata() == ("llama-3.2-3b-instruct", 40960)
+
+
+def test_fetch_model_metadata_falls_back_to_props_for_context_window(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse(['{"data":[{"id":"llama-3.2-3b-instruct"}]}'])
+        if req.full_url.endswith("/props"):
+            return FakeResponse(['{"default_generation_settings":{"n_ctx":40960}}'])
+        raise AssertionError(f"unexpected endpoint: {req.full_url}")
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    assert agent.fetch_model_metadata() == ("llama-3.2-3b-instruct", 40960)
+
+
 def test_fetch_model_name_accepts_top_level_model_field(runtime: SkillRuntime):
     assert Agent._extract_model_name({"model": "qwen2.5-coder-7b"}) == "qwen2.5-coder-7b"
+
+
+def test_extract_model_context_window_accepts_nested_metadata(runtime: SkillRuntime):
+    assert Agent._extract_model_context_window({"data": [{"metadata": {"n_ctx_slot": 40960}}]}) == 40960
+
+
+def test_extract_model_context_window_accepts_recursive_nested_fields(runtime: SkillRuntime):
+    assert Agent._extract_model_context_window({"default_generation_settings": {"nested": {"n_ctx": 40960}}}) == 40960
 
 
 def test_reload_config_resets_readiness_state(runtime: SkillRuntime):

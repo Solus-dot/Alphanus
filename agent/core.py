@@ -379,17 +379,123 @@ class Agent:
                     return candidate
         return None
 
-    def fetch_model_name(self, timeout_s: Optional[float] = None) -> Optional[str]:
+    @staticmethod
+    def _extract_model_context_window(payload: Any) -> Optional[int]:
+        context_keys = (
+            "context_length",
+            "context_window",
+            "max_context_length",
+            "max_model_len",
+            "num_ctx",
+            "n_ctx",
+            "n_ctx_slot",
+            "n_ctx_train",
+        )
+        visited: set[int] = set()
+
+        def _candidate_int(value: Any) -> Optional[int]:
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, int):
+                return value if value > 0 else None
+            if isinstance(value, float):
+                parsed = int(value)
+                return parsed if parsed > 0 else None
+            if isinstance(value, str):
+                try:
+                    parsed = int(value.strip())
+                except Exception:
+                    return None
+                    return parsed if parsed > 0 else None
+            return None
+
+        def _from_item(item: Any) -> Optional[int]:
+            if isinstance(item, dict):
+                marker = id(item)
+                if marker in visited:
+                    return None
+                visited.add(marker)
+                for key in context_keys:
+                    candidate = _candidate_int(item.get(key))
+                    if candidate is not None:
+                        return candidate
+                for value in item.values():
+                    candidate = _from_item(value)
+                    if candidate is not None:
+                        return candidate
+                return None
+            if isinstance(item, list):
+                marker = id(item)
+                if marker in visited:
+                    return None
+                visited.add(marker)
+                for value in item:
+                    candidate = _from_item(value)
+                    if candidate is not None:
+                        return candidate
+                return None
+            return None
+
+        if isinstance(payload, dict):
+            data = payload.get("data")
+            if isinstance(data, list):
+                for item in data:
+                    candidate = _from_item(item)
+                    if candidate is not None:
+                        return candidate
+            elif data is not None:
+                candidate = _from_item(data)
+                if candidate is not None:
+                    return candidate
+            return _from_item(payload)
+
+        if isinstance(payload, list):
+            for item in payload:
+                candidate = _from_item(item)
+                if candidate is not None:
+                    return candidate
+        return None
+
+    @staticmethod
+    def _props_endpoint_from_models_endpoint(models_endpoint: str) -> str:
+        parsed = urllib.parse.urlparse(models_endpoint)
+        path = parsed.path or ""
+        if path.endswith("/v1/models"):
+            path = path[: -len("/v1/models")] + "/props"
+        elif path.endswith("/models"):
+            path = path[: -len("/models")] + "/props"
+        else:
+            path = "/props"
+        return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
+
+    def _fetch_json(self, url: str, timeout_s: Optional[float] = None) -> Any:
         headers = self._headers()
-        request = urllib.request.Request(self.models_endpoint, headers=headers, method="GET")
+        request = urllib.request.Request(url, headers=headers, method="GET")
         timeout = self.connect_timeout_s if timeout_s is None else max(0.1, float(timeout_s))
+        with urllib.request.urlopen(request, timeout=timeout, context=self.ssl_context) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def fetch_model_metadata(self, timeout_s: Optional[float] = None) -> tuple[Optional[str], Optional[int]]:
         try:
-            with urllib.request.urlopen(request, timeout=timeout, context=self.ssl_context) as response:
-                payload = json.loads(response.read().decode("utf-8"))
+            payload = self._fetch_json(self.models_endpoint, timeout_s=timeout_s)
         except Exception as exc:
             self._debug_log("model_fetch_failed", endpoint=self.models_endpoint, error=str(exc))
-            return None
-        return self._extract_model_name(payload)
+            return None, None
+        model_name = self._extract_model_name(payload)
+        context_window = self._extract_model_context_window(payload)
+        if context_window is not None:
+            return model_name, context_window
+        props_endpoint = self._props_endpoint_from_models_endpoint(self.models_endpoint)
+        try:
+            props_payload = self._fetch_json(props_endpoint, timeout_s=timeout_s)
+        except Exception as exc:
+            self._debug_log("model_props_fetch_failed", endpoint=props_endpoint, error=str(exc))
+            return model_name, None
+        return model_name, self._extract_model_context_window(props_payload)
+
+    def fetch_model_name(self, timeout_s: Optional[float] = None) -> Optional[str]:
+        model_name, _context_window = self.fetch_model_metadata(timeout_s=timeout_s)
+        return model_name
 
     def _validate_endpoints(self) -> Optional[str]:
         try:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 
 import pytest
@@ -90,6 +91,20 @@ def test_load_or_create_global_config_scrubs_secret_fields_on_disk(tmp_path: Pat
     assert "tavily_api_key" not in loaded["search"]
     assert "tavily_api_key" not in disk
     assert any("on disk" in warning for warning in warnings)
+
+
+def test_load_or_create_global_config_hides_internal_context_budget_fields_on_disk(tmp_path: Path) -> None:
+    cfg = tmp_path / "config" / "global_config.json"
+
+    loaded = load_or_create_global_config(cfg)
+    written = json.loads(cfg.read_text(encoding="utf-8"))
+
+    assert loaded["agent"]["context_budget_max_tokens"] == DEFAULT_CONFIG["agent"]["context_budget_max_tokens"]
+    assert loaded["context"]["context_limit"] == DEFAULT_CONFIG["context"]["context_limit"]
+    assert loaded["context"]["safety_margin"] == DEFAULT_CONFIG["context"]["safety_margin"]
+    assert "context_budget_max_tokens" not in written["agent"]
+    assert "context_limit" not in written["context"]
+    assert "safety_margin" not in written["context"]
 
 
 def test_load_dotenv_supports_export_and_ignores_invalid_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

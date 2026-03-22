@@ -22,6 +22,24 @@ def _short_endpoint(endpoint: str) -> str:
     return endpoint
 
 
+def context_usage_percent(context_tokens: Optional[int], context_window: Optional[int]) -> Optional[int]:
+    if context_tokens is None or context_window is None or context_window <= 0:
+        return None
+    pct = int(round((max(0, context_tokens) * 100) / context_window))
+    if context_tokens > 0 and pct == 0:
+        pct = 1
+    return min(pct, 999)
+
+
+def _context_usage_markup(context_tokens: Optional[int], context_window: Optional[int]) -> str:
+    if context_tokens is None or context_window is None or context_window <= 0:
+        return "[#a1a1aa]—[/#a1a1aa]"
+    pct = context_usage_percent(context_tokens, context_window)
+    if pct is None:
+        return "[#a1a1aa]—[/#a1a1aa]"
+    return f"[#6366f1]{pct}%[/#6366f1]"
+
+
 def topbar_left(workspace_root: str, *, width: int) -> str:
     workspace_name = os.path.basename(workspace_root) or workspace_root
     if width < 110:
@@ -52,11 +70,11 @@ def topbar_center(*, session_name: str, branch_name: str, memory_mode: str, widt
     )
 
 
-def topbar_right(*, endpoint: str, context_tokens: Optional[int], width: int) -> str:
+def topbar_right(*, endpoint: str, context_tokens: Optional[int], context_window: Optional[int], width: int) -> str:
     short_endpoint = _short_endpoint(endpoint)
     if width < 105:
         short_endpoint = ""
-    ctx_markup = "[#a1a1aa]—[/#a1a1aa]" if context_tokens is None else f"[#6366f1]{context_tokens}[/#6366f1]"
+    ctx_markup = _context_usage_markup(context_tokens, context_window)
     if not short_endpoint:
         return f"  [dim]ctx:[/dim] {ctx_markup}"
     return f"  [#a1a1aa]{esc(_truncate(short_endpoint, 22 if width < 140 else 28))}[/#a1a1aa]   [dim]ctx:[/dim] {ctx_markup}"

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from core.conv_tree import ConvTree
 from tui.sidebar import render_sidebar_inspector_markup, render_sidebar_tree_markup
-from tui.status import status_left_markup, status_right_markup, topbar_center, topbar_left, topbar_right
+from tui.status import context_usage_percent, status_left_markup, status_right_markup, topbar_center, topbar_left, topbar_right
 
 
 def test_topbar_helpers_include_workspace_branch_and_context() -> None:
@@ -10,7 +10,8 @@ def test_topbar_helpers_include_workspace_branch_and_context() -> None:
     center = topbar_center(session_name="Session 1", branch_name="root", memory_mode="hash", width=180)
     right = topbar_right(
         endpoint="http://127.0.0.1:8080/v1/chat/completions",
-        context_tokens=321,
+        context_tokens=1612,
+        context_window=40960,
         width=180,
     )
 
@@ -20,14 +21,32 @@ def test_topbar_helpers_include_workspace_branch_and_context() -> None:
     assert "branch:" in center
     assert "memory:" in center
     assert "ctx:" in right
-    assert "321" in right
+    assert "4%" in right
     assert "127.0.0.1:8080" in right
+
+
+def test_topbar_right_uses_inference_engine_context_window() -> None:
+    right = topbar_right(
+        endpoint="http://127.0.0.1:8080/v1/chat/completions",
+        context_tokens=40960,
+        context_window=40960,
+        width=180,
+    )
+
+    assert "100%" in right
+
+
+def test_context_usage_percent_handles_rounding_and_missing_values() -> None:
+    assert context_usage_percent(1612, 40960) == 4
+    assert context_usage_percent(1, 40960) == 1
+    assert context_usage_percent(None, 40960) is None
 
 
 def test_topbar_right_handles_missing_model_usage() -> None:
     right = topbar_right(
         endpoint="http://127.0.0.1:8080/v1/chat/completions",
         context_tokens=None,
+        context_window=None,
         width=180,
     )
 
@@ -89,7 +108,8 @@ def test_status_helpers_compact_at_small_width() -> None:
     )
     right = topbar_right(
         endpoint="http://127.0.0.1:8080/v1/chat/completions",
-        context_tokens=321,
+        context_tokens=1612,
+        context_window=40960,
         width=90,
     )
     status_right = status_right_markup(

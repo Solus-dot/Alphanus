@@ -56,6 +56,7 @@ HELP_SECTIONS = [
         "UTILITIES",
         [
             ("/memory stats", "Show memory stats"),
+            ("/context", "Show inference engine context usage"),
             ("/workspace tree", "Render workspace tree"),
             ("/config", "Edit global config in a popup"),
             ("/report [file]", "Save a support bundle JSON"),
@@ -97,6 +98,7 @@ COMMAND_ENTRIES = [
     CommandEntry("/skill reload", "/skill reload", "Reload skills from disk"),
     CommandEntry("/skill info <id>", "/skill info ", "Show skill details"),
     CommandEntry("/memory stats", "/memory stats", "Show memory stats"),
+    CommandEntry("/context", "/context", "Show inference engine context usage"),
     CommandEntry("/workspace tree", "/workspace tree", "Render the workspace tree"),
     CommandEntry("/config", "/config", "Edit the global config in a popup"),
     CommandEntry("/report [file]", "/report ", "Save a support bundle JSON"),

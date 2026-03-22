@@ -269,6 +269,13 @@ def strip_secret_fields(config: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
 
 def config_for_editor_view(config: Dict[str, Any]) -> Dict[str, Any]:
     cleaned, _ = strip_secret_fields(config)
+    agent_cfg = cleaned.get("agent")
+    if isinstance(agent_cfg, dict):
+        agent_cfg.pop("context_budget_max_tokens", None)
+    context_cfg = cleaned.get("context")
+    if isinstance(context_cfg, dict):
+        context_cfg.pop("context_limit", None)
+        context_cfg.pop("safety_margin", None)
     memory_cfg = cleaned.get("memory")
     if isinstance(memory_cfg, dict) and str(memory_cfg.get("embedding_backend", "transformer")).strip().lower() == "hash":
         memory_cfg.pop("model_name", None)
@@ -671,7 +678,7 @@ def validate_endpoint_policy(config: Dict[str, Any]) -> None:
 def load_or_create_global_config(path: Path, *, warnings: List[str] | None = None) -> Dict[str, Any]:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
-        path.write_text(json.dumps(DEFAULT_CONFIG, indent=2) + "\n", encoding="utf-8")
+        path.write_text(json.dumps(config_for_editor_view(DEFAULT_CONFIG), indent=2) + "\n", encoding="utf-8")
         return copy.deepcopy(DEFAULT_CONFIG)
 
     size = path.stat().st_size

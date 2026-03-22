@@ -51,7 +51,7 @@ from tui.popups import (
     session_picker_items,
 )
 from tui.sidebar import render_sidebar_inspector_markup, render_sidebar_tree_markup
-from tui.status import status_left_markup, status_right_markup, topbar_center, topbar_left, topbar_right
+from tui.status import context_usage_percent, status_left_markup, status_right_markup, topbar_center, topbar_left, topbar_right
 
 MAX_REPLY_ACC_CHARS = 24000
 SHELL_CONFIRM_TIMEOUT_S = 60
@@ -478,6 +478,7 @@ class AlphanusTUI(App):
         self._last_status_right = ""
         self._auto_follow_stream = True
         self._model_name: Optional[str] = None
+        self._model_context_window: Optional[int] = None
         self._model_refresh_inflight = False
         self._last_model_refresh = 0.0
         self._model_refresh_interval_s = 5.0
@@ -731,6 +732,7 @@ class AlphanusTUI(App):
 
     def _switch_to_session(self, session: ChatSession, *, clear_pending: bool = True) -> None:
         self._activate_session_state(session)
+        self._reset_context_usage()
         if clear_pending:
             self.pending.clear()
         self._rebuild_viewport()
@@ -739,6 +741,7 @@ class AlphanusTUI(App):
         self._update_status1()
         self._update_status2()
         self._update_input_placeholder()
+        self._update_topbar()
 
     def _tree_rows(self) -> List[Tuple[str, str, bool]]:
         return self.conv_tree.render_tree(width=30)
@@ -758,6 +761,18 @@ class AlphanusTUI(App):
 
     def _context_tokens(self) -> Optional[int]:
         return self._last_model_context_tokens
+
+    def _context_window_tokens(self) -> Optional[int]:
+        return self._model_context_window if isinstance(self._model_context_window, int) and self._model_context_window > 0 else None
+
+    def _reset_context_usage(self) -> None:
+        self._last_model_context_tokens = None
+
+    def _update_context_usage_from_payload(self, usage: Dict[str, Any]) -> None:
+        prompt_tokens = usage.get("prompt_tokens")
+        if isinstance(prompt_tokens, (int, float)):
+            self._last_model_context_tokens = int(prompt_tokens)
+        self._update_topbar()
 
     def _memory_mode_label(self) -> str:
         try:
@@ -1388,13 +1403,15 @@ class AlphanusTUI(App):
 
     @work(thread=True, exclusive=True)
     def _refresh_model_name_worker(self) -> None:
-        model_name = self.agent.fetch_model_name(timeout_s=min(self.agent.connect_timeout_s, 2.0))
-        self.call_from_thread(self._apply_model_name_refresh, model_name)
+        model_name, context_window = self.agent.fetch_model_metadata(timeout_s=min(self.agent.connect_timeout_s, 2.0))
+        self.call_from_thread(self._apply_model_name_refresh, model_name, context_window)
 
-    def _apply_model_name_refresh(self, model_name: Optional[str]) -> None:
+    def _apply_model_name_refresh(self, model_name: Optional[str], context_window: Optional[int]) -> None:
         self._model_refresh_inflight = False
         self._model_name = model_name
+        self._model_context_window = context_window if isinstance(context_window, int) and context_window > 0 else None
         self._update_status1()
+        self._update_topbar()
 
     def _update_status2(self) -> None:
         left = status_left_markup(
@@ -1428,6 +1445,7 @@ class AlphanusTUI(App):
             topbar_right(
                 endpoint=self.agent.model_endpoint,
                 context_tokens=self._context_tokens(),
+                context_window=self._context_window_tokens(),
                 width=width,
             )
         )
@@ -1754,6 +1772,7 @@ class AlphanusTUI(App):
         self.agent.skill_runtime.config = merged
         self.thinking = bool(merged.get("agent", {}).get("enable_thinking", self.thinking))
         self._model_name = None
+        self._model_context_window = None
         self._update_topbar()
         self._apply_tui_config()
         self._maybe_refresh_model_name(force=True)
@@ -2082,13 +2101,7 @@ class AlphanusTUI(App):
         elif etype == "usage":
             usage = event.get("usage") or {}
             if isinstance(usage, dict):
-                prompt_tokens = usage.get("prompt_tokens")
-                total_tokens = usage.get("total_tokens")
-                if isinstance(prompt_tokens, (int, float)):
-                    self._last_model_context_tokens = int(prompt_tokens)
-                elif isinstance(total_tokens, (int, float)):
-                    self._last_model_context_tokens = int(total_tokens)
-                self._update_topbar()
+                self._update_context_usage_from_payload(usage)
 
         now = time.monotonic()
         if now - self._last_scroll >= self._scroll_interval:
@@ -2125,12 +2138,7 @@ class AlphanusTUI(App):
             self.conv_tree.fail_turn(turn_id, reply)
         usage = result.journal.get("model_usage", {}) if isinstance(result.journal, dict) else {}
         if isinstance(usage, dict):
-            prompt_tokens = usage.get("prompt_tokens")
-            total_tokens = usage.get("total_tokens")
-            if isinstance(prompt_tokens, (int, float)):
-                self._last_model_context_tokens = int(prompt_tokens)
-            elif isinstance(total_tokens, (int, float)):
-                self._last_model_context_tokens = int(total_tokens)
+            self._update_context_usage_from_payload(usage)
 
         if result.status != "done":
             if result.error and result.error != self._last_stream_error_text:
@@ -2442,6 +2450,7 @@ class AlphanusTUI(App):
 
         if cmd == "/clear":
             self.conv_tree = self._new_conv_tree()
+            self._reset_context_usage()
             self.pending.clear()
             self._log().clear()
             self._partial().update("")
@@ -2451,6 +2460,7 @@ class AlphanusTUI(App):
             self._update_status2()
             self._update_sidebar()
             self._update_input_placeholder()
+            self._update_topbar()
             return True
 
         if cmd in {"/file", "/image"}:
@@ -2481,6 +2491,9 @@ class AlphanusTUI(App):
 
         if cmd == "/memory":
             return self._cmd_memory(arg)
+
+        if cmd == "/context":
+            return self._cmd_context(arg)
 
         if cmd == "/workspace":
             return self._cmd_workspace(arg)
@@ -2613,6 +2626,22 @@ class AlphanusTUI(App):
             self._write("")
             return True
         return self._write_usage("/memory stats")
+
+    def _cmd_context(self, arg: str) -> bool:
+        if arg.strip():
+            return self._write_usage("/context")
+        used = self._context_tokens()
+        total = self._context_window_tokens()
+        percent = context_usage_percent(used, total)
+        self._write_section_heading("Context")
+        self._write_detail_line("usage", "—" if percent is None else f"{percent}%")
+        if used is None or total is None:
+            token_line = f"{'—' if used is None else used} / {'—' if total is None else total}"
+        else:
+            token_line = f"{used} / {total}"
+        self._write_detail_line("tokens", token_line)
+        self._write("")
+        return True
 
     def _cmd_doctor(self) -> None:
         report = self.agent.doctor_report()

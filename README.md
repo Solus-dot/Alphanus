@@ -97,6 +97,8 @@ uv run main.py
 - `agent.max_tokens` defaults to `null`, so no explicit `max_tokens` cap is sent unless configured.
 - The system prompt includes the current local date.
 - Endpoint host policy is enforced: `agent.model_endpoint` and `agent.models_endpoint` must share host unless `allow_cross_host_endpoints = true`.
+- The TUI `ctx:` indicator and `/context` command are based on inference-engine metadata from `agent.models_endpoint` when available, not on app-side config fallbacks.
+- `context.context_limit`, `context.safety_margin`, and `agent.context_budget_max_tokens` are not treated as authoritative model capacity in the UI.
 - Shell commands require confirmation by default.
 - Current-info answers are expected to come from fetched web evidence; otherwise Alphanus will decline to speculate.
 - `delete_path` supports both files and directories.
@@ -140,6 +142,7 @@ Skills and diagnostics:
 
 Memory, workspace, and support:
 - `/memory stats`
+- `/context` (inference engine context usage, when reported)
 - `/workspace tree`
 - `/config`
 - `/report [file]`
@@ -171,6 +174,7 @@ Session notes:
 Global config lives at `config/global_config.json`. Missing keys are merged from built-in defaults at startup.
 Config values are normalized and type-checked at load/save time, with invalid values falling back to safe defaults.
 Secret-like keys are stripped from config (credentials must stay in environment variables).
+Internal pruning defaults are not surfaced in the user-facing config file or config editor.
 
 Built-in defaults:
 
@@ -188,7 +192,6 @@ Built-in defaults:
     "ca_bundle_path": "",
     "allow_cross_host_endpoints": false,
     "max_tokens": null,
-    "context_budget_max_tokens": 2048,
     "max_action_depth": 10,
     "max_tool_result_chars": 12000,
     "max_reasoning_chars": 20000,
@@ -206,9 +209,7 @@ Built-in defaults:
     "allow_model_download": true
   },
   "context": {
-    "context_limit": 8192,
-    "keep_last_n": 10,
-    "safety_margin": 500
+    "keep_last_n": 10
   },
   "capabilities": {
     "shell_require_confirmation": true,

@@ -28,6 +28,12 @@ def test_command_entries_match_keyboard_shortcuts_aliases() -> None:
     assert "/keyboard-shortcuts" in keymap_matches
 
 
+def test_command_entries_match_context_command() -> None:
+    context_matches = [entry.prompt for entry in command_entries_for_query("/cont")]
+
+    assert "/context" in context_matches
+
+
 def test_chat_input_binds_new_shortcuts_locally() -> None:
     bindings = {binding.key: binding.action for binding in ChatInput.BINDINGS}
 
@@ -40,16 +46,21 @@ def test_chat_input_binds_new_shortcuts_locally() -> None:
 
 def test_config_editor_view_omits_secrets_and_unused_minilm() -> None:
     config = {
-        "agent": {"auth_header": "Authorization: Bearer secret"},
+        "agent": {"auth_header": "Authorization: Bearer secret", "context_budget_max_tokens": 2048},
         "search": {"provider": "tavily", "tavily_api_key": "tvly-secret"},
         "memory": {"embedding_backend": "hash", "model_name": "BAAI/bge-small-en-v1.5"},
+        "context": {"context_limit": 8192, "safety_margin": 500, "keep_last_n": 10},
     }
 
     cleaned = AlphanusTUI._config_for_editor(config)
 
     assert "auth_header" not in cleaned["agent"]
+    assert "context_budget_max_tokens" not in cleaned["agent"]
     assert "tavily_api_key" not in cleaned["search"]
     assert "model_name" not in cleaned["memory"]
+    assert "context_limit" not in cleaned["context"]
+    assert "safety_margin" not in cleaned["context"]
+    assert cleaned["context"]["keep_last_n"] == 10
 
 
 def test_tool_result_lines_hidden_when_details_off() -> None:
@@ -275,6 +286,43 @@ def test_tool_call_create_files_writes_all_file_previews_without_deltas() -> Non
     assert any(language == "html" for _code, language, _indent in code_blocks)
     assert any(language == "css" for _code, language, _indent in code_blocks)
     assert any(language == "javascript" for _code, language, _indent in code_blocks)
+
+def test_update_context_usage_ignores_total_tokens_without_prompt_tokens() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._last_model_context_tokens = 321
+    updates: list[str] = []
+    tui._update_topbar = lambda: updates.append("topbar")
+
+    tui._update_context_usage_from_payload({"total_tokens": 999})
+
+    assert tui._last_model_context_tokens == 321
+    assert updates == ["topbar"]
+
+
+def test_cmd_context_writes_percent_and_tokens() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    lines: list[str] = []
+    tui._write = lines.append
+    tui._write_section_heading = lambda text: lines.append(f"SECTION:{text}")
+    tui._write_detail_line = lambda label, value, value_markup=False: lines.append(f"DETAIL:{label}:{value}:{value_markup}")
+    tui._context_tokens = lambda: 1612
+    tui._context_window_tokens = lambda: 40960
+
+    assert tui._cmd_context("") is True
+    assert "SECTION:Context" in lines
+    assert "DETAIL:usage:4%:False" in lines
+    assert "DETAIL:tokens:1612 / 40960:False" in lines
+
+
+def test_handle_context_command_renders_context_summary() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    rendered: list[str] = []
+    tui._cmd_context = lambda arg: rendered.append(arg) or True
+
+    assert tui._handle_command("/context") is True
+    assert rendered == [""]
 
 
 def test_show_keymap_writes_expected_sections() -> None:
@@ -662,6 +710,61 @@ def test_activate_session_state_uses_newest_leaf_not_rightmost_descendant() -> N
 
     assert tui.conv_tree.current_id == newest.id
     assert tui._tree_cursor_id == newest.id
+
+
+def test_switch_to_session_resets_context_usage_and_refreshes_topbar() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    session = ChatSession(
+        id="sess-4",
+        title="Next Session",
+        created_at="2026-03-20T10:00:00+00:00",
+        updated_at="2026-03-20T10:05:00+00:00",
+        tree=ConvTree(),
+    )
+    events: list[str] = []
+    tui.pending = [("/tmp/example.txt", "text")]
+    tui._last_model_context_tokens = 512
+    tui._activate_session_state = lambda current: events.append(f"activate:{current.title}")
+    tui._rebuild_viewport = lambda: events.append("rebuild")
+    tui._update_sidebar = lambda: events.append("sidebar")
+    tui._update_pending_attachments = lambda: events.append("attachments")
+    tui._update_status1 = lambda: events.append("status1")
+    tui._update_status2 = lambda: events.append("status2")
+    tui._update_input_placeholder = lambda: events.append("placeholder")
+    tui._update_topbar = lambda: events.append("topbar")
+
+    tui._switch_to_session(session)
+
+    assert tui._last_model_context_tokens is None
+    assert tui.pending == []
+    assert events == ["activate:Next Session", "rebuild", "sidebar", "attachments", "status1", "status2", "placeholder", "topbar"]
+
+
+def test_handle_clear_resets_context_usage_and_refreshes_topbar() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    tui.conv_tree = ConvTree()
+    tui.pending = [("/tmp/example.txt", "text")]
+    tui._last_model_context_tokens = 768
+    events: list[str] = []
+    fresh_tree = ConvTree()
+    tui._new_conv_tree = lambda: fresh_tree
+    tui._log = lambda: SimpleNamespace(clear=lambda: events.append("log"))
+    tui._partial = lambda: SimpleNamespace(update=lambda _value: events.append("partial"))
+    tui._save_active_session = lambda rename_to=None: events.append("save")
+    tui._update_pending_attachments = lambda: events.append("attachments")
+    tui._update_status1 = lambda: events.append("status1")
+    tui._update_status2 = lambda: events.append("status2")
+    tui._update_sidebar = lambda: events.append("sidebar")
+    tui._update_input_placeholder = lambda: events.append("placeholder")
+    tui._update_topbar = lambda: events.append("topbar")
+
+    assert tui._handle_command("/clear") is True
+    assert tui.conv_tree is fresh_tree
+    assert tui.pending == []
+    assert tui._last_model_context_tokens is None
+    assert events == ["log", "partial", "save", "attachments", "status1", "status2", "sidebar", "placeholder", "topbar"]
 
 
 def test_session_picker_name_submit_creates_new_session() -> None:
