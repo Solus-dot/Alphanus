@@ -404,9 +404,9 @@ class Agent:
             if isinstance(value, str):
                 try:
                     parsed = int(value.strip())
+                    return parsed if parsed > 0 else None
                 except Exception:
                     return None
-                    return parsed if parsed > 0 else None
             return None
 
         def _from_item(item: Any) -> Optional[int]:
