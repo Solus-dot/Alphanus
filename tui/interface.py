@@ -889,36 +889,54 @@ class AlphanusTUI(App):
         self._update_topbar()
 
     def _show_keyboard_shortcuts(self) -> None:
-        self._write_section_heading("Keymap")
-        self._write_command_row("F1 / ?", "Show keyboard shortcuts", col=24)
-        self._write_command_row("Ctrl+P / /", "Open slash command palette", col=24)
-        self._write_command_row("Ctrl+G", "Focus composer", col=24)
-        self._write_command_row("Tab / Shift+Tab", "Cycle active panels", col=20)
-        self._write_command_row("Ctrl+H / Ctrl+L", "Focus transcript or tree", col=20)
-        self._write_command_row("F2", "Toggle live tool details", col=24)
-        self._write_command_row("F3", "Toggle thinking mode", col=24)
-        self._write_command_row("Ctrl+C / Ctrl+D", "Quit app", col=24)
-        self._write("")
-        self._write_section_heading("Transcript")
-        self._write_command_row("PgUp / PgDn", "Scroll transcript", col=20)
-        self._write("")
-        self._write_section_heading("Tree")
-        self._write_command_row("j / k", "Move selection", col=20)
-        self._write_command_row("Enter / o", "Open selected node", col=20)
-        self._write_command_row("[ / ]", "Jump sibling branches", col=20)
-        self._write_command_row("g / G", "Jump top or bottom", col=20)
-        self._write("")
-        self._write_section_heading("Input")
-        self._write_command_row("Enter", "Send message", col=20)
-        self._write_command_row("Esc", "Clear input or stop stream", col=20)
-        self._write_command_row("Ctrl+U", "Clear the full draft", col=20)
-        self._write_command_row("Ctrl+K", "Delete to end of line", col=20)
-        self._write("")
-        self._write_section_heading("Slash Palette")
-        self._write_command_row("Up / Down", "Move command selection", col=20)
-        self._write_command_row("Tab", "Insert highlighted command", col=20)
-        self._write_command_row("Esc", "Close command palette", col=20)
-        self._write("")
+        sections = [
+            (
+                "Keymap",
+                [
+                    ("F1 / ?", "Show keyboard shortcuts"),
+                    ("Ctrl+P / /", "Open slash command palette"),
+                    ("Ctrl+G", "Focus composer"),
+                    ("Tab / Shift+Tab", "Cycle active panels"),
+                    ("Ctrl+H / Ctrl+L", "Focus transcript or tree"),
+                    ("F2", "Toggle live tool details"),
+                    ("F3", "Toggle thinking mode"),
+                    ("Ctrl+C / Ctrl+D", "Quit app"),
+                ],
+            ),
+            ("Transcript", [("PgUp / PgDn", "Scroll transcript")]),
+            (
+                "Tree",
+                [
+                    ("j / k", "Move selection"),
+                    ("Enter / o", "Open selected node"),
+                    ("[ / ]", "Jump sibling branches"),
+                    ("g / G", "Jump top or bottom"),
+                ],
+            ),
+            (
+                "Input",
+                [
+                    ("Enter", "Send message"),
+                    ("Esc", "Clear input or stop stream"),
+                    ("Ctrl+U", "Clear the full draft"),
+                    ("Ctrl+K", "Delete to end of line"),
+                ],
+            ),
+            (
+                "Slash Palette",
+                [
+                    ("Up / Down", "Move command selection"),
+                    ("Tab", "Insert highlighted command"),
+                    ("Esc", "Close command palette"),
+                ],
+            ),
+        ]
+        col = max((len(command) for _title, rows in sections for command, _desc in rows), default=20) + 4
+        for title, rows in sections:
+            self._write_section_heading(title)
+            for command, desc in rows:
+                self._write_command_row(command, desc, col=col)
+            self._write("")
 
     def action_show_keymap(self) -> None:
         self._show_keyboard_shortcuts()

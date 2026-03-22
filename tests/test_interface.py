@@ -280,9 +280,15 @@ def test_tool_call_create_files_writes_all_file_previews_without_deltas() -> Non
 def test_show_keymap_writes_expected_sections() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     lines: list[str] = []
+    command_cols: list[int] = []
     tui._write = lines.append
     tui._write_section_heading = lambda text: lines.append(f"SECTION:{text}")
-    tui._write_command_row = lambda command, desc, *, col: lines.append(f"ROW:{command}:{desc}:{col}")
+
+    def capture_command_row(command: str, desc: str, *, col: int) -> None:
+        command_cols.append(col)
+        lines.append(f"ROW:{command}:{desc}:{col}")
+
+    tui._write_command_row = capture_command_row
 
     tui.action_show_keymap()
 
@@ -293,6 +299,7 @@ def test_show_keymap_writes_expected_sections() -> None:
     assert any("SECTION:Tree" == line for line in lines)
     assert any("SECTION:Slash Palette" == line for line in lines)
     assert any("Enter / o" in line for line in lines)
+    assert len(set(command_cols)) == 1
 
 
 def test_handle_keyboard_shortcuts_command_renders_keymap() -> None:
