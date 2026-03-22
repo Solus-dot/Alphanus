@@ -109,3 +109,61 @@ def test_shell_command_nonzero_exit_is_reported_as_failure(tmp_path: Path):
     assert res["error"]["code"] == "E_SHELL"
     assert "code 7" in res["error"]["message"]
     assert res["data"]["returncode"] == 7
+
+
+def test_delete_workspace_root_denied_for_dot_path(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    with pytest.raises(PermissionError):
+        mgr.delete_path(".", recursive=True)
+
+
+def test_delete_workspace_root_denied_for_empty_path(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    with pytest.raises(PermissionError):
+        mgr.delete_path("", recursive=True)
+
+
+def test_delete_alphanus_state_denied(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    state_dir = ws / ".alphanus" / "sessions"
+    home.mkdir()
+    state_dir.mkdir(parents=True)
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    with pytest.raises(PermissionError):
+        mgr.delete_path(".alphanus", recursive=True)
+    with pytest.raises(PermissionError):
+        mgr.delete_path(".alphanus/sessions", recursive=True)
+
+
+def test_delete_symlink_to_protected_target_unlinks_link_only(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    state_dir = ws / ".alphanus"
+    home.mkdir()
+    state_dir.mkdir(parents=True)
+    state_link = ws / "state-link"
+    root_link = ws / "root-link"
+    state_link.symlink_to(state_dir, target_is_directory=True)
+    root_link.symlink_to(ws, target_is_directory=True)
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+
+    assert mgr.delete_path("state-link", recursive=True) == str(state_link)
+    assert not state_link.exists()
+    assert state_dir.exists()
+
+    assert mgr.delete_path("root-link", recursive=True) == str(root_link)
+    assert not root_link.exists()
+    assert ws.exists()

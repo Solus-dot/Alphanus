@@ -166,6 +166,21 @@ class WorkspaceManager:
         return str(target)
 
     def delete_path(self, path: str, recursive: bool = False) -> str:
+        raw = self._normalize_workspace_relative(path)
+        candidate = (self.workspace_root / raw) if not raw.is_absolute() else raw
+        candidate = Path(os.path.abspath(str(candidate)))
+        if not self._is_relative_to(candidate, self.workspace_root):
+            raise PermissionError("Write path escapes workspace root")
+
+        if candidate == self.workspace_root:
+            raise PermissionError("Deleting the workspace root is not allowed")
+        protected_dir = self.workspace_root / ".alphanus"
+        if self._is_relative_to(candidate, protected_dir):
+            raise PermissionError("Deleting .alphanus state is not allowed")
+        if candidate.is_symlink():
+            candidate.unlink()
+            return str(candidate)
+
         target = self._resolve_write_path(path)
         if not target.exists():
             raise FileNotFoundError(str(target))
