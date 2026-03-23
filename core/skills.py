@@ -14,8 +14,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from core.skill_loader import LoadedSkill, SkillStub, activate_skill, discover_skills, stub_to_manifest
 from core.memory import VectorMemory
-from core.skill_parser import SKILL_DOC, SkillManifest, extract_skill_doc, parse_agentskill_manifest
+from core.skill_parser import SkillManifest, extract_skill_doc
 from core.workspace import WorkspaceManager
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9+#._/-]{1,}")
@@ -227,6 +228,7 @@ class SkillRuntime:
         debug: bool = False,
     ) -> None:
         self.skills_dir = Path(skills_dir).resolve()
+        self.skill_roots = [self.skills_dir]
         self.workspace = workspace
         self.memory = memory
         self.config = config or {}
@@ -243,6 +245,8 @@ class SkillRuntime:
         self.generation = 0
 
         self.skills: Dict[str, SkillManifest] = {}
+        self.skill_stubs: Dict[str, SkillStub] = {}
+        self._loaded_skill_cache: Dict[str, LoadedSkill] = {}
         self._tool_registry: Dict[str, RegisteredTool] = {}
         self._list_skills_cache: Optional[Tuple[SkillManifest, ...]] = None
         self._enabled_skills_cache: Optional[Tuple[SkillManifest, ...]] = None
@@ -315,16 +319,23 @@ class SkillRuntime:
                     return value if isinstance(value, dict) else None
         return None
 
-    def _load_manifest(self, child: Path) -> Optional[SkillManifest]:
-        skill_doc = child / SKILL_DOC
-        if not skill_doc.exists():
-            if self.debug:
-                print(f"[skill] {child.name}: missing {SKILL_DOC}")
+    def _activate_skill(self, skill_id: str) -> Optional[LoadedSkill]:
+        loaded = self._loaded_skill_cache.get(skill_id)
+        if loaded is not None:
+            return loaded
+        stub = self.skill_stubs.get(skill_id)
+        if stub is None:
             return None
-        return parse_agentskill_manifest(child, skill_doc)
+        loaded = activate_skill(stub)
+        self._loaded_skill_cache[skill_id] = loaded
+        return loaded
 
     def _ensure_skill_prompt(self, manifest: SkillManifest) -> str:
         if manifest.prompt is not None:
+            return manifest.prompt
+        loaded = self._activate_skill(manifest.id)
+        if loaded is not None:
+            manifest.prompt = loaded.instructions_markdown
             return manifest.prompt
         if not manifest.doc_path:
             manifest.prompt = ""
@@ -354,6 +365,7 @@ class SkillRuntime:
         self._list_skills_cache = None
         self._enabled_skills_cache = None
         self._skill_catalog_cache = {}
+        self._loaded_skill_cache = {}
 
     def _register_tool(self, tool_name: str, manifest: SkillManifest, spec: Dict[str, Any], **extra: Any) -> bool:
         if tool_name in self._tool_registry:
@@ -396,20 +408,24 @@ class SkillRuntime:
         previous_enabled = {skill_id: skill.enabled for skill_id, skill in self.skills.items()}
         self.generation += 1
         self.skills = {}
+        self.skill_stubs = {}
         self._tool_registry = {}
         self._invalidate_skill_caches()
-        if not self.skills_dir.exists():
+        if not any(root.exists() for root in self.skill_roots):
             return
 
-        for child in sorted(self.skills_dir.iterdir(), key=lambda p: p.name):
-            if not child.is_dir():
-                continue
-
+        for stub in discover_skills(
+            self.skill_roots,
+            on_error=(
+                (lambda child, exc: print(f"[skill] failed to load {child.name}: {exc}"))
+                if self.debug
+                else None
+            ),
+        ):
             manifest: Optional[SkillManifest] = None
             try:
-                manifest = self._load_manifest(child)
-                if manifest is None:
-                    continue
+                manifest = stub_to_manifest(stub)
+                self.skill_stubs[manifest.id] = stub
 
                 if manifest.id in self.skills:
                     raise ValueError(f"Duplicate skill id '{manifest.id}'")
@@ -432,9 +448,9 @@ class SkillRuntime:
 
                 self.skills[manifest.id] = manifest
             except Exception as exc:
-                self._remove_skill_tools(manifest.id if manifest else child.name)
+                self._remove_skill_tools(manifest.id if manifest else stub.id)
                 if self.debug:
-                    print(f"[skill] failed to load {child.name}: {exc}")
+                    print(f"[skill] failed to load {stub.id}: {exc}")
 
     @staticmethod
     def _current_os_aliases() -> set[str]:

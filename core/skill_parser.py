@@ -116,6 +116,9 @@ class SkillManifest:
     available: bool = True
     availability_code: str = "ready"
     availability_reason: str = ""
+    frontmatter: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    bundled_files: List[str] = field(default_factory=list)
 
 
 def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool = False) -> SkillManifest:
@@ -259,4 +262,6 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         command_tools=command_tools,
         disable_model_invocation=disable_model_invocation,
         format="agentskills",
+        frontmatter=dict(frontmatter),
+        metadata=dict(metadata_raw),
     )
