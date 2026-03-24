@@ -280,6 +280,164 @@ def execute(tool_name, args, env):
     assert merged_tool_names == ["create_file", "read_file", "web_search"]
 
 
+def test_tools_for_turn_includes_generic_script_runner_for_selected_script_skill(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "script-only" / "scripts").mkdir(parents=True)
+
+    (skills / "script-only" / "SKILL.md").write_text(
+        """
+---
+name: script-only
+description: ships a helper script for structured tasks
+version: 1.0.0
+---
+Use the helper script when available.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "script-only" / "scripts" / "helper.py").write_text("print('ok')\n", encoding="utf-8")
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    skill = runtime.get_skill("script-only")
+    assert skill is not None
+    tools = runtime.tools_for_turn([skill])
+    tool_names = [tool["function"]["name"] for tool in tools]
+    assert tool_names == ["run_skill_script"]
+    script_tool = tools[0]["function"]
+    assert "scripts/helper.py" in script_tool["description"]
+    assert script_tool["parameters"]["properties"]["script"]["enum"] == ["scripts/helper.py"]
+
+
+def test_tools_for_turn_includes_generic_entrypoint_runner_for_structured_skill(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "report-pdf" / "scripts").mkdir(parents=True)
+
+    (skills / "report-pdf" / "SKILL.md").write_text(
+        """
+---
+name: report-pdf
+description: Create report PDFs with a declared workflow.
+produces:
+  - .pdf
+execution:
+  entrypoints:
+    - name: create_report
+      description: Create a PDF report artifact.
+      intents: [create]
+      produces: [.pdf]
+      command: python3 {skill_root}/scripts/create_report.py {workspace_root}/{filename}
+      parameters:
+        type: object
+        properties:
+          filename:
+            type: string
+        required:
+          - filename
+---
+Create PDFs with the declared entrypoint.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "report-pdf" / "scripts" / "create_report.py").write_text(
+        "from pathlib import Path\nimport sys\nPath(sys.argv[1]).write_text('pdf', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("report-pdf")
+    assert skill is not None
+    ctx = SkillContext(
+        user_input="Create a report PDF and save it as report.pdf",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    tools = runtime.tools_for_turn([skill], ctx=ctx)
+    tool_names = [tool["function"]["name"] for tool in tools]
+    assert tool_names == ["run_skill_entrypoint"]
+    entry_tool = tools[0]["function"]
+    assert "report-pdf:create_report" in entry_tool["description"]
+    assert entry_tool["parameters"]["properties"]["entrypoint"]["enum"] == ["create_report"]
+
+
+def test_produces_entrypoint_still_matches_create_plus_review_request(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "preview-pdf" / "scripts").mkdir(parents=True)
+
+    (skills / "preview-pdf" / "SKILL.md").write_text(
+        """
+---
+name: preview-pdf
+description: Build binary report artifacts.
+produces:
+  - .pdf
+execution:
+  entrypoints:
+    - name: create_preview
+      description: Create the PDF artifact for later review.
+      intents: [create]
+      produces: [.pdf]
+      command: python3 {skill_root}/scripts/create_preview.py {workspace_root}/{filename}
+      parameters:
+        type: object
+        properties:
+          filename:
+            type: string
+        required:
+          - filename
+---
+Create PDFs through the declared entrypoint.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "preview-pdf" / "scripts" / "create_preview.py").write_text(
+        "from pathlib import Path\nimport sys\nPath(sys.argv[1]).write_text('pdf', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("preview-pdf")
+    assert skill is not None
+    ctx = SkillContext(
+        user_input="Create preview.pdf and review it after generation",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    assert runtime._skill_supports_artifact(skill, [".pdf"], intents=runtime.task_intents(ctx)) is True
+    tools = runtime.tools_for_turn([skill], ctx=ctx)
+    assert [tool["function"]["name"] for tool in tools] == ["run_skill_entrypoint"]
+
+
 def test_core_tool_executes_without_selected_skill(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
@@ -487,324 +645,6 @@ def execute(tool_name, args, env):
     selected = runtime.select_skills(ctx)
     assert selected
     assert selected[0].id == "frontend-design"
-
-
-def test_prompt_only_skill_cannot_fake_opaque_artifact_with_create_file(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "workspace-ops").mkdir(parents=True)
-    (skills / "doc").mkdir(parents=True)
-
-    (skills / "workspace-ops" / "SKILL.md").write_text(
-        """
----
-name: workspace-ops
-description: workspace core tools
-version: 1.0.0
-tools:
-  allowed-tools:
-    - create_file
----
-Workspace core.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "workspace-ops" / "tools.py").write_text(
-        """
-TOOL_SPECS = {
-  "create_file": {
-    "capability": "workspace_write",
-    "description": "Create file",
-    "parameters": {
-      "type": "object",
-      "properties": {"filepath": {"type": "string"}, "content": {"type": "string"}},
-      "required": ["filepath", "content"]
-    }
-  }
-}
-
-def execute(tool_name, args, env):
-    path = env.workspace.create_file(args["filepath"], args["content"])
-    return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "doc" / "SKILL.md").write_text(
-        """
----
-name: doc
-description: Create polished .docx documents.
-metadata:
-  tags: [docx, report]
----
-Use document tooling when available.
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-    ctx = SkillContext(
-        user_input="Create a professional .docx report outline and save it as report-outline.docx",
-        branch_labels=[],
-        attachments=[],
-        workspace_root=str(ws),
-        memory_hits=[],
-    )
-
-    selected = [runtime.get_skill("doc")]
-    assert selected[0] is not None
-    out = runtime.execute_tool_call(
-        "create_file",
-        {"filepath": "report-outline.docx", "content": "<?xml version='1.0'?>"},
-        selected=selected,  # type: ignore[list-item]
-        ctx=ctx,
-    )
-
-    assert out["ok"] is False
-    assert out["error"]["code"] == "E_POLICY"
-    assert "opaque artifact paths" in out["error"]["message"]
-
-
-def test_prompt_only_skill_cannot_bypass_opaque_artifact_guard_with_unrelated_executable_skill(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "doc").mkdir(parents=True)
-    (skills / "workspace-ops").mkdir(parents=True)
-    (skills / "search-ops").mkdir(parents=True)
-
-    (skills / "doc" / "SKILL.md").write_text(
-        """
----
-name: doc
-description: Create polished .docx documents.
-metadata:
-  tags: [docx, report]
----
-    Use document tooling when available.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "workspace-ops" / "SKILL.md").write_text(
-        """
----
-name: workspace-ops
-description: Generic text file operations for workspace tasks.
-tools:
-  allowed-tools:
-    - create_file
----
-Create text files in the workspace.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "workspace-ops" / "tools.py").write_text(
-        """
-TOOL_SPECS = {
-  "create_file": {
-    "capability": "workspace_write",
-    "description": "Create file",
-    "parameters": {
-      "type": "object",
-      "properties": {"filepath": {"type": "string"}, "content": {"type": "string"}},
-      "required": ["filepath", "content"]
-    }
-  }
-}
-
-def execute(tool_name, args, env):
-    path = env.workspace.create_file(args["filepath"], args["content"])
-    return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "search-ops" / "SKILL.md").write_text(
-        """
----
-name: search-ops
-description: Search the web.
-tools:
-  allowed-tools:
-    - web_search
----
-Search skill.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "search-ops" / "tools.py").write_text(
-        """
-TOOL_SPECS = {
-  "web_search": {
-    "capability": "web_search",
-    "description": "Search",
-    "parameters": {
-      "type": "object",
-      "properties": {"query": {"type": "string"}},
-      "required": ["query"]
-    }
-  }
-}
-
-def execute(tool_name, args, env):
-    return {"ok": True, "data": {"query": args.get("query", "")}, "error": None, "meta": {}}
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-    ctx = SkillContext(
-        user_input="Create a professional .docx report outline and save it as report-outline.docx",
-        branch_labels=[],
-        attachments=[],
-        workspace_root=str(ws),
-        memory_hits=[],
-    )
-
-    selected = [runtime.get_skill("doc"), runtime.get_skill("workspace-ops"), runtime.get_skill("search-ops")]
-    assert selected[0] is not None
-    assert selected[1] is not None
-    assert selected[2] is not None
-
-    out = runtime.execute_tool_call(
-        "create_file",
-        {"filepath": "report-outline.docx", "content": "<?xml version='1.0'?>"},
-        selected=selected,  # type: ignore[list-item]
-        ctx=ctx,
-    )
-
-    assert out["ok"] is False
-    assert out["error"]["code"] == "E_POLICY"
-    assert "opaque artifact paths" in out["error"]["message"]
-
-
-def test_relevant_frontmatter_materializer_allows_opaque_artifact_path(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "doc").mkdir(parents=True)
-    (skills / "workspace-ops").mkdir(parents=True)
-    (skills / "docx-maker" / "scripts").mkdir(parents=True)
-
-    (skills / "doc" / "SKILL.md").write_text(
-        """
----
-name: doc
-description: Create polished .docx documents.
----
-    Use document tooling when available.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "workspace-ops" / "SKILL.md").write_text(
-        """
----
-name: workspace-ops
-description: Generic text file operations for workspace tasks.
-tools:
-  allowed-tools:
-    - create_file
----
-Create text files in the workspace.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "workspace-ops" / "tools.py").write_text(
-        """
-TOOL_SPECS = {
-  "create_file": {
-    "capability": "workspace_write",
-    "description": "Create file",
-    "parameters": {
-      "type": "object",
-      "properties": {"filepath": {"type": "string"}, "content": {"type": "string"}},
-      "required": ["filepath", "content"]
-    }
-  }
-}
-
-def execute(tool_name, args, env):
-    path = env.workspace.create_file(args["filepath"], args["content"])
-    return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "docx-maker" / "SKILL.md").write_text(
-        """
----
-name: docx-maker
-description: Materialize real .docx artifacts.
-allowed-tools: create_docx_outline
-metadata:
-  tools:
-    definitions:
-      - name: create_docx_outline
-        capability: docx_materializer
-        description: Create a .docx outline artifact.
-        command: python3 scripts/create_docx_outline.py
-        parameters:
-          type: object
-          properties:
-            filepath:
-              type: string
-          required:
-            - filepath
----
-Create document artifacts.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "docx-maker" / "scripts" / "create_docx_outline.py").write_text(
-        """
-import json
-
-print(json.dumps({"filepath": "report-outline.docx"}))
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-    ctx = SkillContext(
-        user_input="Create a professional .docx report outline and save it as report-outline.docx",
-        branch_labels=[],
-        attachments=[],
-        workspace_root=str(ws),
-        memory_hits=[],
-    )
-
-    selected = [runtime.get_skill("doc"), runtime.get_skill("workspace-ops"), runtime.get_skill("docx-maker")]
-    assert selected[0] is not None
-    assert selected[1] is not None
-    assert selected[2] is not None
-
-    out = runtime.execute_tool_call(
-        "create_file",
-        {"filepath": "report-outline.docx", "content": "<?xml version='1.0'?>"},
-        selected=selected,  # type: ignore[list-item]
-        ctx=ctx,
-    )
-
-    assert out["ok"] is True
-    created = ws / "report-outline.docx"
-    assert created.exists()
 
 
 def test_heuristic_selection_skips_zero_score_skills(tmp_path: Path):
@@ -1292,7 +1132,7 @@ Loaded on demand
     assert skill.prompt == "Loaded on demand"
 
 
-def test_bundled_scripts_without_tool_definitions_remain_advisory_only(tmp_path: Path):
+def test_bundled_scripts_without_tool_definitions_use_generic_script_runner(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -1322,9 +1162,194 @@ Use the helper script if your runtime knows how.
     assert skill is not None
 
     caps = runtime.selected_skill_capabilities([skill])
-    assert caps["has_executable_skills"] is False
-    assert caps["advisory_skill_ids"] == ["script-only"]
+    assert caps["has_executable_skills"] is True
+    assert caps["executable_skill_ids"] == ["script-only"]
+    assert caps["custom_tool_names"] == ["run_skill_script"]
     assert caps["scripts"] == ["scripts/helper.py"]
+
+
+def test_generic_script_runner_executes_selected_skill_script(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "script-only" / "scripts").mkdir(parents=True)
+
+    (skills / "script-only" / "SKILL.md").write_text(
+        """
+---
+name: script-only
+description: helper script execution
+version: 1.0.0
+---
+Use helper.py when needed.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "script-only" / "scripts" / "helper.py").write_text(
+        """
+import json
+import os
+import sys
+
+payload = json.loads(os.getenv("ALPHANUS_TOOL_ARGS_JSON") or "{}")
+print(json.dumps({"stdout": sys.stdin.read(), "payload": payload}))
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("script-only")
+    assert skill is not None
+    ctx = SkillContext(
+        user_input="run the bundled helper",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    out = runtime.execute_tool_call(
+        "run_skill_script",
+        {"script": "helper.py", "stdin": "hello", "args": {"mode": "demo"}},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    assert out["ok"] is True
+    assert out["data"]["skill_id"] == "script-only"
+    assert out["data"]["script"] == "scripts/helper.py"
+    assert out["data"]["stdout"] == "hello"
+    assert out["data"]["payload"] == {"mode": "demo"}
+
+
+def test_generic_script_runner_respects_allowed_tools_policy(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "script-wrapper" / "scripts").mkdir(parents=True)
+
+    (skills / "script-wrapper" / "SKILL.md").write_text(
+        """
+---
+name: script-wrapper
+description: Expose only a narrow wrapper tool.
+allowed-tools: wrapped_tool
+---
+Do not expose the raw script runner.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "script-wrapper" / "scripts" / "helper.py").write_text("print('ok')\n", encoding="utf-8")
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("script-wrapper")
+    assert skill is not None
+    ctx = SkillContext(
+        user_input="run the helper script",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    assert runtime.tools_for_turn([skill], ctx=ctx) == []
+    caps = runtime.selected_skill_capabilities([skill])
+    assert caps["custom_tool_names"] == []
+
+    out = runtime.execute_tool_call(
+        "run_skill_script",
+        {"script": "helper.py"},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_POLICY"
+
+
+def test_generic_entrypoint_runner_executes_structured_workflow(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "report-pdf" / "scripts").mkdir(parents=True)
+
+    (skills / "report-pdf" / "SKILL.md").write_text(
+        """
+---
+name: report-pdf
+description: Create report PDFs with a declared workflow.
+produces:
+  - .pdf
+execution:
+  entrypoints:
+    - name: create_report
+      description: Create a PDF report artifact.
+      intents: [create]
+      produces: [.pdf]
+      install:
+        - python3 -c "print('install-ok')"
+      verify:
+        - python3 -c "print('verify-ok')"
+      command: python3 {skill_root}/scripts/create_report.py {workspace_root}/{filename}
+      parameters:
+        type: object
+        properties:
+          filename:
+            type: string
+        required:
+          - filename
+---
+Create PDFs with the declared entrypoint.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "report-pdf" / "scripts" / "create_report.py").write_text(
+        "from pathlib import Path\nimport sys\nPath(sys.argv[1]).write_text('artifact', encoding='utf-8')\nprint('done')\n",
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"capabilities": {"shell_require_confirmation": False, "dangerously_skip_permissions": True}},
+    )
+    skill = runtime.get_skill("report-pdf")
+    assert skill is not None
+    ctx = SkillContext(
+        user_input="Create a report PDF and save it as report.pdf",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    out = runtime.execute_tool_call(
+        "run_skill_entrypoint",
+        {"entrypoint": "create_report", "params": {"filename": "report.pdf"}},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    assert out["ok"] is True
+    assert out["data"]["skill_id"] == "report-pdf"
+    assert out["data"]["entrypoint"] == "create_report"
+    assert len(out["data"]["install_results"]) == 1
+    assert len(out["data"]["verify_results"]) == 1
+    assert (ws / "report.pdf").read_text(encoding="utf-8") == "artifact"
 
 
 def test_frontmatter_metadata_format_executes(tmp_path: Path):

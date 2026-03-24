@@ -111,6 +111,18 @@ def test_shell_command_nonzero_exit_is_reported_as_failure(tmp_path: Path):
     assert res["data"]["returncode"] == 7
 
 
+def test_shell_command_allows_semicolon_inside_quoted_python_arg(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("python3 -c \"import sys; print('ok')\"")
+    assert res["ok"] is True
+    assert res["data"]["stdout"].strip() == "ok"
+
+
 def test_delete_workspace_root_denied_for_dot_path(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"

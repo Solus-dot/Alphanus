@@ -758,19 +758,21 @@ class Agent:
         snapshot: SkillRoutingSnapshot,
         stop_event,
     ) -> Optional[List[Any]]:
+        skills_cfg = self.config.get("skills", {}) if isinstance(self.config, dict) else {}
+        configured_limit = int(skills_cfg.get("max_active_skills", getattr(self.skill_runtime, "max_active_skills", 2)))
+        limit = configured_limit if configured_limit > 0 else 2
+        candidate_items = self.skill_runtime.propose_skill_candidates(ctx, top_n=max(limit * 3, 6))
         enabled = snapshot.skills
         if not enabled:
             return []
 
-        skills_cfg = self.config.get("skills", {}) if isinstance(self.config, dict) else {}
-        configured_limit = int(skills_cfg.get("max_active_skills", getattr(self.skill_runtime, "max_active_skills", 2)))
-        limit = configured_limit if configured_limit > 0 else 2
         catalog = snapshot.catalog
+        heuristic_fallback = self.skill_runtime.rerank_skill_candidates(ctx, candidate_items, limit)
         use_recent_hint = self._should_use_recent_routing_hint(ctx)
         routing_system = (
             "You are selecting local skills for the next assistant turn.\n"
             "Choose the smallest set of skills needed for the user's request.\n"
-            "Use the skill descriptions, tags, and available tool names to infer intent.\n"
+            "Use the skill descriptions, tags, produced artifact hints, and available tool names to infer intent.\n"
             f"Return strict JSON only in the form {{\"skills\": [\"skill-id\"]}} with at most {limit} ids.\n"
             "Return an empty list when no skill is needed.\n"
             "Do not explain your choice."
@@ -785,6 +787,11 @@ class Agent:
             user_content += f"\n\nImmediate prior exchange:\n{ctx.recent_routing_hint}"
         if use_recent_hint and ctx.sticky_skill_ids:
             user_content += f"\n\nLikely carry-over skills for this confirmation:\n{', '.join(ctx.sticky_skill_ids[:limit])}"
+        if candidate_items:
+            user_content += (
+                "\n\nHeuristic shortlist (useful but not exhaustive):\n"
+                + "\n".join(f"- {item.skill.id}" for item in candidate_items[: min(len(candidate_items), 8)])
+            )
         user_content += f"\n\nAvailable skills:\n{catalog}"
         routing_messages = [
             {"role": "system", "content": routing_system},
@@ -794,13 +801,17 @@ class Agent:
         try:
             result = self._call_with_retry(payload, stop_event, None, pass_id="skill_route")
         except Exception:
+            if heuristic_fallback:
+                return heuristic_fallback
             return self.skill_runtime.skills_by_ids(ctx.sticky_skill_ids[:limit]) if use_recent_hint and ctx.sticky_skill_ids else None
         if result.finish_reason == "cancelled":
             return None
         skill_ids = self._parse_skill_route(result.content, [skill.id for skill in enabled], limit)
         if skill_ids is None:
+            if heuristic_fallback:
+                return heuristic_fallback
             return self.skill_runtime.skills_by_ids(ctx.sticky_skill_ids[:limit]) if use_recent_hint and ctx.sticky_skill_ids else None
-        return self.skill_runtime.skills_by_ids(skill_ids)
+        return self.skill_runtime.expand_selected_skills(ctx, self.skill_runtime.skills_by_ids(skill_ids))
 
     def _select_skills(
         self,
@@ -936,10 +947,13 @@ class Agent:
     def _sanitize_final_content(text: str) -> str:
         if not text:
             return ""
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
         text = re.sub(r"<tool_call>.*?</tool_call>", "", text, flags=re.IGNORECASE | re.DOTALL)
         kept: List[str] = []
         for line in text.splitlines():
             stripped = line.strip()
+            if re.fullmatch(r"</?think>", stripped, flags=re.IGNORECASE):
+                continue
             if re.fullmatch(r"</?tool_call>", stripped, flags=re.IGNORECASE):
                 continue
             if re.fullmatch(r"<function=[^>]+>", stripped, flags=re.IGNORECASE):
@@ -1942,6 +1956,8 @@ class Agent:
                     "- If a tool can safely operate on the explicit path, pass that path directly.\n"
                     "- If the task requires running a command in that other directory, use a single shell command that targets the explicit path instead of assuming the current workspace."
                 )
+            shell_workflow_skills = self.skill_runtime.selected_shell_workflow_skills(state.selected, state.ctx)
+            allow_shell_workflow = bool(shell_workflow_skills)
             if state.prefer_local_workspace_tools:
                 system_content += (
                     "\n\nLocal workspace tool rule:\n"
@@ -1950,13 +1966,39 @@ class Agent:
                     "- Prefer create_directory for folder creation.\n"
                     "- For multi-file scaffolds or programs, prefer create_file one file at a time so progress stays visible in the UI.\n"
                     "- Use create_files only when batching is acceptable and per-file progress is not important.\n"
-                    "- Do not use shell_command to create folders or inspect local files.\n"
                     "- Do not use web_search, fetch_url, open_url, or play_youtube for local workspace file tasks."
+                )
+                if allow_shell_workflow:
+                    system_content += (
+                        "\n- shell_command is allowed only for the documented selected-skill workflow required by this artifact task.\n"
+                        f"- Skills requiring shell workflow here: {', '.join(shell_workflow_skills[:4])}\n"
+                        "- Use documented shell/python commands from the selected skill to install missing dependencies and create the requested artifact.\n"
+                        "- Each shell_command must be exactly one plain command.\n"
+                        "- Do not use shell control operators, chaining, or redirection fallbacks such as `||`, `&&`, `;`, `|`, or `2>&1`.\n"
+                        "- Do not use run_checks for dependency probing or installation on this task.\n"
+                        "- Do not use python -c import probes before trying the documented install workflow.\n"
+                        "- If a dependency is required or uncertain, run the skill's documented install command first after approval.\n"
+                        "- Do not create helper .py files until required dependencies are installed.\n"
+                        "- Do not use shell_command for generic local file inspection or folder creation."
+                    )
+                else:
+                    system_content += "\n- Do not use shell_command to create folders or inspect local files."
+            requested_exts = self.skill_runtime.requested_artifact_extensions(state.ctx)
+            selected_materializers = self.skill_runtime.selected_artifact_materializers(state.selected, state.ctx)
+            if requested_exts and "create" in self.skill_runtime.task_intents(state.ctx) and not selected_materializers:
+                system_content += (
+                    "\n\nOpaque artifact capability rule:\n"
+                    f"- The request asks for a real opaque artifact: {', '.join(requested_exts[:3])}\n"
+                    "- None of the selected skills expose an executable creation path for that artifact in this runtime.\n"
+                    "- Do not invent script names.\n"
+                    "- Do not use shell_command or run_checks to probe or install dependencies for this local workspace file task.\n"
+                    "- Do not attempt create_file/create_files as a surrogate for the opaque artifact.\n"
+                    "- Say directly that no executable creation path is available."
                 )
             system_messages = [{"role": "system", "content": system_content}]
 
             model_messages = self.context_mgr.prune(system_messages + state.dynamic_history, self.context_budget_max_tokens)
-            tools = self.skill_runtime.tools_for_turn(state.selected)
+            tools = self.skill_runtime.tools_for_turn(state.selected, ctx=state.ctx)
             payload = self._build_payload(model_messages, thinking=thinking, tools=tools or None)
 
             try:
@@ -2092,35 +2134,38 @@ class Agent:
                         "open_url",
                         "play_youtube",
                     }:
-                        result = {
-                            "ok": False,
-                            "data": None,
-                            "error": {
-                                "code": "E_POLICY",
-                                "message": f"{call.name} is not allowed for local workspace file tasks; use workspace tools instead.",
-                            },
-                            "meta": {},
-                        }
-                        self._emit(
-                            on_event,
-                            {
-                                "type": "tool_result",
+                        if call.name == "shell_command" and allow_shell_workflow:
+                            pass
+                        else:
+                            result = {
+                                "ok": False,
+                                "data": None,
+                                "error": {
+                                    "code": "E_POLICY",
+                                    "message": f"{call.name} is not allowed for local workspace file tasks; use workspace tools instead.",
+                                },
+                                "meta": {},
+                            }
+                            self._emit(
+                                on_event,
+                                {
+                                    "type": "tool_result",
+                                    "name": call.name,
+                                    "id": call.id,
+                                    "result": result,
+                                },
+                            )
+                            tool_message = {
+                                "role": "tool",
+                                "tool_call_id": call.id,
                                 "name": call.name,
-                                "id": call.id,
-                                "result": result,
-                            },
-                        )
-                        tool_message = {
-                            "role": "tool",
-                            "tool_call_id": call.id,
-                            "name": call.name,
-                            "content": self._safe_json_dumps(self._tool_result_for_history(call.name, result)),
-                        }
-                        state.dynamic_history.append(tool_message)
-                        state.skill_exchanges.append(tool_message)
-                        self._record_tool_effects(state, call, result)
-                        all_tool_success = False
-                        continue
+                                "content": self._safe_json_dumps(self._tool_result_for_history(call.name, result)),
+                            }
+                            state.dynamic_history.append(tool_message)
+                            state.skill_exchanges.append(tool_message)
+                            self._record_tool_effects(state, call, result)
+                            all_tool_success = False
+                            continue
 
                     if state.search_mode and call.name == "fetch_url":
                         raw_url = str(call.arguments.get("url", "")).strip()
@@ -2255,8 +2300,9 @@ class Agent:
                     )
                 continue
 
-            final = stream_result.content
-            if self._contains_tool_markup(final):
+            raw_final = stream_result.content
+            final = self._sanitize_final_content(raw_final)
+            if self._contains_tool_markup(raw_final):
                 finalized = self._finalize_turn(
                     system_content,
                     state,

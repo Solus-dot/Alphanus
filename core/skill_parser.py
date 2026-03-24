@@ -91,6 +91,21 @@ class ToolCommandDef:
 
 
 @dataclass(slots=True)
+class SkillEntrypointDef:
+    name: str
+    description: str
+    tool: str
+    command: str
+    parameters: Dict[str, Any]
+    intents: List[str] = field(default_factory=list)
+    produces: List[str] = field(default_factory=list)
+    install: List[str] = field(default_factory=list)
+    verify: List[str] = field(default_factory=list)
+    timeout_s: int = 30
+    cwd: str = "workspace"
+
+
+@dataclass(slots=True)
 class SkillManifest:
     id: str
     name: str
@@ -107,9 +122,12 @@ class SkillManifest:
     hooks: Optional[object] = None
     tags: List[str] = field(default_factory=list)
     categories: List[str] = field(default_factory=list)
+    produces: List[str] = field(default_factory=list)
+    execution_dependencies: Dict[str, List[str]] = field(default_factory=dict)
     allowed_tools: List[str] = field(default_factory=list)
     required_tools: List[str] = field(default_factory=list)
     command_tools: List[ToolCommandDef] = field(default_factory=list)
+    entrypoints: List[SkillEntrypointDef] = field(default_factory=list)
     disable_model_invocation: bool = False
     format: str = "agentskills"
     source_tier: str = "bundled"
@@ -147,6 +165,14 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
 
     categories = _dedupe(_as_str_list(frontmatter.get("categories") or metadata_raw.get("categories")))
     tags = _as_str_list(frontmatter.get("tags") or metadata_raw.get("tags"))
+    produces = _dedupe(
+        _as_str_list(
+            frontmatter.get("produces")
+            or frontmatter.get("artifacts")
+            or metadata_raw.get("produces")
+            or metadata_raw.get("artifacts")
+        )
+    )
     compatibility = str(frontmatter.get("compatibility") or metadata_raw.get("compatibility") or "").strip()
 
     requirements_raw = frontmatter.get("requirements") or metadata_raw.get("requirements") or {}
@@ -163,6 +189,82 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
             or requirements_raw.get("bins")
         ),
     }
+
+    execution_raw = frontmatter.get("execution") or metadata_raw.get("execution") or {}
+    if execution_raw is None:
+        execution_raw = {}
+    if not isinstance(execution_raw, dict):
+        raise ValueError("SKILL.md execution must be a mapping")
+    execution_dependencies_raw = execution_raw.get("dependencies") or {}
+    if execution_dependencies_raw is None:
+        execution_dependencies_raw = {}
+    if not isinstance(execution_dependencies_raw, dict):
+        raise ValueError("SKILL.md execution.dependencies must be a mapping")
+    execution_dependencies = {
+        "python": _as_str_list(execution_dependencies_raw.get("python") or execution_dependencies_raw.get("pip")),
+        "commands": _as_str_list(
+            execution_dependencies_raw.get("commands")
+            or execution_dependencies_raw.get("binaries")
+            or execution_dependencies_raw.get("system")
+        ),
+    }
+    global_install = _as_str_list(
+        execution_raw.get("install")
+        or execution_raw.get("install_commands")
+        or execution_raw.get("installs")
+    )
+    global_verify = _as_str_list(
+        execution_raw.get("verify")
+        or execution_raw.get("verify_commands")
+        or execution_raw.get("preflight")
+    )
+    raw_entrypoints = execution_raw.get("entrypoints") or []
+    if raw_entrypoints and not isinstance(raw_entrypoints, list):
+        raise ValueError("SKILL.md execution.entrypoints must be a list")
+    entrypoints: List[SkillEntrypointDef] = []
+    for idx, raw in enumerate(raw_entrypoints):
+        if not isinstance(raw, dict):
+            raise ValueError(f"SKILL.md execution.entrypoints[{idx}] must be a mapping")
+        name = str(raw.get("name", "")).strip()
+        command = str(raw.get("command", "")).strip()
+        if not name:
+            raise ValueError(f"SKILL.md execution.entrypoints[{idx}] missing name")
+        if not command:
+            raise ValueError(f"SKILL.md execution.entrypoints[{idx}] missing command")
+        tool = str(raw.get("tool", "shell_command")).strip() or "shell_command"
+        if tool != "shell_command":
+            raise ValueError(f"SKILL.md execution.entrypoints[{idx}] unsupported tool '{tool}'")
+        description = str(raw.get("description", "")).strip() or name
+        parameters = raw.get("parameters")
+        if parameters is None:
+            parameters = {"type": "object", "properties": {}, "required": []}
+        if not isinstance(parameters, dict):
+            raise ValueError(f"SKILL.md execution.entrypoints[{idx}] parameters must be a mapping")
+        timeout_s = int(raw.get("timeout-s", 30))
+        if timeout_s <= 0:
+            raise ValueError(f"SKILL.md execution.entrypoints[{idx}] timeout-s must be > 0")
+        cwd = str(raw.get("cwd", "workspace")).strip().lower() or "workspace"
+        if cwd not in {"workspace", "skill"}:
+            raise ValueError(f"SKILL.md execution.entrypoints[{idx}] cwd must be 'workspace' or 'skill'")
+        intents = _as_str_list(raw.get("intents") or raw.get("intent") or ["general"])
+        produces_for_entry = _dedupe(_as_str_list(raw.get("produces") or raw.get("artifacts") or produces))
+        install = _as_str_list(raw.get("install") or raw.get("install_commands") or global_install)
+        verify = _as_str_list(raw.get("verify") or raw.get("verify_commands") or raw.get("preflight") or global_verify)
+        entrypoints.append(
+            SkillEntrypointDef(
+                name=name,
+                description=description,
+                tool=tool,
+                command=command,
+                parameters=parameters,
+                intents=intents,
+                produces=produces_for_entry,
+                install=install,
+                verify=verify,
+                timeout_s=timeout_s,
+                cwd=cwd,
+            )
+        )
 
     tools_cfg_raw = frontmatter.get("tools", {})
     if tools_cfg_raw is None:
@@ -257,9 +359,12 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         hooks_path=child / "hooks.py",
         tags=tags,
         categories=categories,
+        produces=produces,
+        execution_dependencies=execution_dependencies,
         allowed_tools=allowed_tools,
         required_tools=required_tools,
         command_tools=command_tools,
+        entrypoints=entrypoints,
         disable_model_invocation=disable_model_invocation,
         format="agentskills",
         frontmatter=dict(frontmatter),

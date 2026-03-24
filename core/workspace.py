@@ -33,7 +33,7 @@ DANGEROUS_SHELL_PATTERNS = [
     r"\bchown\s+-R\s+/",
 ]
 
-METACHAR_BLOCKLIST = ["&&", "||", ";", "`", "$(", "\n", "\r"]
+METACHAR_BLOCKLIST = ["&&", "||", "\n", "\r"]
 MAX_TOOL_TEXT_BYTES = 20000
 SAFE_CHECK_RUNNERS = {
     "pytest",
@@ -468,6 +468,14 @@ class WorkspaceManager:
         for token in METACHAR_BLOCKLIST:
             if token in trimmed:
                 raise PermissionError(f"Command rejected by shell metacharacter policy: {token}")
+        try:
+            argv = shlex.split(trimmed, posix=True)
+        except ValueError as exc:
+            raise PermissionError(f"Command could not be parsed safely: {exc}") from exc
+        if not argv:
+            raise PermissionError("Empty command is not allowed")
+        if any(part in {"&&", "||", ";", "|"} for part in argv):
+            raise PermissionError("Command rejected by shell metacharacter policy")
         for pattern in DANGEROUS_SHELL_PATTERNS:
             if re.search(pattern, trimmed, flags=re.IGNORECASE):
                 raise PermissionError("Command matches blocked dangerous pattern")

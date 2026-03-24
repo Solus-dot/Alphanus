@@ -1291,6 +1291,46 @@ def test_finalization_falls_back_to_sources_when_markup_repeats(mocker, runtime:
     assert len(chat_reqs) == 2
 
 
+def test_finalization_strips_think_tags_from_model_output(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"<think>internal</think>\\n\\nVisible answer"}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "say visible answer"}],
+        user_input="say visible answer",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert "<think>" not in result.content
+    assert "</think>" not in result.content
+    assert "Visible answer" in result.content
+
+
 def test_main_pass_tool_markup_forces_clean_finalization(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
@@ -1812,6 +1852,76 @@ def execute(tool_name, args, env):
     )
 
     assert result.status == "done"
+
+
+def test_model_skill_router_prompt_keeps_full_catalog_available(mocker, runtime: SkillRuntime):
+    hidden_skill = runtime.skills_dir / "hidden-tool"
+    hidden_skill.mkdir(parents=True)
+    (hidden_skill / "SKILL.md").write_text(
+        """
+---
+name: hidden-tool
+description: General build helper.
+allowed-tools: artifact_forge
+---
+Use artifact_forge when needed.
+""".strip(),
+        encoding="utf-8",
+    )
+    (hidden_skill / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "artifact_forge": {
+    "capability": "workspace_write",
+    "description": "Forge an artifact",
+    "parameters": {
+      "type": "object",
+      "properties": {"filepath": {"type": "string"}, "content": {"type": "string"}},
+      "required": ["filepath", "content"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    path = env.workspace.create_file(args["filepath"], args["content"])
+    return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+    runtime.load_skills()
+    runtime.config = {"skills": {"selection_mode": "model", "max_active_skills": 2}}
+
+    agent = Agent({"agent": {}}, runtime)
+    ctx = SkillContext(
+        user_input="make an artifact for me",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(runtime.workspace.workspace_root),
+        memory_hits=[],
+    )
+    snapshot = agent._get_skill_snapshot()
+
+    shortlist = [type("C", (), {"skill": type("S", (), {"id": "workspace-ops"})()})()]
+    mocker.patch.object(runtime, "propose_skill_candidates", return_value=shortlist)
+    mocker.patch.object(runtime, "rerank_skill_candidates", return_value=[])
+
+    captured = {}
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        captured["payload"] = payload
+        return type("R", (), {"finish_reason": "stop", "content": '{"skills":[]}'})()
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+
+    selected = agent._route_skills_with_model(ctx, snapshot, threading.Event())
+
+    assert selected == []
+    user_content = captured["payload"]["messages"][1]["content"]
+    assert "Heuristic shortlist (useful but not exhaustive):" in user_content
+    assert "- workspace-ops" in user_content
+    assert "Available skills:" in user_content
+    assert "hidden-tool" in user_content
+    assert "artifact_forge" in user_content
 
 
 def test_model_skill_router_respects_explicit_empty_selection(mocker, runtime: SkillRuntime):
