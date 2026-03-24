@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import pytest
 
 from core.conv_tree import ConvTree
 from core.sessions import SessionStore
@@ -42,23 +45,34 @@ def test_save_tree_roundtrip_preserves_branching_state(tmp_path: Path) -> None:
 
 
 def test_import_tree_creates_new_active_session(tmp_path: Path) -> None:
-    export_path = tmp_path / "importable.json"
+    store = SessionStore(tmp_path, tmp_path / "sessions")
+    original = store.bootstrap()
     tree = ConvTree()
     turn = tree.add_turn("hello")
     tree.complete_turn(turn.id, "world")
-    tree.save(str(export_path))
-
-    store = SessionStore(tmp_path, tmp_path / "sessions")
-    original = store.bootstrap()
+    export_path = store.export_session_tree("Importable Session", tree)
     imported = store.import_tree(export_path)
 
     summaries = store.list_sessions()
 
     assert imported.id != original.id
-    assert imported.title == "importable"
+    assert imported.title == "Importable Session"
     imported_summary = next(summary for summary in summaries if summary.id == imported.id)
     assert imported_summary.is_active is True
     assert imported.tree.nodes[turn.id].assistant_content == "world"
+
+
+def test_import_tree_rejects_legacy_raw_tree_exports(tmp_path: Path) -> None:
+    legacy_export = tmp_path / "legacy-export.json"
+    tree = ConvTree()
+    turn = tree.add_turn("hello")
+    tree.complete_turn(turn.id, "world")
+    legacy_export.write_text(json.dumps(tree.to_dict()), encoding="utf-8")
+
+    store = SessionStore(tmp_path, tmp_path / "sessions")
+
+    with pytest.raises(ValueError, match="missing 'tree'"):
+        store.import_tree(legacy_export)
 
 
 def test_export_roundtrip_uses_workspace_exports_folder(tmp_path: Path) -> None:

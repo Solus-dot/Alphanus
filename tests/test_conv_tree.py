@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from core.conv_tree import ConvTree
 
 
@@ -110,27 +108,23 @@ def test_history_messages_refresh_when_switching_current_branch():
     assert right_msgs[-1]["content"] == "right-done"
 
 
-def test_save_load_roundtrip(tmp_path: Path):
+def test_dict_roundtrip_preserves_cancelled_turn_state():
     tree = ConvTree()
     turn = tree.add_turn("hello")
     tree.cancel_turn(turn.id, "partial")
 
-    path = tmp_path / "tree.json"
-    tree.save(str(path))
-    loaded = ConvTree.load(str(path))
+    loaded = ConvTree.from_dict(tree.to_dict())
 
     assert loaded.current_id == tree.current_id
     assert loaded.nodes.keys() == tree.nodes.keys()
     assert "[interrupted]" in (loaded.nodes[turn.id].assistant_content or "")
 
 
-def test_save_load_roundtrip_preserves_pending_branch_state(tmp_path: Path):
+def test_dict_roundtrip_preserves_pending_branch_state():
     tree = ConvTree()
     tree.arm_branch("alt-path")
 
-    path = tmp_path / "tree.json"
-    tree.save(str(path))
-    loaded = ConvTree.load(str(path))
+    loaded = ConvTree.from_dict(tree.to_dict())
 
     assert loaded._pending_branch is True
     assert loaded._pending_branch_label == "alt-path"

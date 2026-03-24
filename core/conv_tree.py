@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import json
-import os
-import tempfile
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 SCHEMA_VERSION = "1.0.0"
@@ -456,22 +452,3 @@ class ConvTree:
                 )
             if node.skill_exchanges:
                 node.skill_exchanges = [self._compact_skill_message(msg) for msg in node.skill_exchanges]
-
-    def save(self, path: str) -> None:
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
-        fd, tmp_path = tempfile.mkstemp(prefix=target.name + ".", dir=str(target.parent))
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(payload)
-            os.replace(tmp_path, target)
-        finally:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-
-    @staticmethod
-    def load(path: str) -> "ConvTree":
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        return ConvTree.from_dict(data)
