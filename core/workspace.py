@@ -34,6 +34,7 @@ DANGEROUS_SHELL_PATTERNS = [
 ]
 
 METACHAR_BLOCKLIST = ["&&", "||", "\n", "\r"]
+SHELL_WRAPPER_BINARIES = {"bash", "sh", "zsh", "fish"}
 MAX_TOOL_TEXT_BYTES = 20000
 SAFE_CHECK_RUNNERS = {
     "pytest",
@@ -164,6 +165,33 @@ class WorkspaceManager:
             raise FileNotFoundError(str(target))
         target.write_text(content, encoding="utf-8")
         return str(target)
+
+    def move_path(self, source_path: str, destination_path: str, overwrite: bool = False) -> str:
+        source = self._resolve_write_path(source_path)
+        destination = self._resolve_write_path(destination_path)
+
+        if not source.exists():
+            raise FileNotFoundError(str(source))
+        if source == self.workspace_root:
+            raise PermissionError("Moving the workspace root is not allowed")
+
+        protected_dir = self.workspace_root / ".alphanus"
+        if self._is_relative_to(source, protected_dir) or self._is_relative_to(destination, protected_dir):
+            raise PermissionError("Moving .alphanus state is not allowed")
+        if source == destination:
+            raise ValueError("Source and destination must be different")
+
+        if destination.exists():
+            if not overwrite:
+                raise FileExistsError(str(destination))
+            if destination.is_dir() and not destination.is_symlink():
+                shutil.rmtree(destination)
+            else:
+                destination.unlink()
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        moved = shutil.move(str(source), str(destination))
+        return str(Path(moved).resolve())
 
     def delete_path(self, path: str, recursive: bool = False) -> str:
         raw = self._normalize_workspace_relative(path)
@@ -476,6 +504,8 @@ class WorkspaceManager:
             raise PermissionError("Empty command is not allowed")
         if any(part in {"&&", "||", ";", "|"} for part in argv):
             raise PermissionError("Command rejected by shell metacharacter policy")
+        if argv[0] in SHELL_WRAPPER_BINARIES and len(argv) >= 3 and argv[1] in {"-c", "-lc"}:
+            raise PermissionError("Command rejected by shell metacharacter policy")
         for pattern in DANGEROUS_SHELL_PATTERNS:
             if re.search(pattern, trimmed, flags=re.IGNORECASE):
                 raise PermissionError("Command matches blocked dangerous pattern")
@@ -489,12 +519,15 @@ class WorkspaceManager:
             raise PermissionError("Empty command is not allowed")
         return argv
 
-    def run_shell_command(self, command: str, timeout_s: int = 30) -> dict:
+    def run_shell_command(self, command: str, timeout_s: int = 30, cwd: Optional[str] = None) -> dict:
         start = time.perf_counter()
         try:
             self._validate_shell_command(command)
             argv = self._parse_command_argv(command)
-            run = self._run_argv(argv, timeout_s=timeout_s)
+            target_cwd = self._resolve_read_path(cwd) if cwd else self.workspace_root
+            if target_cwd.is_file():
+                target_cwd = target_cwd.parent
+            run = self._run_argv(argv, timeout_s=timeout_s, cwd=target_cwd)
             if run["returncode"] != 0:
                 detail = (run["stderr"] or run["stdout"] or "").strip()
                 message = f"Command exited with code {run['returncode']}"
