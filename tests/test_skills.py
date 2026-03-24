@@ -489,6 +489,324 @@ def execute(tool_name, args, env):
     assert selected[0].id == "frontend-design"
 
 
+def test_prompt_only_skill_cannot_fake_opaque_artifact_with_create_file(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "workspace-ops").mkdir(parents=True)
+    (skills / "doc").mkdir(parents=True)
+
+    (skills / "workspace-ops" / "SKILL.md").write_text(
+        """
+---
+name: workspace-ops
+description: workspace core tools
+version: 1.0.0
+tools:
+  allowed-tools:
+    - create_file
+---
+Workspace core.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "workspace-ops" / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "create_file": {
+    "capability": "workspace_write",
+    "description": "Create file",
+    "parameters": {
+      "type": "object",
+      "properties": {"filepath": {"type": "string"}, "content": {"type": "string"}},
+      "required": ["filepath", "content"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    path = env.workspace.create_file(args["filepath"], args["content"])
+    return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "doc" / "SKILL.md").write_text(
+        """
+---
+name: doc
+description: Create polished .docx documents.
+metadata:
+  tags: [docx, report]
+---
+Use document tooling when available.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    ctx = SkillContext(
+        user_input="Create a professional .docx report outline and save it as report-outline.docx",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    selected = [runtime.get_skill("doc")]
+    assert selected[0] is not None
+    out = runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "report-outline.docx", "content": "<?xml version='1.0'?>"},
+        selected=selected,  # type: ignore[list-item]
+        ctx=ctx,
+    )
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_POLICY"
+    assert "opaque artifact paths" in out["error"]["message"]
+
+
+def test_prompt_only_skill_cannot_bypass_opaque_artifact_guard_with_unrelated_executable_skill(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "doc").mkdir(parents=True)
+    (skills / "workspace-ops").mkdir(parents=True)
+    (skills / "search-ops").mkdir(parents=True)
+
+    (skills / "doc" / "SKILL.md").write_text(
+        """
+---
+name: doc
+description: Create polished .docx documents.
+metadata:
+  tags: [docx, report]
+---
+    Use document tooling when available.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "workspace-ops" / "SKILL.md").write_text(
+        """
+---
+name: workspace-ops
+description: Generic text file operations for workspace tasks.
+tools:
+  allowed-tools:
+    - create_file
+---
+Create text files in the workspace.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "workspace-ops" / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "create_file": {
+    "capability": "workspace_write",
+    "description": "Create file",
+    "parameters": {
+      "type": "object",
+      "properties": {"filepath": {"type": "string"}, "content": {"type": "string"}},
+      "required": ["filepath", "content"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    path = env.workspace.create_file(args["filepath"], args["content"])
+    return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "search-ops" / "SKILL.md").write_text(
+        """
+---
+name: search-ops
+description: Search the web.
+tools:
+  allowed-tools:
+    - web_search
+---
+Search skill.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "search-ops" / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "web_search": {
+    "capability": "web_search",
+    "description": "Search",
+    "parameters": {
+      "type": "object",
+      "properties": {"query": {"type": "string"}},
+      "required": ["query"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    return {"ok": True, "data": {"query": args.get("query", "")}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    ctx = SkillContext(
+        user_input="Create a professional .docx report outline and save it as report-outline.docx",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    selected = [runtime.get_skill("doc"), runtime.get_skill("workspace-ops"), runtime.get_skill("search-ops")]
+    assert selected[0] is not None
+    assert selected[1] is not None
+    assert selected[2] is not None
+
+    out = runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "report-outline.docx", "content": "<?xml version='1.0'?>"},
+        selected=selected,  # type: ignore[list-item]
+        ctx=ctx,
+    )
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_POLICY"
+    assert "opaque artifact paths" in out["error"]["message"]
+
+
+def test_relevant_frontmatter_materializer_allows_opaque_artifact_path(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "doc").mkdir(parents=True)
+    (skills / "workspace-ops").mkdir(parents=True)
+    (skills / "docx-maker" / "scripts").mkdir(parents=True)
+
+    (skills / "doc" / "SKILL.md").write_text(
+        """
+---
+name: doc
+description: Create polished .docx documents.
+---
+    Use document tooling when available.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "workspace-ops" / "SKILL.md").write_text(
+        """
+---
+name: workspace-ops
+description: Generic text file operations for workspace tasks.
+tools:
+  allowed-tools:
+    - create_file
+---
+Create text files in the workspace.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "workspace-ops" / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "create_file": {
+    "capability": "workspace_write",
+    "description": "Create file",
+    "parameters": {
+      "type": "object",
+      "properties": {"filepath": {"type": "string"}, "content": {"type": "string"}},
+      "required": ["filepath", "content"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    path = env.workspace.create_file(args["filepath"], args["content"])
+    return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "docx-maker" / "SKILL.md").write_text(
+        """
+---
+name: docx-maker
+description: Materialize real .docx artifacts.
+allowed-tools: create_docx_outline
+metadata:
+  tools:
+    definitions:
+      - name: create_docx_outline
+        capability: docx_materializer
+        description: Create a .docx outline artifact.
+        command: python3 scripts/create_docx_outline.py
+        parameters:
+          type: object
+          properties:
+            filepath:
+              type: string
+          required:
+            - filepath
+---
+Create document artifacts.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "docx-maker" / "scripts" / "create_docx_outline.py").write_text(
+        """
+import json
+
+print(json.dumps({"filepath": "report-outline.docx"}))
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    ctx = SkillContext(
+        user_input="Create a professional .docx report outline and save it as report-outline.docx",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    selected = [runtime.get_skill("doc"), runtime.get_skill("workspace-ops"), runtime.get_skill("docx-maker")]
+    assert selected[0] is not None
+    assert selected[1] is not None
+    assert selected[2] is not None
+
+    out = runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "report-outline.docx", "content": "<?xml version='1.0'?>"},
+        selected=selected,  # type: ignore[list-item]
+        ctx=ctx,
+    )
+
+    assert out["ok"] is True
+    created = ws / "report-outline.docx"
+    assert created.exists()
+
+
 def test_heuristic_selection_skips_zero_score_skills(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
@@ -853,35 +1171,6 @@ def execute(tool_name, args, env):
     assert runtime.list_skills() == []
 
 
-def test_legacy_skill_toml_is_not_loaded(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "legacy").mkdir(parents=True)
-
-    (skills / "legacy" / "skill.toml").write_text(
-        """
-id = "legacy"
-name = "legacy"
-version = "1.0.0"
-description = "legacy"
-enabled = true
-priority = 50
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "legacy" / "prompt.md").write_text("legacy", encoding="utf-8")
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-    assert runtime.list_skills() == []
-
-
 def test_command_definition_tool_executes(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
@@ -1001,6 +1290,41 @@ Loaded on demand
     block = runtime.compose_skill_block([skill], ctx=ctx, context_limit=1024)
     assert "Loaded on demand" in block
     assert skill.prompt == "Loaded on demand"
+
+
+def test_bundled_scripts_without_tool_definitions_remain_advisory_only(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "script-only" / "scripts").mkdir(parents=True)
+
+    (skills / "script-only" / "SKILL.md").write_text(
+        """
+---
+name: script-only
+description: ships a helper script but no executable tool contract
+version: 1.0.0
+---
+Use the helper script if your runtime knows how.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "script-only" / "scripts" / "helper.py").write_text("print('ok')\n", encoding="utf-8")
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("script-only")
+    assert skill is not None
+
+    caps = runtime.selected_skill_capabilities([skill])
+    assert caps["has_executable_skills"] is False
+    assert caps["advisory_skill_ids"] == ["script-only"]
+    assert caps["scripts"] == ["scripts/helper.py"]
 
 
 def test_frontmatter_metadata_format_executes(tmp_path: Path):
