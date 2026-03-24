@@ -31,9 +31,24 @@
     "dangerously_skip_permissions": false
   },
   "skills": {
-    "selection_mode": "model",
+    "selection_mode": "hybrid_lazy",
     "max_active_skills": 2,
-    "strict_capability_policy": false
+    "strict_capability_policy": false,
+    "shortlist_size": 6,
+    "load": {
+      "extra_dirs": [],
+      "watch": true,
+      "upward_scan": true
+    },
+    "compat": {
+      "vendor_extensions": "major"
+    }
+  },
+  "agents": {
+    "enable_skill_agents": true
+  },
+  "runtime": {
+    "ask_user_tool": true
   },
   "tools": {
     "core_exposure_policy": "coding_core"

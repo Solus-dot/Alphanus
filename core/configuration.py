@@ -30,7 +30,7 @@ _SECRET_KEYS = {
     "secret",
 }
 _SECRET_SUFFIXES = ("_api_key", "_apikey", "_token", "_secret", "_password")
-_ALLOWED_SKILL_SELECTION_MODES = {"model", "heuristic", "all_enabled"}
+_ALLOWED_SKILL_SELECTION_MODES = {"model", "heuristic", "all_enabled", "hybrid_lazy"}
 _ALLOWED_SEARCH_PROVIDERS = {"tavily", "brave"}
 _ALLOWED_EMBEDDING_BACKENDS = {"transformer", "hash"}
 _ALLOWED_CORE_EXPOSURE_POLICIES = {"coding_core"}
@@ -76,9 +76,24 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "dangerously_skip_permissions": False,
     },
     "skills": {
-        "selection_mode": "model",
+        "selection_mode": "hybrid_lazy",
         "max_active_skills": 2,
         "strict_capability_policy": False,
+        "shortlist_size": 6,
+        "load": {
+            "extra_dirs": [],
+            "watch": True,
+            "upward_scan": True,
+        },
+        "compat": {
+            "vendor_extensions": "major",
+        },
+    },
+    "agents": {
+        "enable_skill_agents": True,
+    },
+    "runtime": {
+        "ask_user_tool": True,
     },
     "tools": {
         "core_exposure_policy": "coding_core",
@@ -576,7 +591,67 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         path="skills.strict_capability_policy",
         warnings=warnings,
     )
+    skills_cfg["shortlist_size"] = _coerce_int(
+        skills_cfg.get("shortlist_size"),
+        int(DEFAULT_CONFIG["skills"]["shortlist_size"]),
+        path="skills.shortlist_size",
+        warnings=warnings,
+        minimum=1,
+        maximum=20,
+    )
+    load_cfg = skills_cfg.get("load", {}) if isinstance(skills_cfg.get("load"), dict) else {}
+    extra_dirs = load_cfg.get("extra_dirs", [])
+    if isinstance(extra_dirs, str):
+        extra_dirs = [extra_dirs]
+    if not isinstance(extra_dirs, list):
+        extra_dirs = []
+        _warn(warnings, "skills.load.extra_dirs: expected list, using default")
+    load_cfg["extra_dirs"] = [str(item).strip() for item in extra_dirs if str(item).strip()]
+    load_cfg["watch"] = _coerce_bool(
+        load_cfg.get("watch"),
+        bool(DEFAULT_CONFIG["skills"]["load"]["watch"]),
+        path="skills.load.watch",
+        warnings=warnings,
+    )
+    load_cfg["upward_scan"] = _coerce_bool(
+        load_cfg.get("upward_scan"),
+        bool(DEFAULT_CONFIG["skills"]["load"]["upward_scan"]),
+        path="skills.load.upward_scan",
+        warnings=warnings,
+    )
+    skills_cfg["load"] = load_cfg
+    compat_cfg = skills_cfg.get("compat", {}) if isinstance(skills_cfg.get("compat"), dict) else {}
+    compat_mode = _coerce_string(
+        compat_cfg.get("vendor_extensions"),
+        str(DEFAULT_CONFIG["skills"]["compat"]["vendor_extensions"]),
+        path="skills.compat.vendor_extensions",
+        warnings=warnings,
+        allow_empty=False,
+    ).lower()
+    if compat_mode not in {"none", "major", "all"}:
+        _warn(warnings, f"skills.compat.vendor_extensions: unsupported {compat_mode!r}, using default")
+        compat_mode = str(DEFAULT_CONFIG["skills"]["compat"]["vendor_extensions"])
+    compat_cfg["vendor_extensions"] = compat_mode
+    skills_cfg["compat"] = compat_cfg
     merged["skills"] = skills_cfg
+
+    agents_cfg = merged.get("agents", {}) if isinstance(merged.get("agents"), dict) else {}
+    agents_cfg["enable_skill_agents"] = _coerce_bool(
+        agents_cfg.get("enable_skill_agents"),
+        bool(DEFAULT_CONFIG["agents"]["enable_skill_agents"]),
+        path="agents.enable_skill_agents",
+        warnings=warnings,
+    )
+    merged["agents"] = agents_cfg
+
+    runtime_cfg = merged.get("runtime", {}) if isinstance(merged.get("runtime"), dict) else {}
+    runtime_cfg["ask_user_tool"] = _coerce_bool(
+        runtime_cfg.get("ask_user_tool"),
+        bool(DEFAULT_CONFIG["runtime"]["ask_user_tool"]),
+        path="runtime.ask_user_tool",
+        warnings=warnings,
+    )
+    merged["runtime"] = runtime_cfg
 
     tools_cfg = merged.get("tools", {}) if isinstance(merged.get("tools"), dict) else {}
     core_policy = _coerce_string(

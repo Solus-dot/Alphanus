@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import copy
+import threading
 import time
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,6 +67,7 @@ class SkillRoutingSnapshot:
 class TurnState:
     ctx: SkillContext
     selected: List[Any]
+    loaded_skill_ids: List[str]
     dynamic_history: List[Dict[str, Any]]
     skill_exchanges: List[Dict[str, Any]]
     evidence: List[ToolEvidence]
@@ -89,6 +93,19 @@ class TurnState:
     workspace_materialization_target: int = 0
     forced_workspace_retry: bool = False
     model_usage: Dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class BackgroundSkillAgentTask:
+    task_id: str
+    agent_name: str
+    prompt: str
+    skill_id: str = ""
+    status: str = "running"
+    output: str = ""
+    error: str = ""
+    started_at: float = field(default_factory=time.time)
+    completed_at: float = 0.0
 
 
 class ToolCallAccumulator:
@@ -178,6 +195,8 @@ class Agent:
 
         self._ready_checked = False
         self._skill_snapshot: Optional[SkillRoutingSnapshot] = None
+        self._bg_skill_agent_tasks: Dict[str, BackgroundSkillAgentTask] = {}
+        self._bg_skill_agent_lock = threading.Lock()
         self.reload_config(config)
 
     def reload_config(self, config: Dict[str, Any]) -> None:
@@ -574,6 +593,13 @@ class Agent:
         attachments: List[str],
         history_messages: Optional[List[Dict[str, Any]]] = None,
     ) -> SkillContext:
+        explicit_skill_id = ""
+        explicit_skill_args = ""
+        lowered = user_input.strip()
+        match = re.match(r"(?is)^\s*use\s+skill\s+([a-z0-9][a-z0-9-]{0,63})(?::|\s+|$)(.*)$", lowered)
+        if match:
+            explicit_skill_id = str(match.group(1) or "").strip()
+            explicit_skill_args = str(match.group(2) or "").strip()
         hits = self.skill_runtime.memory.search(user_input, top_k=3, min_score=0.45)
         recent_hint, sticky_skill_ids = self._recent_routing_context(history_messages or [])
         return SkillContext(
@@ -584,6 +610,8 @@ class Agent:
             memory_hits=hits,
             recent_routing_hint=recent_hint,
             sticky_skill_ids=sticky_skill_ids,
+            explicit_skill_id=explicit_skill_id,
+            explicit_skill_args=explicit_skill_args,
         )
 
     @staticmethod
@@ -673,6 +701,15 @@ class Agent:
                 if reg and reg.skill_id not in seen_skills:
                     sticky_skill_ids.append(reg.skill_id)
                     seen_skills.add(reg.skill_id)
+                try:
+                    payload = json.loads(self._message_text(msg.get("content", "")) or "{}")
+                except Exception:
+                    payload = {}
+                data = payload.get("data") if isinstance(payload, dict) else {}
+                loaded_skill_id = str(data.get("skill_id", "")).strip() if isinstance(data, dict) else ""
+                if loaded_skill_id and loaded_skill_id not in seen_skills:
+                    sticky_skill_ids.append(loaded_skill_id)
+                    seen_skills.add(loaded_skill_id)
         parts: List[str] = []
         if recent_user:
             parts.append(f"previous user request: {recent_user}")
@@ -690,7 +727,7 @@ class Agent:
         if not force_refresh and self._skill_snapshot and self._skill_snapshot.generation == generation:
             return self._skill_snapshot
         skills = list(self.skill_runtime.enabled_skills())
-        catalog = self.skill_runtime.skill_catalog_text()
+        catalog = self.skill_runtime.skill_cards_text(skills)
         self._skill_snapshot = SkillRoutingSnapshot(generation=generation, skills=skills, catalog=catalog)
         return self._skill_snapshot
 
@@ -699,15 +736,28 @@ class Agent:
         self._skill_snapshot = None
         return int(getattr(self.skill_runtime, "generation", 0))
 
-    def _compose_system_content(self, selected: List[Any], ctx: SkillContext) -> str:
-        skill_block = self.skill_runtime.compose_skill_block(
-            selected,
-            ctx,
-            context_limit=self.context_mgr.context_limit,
-        )
-        if not skill_block:
-            return self.system_prompt
-        return f"{self.system_prompt}\n\nActive skill guidance:\n\n{skill_block}"
+    def _compose_system_content(self, selected: List[Any], ctx: SkillContext, loaded_skill_ids: Optional[List[str]] = None) -> str:
+        loaded_skill_ids = loaded_skill_ids or []
+        parts = [self.system_prompt]
+        unloaded = [skill for skill in selected if getattr(skill, "id", "") not in set(loaded_skill_ids)]
+        if unloaded:
+            cards = self.skill_runtime.skill_cards_text(unloaded)
+            if cards:
+                parts.append(
+                    "Available skills:\n"
+                    "- These are compact routing cards. Use `load_skill` before relying on full skill instructions or bundled resources.\n"
+                    f"{cards}"
+                )
+        loaded = self.skill_runtime.loaded_skills(selected, loaded_skill_ids)
+        if loaded:
+            skill_block = self.skill_runtime.compose_skill_block(
+                loaded,
+                ctx,
+                context_limit=self.context_mgr.context_limit,
+            )
+            if skill_block:
+                parts.append(f"Active skill guidance:\n\n{skill_block}")
+        return "\n\n".join(part for part in parts if part.strip())
 
     @staticmethod
     def _parse_skill_route(content: str, valid_ids: List[str], limit: int) -> Optional[List[str]]:
@@ -766,7 +816,6 @@ class Agent:
         if not enabled:
             return []
 
-        catalog = snapshot.catalog
         heuristic_fallback = self.skill_runtime.rerank_skill_candidates(ctx, candidate_items, limit)
         use_recent_hint = self._should_use_recent_routing_hint(ctx)
         routing_system = (
@@ -787,12 +836,14 @@ class Agent:
             user_content += f"\n\nImmediate prior exchange:\n{ctx.recent_routing_hint}"
         if use_recent_hint and ctx.sticky_skill_ids:
             user_content += f"\n\nLikely carry-over skills for this confirmation:\n{', '.join(ctx.sticky_skill_ids[:limit])}"
-        if candidate_items:
+        shortlisted_skills = [item.skill for item in candidate_items[: min(len(candidate_items), max(limit * 2, self.skill_runtime.shortlist_size))]]
+        if shortlisted_skills:
             user_content += (
-                "\n\nHeuristic shortlist (useful but not exhaustive):\n"
-                + "\n".join(f"- {item.skill.id}" for item in candidate_items[: min(len(candidate_items), 8)])
+                "\n\nSkill shortlist:\n"
+                + self.skill_runtime.skill_cards_text(shortlisted_skills)
             )
-        user_content += f"\n\nAvailable skills:\n{catalog}"
+        elif snapshot.catalog:
+            user_content += f"\n\nAvailable skills:\n{snapshot.catalog}"
         routing_messages = [
             {"role": "system", "content": routing_system},
             {"role": "user", "content": user_content},
@@ -813,6 +864,20 @@ class Agent:
             return self.skill_runtime.skills_by_ids(ctx.sticky_skill_ids[:limit]) if use_recent_hint and ctx.sticky_skill_ids else None
         return self.skill_runtime.expand_selected_skills(ctx, self.skill_runtime.skills_by_ids(skill_ids))
 
+    def _prefer_deterministic_skill_selection(self, ctx: SkillContext) -> bool:
+        if ctx.explicit_skill_id:
+            return True
+        ranked = [(score, skill) for score, skill in self.skill_runtime.score_skills(ctx) if score > 0]
+        if len(ranked) <= 1:
+            return True
+        top_score = ranked[0][0]
+        second_score = ranked[1][0]
+        if top_score >= 60 and top_score - second_score >= 18:
+            return True
+        if top_score >= 90 and second_score <= 24:
+            return True
+        return False
+
     def _select_skills(
         self,
         ctx: SkillContext,
@@ -820,7 +885,9 @@ class Agent:
     ) -> List[Any]:
         skills_cfg = self.config.get("skills", {}) if isinstance(self.config, dict) else {}
         mode = str(skills_cfg.get("selection_mode", getattr(self.skill_runtime, "selection_mode", ""))).strip().lower()
-        if mode == "model":
+        if mode in {"model", "hybrid_lazy"}:
+            if mode == "hybrid_lazy" and self._prefer_deterministic_skill_selection(ctx):
+                return self.skill_runtime.select_skills(ctx)
             snapshot = self._get_skill_snapshot()
             routed = self._route_skills_with_model(ctx, snapshot, stop_event)
             if routed is not None:
@@ -934,6 +1001,9 @@ class Agent:
     def _append_reasoning(self, full_reasoning: str, delta_reasoning: str) -> str:
         if not delta_reasoning:
             return full_reasoning
+        delta_reasoning = self._sanitize_reasoning_markup(delta_reasoning)
+        if not delta_reasoning:
+            return full_reasoning
         if self.max_reasoning_chars <= 0:
             return ""
         if len(full_reasoning) >= self.max_reasoning_chars:
@@ -944,11 +1014,22 @@ class Agent:
         return full_reasoning + delta_reasoning[:remaining]
 
     @staticmethod
+    def _sanitize_reasoning_markup(text: str) -> str:
+        if not text:
+            return ""
+        text = re.sub(r"</?think>", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"</?tool_call>", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"</?function(?:=[^>]+)?>", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"</?parameter(?:=[^>]+)?>", "", text, flags=re.IGNORECASE)
+        return text
+
+    @staticmethod
     def _sanitize_final_content(text: str) -> str:
         if not text:
             return ""
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
         text = re.sub(r"<tool_call>.*?</tool_call>", "", text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r"</?think>", "", text, flags=re.IGNORECASE)
         kept: List[str] = []
         for line in text.splitlines():
             stripped = line.strip()
@@ -1427,9 +1508,27 @@ class Agent:
         user_input: str,
     ) -> TurnState:
         explicit_external_path = self._explicit_path_outside_workspace(ctx.user_input)
+        loaded_skill_ids = self.skill_runtime.default_loaded_skill_ids(selected, ctx)
+        selection_mode = str(getattr(self.skill_runtime, "selection_mode", "")).strip().lower()
+        auto_load_ids: List[str] = []
+        explicit = self.skill_runtime.resolve_skill_reference(ctx.explicit_skill_id) if ctx.explicit_skill_id else None
+        if explicit is not None:
+            auto_load_ids.append(explicit.id)
+        elif selection_mode == "hybrid_lazy":
+            non_core_selected = [
+                getattr(skill, "id", "")
+                for skill in selected
+                if getattr(skill, "id", "")
+                and getattr(skill, "id", "") not in {"workspace-ops", "search-ops", "shell-ops", "memory-rag", "utilities"}
+                and not bool(getattr(skill, "disable_model_invocation", False))
+            ]
+            if len(non_core_selected) == 1:
+                auto_load_ids.append(non_core_selected[0])
+        loaded_skill_ids = sorted(dict.fromkeys([skill_id for skill_id in loaded_skill_ids + auto_load_ids if skill_id]))
         return TurnState(
             ctx=ctx,
             selected=selected,
+            loaded_skill_ids=loaded_skill_ids,
             dynamic_history=list(history_messages),
             skill_exchanges=[],
             evidence=[],
@@ -1710,11 +1809,153 @@ class Agent:
         )
         return f"Tool budget exceeded for {call.name} ({limit})"
 
+    def _run_nested_skill_agent(self, agent_name: str, prompt: str, skill_id: str = "") -> AgentTurnResult:
+        try:
+            agent_contract = self.skill_runtime.load_agent_contract(agent_name, skill_id=skill_id)
+        except Exception as exc:
+            return AgentTurnResult(status="error", content="", reasoning="", skill_exchanges=[], error=str(exc))
+        agent_record = self.skill_runtime.get_agent(agent_name)
+        if agent_record is None:
+            return AgentTurnResult(
+                status="error",
+                content="",
+                reasoning="",
+                skill_exchanges=[],
+                error=f"Unknown companion agent: {agent_name}",
+            )
+        nested_config = copy.deepcopy(self.config) if isinstance(self.config, dict) else {}
+        nested_agents_cfg = nested_config.get("agents", {}) if isinstance(nested_config.get("agents"), dict) else {}
+        nested_agents_cfg["enable_skill_agents"] = False
+        nested_config["agents"] = nested_agents_cfg
+        nested = Agent(nested_config, self.skill_runtime, debug=self.debug)
+        nested.system_prompt = (
+            f"{self.system_prompt}\n\n"
+            f"Companion agent profile: {agent_record.name}\n"
+            f"{agent_record.description}\n\n"
+            f"{agent_contract.prompt}"
+        ).strip()
+        return nested.run_turn(
+            history_messages=[],
+            user_input=prompt,
+            thinking=False,
+            branch_labels=[],
+            attachments=[],
+            stop_event=threading.Event(),
+            on_event=None,
+            confirm_shell=None,
+        )
+
+    def _background_skill_agent_worker(self, task_id: str, agent_name: str, prompt: str, skill_id: str) -> None:
+        result = self._run_nested_skill_agent(agent_name, prompt, skill_id=skill_id)
+        with self._bg_skill_agent_lock:
+            task = self._bg_skill_agent_tasks.get(task_id)
+            if not task:
+                return
+            task.completed_at = time.time()
+            if result.status == "done":
+                task.status = "done"
+                task.output = result.content
+            elif result.status == "cancelled":
+                task.status = "cancelled"
+                task.error = "cancelled"
+            else:
+                task.status = "error"
+                task.error = result.error or "background agent failed"
+
+    def _handle_spawn_skill_agent(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        agents_cfg = self.config.get("agents", {}) if isinstance(self.config.get("agents"), dict) else {}
+        if not bool(agents_cfg.get("enable_skill_agents", True)):
+            raise PermissionError("Skill agents are disabled in configuration")
+        action = str(args.get("action", "start")).strip().lower() or "start"
+        if action in {"status", "wait"}:
+            task_id = str(args.get("task_id", "")).strip()
+            if not task_id:
+                raise ValueError("Missing required argument: task_id")
+            deadline = time.time() + max(1, int(args.get("timeout_s", 30))) if action == "wait" else time.time()
+            while True:
+                with self._bg_skill_agent_lock:
+                    task = self._bg_skill_agent_tasks.get(task_id)
+                    snapshot = None if task is None else {
+                        "task_id": task.task_id,
+                        "agent_name": task.agent_name,
+                        "skill_id": task.skill_id,
+                        "status": task.status,
+                        "output": task.output,
+                        "error": task.error,
+                    }
+                if snapshot is None:
+                    raise FileNotFoundError(f"Unknown skill agent task: {task_id}")
+                if action == "status" or snapshot["status"] != "running" or time.time() >= deadline:
+                    return snapshot
+                time.sleep(0.05)
+        agent_name = str(args.get("agent_name", "")).strip()
+        skill_id = str(args.get("skill_id", "")).strip()
+        prompt = str(args.get("prompt", "")).strip()
+        if not agent_name:
+            raise ValueError("Missing required argument: agent_name")
+        if not prompt:
+            raise ValueError("Missing required argument: prompt")
+        background = bool(args.get("background", True))
+        if not background:
+            result = self._run_nested_skill_agent(agent_name, prompt, skill_id=skill_id)
+            return {
+                "task_id": "",
+                "agent_name": agent_name,
+                "skill_id": skill_id,
+                "status": result.status,
+                "output": result.content,
+                "error": result.error or "",
+            }
+        task_id = f"skill-agent-{uuid.uuid4().hex[:10]}"
+        with self._bg_skill_agent_lock:
+            self._bg_skill_agent_tasks[task_id] = BackgroundSkillAgentTask(
+                task_id=task_id,
+                agent_name=agent_name,
+                skill_id=skill_id,
+                prompt=prompt,
+            )
+        thread = threading.Thread(
+            target=self._background_skill_agent_worker,
+            args=(task_id, agent_name, prompt, skill_id),
+            daemon=True,
+        )
+        thread.start()
+        return {
+            "task_id": task_id,
+            "agent_name": agent_name,
+            "skill_id": skill_id,
+            "status": "running",
+            "output": "",
+            "error": "",
+        }
+
+    @staticmethod
+    def _handle_request_user_input(args: Dict[str, Any]) -> Dict[str, Any]:
+        question = str(args.get("question", "")).strip()
+        if not question:
+            raise ValueError("Missing required argument: question")
+        options = args.get("options")
+        normalized_options = [str(item).strip() for item in options if str(item).strip()] if isinstance(options, list) else []
+        return {
+            "question": question,
+            "options": normalized_options,
+            "header": str(args.get("header", "")).strip(),
+            "awaiting_user_input": True,
+        }
+
     @staticmethod
     def _direct_tool_answer(name: str, payload: Dict[str, Any]) -> str:
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, dict):
             return ""
+        if name == "request_user_input":
+            question = str(data.get("question", "")).strip()
+            options = data.get("options")
+            lines = [question] if question else []
+            if isinstance(options, list) and options:
+                lines.append("Options: " + " | ".join(str(item) for item in options[:6]))
+            lines.append("Reply with your choice or answer so I can continue.")
+            return "\n".join(lines)
         if name == "create_directory":
             base = str(data.get("basename", "")).strip()
             path = str(data.get("filepath", "")).strip()
@@ -1777,6 +2018,7 @@ class Agent:
             "status": result.status,
             "error": result.error or "",
             "selected_skills": [getattr(skill, "id", "") for skill in state.selected],
+            "loaded_skills": list(state.loaded_skill_ids),
             "tool_counts": dict(state.tool_counts),
             "tool_evidence": [
                 {
@@ -1796,6 +2038,12 @@ class Agent:
     def _record_tool_effects(self, state: TurnState, call: ToolCall, result: Dict[str, Any]) -> None:
         state.tool_counts[call.name] = state.tool_counts.get(call.name, 0) + 1
         state.evidence.append(ToolEvidence(name=call.name, args=dict(call.arguments), result=result))
+        if call.name == "load_skill" and result.get("ok"):
+            data = result.get("data") if isinstance(result.get("data"), dict) else {}
+            skill_id = str(data.get("skill_id", "")).strip() if isinstance(data, dict) else ""
+            if skill_id and skill_id not in state.loaded_skill_ids:
+                state.loaded_skill_ids.append(skill_id)
+                state.loaded_skill_ids.sort()
         if not state.search_mode:
             return
         if call.name not in {"web_search", "fetch_url"}:
@@ -1891,7 +2139,7 @@ class Agent:
                     )
                 )
 
-            system_content = self._compose_system_content(state.selected, state.ctx)
+            system_content = self._compose_system_content(state.selected, state.ctx, state.loaded_skill_ids)
             if (
                 state.search_mode
                 and state.time_sensitive_query
@@ -1983,7 +2231,7 @@ class Agent:
                     )
                 else:
                     system_content += "\n- Do not use shell_command to create folders or inspect local files."
-            requested_exts = self.skill_runtime.requested_artifact_extensions(state.ctx)
+            requested_exts = self.skill_runtime.requested_opaque_artifact_extensions(state.ctx)
             selected_materializers = self.skill_runtime.selected_artifact_materializers(state.selected, state.ctx)
             if requested_exts and "create" in self.skill_runtime.task_intents(state.ctx) and not selected_materializers:
                 system_content += (
@@ -1998,7 +2246,7 @@ class Agent:
             system_messages = [{"role": "system", "content": system_content}]
 
             model_messages = self.context_mgr.prune(system_messages + state.dynamic_history, self.context_budget_max_tokens)
-            tools = self.skill_runtime.tools_for_turn(state.selected, ctx=state.ctx)
+            tools = self.skill_runtime.tools_for_turn(state.selected, ctx=state.ctx, loaded_skill_ids=state.loaded_skill_ids)
             payload = self._build_payload(model_messages, thinking=thinking, tools=tools or None)
 
             try:
@@ -2192,6 +2440,8 @@ class Agent:
                         selected=state.selected,
                         ctx=state.ctx,
                         confirm_shell=confirm_shell,
+                        spawn_skill_agent=self._handle_spawn_skill_agent,
+                        request_user_input=self._handle_request_user_input,
                     )
 
                     self._emit(

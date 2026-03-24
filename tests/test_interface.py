@@ -34,6 +34,14 @@ def test_command_entries_match_context_command() -> None:
     assert "/context" in context_matches
 
 
+def test_command_entries_match_agents_and_use_skill_commands() -> None:
+    agent_matches = [entry.prompt for entry in command_entries_for_query("/agen")]
+    use_skill_matches = [entry.prompt for entry in command_entries_for_query("/use-s")]
+
+    assert "/agents" in agent_matches
+    assert "/use-skill <id> [args]" in use_skill_matches
+
+
 def test_chat_input_binds_new_shortcuts_locally() -> None:
     bindings = {binding.key: binding.action for binding in ChatInput.BINDINGS}
 
@@ -227,6 +235,17 @@ def test_flush_reasoning_buffer_skips_whitespace_only_panel() -> None:
     assert tui._buf_r == ""
 
 
+def test_visible_reasoning_text_strips_think_markers() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._is_tool_trace_line = lambda _line: False
+
+    visible = tui._visible_reasoning_text("<think>\ninternal reasoning\n</think>")
+
+    assert "<think>" not in visible
+    assert "</think>" not in visible
+    assert "internal reasoning" in visible
+
+
 def test_file_tool_success_lines_use_standard_tool_blocks() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._show_tool_details = True
@@ -323,6 +342,28 @@ def test_handle_context_command_renders_context_summary() -> None:
 
     assert tui._handle_command("/context") is True
     assert rendered == [""]
+
+
+def test_handle_agents_command_renders_agent_list() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    rendered: list[str] = []
+    tui._cmd_agents = lambda: rendered.append("agents")
+
+    assert tui._handle_command("/agents") is True
+    assert rendered == ["agents"]
+
+
+def test_handle_use_skill_command_forwards_explicit_invocation() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    sent: list[str] = []
+    tui._send = sent.append
+
+    assert tui._handle_command("/use-skill docx draft.md") is True
+    assert sent == ["use skill docx: draft.md"]
 
 
 def test_show_keymap_writes_expected_sections() -> None:

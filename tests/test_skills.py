@@ -277,7 +277,7 @@ def execute(tool_name, args, env):
     search_skill = runtime.get_skill("search-ops")
     assert search_skill is not None
     merged_tool_names = [tool["function"]["name"] for tool in runtime.tools_for_turn([search_skill])]
-    assert merged_tool_names == ["create_file", "read_file", "web_search"]
+    assert merged_tool_names == ["create_file", "load_skill", "read_file", "web_search"]
 
 
 def test_tools_for_turn_includes_generic_script_runner_for_selected_script_skill(tmp_path: Path):
@@ -311,8 +311,8 @@ Use the helper script when available.
     assert skill is not None
     tools = runtime.tools_for_turn([skill])
     tool_names = [tool["function"]["name"] for tool in tools]
-    assert tool_names == ["run_skill_script"]
-    script_tool = tools[0]["function"]
+    assert tool_names == ["load_skill", "run_skill_script"]
+    script_tool = tools[1]["function"]
     assert "scripts/helper.py" in script_tool["description"]
     assert script_tool["parameters"]["properties"]["script"]["enum"] == ["scripts/helper.py"]
 
@@ -373,8 +373,8 @@ Create PDFs with the declared entrypoint.
 
     tools = runtime.tools_for_turn([skill], ctx=ctx)
     tool_names = [tool["function"]["name"] for tool in tools]
-    assert tool_names == ["run_skill_entrypoint"]
-    entry_tool = tools[0]["function"]
+    assert tool_names == ["load_skill", "run_skill_entrypoint"]
+    entry_tool = tools[1]["function"]
     assert "report-pdf:create_report" in entry_tool["description"]
     assert entry_tool["parameters"]["properties"]["entrypoint"]["enum"] == ["create_report"]
 
@@ -435,7 +435,7 @@ Create PDFs through the declared entrypoint.
 
     assert runtime._skill_supports_artifact(skill, [".pdf"], intents=runtime.task_intents(ctx)) is True
     tools = runtime.tools_for_turn([skill], ctx=ctx)
-    assert [tool["function"]["name"] for tool in tools] == ["run_skill_entrypoint"]
+    assert [tool["function"]["name"] for tool in tools] == ["load_skill", "run_skill_entrypoint"]
 
 
 def test_core_tool_executes_without_selected_skill(tmp_path: Path):
@@ -1264,7 +1264,7 @@ Do not expose the raw script runner.
         memory_hits=[],
     )
 
-    assert runtime.tools_for_turn([skill], ctx=ctx) == []
+    assert [tool["function"]["name"] for tool in runtime.tools_for_turn([skill], ctx=ctx)] == ["load_skill"]
     caps = runtime.selected_skill_capabilities([skill])
     assert caps["custom_tool_names"] == []
 
@@ -1575,3 +1575,111 @@ Hello
 
     assert report[0]["source_tier"] == "bundled"
     assert report[0]["availability_code"] == "ready"
+
+
+def test_runtime_discovers_pack_agents_and_rebases_agent_paths(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    bundled = tmp_path / "bundled"
+    pack_root = ws / ".claude"
+    skill_dir = pack_root / "skills" / "frontend-design"
+    agent_dir = pack_root / "agents"
+    home.mkdir()
+    ws.mkdir()
+    skill_dir.mkdir(parents=True)
+    agent_dir.mkdir(parents=True)
+
+    (skill_dir / "SKILL.md").write_text(
+        """
+---
+name: frontend-design
+description: frontend design skill
+version: 1.0.0
+---
+Use ~/.codex/skills/frontend-design/templates/mockup.html
+""".strip(),
+        encoding="utf-8",
+    )
+    (agent_dir / "researcher.md").write_text(
+        """
+---
+name: researcher
+description: Research helper
+---
+Read ~/.codex/skills/frontend-design/SKILL.md and coordinate with ~/.codex/agents/researcher.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(bundled),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    skill = runtime.resolve_skill_reference("front")
+    assert skill is not None
+    assert skill.id == "frontend-design"
+
+    agents = runtime.list_agents()
+    assert [agent.name for agent in agents] == ["researcher"]
+
+    contract = runtime.load_agent_contract("researcher", skill_id="frontend-design")
+    assert str(skill_dir) in contract.prompt
+    assert str((agent_dir / "researcher.md").resolve()) in contract.prompt
+
+    report = runtime.skill_health_report()
+    assert report[0]["agents"] == ["researcher"]
+    assert report[0]["source_tier"] == "workspace/local"
+
+
+def test_request_user_input_runtime_tool_uses_callback(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "asker").mkdir(parents=True)
+    (skills / "asker" / "SKILL.md").write_text(
+        """
+---
+name: asker
+description: ask follow-up questions
+version: 1.0.0
+---
+Ask for clarification when needed.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("asker")
+    assert skill is not None
+    ctx = SkillContext(
+        user_input="use skill asker",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+        explicit_skill_id="asker",
+    )
+
+    out = runtime.execute_tool_call(
+        "request_user_input",
+        {"question": "Choose one", "options": ["a", "b"]},
+        selected=[skill],
+        ctx=ctx,
+        request_user_input=lambda args: {
+            "question": args["question"],
+            "options": list(args.get("options", [])),
+            "awaiting_user_input": True,
+        },
+    )
+
+    assert out["ok"] is True
+    assert out["data"]["awaiting_user_input"] is True
+    assert out["data"]["options"] == ["a", "b"]

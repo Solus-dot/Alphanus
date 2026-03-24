@@ -129,6 +129,8 @@ class SkillManifest:
     command_tools: List[ToolCommandDef] = field(default_factory=list)
     entrypoints: List[SkillEntrypointDef] = field(default_factory=list)
     disable_model_invocation: bool = False
+    user_invocable: bool = True
+    argument_hint: str = ""
     format: str = "agentskills"
     source_tier: str = "bundled"
     available: bool = True
@@ -137,6 +139,7 @@ class SkillManifest:
     frontmatter: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
     bundled_files: List[str] = field(default_factory=list)
+    vendor_flavor: str = "agentskills"
 
 
 def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool = False) -> SkillManifest:
@@ -189,6 +192,23 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
             or requirements_raw.get("bins")
         ),
     }
+    vendor_flavor = str(frontmatter.get("format") or metadata_raw.get("format") or "agentskills").strip() or "agentskills"
+    vendor_requires: Dict[str, Any] = {}
+    for vendor_key in ("openclaw", "claude", "opencode"):
+        candidate = metadata_raw.get(vendor_key)
+        if isinstance(candidate, dict):
+            vendor_requires = candidate.get("requires") if isinstance(candidate.get("requires"), dict) else {}
+            if vendor_requires:
+                vendor_flavor = vendor_key
+                break
+    if vendor_requires:
+        requirements["os"] = _dedupe(requirements["os"] + _as_str_list(vendor_requires.get("os")))
+        requirements["env"] = _dedupe(requirements["env"] + _as_str_list(vendor_requires.get("env")))
+        requirements["commands"] = _dedupe(
+            requirements["commands"]
+            + _as_str_list(vendor_requires.get("commands") or vendor_requires.get("bins") or vendor_requires.get("binaries"))
+            + _as_str_list(vendor_requires.get("anyBins"))
+        )
 
     execution_raw = frontmatter.get("execution") or metadata_raw.get("execution") or {}
     if execution_raw is None:
@@ -330,9 +350,20 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
             )
         )
     disable_model_invocation = _coerce_bool(
-        metadata_tools_raw.get("disable-model-invocation", tools_cfg_raw.get("disable-model-invocation")),
+        frontmatter.get(
+            "disable-model-invocation",
+            metadata_raw.get(
+                "disable-model-invocation",
+                metadata_tools_raw.get("disable-model-invocation", tools_cfg_raw.get("disable-model-invocation")),
+            ),
+        ),
         False,
     )
+    user_invocable = _coerce_bool(
+        frontmatter.get("user-invocable", metadata_raw.get("user-invocable")),
+        True,
+    )
+    argument_hint = str(frontmatter.get("argument-hint") or metadata_raw.get("argument-hint") or "").strip()
 
     trigger_cfg = metadata_raw.get("triggers", frontmatter.get("triggers", {}))
     if trigger_cfg is None:
@@ -366,7 +397,10 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         command_tools=command_tools,
         entrypoints=entrypoints,
         disable_model_invocation=disable_model_invocation,
-        format="agentskills",
+        user_invocable=user_invocable,
+        argument_hint=argument_hint,
+        format=vendor_flavor,
         frontmatter=dict(frontmatter),
         metadata=dict(metadata_raw),
+        vendor_flavor=vendor_flavor,
     )

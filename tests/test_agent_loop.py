@@ -867,7 +867,7 @@ def test_workspace_scaffold_does_not_stop_after_create_directory(mocker, runtime
     executed = []
     real_execute = runtime.execute_tool_call
 
-    def wrapped_execute(tool_name, args, selected, ctx, confirm_shell=None):
+    def wrapped_execute(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
         executed.append(tool_name)
         return real_execute(tool_name, args, selected=selected, ctx=ctx, confirm_shell=confirm_shell)
 
@@ -936,7 +936,7 @@ def test_workspace_folder_and_single_file_does_not_stop_after_create_directory(m
     executed = []
     real_execute = runtime.execute_tool_call
 
-    def wrapped_execute(tool_name, args, selected, ctx, confirm_shell=None):
+    def wrapped_execute(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
         executed.append(tool_name)
         return real_execute(tool_name, args, selected=selected, ctx=ctx, confirm_shell=confirm_shell)
 
@@ -1071,7 +1071,7 @@ def test_local_workspace_tasks_reject_shell_and_fetch_tools(mocker, runtime: Ski
     executed = []
     real_execute = runtime.execute_tool_call
 
-    def wrapped_execute(tool_name, args, selected, ctx, confirm_shell=None):
+    def wrapped_execute(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
         executed.append(tool_name)
         return real_execute(tool_name, args, selected=selected, ctx=ctx, confirm_shell=confirm_shell)
 
@@ -1827,7 +1827,7 @@ def execute(tool_name, args, env):
         if len(chat_reqs) == 2:
             payload = json.loads(req.data.decode("utf-8"))
             tool_names = [tool["function"]["name"] for tool in payload.get("tools", [])]
-            assert tool_names == ["create_directory", "create_file", "create_files", "web_search"]
+            assert tool_names == ["create_directory", "create_file", "create_files", "load_skill", "web_search"]
             return FakeResponse(
                 [
                     'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"meta latest acquisitions\\\"}"}}]}}]}',
@@ -1917,11 +1917,11 @@ def execute(tool_name, args, env):
 
     assert selected == []
     user_content = captured["payload"]["messages"][1]["content"]
-    assert "Heuristic shortlist (useful but not exhaustive):" in user_content
+    assert "Skill shortlist:" in user_content
     assert "- workspace-ops" in user_content
-    assert "Available skills:" in user_content
-    assert "hidden-tool" in user_content
-    assert "artifact_forge" in user_content
+    assert "Available skills:" not in user_content
+    assert "hidden-tool" not in user_content
+    assert "artifact_forge" not in user_content
 
 
 def test_model_skill_router_respects_explicit_empty_selection(mocker, runtime: SkillRuntime):
@@ -2156,7 +2156,7 @@ def test_tool_result_history_not_compacted_by_default(mocker, runtime: SkillRunt
 
     chat_reqs = []
 
-    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None):
+    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
         return {"ok": True, "data": {"blob": huge_text}, "error": None, "meta": {}}
 
     def fake_urlopen(req, timeout=None, context=None):
@@ -2218,7 +2218,7 @@ def test_tool_result_history_compaction_can_be_gated_by_tool_name(mocker, runtim
 
     chat_reqs = []
 
-    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None):
+    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
         return {"ok": True, "data": {"blob": huge_text}, "error": None, "meta": {}}
 
     def fake_urlopen(req, timeout=None, context=None):
@@ -2594,3 +2594,182 @@ def execute(tool_name, args, env):
     )
     assert result.status == "done"
     assert "couldn't verify" in result.content.lower()
+
+
+def test_explicit_skill_is_auto_loaded_without_load_skill_tool(mocker, tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "docx").mkdir(parents=True)
+    (skills / "docx" / "scripts").mkdir(parents=True)
+    (skills / "docx" / "scripts" / "convert.py").write_text("print('ok')\n", encoding="utf-8")
+    (skills / "docx" / "SKILL.md").write_text(
+        """
+---
+name: docx
+description: convert documents to docx
+version: 1.0.0
+triggers:
+  keywords:
+    - docx
+---
+Detailed internal prompt for DOCX workflows.
+Use scripts/convert.py when needed.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+        },
+        "skills": {"selection_mode": "hybrid_lazy", "max_active_skills": 2, "shortlist_size": 4},
+    }
+    agent = Agent(cfg, runtime)
+    chat_reqs: list[urllib.request.Request] = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"Loaded and ready."}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "use skill docx"}],
+        user_input="use skill docx",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert len(chat_reqs) == 1
+    first_payload = json.loads(chat_reqs[0].data.decode("utf-8"))
+    first_system = first_payload["messages"][0]["content"]
+    tool_names = [tool["function"]["name"] for tool in first_payload.get("tools", [])]
+    assert "Detailed internal prompt for DOCX workflows." in first_system
+    assert "Active skill guidance:" in first_system
+    assert "load_skill" not in tool_names
+
+
+def test_reasoning_tokens_strip_think_markers_in_journal_and_output(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"reasoning_content":"<think>internal chain</think>"}}]}',
+                'data: {"choices":[{"delta":{"content":"Visible answer"}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "say visible answer"}],
+        user_input="say visible answer",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert "<think>" not in result.reasoning
+    assert "</think>" not in result.reasoning
+    assert "internal chain" in result.reasoning
+
+
+def test_request_user_input_tool_returns_direct_follow_up_to_user(mocker, tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "asker").mkdir(parents=True)
+    (skills / "asker" / "SKILL.md").write_text(
+        """
+---
+name: asker
+description: ask for clarification
+version: 1.0.0
+---
+Ask a follow-up before continuing.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+        }
+    }
+    agent = Agent(cfg, runtime)
+    chat_reqs: list[urllib.request.Request] = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"request_user_input","arguments":"{\\"question\\": \\\"Pick a format\\\", \\\"options\\\": [\\\"pdf\\\", \\\"docx\\\"]}"}}]}}]}',
+                'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "use skill asker"}],
+        user_input="use skill asker",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert result.content == "Pick a format\nOptions: pdf | docx\nReply with your choice or answer so I can continue."
+    assert len(chat_reqs) == 1

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -1938,6 +1939,10 @@ class AlphanusTUI(App):
     def _visible_reasoning_text(self, text: str) -> str:
         if not text:
             return ""
+        text = re.sub(r"</?think>", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"</?tool_call>", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"</?function(?:=[^>]+)?>", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"</?parameter(?:=[^>]+)?>", "", text, flags=re.IGNORECASE)
         filtered_lines = [line for line in text.splitlines() if not self._is_tool_trace_line(line)]
         visible = "\n".join(filtered_lines).strip()
         return visible
@@ -2479,6 +2484,13 @@ class AlphanusTUI(App):
             self._cmd_skills()
             return True
 
+        if cmd == "/agents":
+            self._cmd_agents()
+            return True
+
+        if cmd == "/use-skill":
+            return self._cmd_use_skill(arg)
+
         if cmd == "/reload":
             return self._reload_skills()
 
@@ -2541,20 +2553,68 @@ class AlphanusTUI(App):
             state, color = self.agent.skill_runtime.skill_status_label(skill)
             source = self.agent.skill_runtime.skill_source_label(skill)
             provenance = self.agent.skill_runtime.skill_provenance_label(skill)
+            pack_id = str(skill.metadata.get("_pack_id", "")).strip() or "standalone"
             self._write(
                 f"  [bold {ACCENT_COLOR}]{esc(skill.id)}[/bold {ACCENT_COLOR}] "
                 f"[#a1a1aa]({esc(skill.version)})[/#a1a1aa] "
                 f"[{color}]{state}[/{color}]"
             )
             self._write(f"    [#a1a1aa]{esc(skill.description)}[/#a1a1aa]")
-            source_bits = provenance
+            source_bits = f"{provenance} · pack {pack_id}"
             if source:
                 source_bits += f" · {source}"
             self._write(f"    [#71717a]{esc(source_bits)}[/#71717a]")
+            flags = [
+                f"user={'yes' if skill.user_invocable else 'no'}",
+                f"model={'no' if skill.disable_model_invocation else 'yes'}",
+            ]
+            if skill.allowed_tools:
+                flags.append(f"tools={len(skill.allowed_tools)}")
+            scripts = self.agent.skill_runtime._skill_runnable_scripts(skill)
+            if scripts:
+                flags.append(f"scripts={len(scripts)}")
+            entrypoints = self.agent.skill_runtime._skill_entrypoints(skill)
+            if entrypoints:
+                flags.append(f"entrypoints={len(entrypoints)}")
+            agents = self.agent.skill_runtime._agents_for_skill(skill)
+            if agents:
+                flags.append(f"agents={len(agents)}")
+            self._write(f"    [#71717a]{esc(' · '.join(flags))}[/#71717a]")
             if not skill.available and skill.availability_reason:
                 code = esc(skill.availability_code or "blocked")
                 self._write(f"    [bold {ACCENT_COLOR}]blocked ({code}):[/bold {ACCENT_COLOR}] [#a1a1aa]{esc(skill.availability_reason)}[/#a1a1aa]")
         self._write("")
+
+    def _cmd_agents(self) -> None:
+        agents = self.agent.skill_runtime.list_agents()
+        self._write_section_heading("Agents")
+        if not agents:
+            self._write("  [#a1a1aa]No companion agents discovered.[/#a1a1aa]")
+            self._write("")
+            return
+        for agent in agents:
+            self._write(f"  [bold {ACCENT_COLOR}]{esc(agent.name)}[/bold {ACCENT_COLOR}]")
+            self._write(f"    [#a1a1aa]{esc(agent.description)}[/#a1a1aa]")
+            bits = [agent.source_tier, f"pack {agent.pack_id}"]
+            if agent.model:
+                bits.append(f"model {agent.model}")
+            if agent.reasoning_effort:
+                bits.append(f"effort {agent.reasoning_effort}")
+            self._write(f"    [#71717a]{esc(' · '.join(bits))}[/#71717a]")
+        self._write("")
+
+    def _cmd_use_skill(self, arg: str) -> bool:
+        raw = arg.strip()
+        if not raw:
+            return self._write_usage("/use-skill <id> [args]")
+        parts = raw.split(None, 1)
+        skill_ref = parts[0]
+        skill_args = parts[1] if len(parts) > 1 else ""
+        forwarded = f"use skill {skill_ref}"
+        if skill_args:
+            forwarded += f": {skill_args}"
+        self._send(forwarded)
+        return True
 
     def _cmd_skill(self, arg: str) -> bool:
         parts = arg.split()
@@ -2597,9 +2657,19 @@ class AlphanusTUI(App):
             self._write_detail_line("compatibility", skill.compatibility or "none")
             self._write_detail_line("availability_code", skill.availability_code or "ready")
             self._write_detail_line("availability", skill.availability_reason or "ready")
+            self._write_detail_line("pack_id", str(skill.metadata.get("_pack_id", "") or "standalone"))
             self._write_detail_line("keywords", keywords)
             self._write_detail_line("file_ext", file_ext)
             self._write_detail_line("tools", tools)
+            self._write_detail_line("user_invocable", str(skill.user_invocable).lower())
+            self._write_detail_line("model_invocable", str((not skill.disable_model_invocation)).lower())
+            self._write_detail_line("argument_hint", skill.argument_hint or "none")
+            scripts = ", ".join(self.agent.skill_runtime._skill_runnable_scripts(skill)) or "none"
+            entrypoints = ", ".join(entry.name for entry in self.agent.skill_runtime._skill_entrypoints(skill)) or "none"
+            agents = ", ".join(self.agent.skill_runtime._agents_for_skill(skill)) or "none"
+            self._write_detail_line("scripts", scripts)
+            self._write_detail_line("entrypoints", entrypoints)
+            self._write_detail_line("agents", agents)
             self._write("")
             return True
 
@@ -2673,13 +2743,33 @@ class AlphanusTUI(App):
         for skill in report.get("skills", []):
             line = (
                 f"  [bold {ACCENT_COLOR}]{esc(str(skill.get('id', '')))}[/bold {ACCENT_COLOR}] "
-                f"[#a1a1aa]({esc(str(skill.get('source_tier', '')))} · {esc(str(skill.get('availability_code', 'ready')))})[/#a1a1aa] "
+                f"[#a1a1aa]({esc(str(skill.get('source_tier', '')))} · pack {esc(str(skill.get('pack_id', '')))} · {esc(str(skill.get('availability_code', 'ready')))})[/#a1a1aa] "
                 f"[#a1a1aa]{esc(str(skill.get('status', 'unknown')))}[/#a1a1aa]"
             )
             self._write(line)
             reason = str(skill.get("availability_reason", "")).strip()
             if reason and reason != "ready":
                 self._write(f"    [#a1a1aa]{esc(reason)}[/#a1a1aa]")
+            capabilities: List[str] = []
+            if skill.get("tools"):
+                capabilities.append(f"tools={len(skill.get('tools', []))}")
+            if skill.get("scripts"):
+                capabilities.append(f"scripts={len(skill.get('scripts', []))}")
+            if skill.get("entrypoints"):
+                capabilities.append(f"entrypoints={len(skill.get('entrypoints', []))}")
+            if skill.get("agents"):
+                capabilities.append(f"agents={len(skill.get('agents', []))}")
+            capabilities.append(f"user={'yes' if skill.get('user_invocable', True) else 'no'}")
+            capabilities.append(f"model={'yes' if skill.get('model_invocable', True) else 'no'}")
+            self._write(f"    [#71717a]{esc(' · '.join(capabilities))}[/#71717a]")
+        agents = self.agent.skill_runtime.list_agents()
+        if agents:
+            self._write_section_heading("Agents")
+            for agent in agents:
+                self._write(
+                    f"  [bold {ACCENT_COLOR}]{esc(agent.name)}[/bold {ACCENT_COLOR}] "
+                    f"[#a1a1aa]({esc(agent.source_tier)} · pack {esc(agent.pack_id)})[/#a1a1aa]"
+                )
         self._write("")
 
     def _cmd_report(self, arg: str) -> bool:

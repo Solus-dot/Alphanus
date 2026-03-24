@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib.util
 import json
 import os
@@ -10,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -195,12 +197,25 @@ _TEXT_LIKE_EXTENSIONS = frozenset(
 
 _GENERIC_SCRIPT_TOOL_NAME = "run_skill_script"
 _GENERIC_ENTRYPOINT_TOOL_NAME = "run_skill_entrypoint"
+_LOAD_SKILL_TOOL_NAME = "load_skill"
+_READ_SKILL_RESOURCE_TOOL_NAME = "read_skill_resource"
+_RUN_SKILL_COMMAND_TOOL_NAME = "run_skill_command"
+_SPAWN_SKILL_AGENT_TOOL_NAME = "spawn_skill_agent"
+_REQUEST_USER_INPUT_TOOL_NAME = "request_user_input"
 _SCRIPT_INTERPRETER_BY_EXT = {
     ".py": [sys.executable],
     ".sh": ["bash"],
     ".js": ["node"],
     ".mjs": ["node"],
 }
+_SKILL_DIR_NAMES = ("skills", ".claude/skills", ".agents/skills", ".opencode/skills")
+_USER_SKILL_DIRS = (
+    ".alphanus/skills",
+    ".claude/skills",
+    ".agents/skills",
+    ".config/opencode/skills",
+)
+_PACK_AGENT_DIR_NAMES = ("agents", "agents-codex", ".claude/agents", ".agents/agents", ".config/opencode/agents")
 _ARTIFACT_SYNONYMS = {
     ".docx": ("docx", "word document", "word doc", "microsoft word"),
     ".pdf": ("pdf", "portable document format"),
@@ -292,6 +307,8 @@ class SkillContext:
     memory_hits: List[Dict[str, Any]]
     recent_routing_hint: str = ""
     sticky_skill_ids: List[str] = field(default_factory=list)
+    explicit_skill_id: str = ""
+    explicit_skill_args: str = ""
 
 
 @dataclass(slots=True)
@@ -301,6 +318,8 @@ class ToolExecutionEnv:
     config: Dict[str, Any]
     debug: bool
     confirm_shell: Optional[Callable[[str], bool]] = None
+    spawn_skill_agent: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
+    request_user_input: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
 
 
 @dataclass(slots=True)
@@ -327,6 +346,51 @@ class SkillCandidate:
     rerank_score: int = 0
 
 
+@dataclass(slots=True)
+class SkillPackRecord:
+    id: str
+    root: Path
+    source_tier: str
+    source_label: str
+    skill_ids: List[str] = field(default_factory=list)
+    agent_names: List[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class AgentRecord:
+    name: str
+    description: str
+    prompt: str
+    path: Path
+    pack_id: str
+    source_tier: str
+    model: str = ""
+    reasoning_effort: str = ""
+    sandbox_mode: str = ""
+    web_search_mode: str = ""
+    tool_policy: Dict[str, Any] = field(default_factory=dict)
+    resource_roots: List[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class LoadedSkillContract:
+    skill_id: str
+    prompt: str
+    resources: List[str]
+    scripts: List[str]
+    entrypoints: List[str]
+    agents: List[str]
+    argument_text: str = ""
+
+
+@dataclass(slots=True)
+class LoadedAgentContract:
+    agent_name: str
+    prompt: str
+    skill_id: str = ""
+    resource_roots: List[str] = field(default_factory=list)
+
+
 class SkillRuntime:
     def __init__(
         self,
@@ -337,15 +401,23 @@ class SkillRuntime:
         debug: bool = False,
     ) -> None:
         self.skills_dir = Path(skills_dir).resolve()
-        self.skill_roots = [self.skills_dir]
         self.workspace = workspace
         self.memory = memory
         self.config = config or {}
         self.debug = debug
         self.skills_cfg = self.config.get("skills", {})
         self.tools_cfg = self.config.get("tools", {})
-        self.selection_mode = str(self.skills_cfg.get("selection_mode", "all_enabled"))
+        self.selection_mode = str(self.skills_cfg.get("selection_mode", "all_enabled")).strip().lower()
+        if self.selection_mode == "hybrid_lazy":
+            self.selection_mode = "hybrid_lazy"
         self.max_active_skills = int(self.skills_cfg.get("max_active_skills", 6))
+        self.shortlist_size = max(1, int(self.skills_cfg.get("shortlist_size", 6)))
+        load_cfg = self.skills_cfg.get("load", {}) if isinstance(self.skills_cfg.get("load"), dict) else {}
+        self.upward_scan = bool(load_cfg.get("upward_scan", True))
+        extra_dirs = load_cfg.get("extra_dirs", [])
+        if isinstance(extra_dirs, str):
+            extra_dirs = [extra_dirs]
+        self.extra_skill_dirs = [Path(os.path.expanduser(str(item))).resolve() for item in extra_dirs if str(item).strip()]
         raw_core_policy = self.tools_cfg.get(
             "core_exposure_policy",
             self.skills_cfg.get("core_exposure_policy", "coding_core"),
@@ -353,11 +425,17 @@ class SkillRuntime:
         self.core_exposure_policy = str(raw_core_policy or "coding_core").strip().lower()
         self.generation = 0
 
+        self.skill_roots = self._discover_skill_roots()
         self.skills: Dict[str, SkillManifest] = {}
+        self.skill_packs: Dict[str, SkillPackRecord] = {}
+        self.agents: Dict[str, AgentRecord] = {}
+        self._skill_agents_by_pack: Dict[str, List[str]] = {}
+        self._skill_index: Dict[str, Dict[str, Any]] = {}
         self._tool_registry: Dict[str, RegisteredTool] = {}
         self._list_skills_cache: Optional[Tuple[SkillManifest, ...]] = None
         self._enabled_skills_cache: Optional[Tuple[SkillManifest, ...]] = None
         self._skill_catalog_cache: Dict[int, str] = {}
+        self._loaded_skill_contracts: Dict[tuple[str, str], LoadedSkillContract] = {}
         self._proc_env_base = self._build_proc_env_base()
         self.load_skills()
 
@@ -376,6 +454,151 @@ class SkillRuntime:
         existing = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = repo_root if not existing else repo_root + os.pathsep + existing
         return env
+
+    def _discover_skill_roots(self) -> List[Path]:
+        roots: List[Path] = []
+        seen: set[str] = set()
+
+        def add(path: Path) -> None:
+            resolved = path.resolve()
+            key = str(resolved)
+            if key in seen:
+                return
+            seen.add(key)
+            roots.append(resolved)
+
+        current = self.workspace.workspace_root.resolve()
+        while True:
+            for rel in _SKILL_DIR_NAMES:
+                add(current / rel)
+            if not self.upward_scan or current.parent == current:
+                break
+            current = current.parent
+
+        home_root = self.workspace.home_root.resolve()
+        for rel in _USER_SKILL_DIRS:
+            add(home_root / rel)
+
+        add(self.skills_dir)
+        for path in self.extra_skill_dirs:
+            add(path)
+        return roots
+
+    def _root_source_tier(self, root: Path) -> str:
+        root_resolved = root.resolve()
+        if self._is_relative_to(root_resolved, self.workspace.workspace_root.resolve()):
+            return "workspace/local"
+        if self._is_relative_to(root_resolved, self.workspace.home_root.resolve()):
+            return "user/local"
+        if self._is_relative_to(root_resolved, self.skills_dir.resolve()):
+            return "bundled"
+        return "external/local"
+
+    def _discover_skill_dirs(self, root: Path) -> List[Path]:
+        if not root.exists():
+            return []
+        candidates: List[Path] = []
+        seen: set[str] = set()
+        docs = [root / SKILL_DOC] if (root / SKILL_DOC).exists() else []
+        if root.is_dir():
+            try:
+                docs.extend(sorted(root.rglob(SKILL_DOC)))
+            except Exception:
+                docs = docs or []
+        for skill_doc in docs:
+            skill_dir = skill_doc.parent.resolve()
+            if ".git" in skill_dir.parts:
+                continue
+            if not self._is_relative_to(skill_dir, root.resolve()):
+                continue
+            rel = skill_doc.relative_to(root.resolve())
+            if len(rel.parts) > 5:
+                continue
+            key = str(skill_dir)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(skill_dir)
+        candidates.sort(key=lambda item: (len(item.relative_to(root.resolve()).parts), str(item)))
+        return candidates
+
+    def _pack_root_for_skill(self, skill_dir: Path, root: Path) -> Path:
+        skill_dir = skill_dir.resolve()
+        root = root.resolve()
+        root_parent = root.parent.resolve()
+        if root_parent != root and any((root_parent / rel).exists() for rel in _PACK_AGENT_DIR_NAMES):
+            return root_parent
+        for candidate in [skill_dir] + list(skill_dir.parents):
+            if not self._is_relative_to(candidate, root):
+                continue
+            if candidate == root:
+                return candidate
+            if (candidate / "skills").exists():
+                return candidate
+            if any((candidate / rel).exists() for rel in _PACK_AGENT_DIR_NAMES):
+                return candidate
+        return root
+
+    @staticmethod
+    def _pack_id_for_root(root: Path) -> str:
+        text = re.sub(r"[^a-z0-9]+", "-", root.name.lower()).strip("-") or "skill-pack"
+        digest = hashlib.sha1(str(root.resolve()).encode("utf-8")).hexdigest()[:10]
+        return f"{text}-{digest}"
+
+    def _discover_agents_for_pack(self, pack_root: Path, source_tier: str) -> List[AgentRecord]:
+        records: List[AgentRecord] = []
+        pack_id = self._pack_id_for_root(pack_root)
+        for rel in _PACK_AGENT_DIR_NAMES:
+            agent_root = pack_root / rel
+            if not agent_root.exists():
+                continue
+            for path in sorted(agent_root.rglob("*")):
+                if not path.is_file():
+                    continue
+                if path.suffix.lower() not in {".md", ".toml"}:
+                    continue
+                try:
+                    record = self._load_agent_record(path.resolve(), pack_id, source_tier)
+                except Exception:
+                    continue
+                if record.name not in self.agents:
+                    records.append(record)
+        return records
+
+    def _load_agent_record(self, path: Path, pack_id: str, source_tier: str) -> AgentRecord:
+        if path.suffix.lower() == ".toml":
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+            prompt = str(data.get("developer_instructions") or "").strip()
+            tool_policy = {key: value for key, value in data.items() if key not in {"developer_instructions", "description"}}
+            return AgentRecord(
+                name=path.stem.replace("_", "-"),
+                description=str(data.get("description") or path.stem).strip(),
+                prompt=prompt,
+                path=path,
+                pack_id=pack_id,
+                source_tier=source_tier,
+                model=str(data.get("model") or "").strip(),
+                reasoning_effort=str(data.get("model_reasoning_effort") or "").strip(),
+                sandbox_mode=str(data.get("sandbox_mode") or "").strip(),
+                web_search_mode=str(data.get("web_search") or "").strip(),
+                tool_policy=tool_policy,
+                resource_roots=[str(path.parent)],
+            )
+        frontmatter, prompt = extract_skill_doc(path, include_prompt=True)
+        return AgentRecord(
+            name=str(frontmatter.get("name") or path.stem).strip(),
+            description=str(frontmatter.get("description") or path.stem).strip(),
+            prompt=str(prompt or "").strip(),
+            path=path,
+            pack_id=pack_id,
+            source_tier=source_tier,
+            model=str(frontmatter.get("model") or "").strip(),
+            reasoning_effort=str(frontmatter.get("effort") or "").strip(),
+            sandbox_mode=str(frontmatter.get("sandbox") or frontmatter.get("mode") or "").strip(),
+            web_search_mode=str(frontmatter.get("web_search") or "").strip(),
+            tool_policy={"tools": frontmatter.get("tools")},
+            resource_roots=[str(path.parent)],
+        )
 
     @staticmethod
     def _prepare_command(command: str) -> Tuple[object, bool]:
@@ -476,6 +699,26 @@ class SkillRuntime:
         self._enabled_skills_cache = None
         self._skill_catalog_cache = {}
 
+    def _rebuild_skill_index(self) -> None:
+        self._skill_index = {}
+        for skill in self.skills.values():
+            self._skill_index[skill.id] = {
+                "id": skill.id,
+                "name": skill.name,
+                "description": skill.description,
+                "tags": list(skill.tags),
+                "categories": list(skill.categories),
+                "keywords": list(skill.triggers.get("keywords", [])),
+                "file_ext": list(skill.triggers.get("file_ext", [])),
+                "tools": list(skill.allowed_tools),
+                "produces": list(skill.produces),
+                "entrypoints": [entry.name for entry in self._skill_entrypoints(skill)],
+                "scripts": self._skill_runnable_scripts(skill),
+                "source_tier": skill.source_tier,
+                "user_invocable": bool(skill.user_invocable),
+                "model_invocable": not bool(skill.disable_model_invocation),
+            }
+
     def _register_tool(self, tool_name: str, manifest: SkillManifest, spec: Dict[str, Any], **extra: Any) -> bool:
         if tool_name in self._tool_registry:
             if self.debug:
@@ -514,6 +757,87 @@ class SkillRuntime:
         return names
 
     def _register_runtime_tools(self) -> None:
+        self._tool_registry[_LOAD_SKILL_TOOL_NAME] = RegisteredTool(
+            name=_LOAD_SKILL_TOOL_NAME,
+            skill_id="__runtime__",
+            tool_scope="skill",
+            capability="skill_loader",
+            description="Load the full content and packaged resources for a selected skill.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "skill_id": {"type": "string"},
+                    "arguments": {"type": "string"},
+                },
+                "required": ["skill_id"],
+            },
+        )
+        self._tool_registry[_READ_SKILL_RESOURCE_TOOL_NAME] = RegisteredTool(
+            name=_READ_SKILL_RESOURCE_TOOL_NAME,
+            skill_id="__runtime__",
+            tool_scope="skill",
+            capability="skill_resource_reader",
+            description="Read a supporting file bundled with a loaded skill.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "skill_id": {"type": "string"},
+                    "path": {"type": "string"},
+                },
+                "required": ["path"],
+            },
+        )
+        self._tool_registry[_RUN_SKILL_COMMAND_TOOL_NAME] = RegisteredTool(
+            name=_RUN_SKILL_COMMAND_TOOL_NAME,
+            skill_id="__runtime__",
+            tool_scope="skill",
+            capability="skill_command_runner",
+            description="Run a packaged skill workflow command relative to the skill or workspace root.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "skill_id": {"type": "string"},
+                    "command": {"type": "string"},
+                    "cwd": {"type": "string", "enum": ["skill", "workspace"]},
+                    "timeout_s": {"type": "integer"},
+                },
+                "required": ["command"],
+            },
+        )
+        self._tool_registry[_SPAWN_SKILL_AGENT_TOOL_NAME] = RegisteredTool(
+            name=_SPAWN_SKILL_AGENT_TOOL_NAME,
+            skill_id="__runtime__",
+            tool_scope="skill",
+            capability="skill_agent_runner",
+            description="Start, inspect, or wait for a companion agent provided by the active skill pack.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["start", "status", "wait"]},
+                    "agent_name": {"type": "string"},
+                    "prompt": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "background": {"type": "boolean"},
+                    "timeout_s": {"type": "integer"},
+                },
+            },
+        )
+        self._tool_registry[_REQUEST_USER_INPUT_TOOL_NAME] = RegisteredTool(
+            name=_REQUEST_USER_INPUT_TOOL_NAME,
+            skill_id="__runtime__",
+            tool_scope="skill",
+            capability="user_input_requester",
+            description="Ask the user a structured follow-up question and pause the current workflow.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string"},
+                    "options": {"type": "array", "items": {"type": "string"}},
+                    "header": {"type": "string"},
+                },
+                "required": ["question"],
+            },
+        )
         self._tool_registry[_GENERIC_ENTRYPOINT_TOOL_NAME] = RegisteredTool(
             name=_GENERIC_ENTRYPOINT_TOOL_NAME,
             skill_id="__runtime__",
@@ -554,8 +878,14 @@ class SkillRuntime:
     def load_skills(self) -> None:
         previous_enabled = {skill_id: skill.enabled for skill_id, skill in self.skills.items()}
         self.generation += 1
+        self.skill_roots = self._discover_skill_roots()
         self.skills = {}
+        self.skill_packs = {}
+        self.agents = {}
+        self._skill_agents_by_pack = {}
+        self._skill_index = {}
         self._tool_registry = {}
+        self._loaded_skill_contracts = {}
         self._invalidate_skill_caches()
         self._register_runtime_tools()
         if not any(root.exists() for root in self.skill_roots):
@@ -564,9 +894,9 @@ class SkillRuntime:
         for root in self.skill_roots:
             if not root.exists():
                 continue
-            for child in sorted(root.iterdir(), key=lambda path: path.name):
-                if not child.is_dir():
-                    continue
+            source_tier = self._root_source_tier(root)
+            pack_agents_registered: set[str] = set()
+            for child in self._discover_skill_dirs(root):
                 manifest: Optional[SkillManifest] = None
                 try:
                     manifest = self._load_manifest(child)
@@ -579,7 +909,19 @@ class SkillRuntime:
                     if manifest.id in previous_enabled:
                         manifest.enabled = previous_enabled[manifest.id]
 
-                    manifest.source_tier = self._skill_source_tier(manifest)
+                    pack_root = self._pack_root_for_skill(child, root)
+                    pack_id = self._pack_id_for_root(pack_root)
+                    pack = self.skill_packs.get(pack_id)
+                    if pack is None:
+                        pack = SkillPackRecord(
+                            id=pack_id,
+                            root=pack_root,
+                            source_tier=source_tier,
+                            source_label=str(pack_root),
+                        )
+                        self.skill_packs[pack_id] = pack
+                    manifest.source_tier = source_tier
+                    manifest.metadata.setdefault("_pack_id", pack_id)
                     (
                         manifest.available,
                         manifest.availability_code,
@@ -593,10 +935,19 @@ class SkillRuntime:
                         continue
 
                     self.skills[manifest.id] = manifest
+                    pack.skill_ids.append(manifest.id)
+                    if pack_id not in pack_agents_registered:
+                        for agent in self._discover_agents_for_pack(pack_root, source_tier):
+                            if agent.name in self.agents:
+                                continue
+                            self.agents[agent.name] = agent
+                            pack.agent_names.append(agent.name)
+                        pack_agents_registered.add(pack_id)
                 except Exception as exc:
                     self._remove_skill_tools(manifest.id if manifest else child.name)
                     if self.debug:
                         print(f"[skill] failed to load {child.name}: {exc}")
+        self._rebuild_skill_index()
 
     @staticmethod
     def _current_os_aliases() -> set[str]:
@@ -622,6 +973,10 @@ class SkillRuntime:
         if not path:
             return "external/local"
         try:
+            if self._is_relative_to(path.resolve(), self.workspace.workspace_root.resolve()):
+                return "workspace/local"
+            if self._is_relative_to(path.resolve(), self.workspace.home_root.resolve()):
+                return "user/local"
             if self._is_relative_to(path.resolve(), self.skills_dir.resolve()):
                 return "bundled"
         except Exception:
@@ -712,12 +1067,23 @@ class SkillRuntime:
             self._list_skills_cache = tuple(sorted(self.skills.values(), key=lambda s: s.id))
         return list(self._list_skills_cache)
 
+    def list_agents(self) -> List[AgentRecord]:
+        return [self.agents[name] for name in sorted(self.agents)]
+
+    def get_agent(self, agent_name: str) -> Optional[AgentRecord]:
+        return self.agents.get(str(agent_name).strip())
+
     def skill_source_label(self, skill: SkillManifest) -> str:
         path = skill.path or skill.doc_path
         if not path:
             return ""
         try:
-            return str(path.resolve().relative_to(self.skills_dir.parent))
+            resolved = path.resolve()
+            if self._is_relative_to(resolved, self.workspace.workspace_root.resolve()):
+                return f"workspace/{resolved.relative_to(self.workspace.workspace_root.resolve())}"
+            if self._is_relative_to(resolved, self.workspace.home_root.resolve()):
+                return f"home/{resolved.relative_to(self.workspace.home_root.resolve())}"
+            return str(resolved.relative_to(self.skills_dir.parent))
         except Exception:
             return str(path)
 
@@ -785,14 +1151,21 @@ class SkillRuntime:
         return [
             {
                 "id": skill.id,
+                "name": skill.name,
                 "enabled": bool(skill.enabled),
                 "available": bool(skill.available),
                 "status": self.skill_status_label(skill)[0],
                 "source_tier": self.skill_provenance_label(skill),
                 "source": self.skill_source_label(skill),
+                "pack_id": self._skill_pack_id(skill),
                 "availability_code": skill.availability_code or "ready",
                 "availability_reason": skill.availability_reason or "ready",
                 "tools": list(skill.allowed_tools),
+                "scripts": self._skill_runnable_scripts(skill),
+                "entrypoints": [entry.name for entry in self._skill_entrypoints(skill)],
+                "agents": self._agents_for_skill(skill),
+                "user_invocable": bool(skill.user_invocable),
+                "model_invocable": not bool(skill.disable_model_invocation),
             }
             for skill in self.list_skills()
         ]
@@ -810,6 +1183,38 @@ class SkillRuntime:
 
     def get_skill(self, skill_id: str) -> Optional[SkillManifest]:
         return self.skills.get(skill_id)
+
+    def resolve_skill_reference(self, skill_ref: str) -> Optional[SkillManifest]:
+        ref = str(skill_ref).strip()
+        if not ref:
+            return None
+        exact = self.get_skill(ref)
+        if exact is not None:
+            return exact
+        lowered = ref.lower()
+        for skill in self.list_skills():
+            if skill.id.lower() == lowered or skill.name.lower() == lowered:
+                return skill
+        prefix_matches = [
+            skill
+            for skill in self.list_skills()
+            if skill.id.lower().startswith(lowered) or skill.name.lower().startswith(lowered)
+        ]
+        if len(prefix_matches) == 1:
+            return prefix_matches[0]
+        normalized = re.sub(r"[^a-z0-9]+", "", lowered)
+        fuzzy = [
+            skill
+            for skill in self.list_skills()
+            if normalized
+            and (
+                re.sub(r"[^a-z0-9]+", "", skill.id.lower()) == normalized
+                or re.sub(r"[^a-z0-9]+", "", skill.name.lower()) == normalized
+            )
+        ]
+        if len(fuzzy) == 1:
+            return fuzzy[0]
+        return None
 
     @staticmethod
     def _match_tokens(text: str) -> List[str]:
@@ -1190,7 +1595,12 @@ class SkillRuntime:
         for skill in self.skills.values():
             if not skill.enabled or not skill.available:
                 continue
+            if skill.disable_model_invocation and skill.id != ctx.explicit_skill_id:
+                continue
             score = 0
+
+            if ctx.explicit_skill_id and skill.id == ctx.explicit_skill_id:
+                score += 1000
 
             for kw in skill.triggers.get("keywords", []):
                 kw_lower = kw.lower()
@@ -1270,6 +1680,10 @@ class SkillRuntime:
         return expanded
 
     def select_skills(self, ctx: SkillContext, top_n: int = 3) -> List[SkillManifest]:
+        if ctx.explicit_skill_id:
+            explicit = self.resolve_skill_reference(ctx.explicit_skill_id)
+            if explicit and explicit.enabled and explicit.available:
+                return self.expand_selected_skills(ctx, [explicit])
         if self.selection_mode == "all_enabled":
             enabled = [s for s in self.skills.values() if s.enabled]
             enabled.sort(key=lambda s: s.id)
@@ -1278,9 +1692,57 @@ class SkillRuntime:
             return self.expand_selected_skills(ctx, enabled[: self.max_active_skills])
 
         limit = self.max_active_skills if self.max_active_skills > 0 else top_n
-        candidates = self.propose_skill_candidates(ctx, top_n=max(limit * 3, 6))
+        shortlist = self.shortlist_size if self.shortlist_size > 0 else max(limit * 3, 6)
+        candidates = self.propose_skill_candidates(ctx, top_n=max(limit * 3, shortlist))
         selected = self.rerank_skill_candidates(ctx, candidates, max(1, limit))
         return self.expand_selected_skills(ctx, selected)
+
+    @staticmethod
+    def _skill_has_runtime_surface(skill: SkillManifest) -> bool:
+        return bool(
+            getattr(skill, "allowed_tools", None)
+            or getattr(skill, "command_tools", None)
+            or getattr(skill, "entrypoints", None)
+            or getattr(skill, "bundled_files", None)
+        )
+
+    def default_loaded_skill_ids(self, selected: List[SkillManifest], ctx: SkillContext) -> List[str]:
+        loaded: List[str] = []
+        for skill in selected:
+            skill_id = str(getattr(skill, "id", "")).strip()
+            if ctx.explicit_skill_id and skill_id == ctx.explicit_skill_id:
+                loaded.append(skill_id)
+                continue
+            if bool(getattr(skill, "disable_model_invocation", False)):
+                continue
+            if not self._skill_has_runtime_surface(skill):
+                loaded.append(skill_id)
+        return sorted(dict.fromkeys(loaded))
+
+    def loaded_skills(self, selected: List[SkillManifest], loaded_skill_ids: List[str]) -> List[SkillManifest]:
+        selected_map = {skill.id: skill for skill in selected}
+        out: List[SkillManifest] = []
+        for skill_id in loaded_skill_ids:
+            skill = selected_map.get(skill_id) or self.get_skill(skill_id)
+            if skill:
+                out.append(skill)
+        return out
+
+    def skill_cards_text(self, skills: List[SkillManifest]) -> str:
+        lines: List[str] = []
+        for skill in skills:
+            allowed_tools = list(getattr(skill, "allowed_tools", []) or [])
+            bundled_files = list(getattr(skill, "bundled_files", []) or [])
+            tool_text = ", ".join(allowed_tools[:4]) or "none"
+            resource_count = len([rel for rel in bundled_files if not rel.startswith("scripts/")])
+            lines.append(
+                f"- {getattr(skill, 'id', '')}: {getattr(skill, 'description', '')} | tools: {tool_text} | resources: {resource_count} | "
+                f"user_invocable: {'yes' if getattr(skill, 'user_invocable', True) else 'no'} | model_invocable: {'no' if getattr(skill, 'disable_model_invocation', False) else 'yes'}"
+            )
+        return "\n".join(lines)
+
+    def requested_opaque_artifact_extensions(self, ctx: SkillContext) -> List[str]:
+        return [ext for ext in self.requested_artifact_extensions(ctx) if ext not in _TEXT_LIKE_EXTENSIONS]
 
     def _skill_runtime_note(self, skill: SkillManifest, ctx: SkillContext) -> str:
         requested_exts = self.requested_artifact_extensions(ctx)
@@ -1388,6 +1850,135 @@ class SkillRuntime:
 
         return "\n\n".join(out)
 
+    def _skill_pack_id(self, skill: SkillManifest) -> str:
+        return str(skill.metadata.get("_pack_id", "")).strip()
+
+    def _agents_for_skill(self, skill: SkillManifest) -> List[str]:
+        pack_id = self._skill_pack_id(skill)
+        pack = self.skill_packs.get(pack_id)
+        if not pack:
+            return []
+        return list(pack.agent_names)
+
+    @staticmethod
+    def _extract_argument_item(argument_text: str, index: int) -> str:
+        if index < 0:
+            return ""
+        try:
+            parts = shlex.split(argument_text)
+        except Exception:
+            parts = argument_text.split()
+        return parts[index] if index < len(parts) else ""
+
+    def _rebase_vendor_paths(self, text: str, skill: SkillManifest) -> str:
+        out = str(text or "")
+        skill_root = str(skill.path or "")
+        if not skill_root:
+            return out
+        replacements: Dict[str, str] = {}
+        for candidate in self.list_skills():
+            if not candidate.path:
+                continue
+            for prefix in ("~/.codex/skills", "~/.claude/skills", "~/.config/opencode/skills", "~/.agents/skills"):
+                replacements[f"{prefix}/{candidate.id}"] = str(candidate.path)
+            for prefix in ("/home/weizhena/.codex/skills", "/home/weizhena/.claude/skills"):
+                replacements[f"{prefix}/{candidate.id}"] = str(candidate.path)
+        pack_id = self._skill_pack_id(skill)
+        pack = self.skill_packs.get(pack_id)
+        if pack:
+            for agent_name in pack.agent_names:
+                agent = self.agents.get(agent_name)
+                if not agent:
+                    continue
+                agent_root = str(agent.path.parent)
+                for prefix in ("~/.codex/agents", "~/.claude/agents", "~/.config/opencode/agents", "~/.agents/agents"):
+                    replacements[f"{prefix}/{agent_name}"] = str(agent.path)
+                    replacements[f"{prefix}/web-search-modules"] = str(Path(agent_root) / "web-search-modules")
+                for prefix in ("/home/weizhena/.codex/agents", "/home/weizhena/.claude/agents"):
+                    replacements[f"{prefix}/web-search-modules"] = str(Path(agent_root) / "web-search-modules")
+        for source, target in sorted(replacements.items(), key=lambda item: -len(item[0])):
+            out = out.replace(source, target)
+        return out
+
+    def _apply_skill_arguments(self, text: str, argument_text: str) -> str:
+        out = str(text or "")
+        if not argument_text:
+            return out
+        out = re.sub(r"\$ARGUMENTS\[(\d+)\]", lambda m: self._extract_argument_item(argument_text, int(m.group(1))), out)
+        out = re.sub(r"\$(\d+)\b", lambda m: self._extract_argument_item(argument_text, int(m.group(1))), out)
+        out = out.replace("$ARGUMENTS", argument_text)
+        if "$ARGUMENTS" not in text and "$0" not in text and "$ARGUMENTS[" not in text:
+            out = out.rstrip() + f"\n\nARGUMENTS: {argument_text}"
+        return out
+
+    def load_skill_contract(self, skill_id: str, argument_text: str = "") -> LoadedSkillContract:
+        skill = self.resolve_skill_reference(skill_id)
+        resolved_skill_id = skill.id if skill else str(skill_id).strip()
+        key = (resolved_skill_id, argument_text.strip())
+        cached = self._loaded_skill_contracts.get(key)
+        if cached is not None:
+            return cached
+        if skill is None or not skill.path:
+            raise FileNotFoundError(f"Skill not found: {skill_id}")
+        prompt = self._ensure_skill_prompt(skill).strip()
+        prompt = prompt.replace("${CLAUDE_SKILL_DIR}", str(skill.path)).replace("${OPENCODE_SKILL_DIR}", str(skill.path))
+        prompt = self._apply_skill_arguments(prompt, argument_text.strip())
+        prompt = self._rebase_vendor_paths(prompt, skill)
+        contract = LoadedSkillContract(
+            skill_id=skill.id,
+            prompt=prompt,
+            resources=sorted(
+                rel
+                for rel in skill.bundled_files
+                if not rel.startswith("scripts/") and rel != "tools.py" and rel != "hooks.py"
+            ),
+            scripts=self._skill_runnable_scripts(skill),
+            entrypoints=[entry.name for entry in self._skill_entrypoints(skill)],
+            agents=self._agents_for_skill(skill),
+            argument_text=argument_text.strip(),
+        )
+        self._loaded_skill_contracts[key] = contract
+        return contract
+
+    def load_agent_contract(self, agent_name: str, skill_id: str = "") -> LoadedAgentContract:
+        agent = self.get_agent(agent_name)
+        if agent is None:
+            raise FileNotFoundError(f"Agent not found: {agent_name}")
+        skill = self.resolve_skill_reference(skill_id) if skill_id else None
+        if skill is not None and self._skill_pack_id(skill) != agent.pack_id:
+            raise PermissionError(
+                f"Agent '{agent_name}' does not belong to the active skill pack for '{skill.id}'"
+            )
+        prompt = str(agent.prompt or "").strip()
+        if skill is not None:
+            prompt = self._rebase_vendor_paths(prompt, skill)
+            prompt = (
+                prompt.replace("${SKILL_DIR}", str(skill.path))
+                .replace("${PACK_ROOT}", str(self.skill_packs.get(agent.pack_id).root if self.skill_packs.get(agent.pack_id) else ""))
+                .replace("${WORKSPACE_ROOT}", str(self.workspace.workspace_root))
+            )
+        return LoadedAgentContract(
+            agent_name=agent.name,
+            prompt=prompt,
+            skill_id=skill.id if skill is not None else "",
+            resource_roots=list(agent.resource_roots),
+        )
+
+    def read_skill_resource(self, skill_id: str, relpath: str) -> Dict[str, Any]:
+        skill = self.get_skill(skill_id)
+        if skill is None or not skill.path:
+            raise FileNotFoundError(f"Skill not found: {skill_id}")
+        target = (skill.path / relpath).resolve()
+        if not self._is_relative_to(target, skill.path.resolve()):
+            raise PermissionError("Skill resource path escapes skill root")
+        if not target.exists() or not target.is_file():
+            raise FileNotFoundError(f"Skill resource not found: {relpath}")
+        return {
+            "skill_id": skill.id,
+            "path": relpath,
+            "content": target.read_text(encoding="utf-8"),
+        }
+
     @staticmethod
     def _safe_prompt_snippet(body: str, allowed: int) -> str:
         if allowed <= 0 or not body:
@@ -1468,9 +2059,28 @@ class SkillRuntime:
             allowed.append(tool_name)
         return sorted(allowed)
 
-    def allowed_tool_names(self, selected: List[SkillManifest], ctx: Optional[SkillContext] = None) -> List[str]:
+    def allowed_tool_names(
+        self,
+        selected: List[SkillManifest],
+        ctx: Optional[SkillContext] = None,
+        loaded_skill_ids: Optional[List[str]] = None,
+    ) -> List[str]:
+        loaded_skill_ids = loaded_skill_ids or []
         names = self.core_tool_names()
         names.extend(self.optional_tool_names(selected, ctx=ctx))
+        if any(getattr(skill, "id", "") not in set(loaded_skill_ids) for skill in selected):
+            names.append(_LOAD_SKILL_TOOL_NAME)
+        if loaded_skill_ids:
+            names.extend(
+                [
+                    _READ_SKILL_RESOURCE_TOOL_NAME,
+                    _RUN_SKILL_COMMAND_TOOL_NAME,
+                    _SPAWN_SKILL_AGENT_TOOL_NAME,
+                ]
+            )
+            runtime_cfg = self.config.get("runtime", {}) if isinstance(self.config.get("runtime"), dict) else {}
+            if bool(runtime_cfg.get("ask_user_tool", True)):
+                names.append(_REQUEST_USER_INPUT_TOOL_NAME)
         if self.selected_shell_workflow_skills(selected, ctx):
             names = [name for name in names if name != "run_checks"]
         return sorted(dict.fromkeys(names))
@@ -1674,12 +2284,40 @@ class SkillRuntime:
         names: List[str],
         selected: Optional[List[SkillManifest]] = None,
         ctx: Optional[SkillContext] = None,
+        loaded_skill_ids: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         tools = []
+        loaded_skill_ids = loaded_skill_ids or []
         for name in names:
             reg = self._tool_registry[name]
             parameters = reg.parameters
             description = reg.description
+            if reg.name == _LOAD_SKILL_TOOL_NAME and selected is not None:
+                candidates = [skill.id for skill in selected if not skill.disable_model_invocation or (ctx and ctx.explicit_skill_id == skill.id)]
+                if candidates:
+                    parameters = {
+                        "type": "object",
+                        "properties": {
+                            "skill_id": {"type": "string", "enum": sorted(dict.fromkeys(candidates))},
+                            "arguments": {"type": "string"},
+                        },
+                        "required": ["skill_id"],
+                    }
+                    description = f"{reg.description} Available skills: {', '.join(sorted(dict.fromkeys(candidates))[:8])}."
+            if reg.name in {_READ_SKILL_RESOURCE_TOOL_NAME, _RUN_SKILL_COMMAND_TOOL_NAME, _SPAWN_SKILL_AGENT_TOOL_NAME} and loaded_skill_ids:
+                parameters = dict(parameters) if isinstance(parameters, dict) else {}
+                properties = dict(parameters.get("properties", {}))
+                properties["skill_id"] = {"type": "string", "enum": sorted(dict.fromkeys(loaded_skill_ids))}
+                parameters["type"] = "object"
+                parameters["properties"] = properties
+                if reg.name == _SPAWN_SKILL_AGENT_TOOL_NAME:
+                    agent_names: List[str] = []
+                    for skill_id in loaded_skill_ids:
+                        skill = self.get_skill(skill_id)
+                        if skill:
+                            agent_names.extend(self._agents_for_skill(skill))
+                    if agent_names:
+                        properties["agent_name"] = {"type": "string", "enum": sorted(dict.fromkeys(agent_names))}
             if reg.name == _GENERIC_ENTRYPOINT_TOOL_NAME and selected is not None:
                 parameters = self._dynamic_run_skill_entrypoint_schema(selected, ctx)
                 available_entrypoints: List[str] = []
@@ -1716,8 +2354,18 @@ class SkillRuntime:
             )
         return tools
 
-    def tools_for_turn(self, selected: List[SkillManifest], ctx: Optional[SkillContext] = None) -> List[Dict[str, Any]]:
-        return self._tool_schemas(self.allowed_tool_names(selected, ctx=ctx), selected=selected, ctx=ctx)
+    def tools_for_turn(
+        self,
+        selected: List[SkillManifest],
+        ctx: Optional[SkillContext] = None,
+        loaded_skill_ids: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        return self._tool_schemas(
+            self.allowed_tool_names(selected, ctx=ctx, loaded_skill_ids=loaded_skill_ids),
+            selected=selected,
+            ctx=ctx,
+            loaded_skill_ids=loaded_skill_ids,
+        )
 
     def _run_pre_action_hooks(
         self,
@@ -1837,6 +2485,15 @@ class SkillRuntime:
         reg = self._tool_registry.get(tool_name)
         if not reg:
             raise LookupError(f"No adapter for tool '{tool_name}'")
+
+        if reg.name in {
+            _LOAD_SKILL_TOOL_NAME,
+            _READ_SKILL_RESOURCE_TOOL_NAME,
+            _RUN_SKILL_COMMAND_TOOL_NAME,
+            _SPAWN_SKILL_AGENT_TOOL_NAME,
+            _REQUEST_USER_INPUT_TOOL_NAME,
+        }:
+            return reg, None
 
         if reg.name == _GENERIC_ENTRYPOINT_TOOL_NAME:
             if not any(self._skill_entrypoints(skill) for skill in selected if not skill.disable_model_invocation):
@@ -2028,6 +2685,29 @@ class SkillRuntime:
         args: Dict[str, Any],
         env: ToolExecutionEnv,
     ) -> Any:
+        if reg.name == _LOAD_SKILL_TOOL_NAME:
+            contract = self.load_skill_contract(str(args.get("skill_id", "")).strip(), str(args.get("arguments", "")).strip())
+            return {
+                "skill_id": contract.skill_id,
+                "prompt": contract.prompt,
+                "resources": contract.resources,
+                "scripts": contract.scripts,
+                "entrypoints": contract.entrypoints,
+                "agents": contract.agents,
+                "arguments": contract.argument_text,
+            }
+        if reg.name == _READ_SKILL_RESOURCE_TOOL_NAME:
+            return self.read_skill_resource(str(args.get("skill_id", "")).strip(), str(args.get("path", "")).strip())
+        if reg.name == _RUN_SKILL_COMMAND_TOOL_NAME:
+            return self._execute_skill_command_tool(args, env)
+        if reg.name == _SPAWN_SKILL_AGENT_TOOL_NAME:
+            if not env.spawn_skill_agent:
+                raise PermissionError("Skill agent runtime is unavailable")
+            return env.spawn_skill_agent(args)
+        if reg.name == _REQUEST_USER_INPUT_TOOL_NAME:
+            if not env.request_user_input:
+                raise PermissionError("User input runtime is unavailable")
+            return env.request_user_input(args)
         if reg.name == _GENERIC_ENTRYPOINT_TOOL_NAME:
             return self._execute_skill_entrypoint_tool(args, env)
         if reg.name == _GENERIC_SCRIPT_TOOL_NAME:
@@ -2047,6 +2727,8 @@ class SkillRuntime:
         selected: List[SkillManifest],
         ctx: SkillContext,
         confirm_shell: Optional[Callable[[str], bool]] = None,
+        spawn_skill_agent: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        request_user_input: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         start = time.perf_counter()
         try:
@@ -2058,6 +2740,8 @@ class SkillRuntime:
                 config=self.config,
                 debug=self.debug,
                 confirm_shell=confirm_shell,
+                spawn_skill_agent=spawn_skill_agent,
+                request_user_input=request_user_input,
             )
             result = self._execute_registered_tool(reg, normalized_args, env)
             duration = int((time.perf_counter() - start) * 1000)
@@ -2231,6 +2915,7 @@ class SkillRuntime:
         command: str,
         env: ToolExecutionEnv,
         timeout_s: int,
+        cwd: Optional[str] = None,
     ) -> Dict[str, Any]:
         caps = env.config.get("capabilities", {})
         dangerously_skip_permissions = bool(caps.get("dangerously_skip_permissions", False))
@@ -2240,7 +2925,7 @@ class SkillRuntime:
                 raise PermissionError("Shell confirmation callback is required")
             if not env.confirm_shell(command):
                 raise PermissionError("Shell command rejected by user")
-        result = env.workspace.run_shell_command(command, timeout_s=max(1, int(timeout_s)))
+        result = env.workspace.run_shell_command(command, timeout_s=max(1, int(timeout_s)), cwd=cwd)
         if not result.get("ok"):
             error = result.get("error") or {}
             message = str(error.get("message", "Shell workflow command failed"))
@@ -2251,6 +2936,30 @@ class SkillRuntime:
                 raise TimeoutError(message)
             raise RuntimeError(message)
         return result["data"]
+
+    def _execute_skill_command_tool(
+        self,
+        args: Dict[str, Any],
+        env: ToolExecutionEnv,
+    ) -> Dict[str, Any]:
+        skill = self.get_skill(str(args.get("skill_id", "")).strip())
+        if skill is None or not skill.path:
+            raise FileNotFoundError("Selected skill root is unavailable")
+        command = self._rebase_vendor_paths(str(args.get("command", "")).strip(), skill)
+        if not command:
+            raise ValueError("Missing required argument: command")
+        cwd_mode = str(args.get("cwd", "skill")).strip().lower() or "skill"
+        cwd = str(skill.path) if cwd_mode == "skill" else str(self.workspace.workspace_root)
+        timeout_s = max(1, int(args.get("timeout_s", 30)))
+        run_data = self._run_shell_workflow_command(command, env, timeout_s, cwd=cwd)
+        return {
+            "skill_id": skill.id,
+            "command": command,
+            "stdout": run_data.get("stdout", ""),
+            "stderr": run_data.get("stderr", ""),
+            "returncode": run_data.get("returncode", 0),
+            "cwd": run_data.get("cwd", ""),
+        }
 
     def _execute_skill_entrypoint_tool(
         self,
@@ -2275,14 +2984,15 @@ class SkillRuntime:
 
         install_results: List[Dict[str, Any]] = []
         verify_results: List[Dict[str, Any]] = []
+        command_cwd = str(skill.path) if entrypoint.cwd == "skill" else str(self.workspace.workspace_root)
         for template in entrypoint.install:
             command = self._resolve_entrypoint_placeholders(template, template_values)
-            install_results.append(self._run_shell_workflow_command(command, env, timeout_s))
+            install_results.append(self._run_shell_workflow_command(command, env, timeout_s, cwd=command_cwd))
         for template in entrypoint.verify:
             command = self._resolve_entrypoint_placeholders(template, template_values)
-            verify_results.append(self._run_shell_workflow_command(command, env, timeout_s))
+            verify_results.append(self._run_shell_workflow_command(command, env, timeout_s, cwd=command_cwd))
         command = self._resolve_entrypoint_placeholders(entrypoint.command, template_values)
-        run_data = self._run_shell_workflow_command(command, env, timeout_s)
+        run_data = self._run_shell_workflow_command(command, env, timeout_s, cwd=command_cwd)
         return {
             "skill_id": skill.id,
             "entrypoint": entrypoint.name,
