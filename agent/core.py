@@ -1772,6 +1772,43 @@ class Agent:
                 count += 1
         return count
 
+    @staticmethod
+    def _tool_result_paths(name: str, payload: Dict[str, Any]) -> List[str]:
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            return []
+        if name in {"create_file", "edit_file", "create_directory"}:
+            path = str(data.get("filepath", "")).strip()
+            return [path] if path else []
+        if name == "create_files":
+            created = data.get("created")
+            if not isinstance(created, list):
+                return []
+            out: List[str] = []
+            for item in created:
+                if not isinstance(item, dict):
+                    continue
+                path = str(item.get("filepath", "")).strip()
+                if path:
+                    out.append(path)
+            return out
+        return []
+
+    def _direct_tool_completion_allowed(self, state: TurnState, call: ToolCall, result: Dict[str, Any]) -> bool:
+        if call.name not in {"create_directory", "create_file", "create_files", "edit_file"}:
+            return True
+        requested_exts = {
+            str(ext).strip().lower()
+            for ext in self.skill_runtime.requested_opaque_artifact_extensions(state.ctx)
+            if str(ext).strip()
+        }
+        if not requested_exts:
+            return True
+        for path in self._tool_result_paths(call.name, result):
+            if Path(path).suffix.lower() in requested_exts:
+                return True
+        return False
+
     def _finalize_turn(
         self,
         system_content: str,
@@ -2321,6 +2358,7 @@ class Agent:
 
                 force_finalize_reason = ""
                 direct_answers: List[str] = []
+                single_tool_result: Optional[Dict[str, Any]] = None
                 all_tool_success = True
                 for call in stream_result.tool_calls:
                     state.action_depth += 1
@@ -2468,6 +2506,8 @@ class Agent:
                     direct = self._direct_tool_answer(call.name, result)
                     if direct:
                         direct_answers.append(direct)
+                    if len(stream_result.tool_calls) == 1:
+                        single_tool_result = result
                     if (
                         call.name == "request_user_input"
                         and result.get("ok")
@@ -2546,6 +2586,8 @@ class Agent:
                     len(stream_result.tool_calls) == 1
                     and all_tool_success
                     and len(direct_answers) == 1
+                    and single_tool_result is not None
+                    and self._direct_tool_completion_allowed(state, stream_result.tool_calls[0], single_tool_result)
                     and (not state.search_mode or not search_tool_called)
                     and not state.batch_workspace_action
                     and not state.workspace_scaffold_action

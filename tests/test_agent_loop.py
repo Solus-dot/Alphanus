@@ -293,6 +293,61 @@ def test_agent_requests_final_answer_if_post_tool_content_empty(mocker, runtime:
     )
 
 
+def test_agent_does_not_finish_after_helper_file_for_opaque_artifact_request(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+    chat_reqs = []
+
+    mocker.patch.object(agent, "_select_skills", return_value=runtime.enabled_skills())
+    mocker.patch.object(runtime, "requested_opaque_artifact_extensions", return_value=[".docx"])
+    mocker.patch.object(runtime, "selected_artifact_materializers", return_value=["docx:shell_command"])
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\\"northstar-proposal.js\\\", \\\"content\\\": \\\"console.log(1)\\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        if len(chat_reqs) == 2:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"Continuing with the DOCX workflow."}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        raise AssertionError("Unexpected extra completion call")
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "create northstar-proposal.docx"}],
+        user_input="create northstar-proposal.docx",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert result.content == "Continuing with the DOCX workflow."
+    assert len(chat_reqs) == 2
+
+
 def test_skill_snapshot_refreshes_only_after_runtime_generation_changes(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
