@@ -246,6 +246,10 @@ _SCRIPT_CREATE_HINTS = frozenset({"build", "convert", "create", "export", "gener
 _SCRIPT_EDIT_HINTS = frozenset({"edit", "fix", "format", "modify", "patch", "rewrite", "update"})
 _SCRIPT_REVIEW_HINTS = frozenset({"extract", "inspect", "preview", "read", "render", "review", "view"})
 _SCRIPT_SETUP_HINTS = frozenset({"bootstrap", "dependency", "install", "setup", "verify"})
+_SHELL_FENCE_LANGS = frozenset({"", "bash", "console", "shell", "sh", "zsh"})
+_INLINE_COMMAND_HINT_RE = re.compile(r"\b(?:bootstrap|command|commands|convert|install|requires?|run|setup|validate|verify)\b", re.IGNORECASE)
+_COMMAND_SETUP_HINT_RE = re.compile(r"\b(?:bootstrap|dependency|install|setup)\b", re.IGNORECASE)
+_COMMAND_VERIFY_HINT_RE = re.compile(r"\b(?:check|preflight|validate|verify)\b", re.IGNORECASE)
 
 
 def _ok(data: Any, duration_ms: int) -> Dict[str, Any]:
@@ -378,9 +382,14 @@ class LoadedSkillContract:
     prompt: str
     resources: List[str]
     scripts: List[str]
+    blocked_scripts: List[Dict[str, str]]
     commands: List[str]
+    install_commands: List[str]
+    verify_commands: List[str]
     entrypoints: List[str]
     agents: List[str]
+    availability_code: str = "ready"
+    availability_reason: str = ""
     argument_text: str = ""
 
 
@@ -419,6 +428,8 @@ class SkillRuntime:
         if isinstance(extra_dirs, str):
             extra_dirs = [extra_dirs]
         self.extra_skill_dirs = [Path(os.path.expanduser(str(item))).resolve() for item in extra_dirs if str(item).strip()]
+        configured_python = str(load_cfg.get("python_executable") or self.skills_cfg.get("python_executable") or "").strip()
+        self.python_executable = configured_python or sys.executable
         raw_core_policy = self.tools_cfg.get(
             "core_exposure_policy",
             self.skills_cfg.get("core_exposure_policy", "coding_core"),
@@ -437,6 +448,7 @@ class SkillRuntime:
         self._enabled_skills_cache: Optional[Tuple[SkillManifest, ...]] = None
         self._skill_catalog_cache: Dict[int, str] = {}
         self._loaded_skill_contracts: Dict[tuple[str, str], LoadedSkillContract] = {}
+        self._python_module_probe_cache: Dict[str, bool] = {}
         self._proc_env_base = self._build_proc_env_base()
         self.load_skills()
 
@@ -448,12 +460,29 @@ class SkillRuntime:
         env["ALPHANUS_MEMORY_MODEL"] = str(self.memory.model_name)
         env["ALPHANUS_MEMORY_BACKEND"] = str(self.memory.embedding_backend)
         env["ALPHANUS_MEMORY_EAGER_LOAD"] = "1" if bool(getattr(self.memory, "eager_load_encoder", False)) else "0"
+        env["ALPHANUS_SKILL_PYTHON"] = str(self.python_executable)
         env["ALPHANUS_CONFIG_JSON"] = json.dumps(self.config, ensure_ascii=False)
 
         # Let skill scripts import project modules without per-script sys.path hacks.
         repo_root = str(self.skills_dir.parent)
         existing = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = repo_root if not existing else repo_root + os.pathsep + existing
+
+        npm_path = shutil.which("npm")
+        if npm_path:
+            try:
+                proc = subprocess.run(
+                    [npm_path, "root", "-g"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+            except Exception:
+                proc = None
+            node_root = (proc.stdout or "").strip() if proc and proc.returncode == 0 else ""
+            if node_root:
+                existing_node_path = env.get("NODE_PATH", "")
+                env["NODE_PATH"] = node_root if not existing_node_path else node_root + os.pathsep + existing_node_path
         return env
 
     def _discover_skill_roots(self) -> List[Path]:
@@ -1345,19 +1374,157 @@ class SkillRuntime:
             intents.add("general")
         return intents
 
+    @staticmethod
+    def _is_skill_script_candidate(relpath: str) -> bool:
+        normalized = str(relpath or "").strip()
+        if not normalized:
+            return False
+        name = Path(normalized).name
+        if name in {"tools.py", "hooks.py", "__init__.py"}:
+            return False
+        if normalized.startswith("scripts/"):
+            return True
+        return "/" not in normalized and Path(normalized).suffix.lower() in _SCRIPT_INTERPRETER_BY_EXT
+
     def _skill_runnable_scripts(self, skill: SkillManifest) -> List[str]:
         runnable: List[str] = []
         for rel in skill.bundled_files:
-            if not rel.startswith("scripts/"):
+            if not self._is_skill_script_candidate(rel):
+                continue
+            if not self._script_is_cli_entry(skill, rel):
                 continue
             ext = Path(rel).suffix.lower()
-            interpreter = _SCRIPT_INTERPRETER_BY_EXT.get(ext)
+            interpreter = self._script_interpreter(ext)
             if not interpreter:
                 continue
-            if interpreter[0] != sys.executable and shutil.which(interpreter[0]) is None:
+            if not Path(interpreter[0]).exists() and interpreter[0] != Path(sys.executable).resolve().as_posix() and shutil.which(interpreter[0]) is None:
+                continue
+            if self._python_script_missing_modules(skill, rel):
                 continue
             runnable.append(rel)
         return sorted(dict.fromkeys(runnable))
+
+    def _script_block_reason(self, skill: SkillManifest, rel_script: str) -> str:
+        if not skill.path:
+            return "skill root is unavailable"
+        script_path = (skill.path / rel_script).resolve()
+        if not self._is_relative_to(script_path, skill.path.resolve()):
+            return "script path escapes skill root"
+        if not script_path.exists():
+            return "script file is missing"
+        ext = script_path.suffix.lower()
+        interpreter = self._script_interpreter(ext)
+        if not interpreter:
+            return f"unsupported script type: {script_path.suffix}"
+        if not Path(interpreter[0]).exists() and interpreter[0] != Path(sys.executable).resolve().as_posix() and shutil.which(interpreter[0]) is None:
+            return f"missing interpreter: {interpreter[0]}"
+        missing_modules = self._python_script_missing_modules(skill, rel_script)
+        if missing_modules:
+            return f"missing python modules: {', '.join(missing_modules)}"
+        return ""
+
+    def _blocked_skill_scripts(self, skill: SkillManifest) -> List[Dict[str, str]]:
+        blocked: List[Dict[str, str]] = []
+        for rel in sorted(rel for rel in skill.bundled_files if self._is_skill_script_candidate(rel)):
+            if not self._script_is_cli_entry(skill, rel):
+                continue
+            if Path(rel).suffix.lower() not in _SCRIPT_INTERPRETER_BY_EXT:
+                continue
+            reason = self._script_block_reason(skill, rel)
+            if reason:
+                blocked.append({"script": rel, "reason": reason})
+        return blocked
+
+    def _script_is_cli_entry(self, skill: SkillManifest, rel_script: str) -> bool:
+        if not skill.path:
+            return False
+        script_path = (skill.path / rel_script).resolve()
+        ext = script_path.suffix.lower()
+        if ext in {".sh", ".js", ".mjs"}:
+            return True
+        if ext != ".py" or not script_path.exists():
+            return False
+        return script_path.name != "__init__.py"
+
+    def _script_has_local_module(self, skill: SkillManifest, script_path: Path, module_name: str) -> bool:
+        if not skill.path:
+            return False
+        bases = [script_path.parent, skill.path / "scripts", skill.path]
+        for base in bases:
+            if (base / f"{module_name}.py").exists():
+                return True
+            module_dir = base / module_name
+            if module_dir.exists() and module_dir.is_dir():
+                return True
+        return False
+
+    def _python_script_missing_modules(self, skill: SkillManifest, rel_script: str) -> List[str]:
+        if not skill.path:
+            return []
+        script_path = (skill.path / rel_script).resolve()
+        if script_path.suffix.lower() != ".py" or not script_path.exists():
+            return []
+        try:
+            tree = ast.parse(script_path.read_text(encoding="utf-8"), filename=str(script_path))
+        except Exception:
+            return []
+
+        imported: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    name = str(alias.name or "").split(".", 1)[0].strip()
+                    if name:
+                        imported.add(name)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                name = str(node.module).split(".", 1)[0].strip()
+                if name:
+                    imported.add(name)
+
+        missing: List[str] = []
+        stdlib = getattr(sys, "stdlib_module_names", set())
+        for name in sorted(imported):
+            if name in stdlib:
+                continue
+            if self._script_has_local_module(skill, script_path, name):
+                continue
+            if not self._python_module_available(name):
+                missing.append(name)
+        return missing
+
+    def _script_interpreter(self, ext: str) -> Optional[List[str]]:
+        normalized = str(ext or "").lower()
+        if normalized == ".py":
+            return [self.python_executable]
+        base = _SCRIPT_INTERPRETER_BY_EXT.get(normalized)
+        return list(base) if base else None
+
+    def _python_module_available(self, module_name: str) -> bool:
+        cached = self._python_module_probe_cache.get(module_name)
+        if cached is not None:
+            return cached
+
+        python_exec = str(self.python_executable or sys.executable)
+        if python_exec == sys.executable:
+            try:
+                available = importlib.util.find_spec(module_name) is not None
+            except Exception:
+                available = False
+            self._python_module_probe_cache[module_name] = available
+            return available
+
+        try:
+            proc = subprocess.run(
+                [python_exec, "-c", "import importlib.util,sys; raise SystemExit(0 if importlib.util.find_spec(sys.argv[1]) else 1)", module_name],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            available = proc.returncode == 0
+        except Exception:
+            available = False
+        self._python_module_probe_cache[module_name] = available
+        return available
 
     @staticmethod
     def _entrypoint_intents(entrypoint: SkillEntrypointDef) -> set[str]:
@@ -1432,8 +1599,11 @@ class SkillRuntime:
         if not prompt.strip():
             return []
         commands: List[str] = []
-        blocks = re.findall(r"```(?:[^\n`]*)\n(.*?)```", prompt, flags=re.DOTALL)
-        for block in blocks:
+        blocks = re.findall(r"```([^\n`]*)\n(.*?)```", prompt, flags=re.DOTALL)
+        for lang_raw, block in blocks:
+            lang = str(lang_raw or "").strip().lower().split(None, 1)[0] if str(lang_raw or "").strip() else ""
+            if lang not in _SHELL_FENCE_LANGS:
+                continue
             for raw_line in block.splitlines():
                 line = raw_line.strip()
                 if not line or line.startswith("#"):
@@ -1442,10 +1612,18 @@ class SkillRuntime:
                     line = line[1:].strip()
                 if not line:
                     continue
-                lowered = line.lower()
-                head = lowered.split()[0] if lowered.split() else ""
-                if head in _SHELL_WORKFLOW_HINTS or any(token in lowered for token in _SHELL_WORKFLOW_HINTS):
+                if self._looks_like_shell_workflow_command(line):
                     commands.append(line)
+        for raw_line in prompt.splitlines():
+            line = raw_line.strip()
+            if "`" not in line:
+                continue
+            if not _INLINE_COMMAND_HINT_RE.search(line) and not any(token in line.lower() for token in _SHELL_WORKFLOW_HINTS):
+                continue
+            for candidate in re.findall(r"`([^`\n]+)`", line):
+                command = candidate.strip()
+                if self._looks_like_shell_workflow_command(command):
+                    commands.append(command)
         if ctx is None:
             return sorted(dict.fromkeys(commands))
 
@@ -1454,6 +1632,43 @@ class SkillRuntime:
         if requested_exts and not self._skill_supports_artifact(skill, requested_exts, intents=intents):
             return []
         return sorted(dict.fromkeys(commands))
+
+    def _runtime_visible_skill_commands(self, skill: SkillManifest, ctx: Optional[SkillContext]) -> List[str]:
+        return sorted(
+            dict.fromkeys(self._rebase_vendor_paths(command, skill) for command in self._skill_shell_workflow_commands(skill, ctx))
+        )
+
+    @staticmethod
+    def _looks_like_shell_workflow_command(text: str) -> bool:
+        raw = str(text or "").strip()
+        if not raw:
+            return False
+        try:
+            parts = shlex.split(raw)
+        except ValueError:
+            parts = raw.split()
+        if not parts:
+            return False
+        head = Path(parts[0]).name.lower()
+        if head == "sudo" and len(parts) > 1:
+            head = Path(parts[1]).name.lower()
+            parts = parts[1:]
+        if head not in _SHELL_WORKFLOW_HINTS:
+            return False
+        if head in {"python", "python3"} and len(parts) >= 2:
+            target = str(parts[1]).strip()
+            return target.endswith(".py") or "/" in target
+        return True
+
+    def _skill_install_commands(self, skill: SkillManifest) -> List[str]:
+        commands = list(self._runtime_visible_skill_commands(skill, None))
+        commands.extend(self._rebase_vendor_paths(command, skill) for entrypoint in self._skill_entrypoints(skill) for command in entrypoint.install)
+        return sorted(dict.fromkeys(command for command in commands if _COMMAND_SETUP_HINT_RE.search(command)))
+
+    def _skill_verify_commands(self, skill: SkillManifest) -> List[str]:
+        commands = list(self._runtime_visible_skill_commands(skill, None))
+        commands.extend(self._rebase_vendor_paths(command, skill) for entrypoint in self._skill_entrypoints(skill) for command in entrypoint.verify)
+        return sorted(dict.fromkeys(command for command in commands if _COMMAND_VERIFY_HINT_RE.search(command)))
 
     def _skill_supports_shell_workflow(self, skill: SkillManifest, ctx: Optional[SkillContext]) -> bool:
         if ctx is None:
@@ -1750,7 +1965,9 @@ class SkillRuntime:
         intents = self.task_intents(ctx)
         relevant_entrypoints = self._relevant_skill_entrypoints(skill, ctx)
         relevant_scripts = self._exposed_relevant_skill_scripts(skill, ctx)
-        shell_commands = self._skill_shell_workflow_commands(skill, ctx)
+        shell_commands = self._runtime_visible_skill_commands(skill, ctx)
+        install_commands = self._skill_install_commands(skill)
+        verify_commands = self._skill_verify_commands(skill)
         if not requested_exts:
             return ""
         if not self._skill_supports_artifact(skill, requested_exts, intents=intents) and not relevant_entrypoints and not relevant_scripts and not shell_commands:
@@ -1769,10 +1986,14 @@ class SkillRuntime:
                 "- Do not invent commands or helper scripts outside the declared entrypoint contract."
             )
         if shell_commands and "create" in intents:
+            install_text = "; ".join(install_commands[:3]) if install_commands else "none"
+            verify_text = "; ".join(verify_commands[:3]) if verify_commands else "none"
             return (
                 "Runtime note:\n"
                 f"- This skill exposes a shell/python workflow for {', '.join(requested_exts[:3])} via shell_command.\n"
                 f"- Use documented commands only: {'; '.join(shell_commands[:4])}\n"
+                f"- Documented install commands: {install_text}\n"
+                f"- Documented verify commands: {verify_text}\n"
                 "- Do not invent script names.\n"
                 "- Prefer shell_command for dependency install and artifact creation if the packaged workflow requires it.\n"
                 "- Do not use python -c import probes or run_checks before trying the documented install/create workflow."
@@ -1931,12 +2152,17 @@ class SkillRuntime:
             resources=sorted(
                 rel
                 for rel in skill.bundled_files
-                if not rel.startswith("scripts/") and rel != "tools.py" and rel != "hooks.py"
+                if not self._is_skill_script_candidate(rel) and rel != "tools.py" and rel != "hooks.py"
             ),
             scripts=self._skill_runnable_scripts(skill),
-            commands=self._skill_shell_workflow_commands(skill, None),
+            blocked_scripts=self._blocked_skill_scripts(skill),
+            commands=self._runtime_visible_skill_commands(skill, None),
+            install_commands=self._skill_install_commands(skill),
+            verify_commands=self._skill_verify_commands(skill),
             entrypoints=[entry.name for entry in self._skill_entrypoints(skill)],
             agents=self._agents_for_skill(skill),
+            availability_code=str(skill.availability_code or "ready"),
+            availability_reason=str(skill.availability_reason or ""),
             argument_text=argument_text.strip(),
         )
         self._loaded_skill_contracts[key] = contract
@@ -2267,7 +2493,7 @@ class SkillRuntime:
                     for skill_id in loaded_skill_ids:
                         skill = self.get_skill(skill_id)
                         if skill:
-                            command_values.extend(self._skill_shell_workflow_commands(skill, None))
+                            command_values.extend(self._runtime_visible_skill_commands(skill, None))
                     command_values = sorted(dict.fromkeys(command_values))
                     if command_values:
                         properties["command"] = {"type": "string", "enum": command_values}
@@ -2527,7 +2753,7 @@ class SkillRuntime:
         command = str(args.get("command", "")).strip()
         if not command:
             raise ValueError("Missing required argument: command")
-        declared = self._skill_shell_workflow_commands(skill, None)
+        declared = self._runtime_visible_skill_commands(skill, None)
         if command not in declared:
             raise PermissionError(
                 f"Command is not declared by skill '{skill.id}'. Use one of the documented commands exposed by load_skill."
@@ -2688,9 +2914,14 @@ class SkillRuntime:
                 "prompt": contract.prompt,
                 "resources": contract.resources,
                 "scripts": contract.scripts,
+                "blocked_scripts": contract.blocked_scripts,
                 "commands": contract.commands,
+                "install_commands": contract.install_commands,
+                "verify_commands": contract.verify_commands,
                 "entrypoints": contract.entrypoints,
                 "agents": contract.agents,
+                "availability_code": contract.availability_code,
+                "availability_reason": contract.availability_reason,
                 "arguments": contract.argument_text,
             }
         if reg.name == _READ_SKILL_RESOURCE_TOOL_NAME:
@@ -2842,10 +3073,10 @@ class SkillRuntime:
         if not script_path.exists():
             raise FileNotFoundError(f"Skill script not found: {rel_script}")
         ext = script_path.suffix.lower()
-        interpreter = _SCRIPT_INTERPRETER_BY_EXT.get(ext)
+        interpreter = self._script_interpreter(ext)
         if not interpreter:
             raise PermissionError(f"Unsupported skill script type: {script_path.suffix}")
-        if interpreter[0] != sys.executable and shutil.which(interpreter[0]) is None:
+        if not Path(interpreter[0]).exists() and interpreter[0] != Path(sys.executable).resolve().as_posix() and shutil.which(interpreter[0]) is None:
             raise FileNotFoundError(f"Missing interpreter for skill script: {interpreter[0]}")
 
         argv = args.get("argv") if isinstance(args.get("argv"), list) else []

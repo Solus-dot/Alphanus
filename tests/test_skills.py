@@ -1,6 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 
+import core.skills as skills_module
 from core.memory import VectorMemory
 from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
@@ -299,7 +300,10 @@ Use the helper script when available.
 """.strip(),
         encoding="utf-8",
     )
-    (skills / "script-only" / "scripts" / "helper.py").write_text("print('ok')\n", encoding="utf-8")
+    (skills / "script-only" / "scripts" / "helper.py").write_text(
+        "if __name__ == '__main__':\n    print('ok')\n",
+        encoding="utf-8",
+    )
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
@@ -377,6 +381,45 @@ Create PDFs with the declared entrypoint.
     entry_tool = tools[1]["function"]
     assert "report-pdf:create_report" in entry_tool["description"]
     assert entry_tool["parameters"]["properties"]["entrypoint"]["enum"] == ["create_report"]
+
+
+def test_root_level_skill_helper_script_is_exposed(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "research-helper").mkdir(parents=True)
+
+    (skills / "research-helper" / "SKILL.md").write_text(
+        """
+---
+name: research-helper
+description: ships a helper validator at the skill root
+version: 1.0.0
+---
+Use validate_json.py when available.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "research-helper" / "validate_json.py").write_text(
+        "if __name__ == '__main__':\n    print('ok')\n",
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    skill = runtime.get_skill("research-helper")
+    assert skill is not None
+    tools = runtime.tools_for_turn([skill])
+    assert [tool["function"]["name"] for tool in tools] == ["load_skill", "run_skill_script"]
+    contract = runtime.load_skill_contract("research-helper")
+    assert contract.scripts == ["validate_json.py"]
+    assert contract.resources == []
 
 
 def test_produces_entrypoint_still_matches_create_plus_review_request(tmp_path: Path):
@@ -859,6 +902,30 @@ Binary required.
     assert "definitely-not-a-real-binary-xyz" in skill.availability_reason
 
 
+def test_runtime_env_exposes_global_npm_root_as_node_path(tmp_path: Path, monkeypatch):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+
+    class _Proc:
+        returncode = 0
+        stdout = "/opt/homebrew/lib/node_modules\n"
+        stderr = ""
+
+    monkeypatch.setattr(skills_module.shutil, "which", lambda name: "/opt/homebrew/bin/npm" if name == "npm" else None)
+    monkeypatch.setattr(skills_module.subprocess, "run", lambda *args, **kwargs: _Proc())
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    assert runtime._proc_env_base["NODE_PATH"] == "/opt/homebrew/lib/node_modules"
+
+
 def test_reload_preserves_manual_skill_toggle(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
@@ -1151,7 +1218,10 @@ Use the helper script if your runtime knows how.
 """.strip(),
         encoding="utf-8",
     )
-    (skills / "script-only" / "scripts" / "helper.py").write_text("print('ok')\n", encoding="utf-8")
+    (skills / "script-only" / "scripts" / "helper.py").write_text(
+        "if __name__ == '__main__':\n    print('ok')\n",
+        encoding="utf-8",
+    )
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
@@ -1161,11 +1231,10 @@ Use the helper script if your runtime knows how.
     skill = runtime.get_skill("script-only")
     assert skill is not None
 
-    caps = runtime.selected_skill_capabilities([skill])
-    assert caps["has_executable_skills"] is True
-    assert caps["executable_skill_ids"] == ["script-only"]
-    assert caps["custom_tool_names"] == ["run_skill_script"]
-    assert caps["scripts"] == ["scripts/helper.py"]
+    tools = runtime.tools_for_turn([skill])
+    assert [tool["function"]["name"] for tool in tools] == ["load_skill", "run_skill_script"]
+    contract = runtime.load_skill_contract("script-only")
+    assert contract.scripts == ["scripts/helper.py"]
 
 
 def test_generic_script_runner_executes_selected_skill_script(tmp_path: Path):
@@ -1193,8 +1262,12 @@ import json
 import os
 import sys
 
-payload = json.loads(os.getenv("ALPHANUS_TOOL_ARGS_JSON") or "{}")
-print(json.dumps({"stdout": sys.stdin.read(), "payload": payload}))
+def main():
+    payload = json.loads(os.getenv("ALPHANUS_TOOL_ARGS_JSON") or "{}")
+    print(json.dumps({"stdout": sys.stdin.read(), "payload": payload}))
+
+if __name__ == "__main__":
+    main()
 """.strip(),
         encoding="utf-8",
     )
@@ -1714,6 +1787,171 @@ python scripts/build.py proposal.md proposal.docx
 
     contract = runtime.load_skill_contract("doc-helper")
     assert contract.commands == ["npm install -g docx", "python scripts/build.py proposal.md proposal.docx"]
+
+
+def test_shell_workflow_commands_keep_inline_install_and_ignore_javascript_fence(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "doc-helper").mkdir(parents=True)
+    (skills / "doc-helper" / "SKILL.md").write_text(
+        """
+---
+name: doc-helper
+description: helper for documents
+version: 1.0.0
+---
+Install: `npm install -g docx`
+
+```javascript
+const width = 9360;
+```
+
+```
+category: International Product
+```
+
+```bash
+python scripts/office/validate.py doc.docx
+```
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    contract = runtime.load_skill_contract("doc-helper")
+    assert contract.commands == ["npm install -g docx", "python scripts/office/validate.py doc.docx"]
+    assert contract.install_commands == ["npm install -g docx"]
+    assert contract.verify_commands == ["python scripts/office/validate.py doc.docx"]
+
+
+def test_load_skill_contract_reports_blocked_python_scripts(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "script-check" / "scripts").mkdir(parents=True)
+    (skills / "script-check" / "SKILL.md").write_text(
+        """
+---
+name: script-check
+description: helper with optional scripts
+version: 1.0.0
+---
+Use the bundled helper script when available.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "script-check" / "scripts" / "helper.py").write_text(
+        "import definitely_missing_mod_xyz\n\nif __name__ == '__main__':\n    print('ok')\n",
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    skill = runtime.get_skill("script-check")
+    assert skill is not None
+    assert runtime._skill_runnable_scripts(skill) == []
+    contract = runtime.load_skill_contract("script-check")
+    assert contract.scripts == []
+    assert contract.blocked_scripts == [
+        {
+            "script": "scripts/helper.py",
+            "reason": "missing python modules: definitely_missing_mod_xyz",
+        }
+    ]
+    assert [tool["function"]["name"] for tool in runtime.tools_for_turn([skill])] == ["load_skill"]
+
+
+def test_python_script_without_main_guard_stays_exposed(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "script-check" / "scripts").mkdir(parents=True)
+    (skills / "script-check" / "SKILL.md").write_text(
+        """
+---
+name: script-check
+description: helper with optional scripts
+version: 1.0.0
+---
+Use the bundled helper script when available.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "script-check" / "scripts" / "helper.py").write_text(
+        "print('ok')\n",
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    skill = runtime.get_skill("script-check")
+    assert skill is not None
+    assert runtime._skill_runnable_scripts(skill) == ["scripts/helper.py"]
+    contract = runtime.load_skill_contract("script-check")
+    assert contract.scripts == ["scripts/helper.py"]
+
+
+def test_configured_python_executable_controls_script_availability(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "script-check" / "scripts").mkdir(parents=True)
+    (skills / "script-check" / "SKILL.md").write_text(
+        """
+---
+name: script-check
+description: helper with optional scripts
+version: 1.0.0
+---
+Use the bundled helper script when available.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "script-check" / "scripts" / "helper.py").write_text(
+        "if __name__ == '__main__':\n    print('ok')\n",
+        encoding="utf-8",
+    )
+
+    missing_python = tmp_path / "missing-python"
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"skills": {"python_executable": str(missing_python)}},
+    )
+
+    skill = runtime.get_skill("script-check")
+    assert skill is not None
+    assert runtime._skill_runnable_scripts(skill) == []
+    contract = runtime.load_skill_contract("script-check")
+    assert contract.blocked_scripts == [
+        {
+            "script": "scripts/helper.py",
+            "reason": f"missing interpreter: {missing_python}",
+        }
+    ]
 
 
 def test_run_skill_command_rejects_undeclared_command(tmp_path: Path):
