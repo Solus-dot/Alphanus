@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -107,6 +107,38 @@ COMMAND_ENTRIES = [
     CommandEntry("/import", "/import", "Open the export picker"),
     CommandEntry("/quit", "/quit", "Exit app", aliases=("/exit", "/q")),
 ]
+
+
+def active_command_query(value: str, cursor_position: Optional[int] = None) -> str:
+    if not value:
+        return ""
+    cursor = len(value) if cursor_position is None else max(0, min(cursor_position, len(value)))
+    start = cursor
+    while start > 0 and not value[start - 1].isspace():
+        start -= 1
+    end = cursor
+    while end < len(value) and not value[end].isspace():
+        end += 1
+    token = value[start:end].strip()
+    if not token.startswith("/"):
+        return ""
+    if value[:start].strip():
+        return ""
+    return token
+
+
+def active_command_span(value: str, cursor_position: Optional[int] = None) -> Optional[Tuple[int, int]]:
+    query = active_command_query(value, cursor_position)
+    if not query:
+        return None
+    cursor = len(value) if cursor_position is None else max(0, min(cursor_position, len(value)))
+    start = cursor
+    while start > 0 and not value[start - 1].isspace():
+        start -= 1
+    end = cursor
+    while end < len(value) and not value[end].isspace():
+        end += 1
+    return (start, end)
 
 
 def command_entries_for_query(value: str) -> List[CommandEntry]:

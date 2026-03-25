@@ -7,7 +7,7 @@ from core.conv_tree import ConvTree
 from core.sessions import ChatSession
 from core.workspace import WorkspaceManager
 from tui.live_tool_preview import LiveToolPreviewManager
-from tui.commands import command_entries_for_query
+from tui.commands import active_command_query, active_command_span, command_entries_for_query
 from tui.interface import AlphanusTUI, ChatInput
 from tui.popups import SessionPickerModal
 
@@ -32,6 +32,22 @@ def test_command_entries_match_context_command() -> None:
     context_matches = [entry.prompt for entry in command_entries_for_query("/cont")]
 
     assert "/context" in context_matches
+
+
+def test_active_command_query_tracks_command_token_at_cursor() -> None:
+    assert active_command_query("/cont", 5) == "/cont"
+    assert active_command_query("/cont notes", 3) == "/cont"
+    assert active_command_query("/cont notes", 5) == "/cont"
+    assert active_command_query("/cont notes", 7) == ""
+
+
+def test_active_command_query_ignores_non_command_prefix_text() -> None:
+    assert active_command_query("note /cont", 6) == ""
+
+
+def test_active_command_span_covers_command_token() -> None:
+    assert active_command_span("/cont notes", 3) == (0, 5)
+    assert active_command_span("  /cont notes", 2) == (2, 7)
 
 
 def test_chat_input_binds_new_shortcuts_locally() -> None:

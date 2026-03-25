@@ -35,6 +35,8 @@ from core.sessions import ChatSession, SessionStore, SessionSummary
 from tui.commands import (
     HELP_SECTIONS,
     CommandEntry,
+    active_command_query,
+    active_command_span,
     command_entries_for_query,
     command_label,
     exact_command_inputs,
@@ -1613,7 +1615,9 @@ class AlphanusTUI(App):
     def _refresh_command_popup(self, value: str) -> None:
         popup = self._command_popup()
         options = self._command_options()
-        next_matches = command_entries_for_query(value)
+        chat_input = self.query_one(ChatInput)
+        query = active_command_query(value, chat_input.cursor_position)
+        next_matches = command_entries_for_query(query)
         if not next_matches or self.streaming or self._await_shell_confirm:
             next_matches = []
 
@@ -1692,18 +1696,25 @@ class AlphanusTUI(App):
             return False
         entry = self._command_matches[highlighted]
         chat_input = self.query_one(ChatInput)
-        chat_input.value = entry.insert_text
-        chat_input.cursor_position = len(chat_input.value)
+        span = active_command_span(chat_input.value, chat_input.cursor_position)
+        if span is None:
+            chat_input.value = entry.insert_text
+            chat_input.cursor_position = len(chat_input.value)
+        else:
+            start, end = span
+            chat_input.value = f"{chat_input.value[:start]}{entry.insert_text}{chat_input.value[end:]}"
+            chat_input.cursor_position = start + len(entry.insert_text)
         self._refresh_command_popup(chat_input.value)
         return True
 
     def _should_accept_popup_on_enter(self, text: str) -> bool:
-        stripped = text.strip()
-        if not self._command_popup_active() or not stripped.startswith("/"):
+        if not self._command_popup_active():
             return False
-        if " " in stripped:
+        chat_input = self.query_one(ChatInput)
+        query = active_command_query(chat_input.value, chat_input.cursor_position).strip()
+        if not query or " " in query:
             return False
-        base = stripped.lower()
+        base = query.lower()
         return base not in exact_command_inputs()
 
     @staticmethod
@@ -2267,8 +2278,14 @@ class AlphanusTUI(App):
             return
         entry = self._command_matches[index]
         chat_input = self.query_one(ChatInput)
-        chat_input.value = entry.insert_text
-        chat_input.cursor_position = len(chat_input.value)
+        span = active_command_span(chat_input.value, chat_input.cursor_position)
+        if span is None:
+            chat_input.value = entry.insert_text
+            chat_input.cursor_position = len(chat_input.value)
+        else:
+            start, end = span
+            chat_input.value = f"{chat_input.value[:start]}{entry.insert_text}{chat_input.value[end:]}"
+            chat_input.cursor_position = start + len(entry.insert_text)
         chat_input.focus()
         self._refresh_command_popup(chat_input.value)
 
