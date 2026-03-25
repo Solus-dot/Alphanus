@@ -2773,3 +2773,71 @@ Ask a follow-up before continuing.
     assert result.status == "done"
     assert result.content == "Pick a format\nOptions: pdf | docx\nReply with your choice or answer so I can continue."
     assert len(chat_reqs) == 1
+
+
+def test_request_user_input_halts_turn_before_later_tool_calls(mocker, tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "asker").mkdir(parents=True)
+    (skills / "asker" / "SKILL.md").write_text(
+        """
+---
+name: asker
+description: ask for clarification
+version: 1.0.0
+---
+Ask a follow-up before continuing.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+        }
+    }
+    agent = Agent(cfg, runtime)
+    calls_seen: list[str] = []
+    real_execute = runtime.execute_tool_call
+
+    def wrapped_execute(tool_name, args, selected, ctx, **kwargs):
+        calls_seen.append(tool_name)
+        return real_execute(tool_name, args, selected, ctx, **kwargs)
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"request_user_input","arguments":"{\\"question\\": \\\"Pick a format\\\", \\\"options\\\": [\\\"pdf\\\", \\\"docx\\\"]}"}},{"index":1,"id":"call_2","type":"function","function":{"name":"read_skill_resource","arguments":"{\\"skill_id\\": \\\"asker\\\", \\\"path\\": \\\"LICENSE.txt\\"}"}}]}}]}',
+                'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(runtime, "execute_tool_call", side_effect=wrapped_execute)
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "use skill asker"}],
+        user_input="use skill asker",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert result.content == "Pick a format\nOptions: pdf | docx\nReply with your choice or answer so I can continue."
+    assert calls_seen == ["request_user_input"]

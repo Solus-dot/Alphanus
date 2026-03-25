@@ -2468,6 +2468,21 @@ class Agent:
                     direct = self._direct_tool_answer(call.name, result)
                     if direct:
                         direct_answers.append(direct)
+                    if (
+                        call.name == "request_user_input"
+                        and result.get("ok")
+                        and isinstance(result.get("data"), dict)
+                        and bool(result["data"].get("awaiting_user_input"))
+                    ):
+                        self.skill_runtime.post_response(state.selected, state.ctx, direct or "")
+                        return finish(
+                            AgentTurnResult(
+                                status="done",
+                                content=direct or "",
+                                reasoning=state.full_reasoning,
+                                skill_exchanges=state.skill_exchanges,
+                            )
+                        )
 
                     if not state.search_mode:
                         continue

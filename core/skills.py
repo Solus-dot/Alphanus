@@ -378,6 +378,7 @@ class LoadedSkillContract:
     prompt: str
     resources: List[str]
     scripts: List[str]
+    commands: List[str]
     entrypoints: List[str]
     agents: List[str]
     argument_text: str = ""
@@ -1933,6 +1934,7 @@ class SkillRuntime:
                 if not rel.startswith("scripts/") and rel != "tools.py" and rel != "hooks.py"
             ),
             scripts=self._skill_runnable_scripts(skill),
+            commands=self._skill_shell_workflow_commands(skill, None),
             entrypoints=[entry.name for entry in self._skill_entrypoints(skill)],
             agents=self._agents_for_skill(skill),
             argument_text=argument_text.strip(),
@@ -2310,6 +2312,20 @@ class SkillRuntime:
                 properties["skill_id"] = {"type": "string", "enum": sorted(dict.fromkeys(loaded_skill_ids))}
                 parameters["type"] = "object"
                 parameters["properties"] = properties
+                if reg.name == _RUN_SKILL_COMMAND_TOOL_NAME:
+                    command_values: List[str] = []
+                    for skill_id in loaded_skill_ids:
+                        skill = self.get_skill(skill_id)
+                        if skill:
+                            command_values.extend(self._skill_shell_workflow_commands(skill, None))
+                    command_values = sorted(dict.fromkeys(command_values))
+                    if command_values:
+                        properties["command"] = {"type": "string", "enum": command_values}
+                        description = (
+                            "Run one documented shell workflow command declared by the loaded skill. "
+                            "Do not invent commands. "
+                            f"Available commands: {', '.join(command_values[:6])}."
+                        )
                 if reg.name == _SPAWN_SKILL_AGENT_TOOL_NAME:
                     agent_names: List[str] = []
                     for skill_id in loaded_skill_ids:
@@ -2535,11 +2551,41 @@ class SkillRuntime:
             validated = self._validate_skill_entrypoint_args(validated, selected, ctx)
         if reg.name == _GENERIC_SCRIPT_TOOL_NAME:
             validated = self._validate_skill_script_args(validated, selected, ctx)
+        if reg.name == _RUN_SKILL_COMMAND_TOOL_NAME:
+            validated = self._validate_skill_command_args(validated, selected)
         self._enforce_artifact_materialization_policy(reg, validated, selected, ctx)
         allowed, reason = self._run_pre_action_hooks(selected, ctx, reg.name, validated)
         if not allowed:
             raise PermissionError(reason or "Denied by skill policy")
         return validated
+
+    def _validate_skill_command_args(
+        self,
+        args: Dict[str, Any],
+        selected: List[SkillManifest],
+    ) -> Dict[str, Any]:
+        requested_skill_id = str(args.get("skill_id", "")).strip()
+        if requested_skill_id:
+            skill = self.resolve_skill_reference(requested_skill_id)
+        elif len(selected) == 1:
+            skill = selected[0]
+        else:
+            raise ValueError("run_skill_command requires skill_id when multiple skills are selected")
+        if skill is None or not skill.path:
+            raise FileNotFoundError(f"Skill not found: {requested_skill_id or 'selected skill'}")
+
+        command = str(args.get("command", "")).strip()
+        if not command:
+            raise ValueError("Missing required argument: command")
+        declared = self._skill_shell_workflow_commands(skill, None)
+        if command not in declared:
+            raise PermissionError(
+                f"Command is not declared by skill '{skill.id}'. Use one of the documented commands exposed by load_skill."
+            )
+        out = dict(args)
+        out["skill_id"] = skill.id
+        out["command"] = command
+        return out
 
     def _validate_skill_script_args(
         self,
@@ -2692,6 +2738,7 @@ class SkillRuntime:
                 "prompt": contract.prompt,
                 "resources": contract.resources,
                 "scripts": contract.scripts,
+                "commands": contract.commands,
                 "entrypoints": contract.entrypoints,
                 "agents": contract.agents,
                 "arguments": contract.argument_text,

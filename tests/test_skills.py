@@ -1683,3 +1683,85 @@ Ask for clarification when needed.
     assert out["ok"] is True
     assert out["data"]["awaiting_user_input"] is True
     assert out["data"]["options"] == ["a", "b"]
+
+
+def test_load_skill_contract_exposes_declared_commands(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "doc-helper").mkdir(parents=True)
+    (skills / "doc-helper" / "SKILL.md").write_text(
+        """
+---
+name: doc-helper
+description: helper for documents
+version: 1.0.0
+---
+Use these commands:
+
+```bash
+npm install -g docx
+python scripts/build.py proposal.md proposal.docx
+```
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    contract = runtime.load_skill_contract("doc-helper")
+    assert contract.commands == ["npm install -g docx", "python scripts/build.py proposal.md proposal.docx"]
+
+
+def test_run_skill_command_rejects_undeclared_command(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "doc-helper").mkdir(parents=True)
+    (skills / "doc-helper" / "SKILL.md").write_text(
+        """
+---
+name: doc-helper
+description: helper for documents
+version: 1.0.0
+---
+```bash
+npm install -g docx
+```
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("doc-helper")
+    assert skill is not None
+    ctx = SkillContext(
+        user_input="use skill doc-helper",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+        explicit_skill_id="doc-helper",
+    )
+
+    out = runtime.execute_tool_call(
+        "run_skill_command",
+        {"skill_id": "doc-helper", "command": "create-proposal"},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_POLICY"
