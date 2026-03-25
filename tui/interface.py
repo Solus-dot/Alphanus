@@ -2484,13 +2484,6 @@ class AlphanusTUI(App):
             self._cmd_skills()
             return True
 
-        if cmd == "/agents":
-            self._cmd_agents()
-            return True
-
-        if cmd == "/use-skill":
-            return self._cmd_use_skill(arg)
-
         if cmd == "/reload":
             return self._reload_skills()
 
@@ -2584,37 +2577,6 @@ class AlphanusTUI(App):
                 code = esc(skill.availability_code or "blocked")
                 self._write(f"    [bold {ACCENT_COLOR}]blocked ({code}):[/bold {ACCENT_COLOR}] [#a1a1aa]{esc(skill.availability_reason)}[/#a1a1aa]")
         self._write("")
-
-    def _cmd_agents(self) -> None:
-        agents = self.agent.skill_runtime.list_agents()
-        self._write_section_heading("Agents")
-        if not agents:
-            self._write("  [#a1a1aa]No companion agents discovered.[/#a1a1aa]")
-            self._write("")
-            return
-        for agent in agents:
-            self._write(f"  [bold {ACCENT_COLOR}]{esc(agent.name)}[/bold {ACCENT_COLOR}]")
-            self._write(f"    [#a1a1aa]{esc(agent.description)}[/#a1a1aa]")
-            bits = [agent.source_tier, f"pack {agent.pack_id}"]
-            if agent.model:
-                bits.append(f"model {agent.model}")
-            if agent.reasoning_effort:
-                bits.append(f"effort {agent.reasoning_effort}")
-            self._write(f"    [#71717a]{esc(' · '.join(bits))}[/#71717a]")
-        self._write("")
-
-    def _cmd_use_skill(self, arg: str) -> bool:
-        raw = arg.strip()
-        if not raw:
-            return self._write_usage("/use-skill <id> [args]")
-        parts = raw.split(None, 1)
-        skill_ref = parts[0]
-        skill_args = parts[1] if len(parts) > 1 else ""
-        forwarded = f"use skill {skill_ref}"
-        if skill_args:
-            forwarded += f": {skill_args}"
-        self._send(forwarded)
-        return True
 
     def _cmd_skill(self, arg: str) -> bool:
         parts = arg.split()

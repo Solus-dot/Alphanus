@@ -44,8 +44,6 @@ HELP_SECTIONS = [
         "SKILLS",
         [
             ("/skills", "List installed skills"),
-            ("/agents", "List companion agents from discovered skill packs"),
-            ("/use-skill <id> [args]", "Invoke a specific skill explicitly"),
             ("/reload", "Reload skills from disk"),
             ("/doctor", "Run readiness diagnostics"),
             ("/skill on <id>", "Enable skill"),
@@ -93,8 +91,6 @@ COMMAND_ENTRIES = [
     CommandEntry("/switch <n>", "/switch ", "Switch to a child branch"),
     CommandEntry("/tree", "/tree", "Render the full conversation tree"),
     CommandEntry("/skills", "/skills", "List installed skills"),
-    CommandEntry("/agents", "/agents", "List companion agents from discovered skill packs"),
-    CommandEntry("/use-skill <id> [args]", "/use-skill ", "Invoke a specific skill explicitly"),
     CommandEntry("/reload", "/reload", "Reload skills from disk"),
     CommandEntry("/doctor", "/doctor", "Run readiness diagnostics"),
     CommandEntry("/skill on <id>", "/skill on ", "Enable a skill"),

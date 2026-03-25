@@ -1265,8 +1265,6 @@ Do not expose the raw script runner.
     )
 
     assert [tool["function"]["name"] for tool in runtime.tools_for_turn([skill], ctx=ctx)] == ["load_skill"]
-    caps = runtime.selected_skill_capabilities([skill])
-    assert caps["custom_tool_names"] == []
 
     out = runtime.execute_tool_call(
         "run_skill_script",
@@ -1621,8 +1619,7 @@ Read ~/.codex/skills/frontend-design/SKILL.md and coordinate with ~/.codex/agent
     assert skill is not None
     assert skill.id == "frontend-design"
 
-    agents = runtime.list_agents()
-    assert [agent.name for agent in agents] == ["researcher"]
+    assert runtime.get_agent("researcher") is not None
 
     contract = runtime.load_agent_contract("researcher", skill_id="frontend-design")
     assert str(skill_dir) in contract.prompt

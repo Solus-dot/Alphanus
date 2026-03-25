@@ -2087,56 +2087,6 @@ class SkillRuntime:
             names = [name for name in names if name != "run_checks"]
         return sorted(dict.fromkeys(names))
 
-    def selected_skill_capabilities(self, selected: List[SkillManifest]) -> Dict[str, Any]:
-        executable_skill_ids: List[str] = []
-        advisory_skill_ids: List[str] = []
-        scripts: List[str] = []
-        resources: List[str] = []
-        custom_tool_names: List[str] = []
-
-        for skill in selected:
-            capability_names: List[str] = []
-            bundled_files = list(skill.bundled_files)
-            scripts.extend([path for path in bundled_files if path.startswith("scripts/")])
-            resources.extend(
-                [
-                    path
-                    for path in bundled_files
-                    if path.startswith("references/") or path.startswith("assets/")
-                ]
-            )
-            capability_names.extend(spec.name for spec in skill.command_tools)
-            if self._skill_entrypoints(skill):
-                capability_names.append(_GENERIC_ENTRYPOINT_TOOL_NAME)
-            if skill.path and (skill.path / "tools.py").exists():
-                capability_names.append("tools.py")
-
-            registered_custom = [
-                reg.name
-                for reg in self._tool_registry.values()
-                if reg.skill_id == skill.id and reg.tool_scope != "core"
-            ]
-            if self._skill_entrypoints(skill):
-                registered_custom.append(_GENERIC_ENTRYPOINT_TOOL_NAME)
-            if self._skill_runnable_scripts(skill) and self._skill_allows_generic_script_runner(skill):
-                registered_custom.append(_GENERIC_SCRIPT_TOOL_NAME)
-            capability_names.extend(registered_custom)
-            custom_tool_names.extend(registered_custom)
-
-            if capability_names:
-                executable_skill_ids.append(skill.id)
-            else:
-                advisory_skill_ids.append(skill.id)
-
-        return {
-            "executable_skill_ids": sorted(dict.fromkeys(executable_skill_ids)),
-            "advisory_skill_ids": sorted(dict.fromkeys(advisory_skill_ids)),
-            "custom_tool_names": sorted(dict.fromkeys(custom_tool_names)),
-            "scripts": sorted(dict.fromkeys(scripts)),
-            "resources": sorted(dict.fromkeys(resources)),
-            "has_executable_skills": bool(executable_skill_ids),
-        }
-
     @staticmethod
     def _opaque_extension_token(path: str) -> str:
         return Path(str(path).strip()).suffix.lower().lstrip(".")
