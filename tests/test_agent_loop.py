@@ -682,6 +682,121 @@ def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_u
     assert "pass_2_final" in calls
 
 
+def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_success_claim(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
+    mocker.patch.object(agent, "ensure_ready", return_value=True)
+
+    calls = []
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        calls.append(pass_id)
+        if pass_id == "skill_route":
+            return type("R", (), {"finish_reason": "stop", "content": '{"skills":["workspace-ops"]}'})()
+        if pass_id == "pass_1":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "tool_calls",
+                    "content": "",
+                    "reasoning": "",
+                    "tool_calls": [type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "read_file", "arguments": {"filepath": "foo.txt"}})()],
+                },
+            )()
+        if pass_id == "pass_2":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "stop",
+                    "content": "I renamed foo.txt to bar.txt.",
+                    "reasoning": "",
+                    "tool_calls": [],
+                },
+            )()
+        if pass_id == "pass_3":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "stop",
+                    "content": "I couldn't complete that workspace action because no workspace tool actually ran.",
+                    "reasoning": "",
+                    "tool_calls": [],
+                },
+            )()
+        raise AssertionError(f"Unexpected pass id: {pass_id}")
+
+    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
+        assert tool_name == "read_file"
+        return {"ok": True, "data": {"filepath": "foo.txt", "content": "alpha"}, "error": None, "meta": {}}
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(runtime, "execute_tool_call", side_effect=fake_execute_tool_call)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "rename foo.txt to bar.txt"}],
+        user_input="yes",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert "couldn't complete that workspace action" in result.content.lower()
+    assert "pass_3" in calls
+
+
+def test_confirmation_workspace_action_rechecks_repair_pass_before_returning(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
+    mocker.patch.object(agent, "ensure_ready", return_value=True)
+
+    calls = []
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        calls.append(pass_id)
+        if pass_id == "skill_route":
+            return type("R", (), {"finish_reason": "stop", "content": '{"skills":["workspace-ops"]}'})()
+        if pass_id == "pass_1":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "tool_calls",
+                    "content": "",
+                    "reasoning": "",
+                    "tool_calls": [type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "read_file", "arguments": {"filepath": "foo.txt"}})()],
+                },
+            )()
+        if pass_id in {"pass_2", "pass_3", "pass_3_final"}:
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "stop",
+                    "content": "I renamed foo.txt to bar.txt.",
+                    "reasoning": "",
+                    "tool_calls": [],
+                },
+            )()
+        raise AssertionError(f"Unexpected pass id: {pass_id}")
+
+    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
+        assert tool_name == "read_file"
+        return {"ok": True, "data": {"filepath": "foo.txt", "content": "alpha"}, "error": None, "meta": {}}
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(runtime, "execute_tool_call", side_effect=fake_execute_tool_call)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "rename foo.txt to bar.txt"}],
+        user_input="yes",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert result.content == "I couldn't complete that workspace action because no workspace tool actually ran."
+    assert "pass_3_final" in calls
+
+
 def test_non_search_tool_success_does_not_mark_search_evidence(runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     state = agent._build_turn_state(

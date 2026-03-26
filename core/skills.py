@@ -3376,7 +3376,13 @@ class SkillRuntime:
                 raise PermissionError("Shell confirmation callback is required")
             if not env.confirm_shell(command):
                 raise PermissionError("Shell command rejected by user")
-        result = env.workspace.run_shell_command(command, timeout_s=max(1, int(timeout_s)), cwd=cwd)
+        allowed_cwd_roots = [cwd] if cwd else None
+        result = env.workspace.run_shell_command(
+            command,
+            timeout_s=max(1, int(timeout_s)),
+            cwd=cwd,
+            allowed_cwd_roots=allowed_cwd_roots,
+        )
         if not result.get("ok"):
             error = result.get("error") or {}
             message = str(error.get("message", "Shell workflow command failed"))

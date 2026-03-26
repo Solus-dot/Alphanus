@@ -173,6 +173,25 @@ class TurnOrchestrator:
         return len(state.completion.materialized_paths)
 
     @staticmethod
+    def workspace_mutation_count(state: TurnState) -> int:
+        mutating_tools = {
+            "create_directory",
+            "create_file",
+            "create_files",
+            "edit_file",
+            "delete_path",
+            "move_path",
+            "run_skill_command",
+            "run_skill_entrypoint",
+            "run_skill_script",
+        }
+        return sum(
+            1
+            for record in state.evidence
+            if record.name in mutating_tools and not record.policy_blocked and bool(record.result.get("ok"))
+        )
+
+    @staticmethod
     def workspace_readback_count(state: TurnState) -> int:
         return len(state.completion.readback_paths)
 
@@ -289,6 +308,20 @@ class TurnOrchestrator:
             or "i updated" in lowered
             or "i renamed" in lowered
             or "successfully deleted" in lowered
+        )
+
+    def coerce_workspace_action_failure(self, state: TurnState, result: AgentTurnResult) -> AgentTurnResult:
+        if result.status != "done" or not state.requires_workspace_action or self.workspace_mutation_count(state) > 0:
+            return result
+        cleaned = self.sanitizer.sanitize_final_content(result.content)
+        if not (self.looks_like_manual_workspace_advice(cleaned) or self.looks_like_workspace_action_claim(cleaned)):
+            return result
+        return AgentTurnResult(
+            status="done",
+            content="I couldn't complete that workspace action because no workspace tool actually ran.",
+            reasoning=result.reasoning,
+            skill_exchanges=result.skill_exchanges,
+            journal=result.journal,
         )
 
     def build_turn_journal(self, state: TurnState, result: AgentTurnResult) -> Dict[str, Any]:
@@ -755,7 +788,7 @@ class TurnOrchestrator:
                 )
                 return finish_finalized(finalized)
 
-            if state.requires_workspace_action and not state.completion.tool_counts:
+            if state.requires_workspace_action and self.workspace_mutation_count(state) == 0:
                 if self.looks_like_manual_workspace_advice(final) or self.looks_like_workspace_action_claim(final):
                     if not state.forced_action_retry:
                         state.forced_action_retry = True
@@ -768,6 +801,7 @@ class TurnOrchestrator:
                         pass_id,
                         "Workspace tool usage rule:\n- No workspace tool was used to complete the requested action.\n- Say plainly that the action was not completed.\n- Do not provide manual shell deletion advice.\n- Do not claim success.",
                     )
+                    finalized = self.coerce_workspace_action_failure(state, finalized)
                     return finish_finalized(finalized)
                 if not state.forced_action_retry and not final.strip():
                     state.forced_action_retry = True

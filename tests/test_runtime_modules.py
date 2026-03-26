@@ -111,3 +111,24 @@ def test_classifier_skips_model_call_for_plain_local_workspace_task(mocker, tmp_
     assert classification.used_model is False
     assert classification.workspace_scaffold_action is True
     assert classification.workspace_materialization_target == 3
+
+
+def test_classifier_counts_opaque_artifact_request_as_materialization_target(mocker, tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": True}}
+    llm_client = LLMClient(cfg)
+    classifier = TurnClassifier(cfg, runtime, llm_client)
+    ctx = classifier.build_skill_context(
+        "Create proposal.docx in a folder called drafts",
+        [],
+        [],
+        [],
+    )
+
+    mocker.patch.object(llm_client, "call_with_retry", side_effect=AssertionError("classifier model should not be called"))
+    classifier.call_with_retry = llm_client.call_with_retry
+
+    classification = classifier.classify(ctx)
+
+    assert classification.used_model is False
+    assert classification.workspace_materialization_target >= 1

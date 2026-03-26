@@ -82,7 +82,7 @@ class WorkspaceManager:
             raise PermissionError("Write path escapes workspace root")
         return resolved
 
-    def _resolve_read_path(self, path: str) -> Path:
+    def _resolve_read_path(self, path: str, extra_allowed_roots: Optional[Iterable[str]] = None) -> Path:
         raw = self._normalize_workspace_relative(path)
         candidate = (self.workspace_root / raw) if not raw.is_absolute() else raw
         resolved = candidate.resolve()
@@ -96,6 +96,13 @@ class WorkspaceManager:
         # configured outside the user's home directory.
         if self._is_relative_to(resolved, self.workspace_root):
             return resolved
+        for root_text in extra_allowed_roots or []:
+            try:
+                allowed_root = Path(os.path.expanduser(str(root_text))).resolve()
+            except Exception:
+                continue
+            if self._is_relative_to(resolved, allowed_root):
+                return resolved
 
         if not self._is_relative_to(resolved, self.home_root):
             raise PermissionError("Read path must remain inside home directory")
@@ -519,12 +526,18 @@ class WorkspaceManager:
             raise PermissionError("Empty command is not allowed")
         return argv
 
-    def run_shell_command(self, command: str, timeout_s: int = 30, cwd: Optional[str] = None) -> dict:
+    def run_shell_command(
+        self,
+        command: str,
+        timeout_s: int = 30,
+        cwd: Optional[str] = None,
+        allowed_cwd_roots: Optional[Iterable[str]] = None,
+    ) -> dict:
         start = time.perf_counter()
         try:
             self._validate_shell_command(command)
             argv = self._parse_command_argv(command)
-            target_cwd = self._resolve_read_path(cwd) if cwd else self.workspace_root
+            target_cwd = self._resolve_read_path(cwd, extra_allowed_roots=allowed_cwd_roots) if cwd else self.workspace_root
             if target_cwd.is_file():
                 target_cwd = target_cwd.parent
             run = self._run_argv(argv, timeout_s=timeout_s, cwd=target_cwd)

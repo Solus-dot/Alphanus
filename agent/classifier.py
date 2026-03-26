@@ -391,12 +391,15 @@ class TurnClassifier:
         workspace_materialization_target = 0
         if any(term in request_text for term in ("make ", "create ", "build ", "generate ", "write ", "save it in", "save them in")):
             requested_files = 0
+            requested_exts = self.skill_runtime.requested_artifact_extensions(ctx)
             if "html" in request_text:
                 requested_files += 1
             if "css" in request_text:
                 requested_files += 1
             if "javascript" in request_text or " js " in f" {request_text} " or "script.js" in request_text:
                 requested_files += 1
+            if requested_exts:
+                requested_files = max(requested_files, len(requested_exts))
             if requested_files == 0 and any(term in request_text for term in ("landing page", "website", "web page")):
                 requested_files = 1
             if requested_files == 0 and any(term in request_text for term in (" file", "files", ".py", ".js", ".html", ".css", "python", "html", "css", "javascript", "js", "script", "code", "program")):

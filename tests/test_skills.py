@@ -2518,3 +2518,61 @@ echo {skill_id}
     assert "skill_id" in (multi_read.get("required") or [])
     assert "skill_id" not in (single_run.get("required") or [])
     assert "skill_id" in (multi_run.get("required") or [])
+
+
+def test_run_skill_command_allows_external_skill_root_as_cwd(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    pack = tmp_path / "external-pack"
+    skills = pack / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "doc-helper").mkdir(parents=True)
+    (skills / "doc-helper" / "scripts").mkdir(parents=True)
+    (skills / "doc-helper" / "scripts" / "show_cwd.py").write_text(
+        "import os\nprint(os.getcwd())\n",
+        encoding="utf-8",
+    )
+    command = "python3 scripts/show_cwd.py"
+    (skills / "doc-helper" / "SKILL.md").write_text(
+        f"""
+---
+name: doc-helper
+description: helper for documents
+version: 1.0.0
+---
+```bash
+{command}
+```
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("doc-helper")
+    assert skill is not None
+    ctx = SkillContext(
+        user_input="use skill doc-helper",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+        explicit_skill_id="doc-helper",
+    )
+
+    out = runtime.execute_tool_call(
+        "run_skill_command",
+        {"skill_id": "doc-helper", "command": command},
+        selected=[skill],
+        ctx=ctx,
+        loaded_skill_ids=["doc-helper"],
+        confirm_shell=lambda _command: True,
+    )
+
+    assert out["ok"] is True
+    assert out["data"]["cwd"] == str(skill.path.resolve())
+    assert out["data"]["stdout"].strip() == str(skill.path.resolve())
