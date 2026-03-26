@@ -30,7 +30,7 @@ _SECRET_KEYS = {
     "secret",
 }
 _SECRET_SUFFIXES = ("_api_key", "_apikey", "_token", "_secret", "_password")
-_ALLOWED_SKILL_SELECTION_MODES = {"model", "heuristic", "all_enabled", "hybrid_lazy"}
+_ALLOWED_SKILL_SELECTION_MODES = {"model", "all_enabled"}
 _ALLOWED_SEARCH_PROVIDERS = {"tavily", "brave"}
 _ALLOWED_EMBEDDING_BACKENDS = {"transformer", "hash"}
 _ALLOWED_CORE_EXPOSURE_POLICIES = {"coding_core"}
@@ -83,7 +83,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "selection_mode": "model",
         "max_active_skills": 2,
         "strict_capability_policy": False,
-        "shortlist_size": 6,
         "load": {
             "extra_dirs": [],
             "watch": True,
@@ -608,6 +607,9 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         warnings=warnings,
         allow_empty=False,
     ).lower()
+    if mode in {"heuristic", "hybrid_lazy"}:
+        _warn(warnings, f"skills.selection_mode: {mode!r} is deprecated, using 'model'")
+        mode = "model"
     if mode not in _ALLOWED_SKILL_SELECTION_MODES:
         _warn(warnings, f"skills.selection_mode: unsupported {mode!r}, using default")
         mode = str(DEFAULT_CONFIG["skills"]["selection_mode"])
@@ -625,14 +627,6 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         bool(DEFAULT_CONFIG["skills"]["strict_capability_policy"]),
         path="skills.strict_capability_policy",
         warnings=warnings,
-    )
-    skills_cfg["shortlist_size"] = _coerce_int(
-        skills_cfg.get("shortlist_size"),
-        int(DEFAULT_CONFIG["skills"]["shortlist_size"]),
-        path="skills.shortlist_size",
-        warnings=warnings,
-        minimum=1,
-        maximum=20,
     )
     load_cfg = skills_cfg.get("load", {}) if isinstance(skills_cfg.get("load"), dict) else {}
     extra_dirs = load_cfg.get("extra_dirs", [])

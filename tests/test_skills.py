@@ -83,6 +83,7 @@ def execute(tool_name, args, env):
         attachments=["main.py"],
         workspace_root=str(ws),
         memory_hits=[],
+        explicit_skill_id="s1",
     )
 
     selected = runtime.select_skills(ctx)
@@ -674,7 +675,7 @@ def execute(tool_name, args, env):
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"skills": {"selection_mode": "heuristic", "max_active_skills": 1}},
+        config={"skills": {"selection_mode": "model", "max_active_skills": 1}},
     )
 
     ctx = SkillContext(
@@ -685,12 +686,10 @@ def execute(tool_name, args, env):
         memory_hits=[],
     )
 
-    selected = runtime.select_skills(ctx)
-    assert selected
-    assert selected[0].id == "frontend-design"
+    assert runtime.select_skills(ctx) == []
 
 
-def test_heuristic_selection_skips_zero_score_skills(tmp_path: Path):
+def test_runtime_select_skills_stays_empty_without_explicit_or_all_enabled_override(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -728,7 +727,7 @@ Search the internet.
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"skills": {"selection_mode": "heuristic", "max_active_skills": 2}},
+        config={"skills": {"selection_mode": "model", "max_active_skills": 2}},
     )
 
     ctx = SkillContext(
@@ -742,7 +741,7 @@ Search the internet.
     assert runtime.select_skills(ctx) == []
 
 
-def test_time_sensitive_query_prefers_search_skill(tmp_path: Path):
+def test_runtime_select_skills_does_not_guess_search_skill_in_model_mode(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -780,7 +779,7 @@ Design well.
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"skills": {"selection_mode": "heuristic", "max_active_skills": 2}},
+        config={"skills": {"selection_mode": "model", "max_active_skills": 2}},
     )
 
     ctx = SkillContext(
@@ -791,9 +790,7 @@ Design well.
         memory_hits=[],
     )
 
-    selected = runtime.select_skills(ctx)
-    assert selected
-    assert selected[0].id == "search-ops"
+    assert runtime.select_skills(ctx) == []
 
 
 def test_skill_catalog_includes_tools_for_model_routing(tmp_path: Path):
@@ -858,7 +855,7 @@ Search.
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"skills": {"selection_mode": "heuristic", "max_active_skills": 1}},
+        config={"skills": {"selection_mode": "model", "max_active_skills": 1}},
     )
 
     skill = runtime.get_skill("search-skill")

@@ -169,8 +169,8 @@ def test_shell_command_nonzero_exit_bubbles_up_as_tool_failure(tmp_path: Path):
     assert out["data"]["returncode"] == 3
 
 
-def test_shell_skill_selected_for_local_version_checks(tmp_path: Path):
-    runtime = _runtime(tmp_path, {"skills": {"selection_mode": "heuristic", "max_active_skills": 2}})
+def test_runtime_select_skills_does_not_guess_shell_skill_in_model_mode(tmp_path: Path):
+    runtime = _runtime(tmp_path, {"skills": {"selection_mode": "model", "max_active_skills": 2}})
     ctx = SkillContext(
         user_input="check my go version",
         branch_labels=[],
@@ -179,14 +179,11 @@ def test_shell_skill_selected_for_local_version_checks(tmp_path: Path):
         memory_hits=[],
     )
 
-    selected = runtime.select_skills(ctx)
-
-    assert selected
-    assert selected[0].id == "shell-ops"
+    assert runtime.select_skills(ctx) == []
 
 
-def test_memory_skill_still_selected_for_personal_fact_queries(tmp_path: Path):
-    runtime = _runtime(tmp_path, {"skills": {"selection_mode": "heuristic", "max_active_skills": 2}})
+def test_runtime_select_skills_does_not_guess_memory_skill_in_model_mode(tmp_path: Path):
+    runtime = _runtime(tmp_path, {"skills": {"selection_mode": "model", "max_active_skills": 2}})
     ctx = SkillContext(
         user_input="what's my birthday",
         branch_labels=[],
@@ -195,10 +192,7 @@ def test_memory_skill_still_selected_for_personal_fact_queries(tmp_path: Path):
         memory_hits=[],
     )
 
-    selected = runtime.select_skills(ctx)
-
-    assert selected
-    assert selected[0].id == "memory-rag"
+    assert runtime.select_skills(ctx) == []
 
 
 def test_shell_confirmation_reuses_recent_assistant_action_context(mocker, tmp_path: Path):

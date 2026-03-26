@@ -59,59 +59,6 @@ _STOPWORDS = {
     "write",
 }
 
-_TIME_SENSITIVE_TOKENS = {
-    "recent",
-    "latest",
-    "current",
-    "today",
-    "now",
-    "breaking",
-    "update",
-    "updates",
-    "news",
-}
-
-_PERSONAL_MEMORY_TERMS = {
-    "address",
-    "age",
-    "birthday",
-    "birthdate",
-    "birthyear",
-    "city",
-    "editor",
-    "favourite",
-    "favorite",
-    "home",
-    "ide",
-    "job",
-    "like",
-    "likes",
-    "live",
-    "location",
-    "name",
-    "occupation",
-    "personal",
-    "preference",
-    "preferences",
-    "prefer",
-    "profile",
-    "role",
-    "work",
-}
-
-_SHELL_TERMS = {
-    "bash",
-    "cli",
-    "cmd",
-    "command",
-    "commands",
-    "console",
-    "powershell",
-    "shell",
-    "terminal",
-    "zsh",
-}
-
 _SHELL_WORKFLOW_HINTS = {
     "apt-get",
     "brew",
@@ -353,13 +300,6 @@ class RegisteredTool:
 
 
 @dataclass(slots=True)
-class SkillCandidate:
-    skill: SkillManifest
-    recall_score: int
-    rerank_score: int = 0
-
-
-@dataclass(slots=True)
 class SkillPackRecord:
     id: str
     root: Path
@@ -426,11 +366,10 @@ class SkillRuntime:
         self.debug = debug
         self.skills_cfg = self.config.get("skills", {})
         self.tools_cfg = self.config.get("tools", {})
-        self.selection_mode = str(self.skills_cfg.get("selection_mode", "all_enabled")).strip().lower()
-        if self.selection_mode == "hybrid_lazy":
+        self.selection_mode = str(self.skills_cfg.get("selection_mode", "model")).strip().lower()
+        if self.selection_mode not in {"model", "all_enabled"}:
             self.selection_mode = "model"
         self.max_active_skills = int(self.skills_cfg.get("max_active_skills", 6))
-        self.shortlist_size = max(1, int(self.skills_cfg.get("shortlist_size", 6)))
         load_cfg = self.skills_cfg.get("load", {}) if isinstance(self.skills_cfg.get("load"), dict) else {}
         self.upward_scan = bool(load_cfg.get("upward_scan", True))
         extra_dirs = load_cfg.get("extra_dirs", [])
@@ -1375,44 +1314,6 @@ class SkillRuntime:
         return tokens
 
     @staticmethod
-    def _looks_like_memory_request(text: str, query_tokens: set[str]) -> bool:
-        lowered = text.lower()
-        if any(term in query_tokens for term in {"memory", "recall", "remember"}):
-            return True
-        if re.search(r"\b(?:my|user(?:'s)?)\s+[a-z][a-z0-9 _-]{0,40}\s+is\b", lowered):
-            return True
-        if re.search(r"\bi\s+(?:am|'m)\b", lowered):
-            return True
-        if not re.search(r"\bmy\b", lowered):
-            return False
-        if query_tokens & _PERSONAL_MEMORY_TERMS:
-            return True
-        return bool(
-            re.search(r"\b(?:what(?:'s| is)|tell me|do you know|do you remember|recall)\s+my\b", lowered)
-        )
-
-    @staticmethod
-    def _looks_like_shell_request(text: str, query_tokens: set[str]) -> bool:
-        lowered = text.lower()
-        if query_tokens & _SHELL_TERMS:
-            return True
-        if "`" in text:
-            return True
-        if re.search(r"\b(?:run|execute)\b", lowered):
-            return True
-        if query_tokens & {"latest", "recent", "current", "today", "news"}:
-            return False
-        if "version" not in query_tokens and "installed" not in query_tokens:
-            return False
-        if re.search(r"\bdo i have\b", lowered):
-            return True
-        if "installed" in query_tokens:
-            return True
-        if re.search(r"\bon my (?:machine|system|computer|mac|pc)\b", lowered):
-            return True
-        return bool(re.search(r"\bmy\b", lowered) and re.search(r"\b(?:check|show|tell|what(?:'s| is)?)\b", lowered))
-
-    @staticmethod
     def _extract_inline_extensions(text: str) -> List[str]:
         lowered = text.lower()
         found = set()
@@ -1908,124 +1809,6 @@ class SkillRuntime:
                 return True
         return False
 
-    def _activation_bonus(self, skill: SkillManifest, ctx: SkillContext, requested_exts: List[str]) -> int:
-        bonus = 0
-        intents = self.task_intents(ctx)
-        if skill.id in ctx.sticky_skill_ids:
-            bonus += 12
-        if ctx.recent_routing_hint:
-            hint_tokens = set(self._match_tokens(ctx.recent_routing_hint))
-            skill_tokens = set(
-                self._match_tokens(
-                    " ".join([skill.name, skill.description] + list(skill.tags) + list(skill.categories) + list(skill.produces))
-                )
-            )
-            overlap = hint_tokens & skill_tokens
-            if overlap:
-                bonus += min(12, len(overlap) * 4)
-        if requested_exts and self._skill_supports_artifact(skill, requested_exts, intents=intents):
-            bonus += 24
-        if self._relevant_skill_entrypoints(skill, ctx):
-            bonus += 10
-        attachment_exts = {Path(str(item).strip()).suffix.lower() for item in ctx.attachments if str(item).strip()}
-        if attachment_exts and any(ext in attachment_exts for ext in skill.triggers.get("file_ext", [])):
-            bonus += 8
-        prompt = self._ensure_skill_prompt(skill)
-        if requested_exts:
-            for ext in requested_exts:
-                naked = ext.lstrip(".")
-                if ext in prompt.lower() or naked in prompt.lower():
-                    bonus += 6
-                    break
-        if self._exposed_relevant_skill_scripts(skill, ctx):
-            bonus += 6
-        return bonus
-
-    def score_skills(self, ctx: SkillContext) -> List[Tuple[int, SkillManifest]]:
-        text = ctx.user_input.lower()
-        attachments = " ".join(ctx.attachments).lower()
-        query_tokens = set(self._match_tokens(ctx.user_input))
-        time_sensitive = bool(query_tokens & _TIME_SENSITIVE_TOKENS)
-        scored: List[Tuple[int, SkillManifest]] = []
-        requested_exts = self.requested_artifact_extensions(ctx)
-        intents = self.task_intents(ctx)
-
-        for skill in self.enabled_skills():
-            if skill.disable_model_invocation and skill.id != ctx.explicit_skill_id:
-                continue
-            index = self._skill_index.get(skill.id, {})
-            score = 0
-
-            if ctx.explicit_skill_id and skill.id == ctx.explicit_skill_id:
-                score += 1000
-
-            for kw in index.get("keywords", skill.triggers.get("keywords", [])):
-                kw_lower = kw.lower()
-                if kw_lower not in text:
-                    continue
-                if skill.id == "memory-rag" and kw_lower == "my":
-                    if self._looks_like_memory_request(text, query_tokens):
-                        score += 30
-                    continue
-                score += 30
-
-            for ext in index.get("file_ext", skill.triggers.get("file_ext", [])):
-                ext_lower = ext.lower()
-                if ext_lower in text or ext_lower in attachments:
-                    score += 20
-
-            metadata_text = " ".join(
-                [index.get("name", skill.name), index.get("description", skill.description)]
-                + list(index.get("tags", skill.tags))
-                + list(index.get("categories", skill.categories))
-                + list(index.get("produces", skill.produces))
-            )
-            metadata_tokens = set(self._match_tokens(metadata_text))
-            overlap = query_tokens & metadata_tokens
-            if overlap:
-                score += min(24, len(overlap) * 6)
-                if any(token in skill.name.lower() for token in overlap):
-                    score += 4
-
-            if time_sensitive:
-                temporal_text = " ".join([index.get("description", skill.description)] + list(index.get("tags", skill.tags)))
-                temporal_tokens = set(self._match_tokens(temporal_text))
-                if temporal_tokens & {"latest", "recent", "current", "news", "internet", "web", "online", "lookup"}:
-                    score += 18
-
-            if "memory" in skill.id and ctx.memory_hits:
-                score += 10
-            if skill.id == "memory-rag" and self._looks_like_memory_request(text, query_tokens):
-                score += 16
-            if skill.id == "shell-ops" and self._looks_like_shell_request(text, query_tokens):
-                score += 28
-            if requested_exts and self._skill_supports_artifact(skill, requested_exts, intents=intents):
-                score += 18
-
-            scored.append((score, skill))
-
-        scored.sort(key=lambda pair: (-pair[0], pair[1].id))
-        return scored
-
-    def propose_skill_candidates(self, ctx: SkillContext, top_n: int = 8) -> List[SkillCandidate]:
-        ranked = [(score, skill) for score, skill in self.score_skills(ctx) if score > 0]
-        if not ranked:
-            return []
-        limit = max(1, top_n)
-        return [SkillCandidate(skill=skill, recall_score=score) for score, skill in ranked[:limit]]
-
-    def rerank_skill_candidates(self, ctx: SkillContext, candidates: List[SkillCandidate], limit: int) -> List[SkillManifest]:
-        if not candidates:
-            return []
-        requested_exts = self.requested_artifact_extensions(ctx)
-        activated_limit = max(limit * 2, min(len(candidates), 6))
-        for idx, candidate in enumerate(candidates):
-            candidate.rerank_score = candidate.recall_score
-            if idx < activated_limit:
-                candidate.rerank_score += self._activation_bonus(candidate.skill, ctx, requested_exts)
-        candidates.sort(key=lambda item: (-item.rerank_score, -item.recall_score, item.skill.id))
-        return [item.skill for item in candidates[: max(1, limit)]]
-
     def expand_selected_skills(self, ctx: SkillContext, selected: List[SkillManifest]) -> List[SkillManifest]:
         expanded = list(selected)
         seen = {skill.id for skill in expanded}
@@ -2049,12 +1832,7 @@ class SkillRuntime:
             if self.max_active_skills <= 0:
                 return self.expand_selected_skills(ctx, enabled)
             return self.expand_selected_skills(ctx, enabled[: self.max_active_skills])
-
-        limit = self.max_active_skills if self.max_active_skills > 0 else top_n
-        shortlist = self.shortlist_size if self.shortlist_size > 0 else max(limit * 3, 6)
-        candidates = self.propose_skill_candidates(ctx, top_n=max(limit * 3, shortlist))
-        selected = self.rerank_skill_candidates(ctx, candidates, max(1, limit))
-        return self.expand_selected_skills(ctx, selected)
+        return []
 
     @staticmethod
     def _skill_has_runtime_surface(skill: SkillManifest) -> bool:

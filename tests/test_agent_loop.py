@@ -233,9 +233,6 @@ def test_agent_requests_final_answer_if_post_tool_content_empty(mocker, runtime:
         }
     }
     agent = Agent(cfg, runtime)
-    shortlist = [type("C", (), {"skill": runtime.get_skill("workspace-ops")})()]
-    mocker.patch.object(runtime, "propose_skill_candidates", return_value=shortlist)
-    mocker.patch.object(runtime, "rerank_skill_candidates", return_value=[])
 
     chat_reqs = []
     events = []
@@ -1446,9 +1443,6 @@ def test_finalization_retries_when_model_leaks_tool_markup(mocker, runtime: Skil
         }
     }
     agent = Agent(cfg, runtime)
-    shortlist = [type("C", (), {"skill": runtime.get_skill("workspace-ops")})()]
-    mocker.patch.object(runtime, "propose_skill_candidates", return_value=shortlist)
-    mocker.patch.object(runtime, "rerank_skill_candidates", return_value=[])
 
     chat_reqs = []
 
@@ -1567,7 +1561,7 @@ def test_finalization_returns_error_when_markup_repeats(mocker, runtime: SkillRu
 
     assert result.status == "error"
     assert "Finalization failed to produce a clean user-facing answer" in (result.error or "")
-    assert len(chat_reqs) == 3
+    assert len(chat_reqs) == 4
 
 
 def test_finalization_strips_think_tags_from_model_output(mocker, runtime: SkillRuntime):
@@ -2192,10 +2186,6 @@ def execute(tool_name, args, env):
     )
     snapshot = agent._get_skill_snapshot()
 
-    shortlist = [type("C", (), {"skill": type("S", (), {"id": "workspace-ops"})()})()]
-    mocker.patch.object(runtime, "propose_skill_candidates", return_value=shortlist)
-    mocker.patch.object(runtime, "rerank_skill_candidates", return_value=[])
-
     captured = {}
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
@@ -2208,11 +2198,11 @@ def execute(tool_name, args, env):
 
     assert selected == []
     user_content = captured["payload"]["messages"][1]["content"]
-    assert "Skill shortlist:" in user_content
+    assert "Available skills:" in user_content
     assert "- workspace-ops" in user_content
-    assert "Available skills:" not in user_content
-    assert "hidden-tool" not in user_content
-    assert "artifact_forge" not in user_content
+    assert "- hidden-tool" in user_content
+    assert "artifact_forge" in user_content
+    assert "Skill shortlist:" not in user_content
 
 
 def test_model_skill_router_respects_explicit_empty_selection(mocker, runtime: SkillRuntime):
@@ -2235,9 +2225,6 @@ def test_model_skill_router_respects_explicit_empty_selection(mocker, runtime: S
     agent = Agent(cfg, runtime)
     workspace_skill = runtime.get_skill("workspace-ops")
     assert workspace_skill is not None
-    shortlist = [type("C", (), {"skill": workspace_skill})()]
-    mocker.patch.object(runtime, "propose_skill_candidates", return_value=shortlist)
-    mocker.patch.object(runtime, "rerank_skill_candidates", return_value=[])
 
     chat_reqs = []
 
@@ -2691,7 +2678,7 @@ def test_fetch_model_metadata_reads_model_id_and_context_window(mocker, runtime:
     assert agent.fetch_model_metadata() == ("llama-3.2-3b-instruct", 40960)
 
 
-def test_model_skill_router_skips_full_catalog_fallback_when_shortlist_empty(mocker, runtime: SkillRuntime):
+def test_model_skill_router_does_not_invent_fallback_skills_without_model_selection(mocker, runtime: SkillRuntime):
     runtime.config = {"skills": {"selection_mode": "model", "max_active_skills": 2}}
     agent = Agent({"agent": {}}, runtime)
     ctx = SkillContext(
@@ -2703,15 +2690,15 @@ def test_model_skill_router_skips_full_catalog_fallback_when_shortlist_empty(moc
     )
     snapshot = agent._get_skill_snapshot()
 
-    mocker.patch.object(runtime, "propose_skill_candidates", return_value=[])
-    fallback_skill = runtime.get_skill("workspace-ops")
-    assert fallback_skill is not None
-    mocker.patch.object(runtime, "rerank_skill_candidates", return_value=[fallback_skill])
-    mocker.patch.object(agent, "_call_with_retry", side_effect=AssertionError("model router should not be called"))
+    mocker.patch.object(
+        agent,
+        "_call_with_retry",
+        return_value=type("R", (), {"finish_reason": "stop", "content": "not-json"})(),
+    )
 
     selected = agent._route_skills_with_model(ctx, snapshot, threading.Event())
 
-    assert [skill.id for skill in selected] == ["workspace-ops"]
+    assert selected == []
 
 
 def test_fetch_model_metadata_falls_back_to_props_for_context_window(mocker, runtime: SkillRuntime):
@@ -2955,7 +2942,7 @@ Use scripts/convert.py when needed.
             "enable_thinking": True,
             "tls_verify": True,
         },
-        "skills": {"selection_mode": "model", "max_active_skills": 2, "shortlist_size": 4},
+        "skills": {"selection_mode": "model", "max_active_skills": 2},
     }
     agent = Agent(cfg, runtime)
     chat_reqs: list[urllib.request.Request] = []

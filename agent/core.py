@@ -16,7 +16,7 @@ from agent.orchestrator import TurnOrchestrator, new_stop_event, request_user_in
 from agent.policies import PromptPolicyRenderer
 from agent.prompts import build_system_prompt
 from agent.telemetry import TelemetryEmitter
-from agent.types import AgentTurnResult, BackgroundSkillAgentTask
+from agent.types import AgentTurnResult, BackgroundSkillAgentTask, TurnClassification
 from core.configuration import validate_endpoint_policy
 from core.skills import SkillRuntime
 
@@ -240,56 +240,14 @@ class Agent:
         skills_cfg = self.config.get("skills", {}) if isinstance(self.config, dict) else {}
         configured_limit = int(skills_cfg.get("max_active_skills", getattr(self.skill_runtime, "max_active_skills", 2)))
         limit = configured_limit if configured_limit > 0 else 2
-        candidate_items = self.skill_runtime.propose_skill_candidates(ctx, top_n=max(limit * 3, 6))
-        enabled = snapshot.skills
-        if not enabled:
-            return []
-
-        heuristic_fallback = self.skill_runtime.rerank_skill_candidates(ctx, candidate_items, limit)
-        use_recent_hint = self._should_use_recent_routing_hint(ctx)
-        routing_system = (
-            "You are selecting local skills for the next assistant turn.\n"
-            "Choose the smallest set of skills needed for the user's request.\n"
-            "Use the skill descriptions, tags, produced artifact hints, and available tool names to infer intent.\n"
-            f"Return strict JSON only in the form {{\"skills\": [\"skill-id\"]}} with at most {limit} ids.\n"
-            "Return an empty list when no skill is needed.\n"
-            "Do not explain your choice."
+        followup_kind = "confirmation" if self._should_use_recent_routing_hint(ctx) else "new_request"
+        classification = TurnClassification(
+            followup_kind=followup_kind,
+            candidate_skill_ids=list(ctx.sticky_skill_ids[:limit]) if followup_kind == "confirmation" else [],
+            source="compat",
         )
-        if use_recent_hint:
-            routing_system += (
-                "\nFor short confirmations like yes/continue/do it, use only the immediate prior exchange summary below."
-                "\nDo not infer tools from older conversation context."
-            )
-        user_content = f"User request:\n{ctx.user_input}"
-        if use_recent_hint and ctx.recent_routing_hint:
-            user_content += f"\n\nImmediate prior exchange:\n{ctx.recent_routing_hint}"
-        shortlisted_skills = [item.skill for item in candidate_items[: min(len(candidate_items), max(limit * 2, self.skill_runtime.shortlist_size))]]
-        if not shortlisted_skills:
-            if heuristic_fallback:
-                return heuristic_fallback
-            return self.skill_runtime.skills_by_ids(ctx.sticky_skill_ids[:limit]) if use_recent_hint and ctx.sticky_skill_ids else []
-        user_content += "\n\nSkill shortlist:\n" + self.skill_runtime.skill_cards_text(shortlisted_skills)
-        payload = self.llm_client.build_payload(
-            [{"role": "system", "content": routing_system}, {"role": "user", "content": user_content}],
-            thinking=False,
-            tools=None,
-            max_tokens_override=self.llm_client.max_classifier_tokens,
-            model_override=self.llm_client.classifier_model if not self.llm_client.classifier_use_primary_model else "",
-        )
-        try:
-            result = self._call_with_retry(payload, stop_event, None, pass_id="skill_route")
-        except Exception:
-            if heuristic_fallback:
-                return heuristic_fallback
-            return self.skill_runtime.skills_by_ids(ctx.sticky_skill_ids[:limit]) if use_recent_hint and ctx.sticky_skill_ids else None
-        if result.finish_reason == "cancelled":
-            return None
-        skill_ids = self.classifier._parse_skill_route(result.content, [skill.id for skill in enabled], limit)
-        if skill_ids is None:
-            if heuristic_fallback:
-                return heuristic_fallback
-            return self.skill_runtime.skills_by_ids(ctx.sticky_skill_ids[:limit]) if use_recent_hint and ctx.sticky_skill_ids else None
-        return self.skill_runtime.expand_selected_skills(ctx, self.skill_runtime.skills_by_ids(skill_ids))
+        route = self.classifier.route_skills(ctx, classification, stop_event=stop_event)
+        return self.skill_runtime.expand_selected_skills(ctx, self.skill_runtime.skills_by_ids(route.selected_skill_ids))
 
     def _get_skill_snapshot(self, force_refresh: bool = False):
         return self.classifier.get_skill_snapshot(force_refresh=force_refresh)

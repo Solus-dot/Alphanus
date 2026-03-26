@@ -33,6 +33,7 @@ def test_command_entries_match_context_command() -> None:
 
     assert "/context" in context_matches
 
+
 def test_active_command_query_tracks_command_token_at_cursor() -> None:
     assert active_command_query("/cont", 5) == "/cont"
     assert active_command_query("/cont notes", 3) == "/cont"
@@ -47,6 +48,8 @@ def test_active_command_query_ignores_non_command_prefix_text() -> None:
 def test_active_command_span_covers_command_token() -> None:
     assert active_command_span("/cont notes", 3) == (0, 5)
     assert active_command_span("  /cont notes", 2) == (2, 7)
+
+
 def test_chat_input_binds_new_shortcuts_locally() -> None:
     bindings = {binding.key: binding.action for binding in ChatInput.BINDINGS}
 

@@ -67,6 +67,13 @@ def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
     assert normalized["tui"]["chat_log_max_lines"] == 100
 
 
+def test_normalize_config_maps_deprecated_heuristic_selection_to_model() -> None:
+    normalized, warnings = normalize_config({"schema_version": "1.0.0", "skills": {"selection_mode": "heuristic"}})
+
+    assert normalized["skills"]["selection_mode"] == "model"
+    assert any("deprecated" in item for item in warnings)
+
+
 def test_load_or_create_global_config_reports_and_rejects_bad_json(tmp_path: Path) -> None:
     cfg = tmp_path / "config" / "global_config.json"
     cfg.parent.mkdir(parents=True, exist_ok=True)
