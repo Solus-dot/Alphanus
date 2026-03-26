@@ -21,3 +21,10 @@ def test_system_prompt_prefers_localized_edit_file_calls(tmp_path: Path):
 
     assert "prefer localized `edit_file` calls with `old_string` and `new_string`" in prompt
     assert "use full `content` only when replacing most of the file" in prompt
+
+
+def test_system_prompt_delegates_shell_confirmation_to_tool(tmp_path: Path):
+    prompt = build_system_prompt(str(tmp_path / "workspace"))
+
+    assert "`shell_command` tool's own confirmation prompt" in prompt
+    assert "instead of asking the user for duplicate confirmation" in prompt

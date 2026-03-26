@@ -7,7 +7,7 @@ from core.skills import ToolExecutionEnv
 TOOL_SPECS = {
     "shell_command": {
         "capability": "run_shell_command",
-        "description": "Run a shell command in workspace with explicit confirmation.",
+        "description": "Run a shell command in workspace. The tool itself asks for confirmation when required, so do not ask separately in assistant text.",
         "parameters": {
             "type": "object",
             "properties": {"command": {"type": "string"}},

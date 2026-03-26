@@ -209,3 +209,19 @@ def test_shell_confirmation_reuses_recent_assistant_action_context(mocker, tmp_p
 
     assert selected
     assert any(skill.id == "shell-ops" for skill in selected)
+
+
+def test_shell_command_tool_description_and_skill_block_delegate_confirmation_to_tool(tmp_path: Path):
+    runtime = _runtime(tmp_path, {})
+    shell_skill = runtime.get_skill("shell-ops")
+    assert shell_skill is not None
+
+    ctx = _ctx(str(runtime.workspace.workspace_root))
+    tools = runtime.tools_for_turn([shell_skill], ctx=ctx)
+    shell_tool = next(tool["function"] for tool in tools if tool["function"]["name"] == "shell_command")
+    assert "tool itself asks for confirmation" in shell_tool["description"]
+    assert "do not ask separately" in shell_tool["description"]
+
+    block = runtime.compose_skill_block([shell_skill], ctx, context_limit=2048)
+    assert "tool itself asks the user for confirmation" in block
+    assert "Do not ask for duplicate confirmation" in block
