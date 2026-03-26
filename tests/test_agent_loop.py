@@ -555,18 +555,31 @@ def test_confirmation_workspace_action_retries_instead_of_accepting_manual_termi
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
         calls.append(pass_id)
+        if pass_id == "pass_1_workspace_action_outcome":
+            return type("R", (), {"finish_reason": "stop", "content": '{"outcome":"not_completed"}'})()
         if pass_id == "pass_1":
             return type(
                 "R",
                 (),
                 {
                     "finish_reason": "stop",
-                    "content": "I cannot delete files directly. You can remove them manually in the terminal with rm -rf.",
+                    "content": "I cannot create files directly here. You can run touch notes.txt manually in the terminal.",
                     "reasoning": "",
                     "tool_calls": [],
                 },
             )()
         if pass_id == "pass_2":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "tool_calls",
+                    "content": "",
+                    "reasoning": "",
+                    "tool_calls": [type("Call", (), {"stream_id": "2", "index": 0, "id": "call_2", "name": "create_file", "arguments": {"filepath": "notes.txt", "content": "hello"}})()],
+                },
+            )()
+        if pass_id == "pass_3":
             return type(
                 "R",
                 (),
@@ -579,17 +592,22 @@ def test_confirmation_workspace_action_retries_instead_of_accepting_manual_termi
             )()
         raise AssertionError(f"Unexpected pass id: {pass_id}")
 
+    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
+        assert tool_name == "create_file"
+        return {"ok": True, "data": {"filepath": "notes.txt"}, "error": None, "meta": {}}
+
     mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(runtime, "execute_tool_call", side_effect=fake_execute_tool_call)
 
     result = agent.run_turn(
-        history_messages=[{"role": "user", "content": "delete all files in the workspace"}],
+        history_messages=[{"role": "user", "content": "create notes.txt in the workspace"}],
         user_input="yes",
         thinking=True,
     )
 
     assert result.status == "done"
     assert result.content == "Done with workspace tools."
-    assert calls[-2:] == ["pass_1", "pass_2"]
+    assert calls[-4:] == ["pass_1", "pass_1_workspace_action_outcome", "pass_2", "pass_3"]
 
 
 def test_confirmation_workspace_action_rejects_manual_terminal_advice_after_retry(mocker, runtime: SkillRuntime):
@@ -598,9 +616,17 @@ def test_confirmation_workspace_action_rejects_manual_terminal_advice_after_retr
     mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation"))
 
     calls = []
+    outcome_calls = {"pass_1_workspace_action_outcome": 0, "pass_2_workspace_action_outcome": 0}
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
         calls.append(pass_id)
+        if pass_id == "pass_1_workspace_action_outcome":
+            outcome_calls[pass_id] += 1
+            return type("R", (), {"finish_reason": "stop", "content": '{"outcome":"not_completed"}'})()
+        if pass_id == "pass_2_workspace_action_outcome":
+            outcome_calls[pass_id] += 1
+            outcome = "not_completed" if outcome_calls[pass_id] == 1 else "declined_or_blocked"
+            return type("R", (), {"finish_reason": "stop", "content": f'{{"outcome":"{outcome}"}}'})()
         if pass_id == "pass_2_final":
             return type(
                 "R",
@@ -643,9 +669,17 @@ def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_u
     mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation"))
 
     calls = []
+    outcome_calls = {"pass_1_workspace_action_outcome": 0, "pass_2_workspace_action_outcome": 0}
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
         calls.append(pass_id)
+        if pass_id == "pass_1_workspace_action_outcome":
+            outcome_calls[pass_id] += 1
+            return type("R", (), {"finish_reason": "stop", "content": '{"outcome":"not_completed"}'})()
+        if pass_id == "pass_2_workspace_action_outcome":
+            outcome_calls[pass_id] += 1
+            outcome = "not_completed" if outcome_calls[pass_id] == 1 else "declined_or_blocked"
+            return type("R", (), {"finish_reason": "stop", "content": f'{{"outcome":"{outcome}"}}'})()
         if pass_id == "pass_2_final":
             return type(
                 "R",
@@ -688,6 +722,7 @@ def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_s
     mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation"))
 
     calls = []
+    outcome_calls = {"pass_2_workspace_action_outcome": 0, "pass_3_workspace_action_outcome": 0}
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
         calls.append(pass_id)
@@ -702,6 +737,9 @@ def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_s
                     "tool_calls": [type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "read_file", "arguments": {"filepath": "foo.txt"}})()],
                 },
             )()
+        if pass_id == "pass_2_workspace_action_outcome":
+            outcome_calls[pass_id] += 1
+            return type("R", (), {"finish_reason": "stop", "content": '{"outcome":"not_completed"}'})()
         if pass_id == "pass_2":
             return type(
                 "R",
@@ -714,6 +752,21 @@ def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_s
                 },
             )()
         if pass_id == "pass_3":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "stop",
+                    "content": "I renamed foo.txt to bar.txt.",
+                    "reasoning": "",
+                    "tool_calls": [],
+                },
+            )()
+        if pass_id == "pass_3_workspace_action_outcome":
+            outcome_calls[pass_id] += 1
+            outcome = "not_completed" if outcome_calls[pass_id] == 1 else "declined_or_blocked"
+            return type("R", (), {"finish_reason": "stop", "content": f'{{"outcome":"{outcome}"}}'})()
+        if pass_id == "pass_3_final":
             return type(
                 "R",
                 (),
@@ -742,6 +795,134 @@ def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_s
     assert result.status == "done"
     assert "couldn't complete that workspace action" in result.content.lower()
     assert "pass_3" in calls
+
+
+def test_workspace_action_preserves_policy_blocked_reply_when_outcome_classifier_fails(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    mocker.patch.object(agent, "ensure_ready", return_value=True)
+    mocker.patch.object(
+        agent,
+        "_classify_turn",
+        return_value=TurnClassification(requires_workspace_action=True, prefer_local_workspace_tools=True, followup_kind="confirmation"),
+    )
+
+    calls = []
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        calls.append(pass_id)
+        if pass_id == "pass_1":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "tool_calls",
+                    "content": "",
+                    "reasoning": "",
+                    "tool_calls": [type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "shell_command", "arguments": {"command": "rm -rf ."}})()],
+                },
+            )()
+        if pass_id in {"pass_2", "pass_3"}:
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "stop",
+                    "content": "shell_command is not allowed for local workspace file tasks; use workspace tools instead.",
+                    "reasoning": "",
+                    "tool_calls": [],
+                },
+            )()
+        if pass_id == "pass_2_workspace_action_outcome":
+            raise RuntimeError("timeout")
+        raise AssertionError(f"Unexpected pass id: {pass_id}")
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "delete all files in the workspace"}],
+        user_input="yes",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert result.content == "shell_command is not allowed for local workspace file tasks; use workspace tools instead."
+    assert "no workspace tool actually ran" not in result.content.lower()
+    assert calls == ["pass_1", "pass_2", "pass_2_workspace_action_outcome"]
+
+
+def test_workspace_action_classifier_failure_does_not_accept_manual_shell_advice_after_block(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    mocker.patch.object(agent, "ensure_ready", return_value=True)
+    mocker.patch.object(
+        agent,
+        "_classify_turn",
+        return_value=TurnClassification(requires_workspace_action=True, prefer_local_workspace_tools=True, followup_kind="confirmation"),
+    )
+
+    calls = []
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        calls.append(pass_id)
+        if pass_id == "pass_1":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "tool_calls",
+                    "content": "",
+                    "reasoning": "",
+                    "tool_calls": [type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "shell_command", "arguments": {"command": "rm -rf ."}})()],
+                },
+            )()
+        if pass_id == "pass_2":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "stop",
+                    "content": "shell_command is not allowed here. Please run rm -rf manually in your terminal.",
+                    "reasoning": "",
+                    "tool_calls": [],
+                },
+            )()
+        if pass_id == "pass_3":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "stop",
+                    "content": "shell_command is not allowed here. Please run rm -rf manually in your terminal.",
+                    "reasoning": "",
+                    "tool_calls": [],
+                },
+            )()
+        if pass_id in {"pass_2_workspace_action_outcome", "pass_3_workspace_action_outcome"}:
+            raise RuntimeError("timeout")
+        if pass_id == "pass_3_final":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "stop",
+                    "content": "I couldn't complete that workspace action because no workspace tool actually ran.",
+                    "reasoning": "",
+                    "tool_calls": [],
+                },
+            )()
+        raise AssertionError(f"Unexpected pass id: {pass_id}")
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "delete all files in the workspace"}],
+        user_input="yes",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert "couldn't complete that workspace action" in result.content.lower()
+    assert "rm -rf" not in result.content.lower()
+    assert calls == ["pass_1", "pass_2", "pass_2_workspace_action_outcome", "pass_3", "pass_3_workspace_action_outcome", "pass_3_final", "pass_3_workspace_action_outcome"]
 
 
 
@@ -3006,3 +3187,78 @@ Ask a follow-up before continuing.
     assert result.status == "done"
     assert result.content == "Pick a format\nOptions: pdf | docx"
     assert calls_seen == ["request_user_input"]
+
+
+
+def test_run_turn_allows_shell_command_for_environment_question(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    mocker.patch.object(agent, "ensure_ready", return_value=True)
+    mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(prefer_local_workspace_tools=False))
+
+    pass_calls = []
+    executed = []
+
+    def fake_turn_call(payload, stop_event, on_event, pass_id):
+        pass_calls.append(pass_id)
+        if pass_id == "pass_1":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "tool_calls",
+                    "content": "",
+                    "reasoning": "",
+                    "tool_calls": [
+                        type(
+                            "Call",
+                            (),
+                            {
+                                "stream_id": "1",
+                                "index": 0,
+                                "id": "call_1",
+                                "name": "shell_command",
+                                "arguments": {"command": "go version"},
+                            },
+                        )()
+                    ],
+                },
+            )()
+        if pass_id == "pass_2":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "stop",
+                    "content": "Go version: go1.24.0",
+                    "reasoning": "",
+                    "tool_calls": [],
+                },
+            )()
+        raise AssertionError(f"Unexpected pass id: {pass_id}")
+
+    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
+        executed.append((tool_name, args))
+        assert tool_name == "shell_command"
+        assert args["command"] == "go version"
+        return {
+            "ok": True,
+            "data": {"stdout": "go version go1.24.0 linux/amd64\n", "stderr": "", "returncode": 0},
+            "error": None,
+            "meta": {},
+        }
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_turn_call)
+    mocker.patch.object(runtime, "execute_tool_call", side_effect=fake_execute_tool_call)
+
+    result = agent.run_turn(
+        history_messages=[],
+        user_input="What version of go am I using?",
+        thinking=True,
+        confirm_shell=lambda _command: True,
+    )
+
+    assert result.status == "done"
+    assert result.content == "Go version: go1.24.0"
+    assert executed == [("shell_command", {"command": "go version"})]
+    assert "local workspace file tasks" not in result.content
+    assert pass_calls == ["pass_1", "pass_2"]

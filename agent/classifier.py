@@ -37,35 +37,6 @@ class TurnClassifier:
             return "\n".join(part for part in parts if part).strip()
         return str(value or "").strip()
 
-    @staticmethod
-    def is_confirmation_like(text: str) -> bool:
-        lowered = " ".join(text.strip().lower().split())
-        if not lowered:
-            return False
-        direct = {
-            "yes",
-            "yeah",
-            "yep",
-            "ok",
-            "okay",
-            "sure",
-            "do it",
-            "go ahead",
-            "continue",
-            "proceed",
-            "run it",
-            "do that",
-            "delete them",
-            "delete it",
-            "all of them",
-        }
-        if lowered in direct:
-            return True
-        if len(lowered.split()) <= 3 and lowered in {"please do", "please continue", "yes please"}:
-            return True
-        affirmative_prefixes = ("yes ", "yeah ", "yep ", "ok ", "okay ", "sure ")
-        return len(lowered.split()) <= 6 and any(lowered.startswith(prefix) for prefix in affirmative_prefixes)
-
     def recent_routing_context(self, history_messages: List[Dict[str, Any]]) -> tuple[str, List[str]]:
         if not history_messages:
             return "", []
@@ -210,6 +181,169 @@ class TurnClassifier:
                 return {}
             return payload if isinstance(payload, dict) else {}
 
+    @staticmethod
+    def _normalized_text(text: str) -> str:
+        return " ".join(str(text or "").strip().lower().split())
+
+    @classmethod
+    def _draft_requests_clarification(cls, assistant_reply: str) -> bool:
+        lowered = cls._normalized_text(assistant_reply)
+        if not lowered:
+            return False
+        if "?" in assistant_reply:
+            return True
+        return bool(
+            re.search(
+                r"\b(?:which|what|where|when|who|clarify|confirm|should i|do you want|would you like|can you tell me)\b",
+                lowered,
+            )
+        )
+
+    @classmethod
+    def _draft_contains_manual_workspace_advice(cls, assistant_reply: str) -> bool:
+        lowered = cls._normalized_text(assistant_reply)
+        if not lowered:
+            return False
+        if re.search(r"\b(?:run|execute|use|copy|paste|type)\b[^.\n]{0,80}\b(?:terminal|shell|command)\b", lowered):
+            return True
+        if re.search(r"\b(?:run|execute)\b[^.\n]{0,80}\bmanually\b", lowered):
+            return True
+        return bool(re.search(r"\bmanually\b[^.\n]{0,40}\b(?:terminal|shell)\b", lowered))
+
+    @classmethod
+    def _draft_claims_workspace_completion_without_evidence(cls, assistant_reply: str) -> bool:
+        lowered = cls._normalized_text(assistant_reply)
+        if not lowered:
+            return False
+        if re.search(
+            r"\b(?:i|we)\s+(?:have\s+)?(?:already\s+)?(?:successfully\s+)?(?:deleted|removed|created|updated|edited|modified|renamed|moved|wrote|saved)\b",
+            lowered,
+        ):
+            return True
+        return bool(re.search(r"\b(?:workspace is now empty|done with workspace tools)\b", lowered))
+
+    @classmethod
+    def _draft_reports_supported_limitation(cls, assistant_reply: str) -> bool:
+        lowered = cls._normalized_text(assistant_reply)
+        if not lowered:
+            return False
+        if "no workspace tool actually ran" in lowered:
+            return True
+        return bool(
+            re.search(
+                r"\b(?:could not|couldn't|cannot|can't|unable|not allowed|blocked|permission|permissions|unsupported|unavailable|disabled)\b",
+                lowered,
+            )
+        )
+
+    @staticmethod
+    def _evidence_shows_blocked_or_unavailable_tool(evidence: Dict[str, Any]) -> bool:
+        recent_tools = evidence.get("recent_tools")
+        if not isinstance(recent_tools, list):
+            return False
+        for item in recent_tools:
+            if not isinstance(item, dict):
+                continue
+            if bool(item.get("policy_blocked")):
+                return True
+            error_code = str(item.get("error_code", "")).strip().upper()
+            if error_code in {"E_POLICY", "E_PERMISSION", "E_PERMISSIONS", "E_UNSUPPORTED", "E_DISABLED", "E_UNAVAILABLE"}:
+                return True
+        return False
+
+    @classmethod
+    def _text_targets_workspace_artifacts(cls, text: str) -> bool:
+        raw = str(text or "")
+        lowered = cls._normalized_text(raw)
+        if not lowered:
+            return False
+        if re.search(r"(?<![\w/.-])(?:[\w.-]+/)*[\w.-]+\.[a-z0-9]{1,16}\b", raw, flags=re.IGNORECASE):
+            return True
+        if re.search(r"(?<![:/\w])(?:~/|/)[^\s\"'`]+", raw):
+            return True
+        if re.search(r"\b(?:file|files|folder|folders|filename|filenames)\b", lowered):
+            return True
+        action_pattern = (
+            r"(?:create|make|write|save|edit|update|modify|delete|remove|rename|move|read|open|list|show|inspect|find|copy|scaffold|generate)"
+        )
+        target_pattern = r"(?:directory|directories|workspace|repo|repository|project)"
+        return bool(
+            re.search(rf"\b{action_pattern}\b[^.\n]{{0,40}}\b{target_pattern}\b", lowered)
+            or re.search(rf"\b{target_pattern}\b[^.\n]{{0,40}}\b{action_pattern}\b", lowered)
+        )
+
+    def _supports_local_workspace_preference(self, ctx: SkillContext, classification: TurnClassification) -> bool:
+        if self._text_targets_workspace_artifacts(ctx.user_input):
+            return True
+        if classification.followup_kind in {"confirmation", "contextual_followup"} and self._text_targets_workspace_artifacts(
+            getattr(ctx, "recent_routing_hint", "")
+        ):
+            return True
+        return False
+
+    def classify_workspace_action_outcome(
+        self,
+        *,
+        current_user_input: str,
+        recent_routing_hint: str,
+        assistant_reply: str,
+        evidence: Dict[str, Any],
+        pass_id: str,
+        stop_event=None,
+    ) -> str:
+        fallback = self._fallback_workspace_action_outcome(assistant_reply, evidence)
+        if not bool(self.llm_client.enable_structured_classification):
+            return fallback
+        prompt = (
+            "Classify an assistant draft for a local workspace action request.\n"
+            "Return strict JSON only with this field:\n"
+            '{"outcome":"not_completed"}\n'
+            "Allowed outcome values: completed_with_evidence, declined_or_blocked, needs_clarification, not_completed.\n"
+            "Use the provided tool evidence as the source of truth.\n"
+            "- Choose completed_with_evidence only if the evidence shows at least one successful mutating workspace tool.\n"
+            "- Choose declined_or_blocked only when the reply transparently reports a real limitation supported by the evidence, such as a policy-blocked tool, unavailable tooling, or an explicit statement that no successful workspace tool actually ran.\n"
+            "- Choose needs_clarification when the assistant is explicitly asking the user for information needed before acting.\n"
+            "- Choose not_completed for manual terminal advice, unsupported success claims, or deflections/refusals that are not supported by the evidence.\n"
+            "Do not explain."
+        )
+        user_lines = [f"Current user input:\n{current_user_input}", f"Assistant draft:\n{assistant_reply}", f"Tool evidence:\n{json.dumps(evidence, ensure_ascii=False, default=str)}"]
+        if recent_routing_hint:
+            user_lines.insert(1, f"Immediate prior exchange:\n{recent_routing_hint}")
+        payload = self.llm_client.build_payload(
+            [{"role": "system", "content": prompt}, {"role": "user", "content": "\n\n".join(user_lines)}],
+            thinking=False,
+            tools=None,
+            max_tokens_override=min(self.llm_client.max_classifier_tokens, 120),
+            model_override=self.llm_client.classifier_model if not self.llm_client.classifier_use_primary_model else "",
+        )
+        try:
+            result = self.call_with_retry(payload, stop_event, None, pass_id=f"{pass_id}_workspace_action_outcome")
+        except Exception as exc:
+            self.telemetry.emit("workspace_action_outcome_classification_failed", error=str(exc))
+            return fallback
+        parsed = self._parse_json_object(result.content)
+        outcome = str(parsed.get("outcome", "")).strip().lower()
+        if outcome in {"completed_with_evidence", "declined_or_blocked", "needs_clarification", "not_completed"}:
+            return outcome
+        return fallback
+
+    @staticmethod
+    def _fallback_workspace_action_outcome(assistant_reply: str, evidence: Dict[str, Any]) -> str:
+        if bool(evidence.get("has_successful_mutation")):
+            return "completed_with_evidence"
+        lowered = TurnClassifier._normalized_text(assistant_reply)
+        if not lowered:
+            return "not_completed"
+        if TurnClassifier._draft_requests_clarification(assistant_reply):
+            return "needs_clarification"
+        if TurnClassifier._draft_contains_manual_workspace_advice(assistant_reply):
+            return "not_completed"
+        if TurnClassifier._draft_claims_workspace_completion_without_evidence(assistant_reply):
+            return "not_completed"
+        if TurnClassifier._evidence_shows_blocked_or_unavailable_tool(evidence) and TurnClassifier._draft_reports_supported_limitation(assistant_reply):
+            return "declined_or_blocked"
+        return "not_completed"
+
     def classify(self, ctx: SkillContext, stop_event=None) -> TurnClassification:
         seed = TurnClassification(
             explicit_external_path=self._explicit_path_outside_workspace(ctx.user_input),
@@ -255,6 +389,8 @@ class TurnClassifier:
             used_model=True,
             source="model",
         )
+        if merged.prefer_local_workspace_tools and not self._supports_local_workspace_preference(ctx, merged):
+            merged.prefer_local_workspace_tools = False
         self.telemetry.emit(
             "turn_classified",
             source=merged.source,

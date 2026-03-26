@@ -266,3 +266,205 @@ def test_classifier_uses_model_for_contextual_followup(mocker, tmp_path: Path) -
     assert classification.used_model is True
     assert classification.followup_kind == "contextual_followup"
     assert "turn_classify" in calls
+
+
+def test_workspace_action_outcome_skips_model_when_structured_classification_disabled(mocker, tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": False}}
+    llm_client = LLMClient(cfg)
+    classifier = TurnClassifier(cfg, runtime, llm_client)
+    call = mocker.patch.object(classifier, "call_with_retry")
+
+    outcome = classifier.classify_workspace_action_outcome(
+        current_user_input="yes",
+        recent_routing_hint="",
+        assistant_reply="shell_command is not allowed for local workspace file tasks; use workspace tools instead.",
+        evidence={
+            "has_successful_mutation": False,
+            "policy_blocked_tools": ["shell_command"],
+            "recent_tools": [
+                {
+                    "name": "shell_command",
+                    "ok": False,
+                    "mutating": False,
+                    "policy_blocked": True,
+                    "error_code": "E_POLICY",
+                    "error_message": "shell_command is not allowed",
+                }
+            ],
+        },
+        pass_id="pass_1",
+    )
+
+    assert outcome == "declined_or_blocked"
+    call.assert_not_called()
+
+
+def test_workspace_action_outcome_falls_back_to_blocked_when_classifier_call_fails(mocker, tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": True}}
+    llm_client = LLMClient(cfg)
+    classifier = TurnClassifier(cfg, runtime, llm_client)
+    mocker.patch.object(classifier, "call_with_retry", side_effect=RuntimeError("timeout"))
+
+    outcome = classifier.classify_workspace_action_outcome(
+        current_user_input="yes",
+        recent_routing_hint="",
+        assistant_reply="shell_command is not allowed for local workspace file tasks; use workspace tools instead.",
+        evidence={
+            "has_successful_mutation": False,
+            "policy_blocked_tools": ["shell_command"],
+            "recent_tools": [
+                {
+                    "name": "shell_command",
+                    "ok": False,
+                    "mutating": False,
+                    "policy_blocked": True,
+                    "error_code": "E_POLICY",
+                    "error_message": "shell_command is not allowed",
+                }
+            ],
+        },
+        pass_id="pass_1",
+    )
+
+    assert outcome == "declined_or_blocked"
+
+
+def test_workspace_action_outcome_fallback_rejects_manual_terminal_advice_even_with_blocked_evidence(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": False}}
+    llm_client = LLMClient(cfg)
+    classifier = TurnClassifier(cfg, runtime, llm_client)
+
+    outcome = classifier.classify_workspace_action_outcome(
+        current_user_input="yes",
+        recent_routing_hint="",
+        assistant_reply="shell_command is not allowed here. Please run rm -rf manually in your terminal.",
+        evidence={
+            "has_successful_mutation": False,
+            "policy_blocked_tools": ["shell_command"],
+            "recent_tools": [
+                {
+                    "name": "shell_command",
+                    "ok": False,
+                    "mutating": False,
+                    "policy_blocked": True,
+                    "error_code": "E_POLICY",
+                    "error_message": "shell_command is not allowed",
+                }
+            ],
+        },
+        pass_id="pass_1",
+    )
+
+    assert outcome == "not_completed"
+
+
+def test_workspace_action_outcome_fallback_rejects_false_success_claim_even_with_blocked_evidence(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": False}}
+    llm_client = LLMClient(cfg)
+    classifier = TurnClassifier(cfg, runtime, llm_client)
+
+    outcome = classifier.classify_workspace_action_outcome(
+        current_user_input="yes",
+        recent_routing_hint="",
+        assistant_reply="shell_command is not allowed here, but I deleted the files for you.",
+        evidence={
+            "has_successful_mutation": False,
+            "policy_blocked_tools": ["shell_command"],
+            "recent_tools": [
+                {
+                    "name": "shell_command",
+                    "ok": False,
+                    "mutating": False,
+                    "policy_blocked": True,
+                    "error_code": "E_POLICY",
+                    "error_message": "shell_command is not allowed",
+                }
+            ],
+        },
+        pass_id="pass_1",
+    )
+
+    assert outcome == "not_completed"
+
+
+def test_classifier_clears_local_workspace_preference_for_environment_question(mocker, tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": True}}
+    llm_client = LLMClient(cfg)
+    classifier = TurnClassifier(cfg, runtime, llm_client)
+    ctx = classifier.build_skill_context(
+        "What version of go am I using?",
+        [],
+        [],
+        [],
+    )
+
+    mocker.patch.object(TurnClassifier, "_should_model_classify", return_value=True)
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        assert pass_id == "turn_classify"
+        return type(
+            "R",
+            (),
+            {
+                "finish_reason": "stop",
+                "content": json.dumps(
+                    {
+                        "prefer_local_workspace_tools": True,
+                    }
+                ),
+            },
+        )()
+
+    llm_client.call_with_retry = fake_call_with_retry
+    classifier.call_with_retry = fake_call_with_retry
+
+    classification = classifier.classify(ctx)
+
+    assert classification.used_model is True
+    assert classification.prefer_local_workspace_tools is False
+
+
+def test_classifier_clears_local_workspace_preference_for_shell_confirmation_followup(mocker, tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": True}}
+    llm_client = LLMClient(cfg)
+    classifier = TurnClassifier(cfg, runtime, llm_client)
+    history_messages = [
+        {"role": "user", "content": "how do i check my go version"},
+        {"role": "assistant", "content": "I can run `go version` in the workspace if you want."},
+    ]
+    ctx = classifier.build_skill_context("yes check it", [], [], history_messages)
+
+    mocker.patch.object(TurnClassifier, "_should_model_classify", return_value=True)
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        assert pass_id == "turn_classify"
+        return type(
+            "R",
+            (),
+            {
+                "finish_reason": "stop",
+                "content": json.dumps(
+                    {
+                        "followup_kind": "confirmation",
+                        "requires_workspace_action": True,
+                        "prefer_local_workspace_tools": True,
+                    }
+                ),
+            },
+        )()
+
+    llm_client.call_with_retry = fake_call_with_retry
+    classifier.call_with_retry = fake_call_with_retry
+
+    classification = classifier.classify(ctx)
+
+    assert classification.used_model is True
+    assert classification.followup_kind == "confirmation"
+    assert classification.requires_workspace_action is True
+    assert classification.prefer_local_workspace_tools is False

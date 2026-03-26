@@ -250,37 +250,55 @@ class TurnOrchestrator:
     def needs_fetch_evidence(state: TurnState) -> bool:
         return state.search_mode and state.time_sensitive_query and not state.completion.search_has_fetch_content
 
-    @staticmethod
-    def looks_like_manual_workspace_advice(text: str) -> bool:
-        lowered = text.lower()
-        return (
-            "can't" in lowered
-            or "cannot" in lowered
-            or "manual" in lowered
-            or "terminal" in lowered
-            or "run the following command" in lowered
-            or "rm " in lowered
-            or "rm -rf" in lowered
+    def workspace_action_evidence(self, state: TurnState) -> Dict[str, Any]:
+        successful_mutating_tools: List[str] = []
+        policy_blocked_tools: List[str] = []
+        recent_tools: List[Dict[str, Any]] = []
+        for record in state.evidence[-12:]:
+            ok = bool(record.result.get("ok"))
+            mutating = self.skill_runtime.tool_is_mutating(record.name)
+            if ok and mutating and not record.policy_blocked and record.name not in successful_mutating_tools:
+                successful_mutating_tools.append(record.name)
+            if record.policy_blocked and record.name not in policy_blocked_tools:
+                policy_blocked_tools.append(record.name)
+            error_obj = record.result.get("error")
+            error = error_obj if isinstance(error_obj, dict) else {}
+            recent_tools.append(
+                {
+                    "name": record.name,
+                    "ok": ok,
+                    "mutating": mutating,
+                    "policy_blocked": record.policy_blocked,
+                    "error_code": str(error.get("code", "")).strip(),
+                    "error_message": str(error.get("message", "")).strip()[:240],
+                }
+            )
+        return {
+            "tool_counts": dict(state.completion.tool_counts),
+            "has_successful_mutation": bool(successful_mutating_tools),
+            "successful_mutating_tools": successful_mutating_tools,
+            "policy_blocked_tools": policy_blocked_tools,
+            "recent_tools": recent_tools,
+        }
+
+    def workspace_action_outcome(self, state: TurnState, text: str, *, stop_event, pass_id: str) -> str:
+        if self.workspace_mutation_count(state) > 0:
+            return "completed_with_evidence"
+        cleaned = self.sanitizer.sanitize_final_content(text)
+        return self.classifier.classify_workspace_action_outcome(
+            current_user_input=state.ctx.user_input,
+            recent_routing_hint=getattr(state.ctx, "recent_routing_hint", ""),
+            assistant_reply=cleaned,
+            evidence=self.workspace_action_evidence(state),
+            pass_id=pass_id,
+            stop_event=stop_event,
         )
 
-    @staticmethod
-    def looks_like_workspace_action_claim(text: str) -> bool:
-        lowered = text.lower()
-        return (
-            "i deleted" in lowered
-            or "deleted the following" in lowered
-            or "workspace is now empty" in lowered
-            or "i created" in lowered
-            or "i updated" in lowered
-            or "i renamed" in lowered
-            or "successfully deleted" in lowered
-        )
-
-    def coerce_workspace_action_failure(self, state: TurnState, result: AgentTurnResult) -> AgentTurnResult:
+    def coerce_workspace_action_failure(self, state: TurnState, result: AgentTurnResult, *, stop_event, pass_id: str) -> AgentTurnResult:
         if result.status != "done" or not state.requires_workspace_action or self.workspace_mutation_count(state) > 0:
             return result
-        cleaned = self.sanitizer.sanitize_final_content(result.content)
-        if not (self.looks_like_manual_workspace_advice(cleaned) or self.looks_like_workspace_action_claim(cleaned)):
+        outcome = self.workspace_action_outcome(state, result.content, stop_event=stop_event, pass_id=pass_id)
+        if outcome in {"declined_or_blocked", "needs_clarification"}:
             return result
         return AgentTurnResult(
             status="done",
@@ -716,7 +734,11 @@ class TurnOrchestrator:
                 return finish_finalized(finalized)
 
             if state.requires_workspace_action and self.workspace_mutation_count(state) == 0:
-                if self.looks_like_manual_workspace_advice(final) or self.looks_like_workspace_action_claim(final):
+                if not final.strip():
+                    if not state.forced_action_retry:
+                        state.forced_action_retry = True
+                        continue
+                elif self.workspace_action_outcome(state, final, stop_event=stop_event, pass_id=pass_id) == "not_completed":
                     if not state.forced_action_retry:
                         state.forced_action_retry = True
                         continue
@@ -728,11 +750,8 @@ class TurnOrchestrator:
                         pass_id,
                         "Workspace tool usage rule:\n- No workspace tool was used to complete the requested action.\n- Say plainly that the action was not completed.\n- Do not provide manual shell deletion advice.\n- Do not claim success.",
                     )
-                    finalized = self.coerce_workspace_action_failure(state, finalized)
+                    finalized = self.coerce_workspace_action_failure(state, finalized, stop_event=stop_event, pass_id=pass_id)
                     return finish_finalized(finalized)
-                if not state.forced_action_retry and not final.strip():
-                    state.forced_action_retry = True
-                    continue
 
             if self.needs_fetch_evidence(state):
                 finalized = self.finalize_turn(
