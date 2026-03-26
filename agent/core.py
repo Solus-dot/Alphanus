@@ -92,6 +92,10 @@ class TurnState:
     workspace_scaffold_action: bool = False
     workspace_materialization_target: int = 0
     forced_workspace_retry: bool = False
+    workspace_readback_required: bool = False
+    forced_readback_retry: bool = False
+    strict_output_requested: bool = False
+    requires_post_tool_reasoning: bool = False
     model_usage: Dict[str, int] = field(default_factory=dict)
 
 
@@ -837,13 +841,14 @@ class Agent:
         if use_recent_hint and ctx.sticky_skill_ids:
             user_content += f"\n\nLikely carry-over skills for this confirmation:\n{', '.join(ctx.sticky_skill_ids[:limit])}"
         shortlisted_skills = [item.skill for item in candidate_items[: min(len(candidate_items), max(limit * 2, self.skill_runtime.shortlist_size))]]
-        if shortlisted_skills:
-            user_content += (
-                "\n\nSkill shortlist:\n"
-                + self.skill_runtime.skill_cards_text(shortlisted_skills)
-            )
-        elif snapshot.catalog:
-            user_content += f"\n\nAvailable skills:\n{snapshot.catalog}"
+        if not shortlisted_skills:
+            if heuristic_fallback:
+                return heuristic_fallback
+            return self.skill_runtime.skills_by_ids(ctx.sticky_skill_ids[:limit]) if use_recent_hint and ctx.sticky_skill_ids else []
+        user_content += (
+            "\n\nSkill shortlist:\n"
+            + self.skill_runtime.skill_cards_text(shortlisted_skills)
+        )
         routing_messages = [
             {"role": "system", "content": routing_system},
             {"role": "user", "content": user_content},
@@ -868,15 +873,7 @@ class Agent:
         if ctx.explicit_skill_id:
             return True
         ranked = [(score, skill) for score, skill in self.skill_runtime.score_skills(ctx) if score > 0]
-        if len(ranked) <= 1:
-            return True
-        top_score = ranked[0][0]
-        second_score = ranked[1][0]
-        if top_score >= 60 and top_score - second_score >= 18:
-            return True
-        if top_score >= 90 and second_score <= 24:
-            return True
-        return False
+        return self.skill_runtime.should_use_deterministic_selection(ranked)
 
     def _select_skills(
         self,
@@ -1069,105 +1066,6 @@ class Agent:
         )
 
     @staticmethod
-    def _fallback_answer_from_evidence(evidence: List[ToolEvidence]) -> str:
-        search_results: List[Dict[str, str]] = []
-        fetched_sources: List[Dict[str, str]] = []
-        fetch_errors: List[str] = []
-        generic_successes: List[Dict[str, Any]] = []
-
-        for item in evidence:
-            name = item.name
-            payload = item.result
-            if not payload.get("ok"):
-                if name == "fetch_url":
-                    msg = str(payload.get("error", {}).get("message", "")).strip()
-                    if msg:
-                        fetch_errors.append(msg)
-                continue
-            data = payload.get("data")
-            if name == "web_search" and isinstance(data, dict):
-                for item in data.get("results", [])[:5]:
-                    if not isinstance(item, dict):
-                        continue
-                    title = str(item.get("title", "")).strip()
-                    url = str(item.get("url", "")).strip()
-                    domain = str(item.get("domain", "")).strip()
-                    if title and url:
-                        search_results.append({"title": title, "url": url, "domain": domain})
-            elif name == "fetch_url" and isinstance(data, dict):
-                title = str(data.get("title", "")).strip()
-                final_url = str(data.get("final_url", "")).strip() or str(data.get("url", "")).strip()
-                if final_url:
-                    fetched_sources.append({"title": title or final_url, "url": final_url})
-            else:
-                generic_successes.append({"name": name, "data": data})
-
-        if fetched_sources:
-            lines = [
-                "I found relevant sources, but the model failed to produce a clean final summary.",
-                "Verified fetched sources:",
-            ]
-            for idx, item in enumerate(fetched_sources[:3], start=1):
-                lines.append(f"{idx}. {item['title']} — {item['url']}")
-            if fetch_errors:
-                lines.append(f"Some pages were blocked or failed to load ({fetch_errors[0]}).")
-            return "\n".join(lines)
-
-        if search_results:
-            lines = [
-                "I found relevant search results, but the model failed to produce a clean final summary.",
-                "Relevant sources to check:",
-            ]
-            seen = set()
-            count = 0
-            for item in search_results:
-                key = item["url"]
-                if key in seen:
-                    continue
-                seen.add(key)
-                domain = f" ({item['domain']})" if item.get("domain") else ""
-                lines.append(f"{count + 1}. {item['title']}{domain} — {item['url']}")
-                count += 1
-                if count >= 3:
-                    break
-            if fetch_errors:
-                lines.append(f"Some fetched pages were blocked or failed to load ({fetch_errors[0]}).")
-            return "\n".join(lines)
-
-        if fetch_errors:
-            return (
-                "I couldn't produce a verified answer because the fetched sources failed to load cleanly "
-                f"({fetch_errors[0]}), and the model did not return a usable final response."
-            )
-
-        if generic_successes:
-            latest = generic_successes[-1]
-            name = str(latest.get("name", "tool")).strip() or "tool"
-            data = latest.get("data")
-            if isinstance(data, dict) and data:
-                preview_items = []
-                for key, value in list(data.items())[:6]:
-                    rendered = str(value)
-                    if len(rendered) > 160:
-                        rendered = rendered[:160] + "..."
-                    preview_items.append(f"- {key}: {rendered}")
-                if preview_items:
-                    return (
-                        f"The `{name}` tool completed successfully, but the model failed to produce a clean final summary.\n\n"
-                        "Tool result:\n"
-                        + "\n".join(preview_items)
-                    )
-            rendered = str(data)
-            if len(rendered) > 400:
-                rendered = rendered[:400] + "..."
-            return (
-                f"The `{name}` tool completed successfully, but the model failed to produce a clean final summary.\n\n"
-                f"Tool result: {rendered}"
-            )
-
-        return ""
-
-    @staticmethod
     def _evidence_from_history(dynamic_history: List[Dict[str, Any]]) -> List[ToolEvidence]:
         out: List[ToolEvidence] = []
         for message in dynamic_history:
@@ -1185,36 +1083,6 @@ class Agent:
                 )
             )
         return out
-
-    @staticmethod
-    def _unverified_search_answer() -> str:
-        return (
-            "I couldn't verify the answer from reliable web results in this turn, and I don't want to speculate "
-            "without confirmed sources."
-        )
-
-    @staticmethod
-    def _generic_finalization_failure_answer() -> str:
-        return (
-            "I couldn't turn the available tool and model output into a clean user-facing answer in this turn."
-        )
-
-    @staticmethod
-    def _workspace_action_failure_answer() -> str:
-        return (
-            "I couldn't complete the requested workspace action in this turn because the model failed to use the "
-            "available workspace tools."
-        )
-
-    @staticmethod
-    def _search_fallback_allowed(state: TurnState) -> bool:
-        return (
-            state.tool_counts.get("web_search", 0) > 0
-            or state.tool_counts.get("fetch_url", 0) > 0
-            or state.search_failure_count > 0
-            or state.search_has_success
-            or state.search_has_fetch_content
-        )
 
     @staticmethod
     def _needs_fetch_evidence(state: TurnState) -> bool:
@@ -1330,35 +1198,62 @@ class Agent:
                 skill_exchanges=state.skill_exchanges,
             )
 
+        def correction_rules(reason: str) -> str:
+            lines = [extra_rules.strip()] if extra_rules.strip() else []
+            lines.extend(
+                [
+                    "Finalization correction rule:",
+                    f"- {reason}",
+                    "- Produce a normal user-facing answer from the existing conversation and tool results only.",
+                    "- Do not emit tool markup, pseudo-calls, XML-like tags, or an empty reply.",
+                ]
+            )
+            if state.search_mode:
+                lines.extend(
+                    [
+                        "- If the available web evidence is insufficient, say plainly that you could not verify the answer from reliable results gathered in this turn.",
+                        "- Do not speculate or fill gaps from prior knowledge.",
+                    ]
+                )
+            if state.requires_workspace_action:
+                lines.extend(
+                    [
+                        "- If the requested workspace action was not completed with tools, say that plainly.",
+                        "- Do not claim success unless the tool history supports it.",
+                    ]
+                )
+            return "\n".join(lines)
+
         first = finalize_once(extra_rules, "final")
         if isinstance(first, AgentTurnResult):
             return first
         first_result = coerce_result(first, state.full_reasoning)
         if first_result.status != "done":
             return first_result
-        leaked_markup = "<tool_call>" in first.content.lower()
-        if not leaked_markup:
+        leaked_markup = self._contains_tool_markup(first.content)
+        if first_result.content.strip() and not leaked_markup:
             return first_result
-        fallback = self._fallback_answer_from_evidence(state.evidence or self._evidence_from_history(state.dynamic_history))
-        if fallback:
-            return AgentTurnResult(
-                status="done",
-                content=fallback,
-                reasoning=first_result.reasoning,
-                skill_exchanges=state.skill_exchanges,
-            )
-        if not self._search_fallback_allowed(state):
-            return AgentTurnResult(
-                status="done",
-                content=self._generic_finalization_failure_answer(),
-                reasoning=first_result.reasoning,
-                skill_exchanges=state.skill_exchanges,
-            )
+        second = finalize_once(
+            correction_rules(
+                "The previous finalization emitted tool markup."
+                if leaked_markup
+                else "The previous finalization did not produce a usable user-facing answer."
+            ),
+            "repair",
+        )
+        if isinstance(second, AgentTurnResult):
+            return second
+        second_result = coerce_result(second, first_result.reasoning)
+        if second_result.status != "done":
+            return second_result
+        if second_result.content.strip() and not self._contains_tool_markup(second.content):
+            return second_result
         return AgentTurnResult(
-            status="done",
-            content=self._unverified_search_answer(),
-            reasoning=first_result.reasoning,
+            status="error",
+            content="",
+            reasoning=second_result.reasoning,
             skill_exchanges=state.skill_exchanges,
+            error="Finalization failed to produce a clean user-facing answer",
         )
 
     @staticmethod
@@ -1540,6 +1435,9 @@ class Agent:
             explicit_external_path=explicit_external_path,
             workspace_scaffold_action=self._is_workspace_scaffold_action(ctx, selected),
             workspace_materialization_target=self._workspace_materialization_target(ctx, selected),
+            workspace_readback_required=self._workspace_readback_required(ctx, selected),
+            strict_output_requested=self._strict_output_requested(ctx),
+            requires_post_tool_reasoning=self._requires_post_tool_reasoning(ctx),
             tool_counts={},
             tool_budgets=dict(self.default_tool_budgets),
         )
@@ -1634,6 +1532,81 @@ class Agent:
             "component",
         )
         return any(marker in text for marker in local_markers)
+
+    def _combined_request_text(self, ctx: SkillContext) -> str:
+        if self._is_confirmation_like(ctx.user_input):
+            text = " ".join(part for part in (ctx.recent_routing_hint, ctx.user_input) if part).strip()
+        else:
+            text = str(ctx.user_input or "").strip()
+        return text.lower()
+
+    def _workspace_readback_required(self, ctx: SkillContext, selected: List[Any]) -> bool:
+        if not self._is_workspace_skill_selected(selected):
+            return False
+        text = self._combined_request_text(ctx)
+        if not text:
+            return False
+        markers = (
+            "read it back",
+            "read back",
+            "read the file back",
+            "confirm the contents",
+            "summarize what was written",
+            "summarise what was written",
+            "tell me how many",
+            "count the",
+            "verify the contents",
+        )
+        return any(marker in text for marker in markers)
+
+    def _strict_output_requested(self, ctx: SkillContext) -> bool:
+        text = self._combined_request_text(ctx)
+        if not text:
+            return False
+        markers = (
+            "reply with exactly",
+            "respond with exactly",
+            "answer with exactly",
+            "reply with one line",
+            "exactly one line",
+            "reply with just",
+            "respond with just",
+            'exactly: "',
+            "exactly: '",
+        )
+        return any(marker in text for marker in markers)
+
+    def _requires_post_tool_reasoning(self, ctx: SkillContext) -> bool:
+        text = self._combined_request_text(ctx)
+        if not text:
+            return False
+        if self._strict_output_requested(ctx):
+            return True
+        sequential_markers = (
+            " then ",
+            " after ",
+            "read it back",
+            "read back",
+            "reply with",
+            "respond with",
+            "answer with",
+            "summarize",
+            "summarise",
+            "confirm the contents",
+            "tell me how many",
+            "count the",
+            "verify",
+        )
+        inferential_markers = (
+            "should i",
+            "should we",
+            "recommend",
+            "umbrella",
+            "do i need",
+            "need to bring",
+            "worth bringing",
+        )
+        return any(marker in text for marker in sequential_markers + inferential_markers)
 
     def _explicit_path_outside_workspace(self, text: str) -> str:
         workspace_root = Path(self.skill_runtime.workspace.workspace_root)
@@ -1773,6 +1746,21 @@ class Agent:
         return count
 
     @staticmethod
+    def _workspace_readback_count(state: TurnState) -> int:
+        count = 0
+        for item in state.evidence:
+            if not isinstance(item.result, dict) or not item.result.get("ok"):
+                continue
+            if item.name == "read_file":
+                count += 1
+            elif item.name == "read_files":
+                data = item.result.get("data")
+                files = data.get("files") if isinstance(data, dict) else None
+                if isinstance(files, list):
+                    count += len(files)
+        return count
+
+    @staticmethod
     def _tool_result_paths(name: str, payload: Dict[str, Any]) -> List[str]:
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, dict):
@@ -1795,6 +1783,8 @@ class Agent:
         return []
 
     def _direct_tool_completion_allowed(self, state: TurnState, call: ToolCall, result: Dict[str, Any]) -> bool:
+        if state.requires_post_tool_reasoning or state.workspace_readback_required or state.strict_output_requested:
+            return False
         if call.name not in {"create_directory", "create_file", "create_files", "edit_file"}:
             return True
         requested_exts = {
@@ -1981,75 +1971,6 @@ class Agent:
         }
 
     @staticmethod
-    def _direct_tool_answer(name: str, payload: Dict[str, Any]) -> str:
-        data = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(data, dict):
-            return ""
-        if name == "request_user_input":
-            question = str(data.get("question", "")).strip()
-            options = data.get("options")
-            lines = [question] if question else []
-            if isinstance(options, list) and options:
-                lines.append("Options: " + " | ".join(str(item) for item in options[:6]))
-            lines.append("Reply with your choice or answer so I can continue.")
-            return "\n".join(lines)
-        if name == "create_directory":
-            base = str(data.get("basename", "")).strip()
-            path = str(data.get("filepath", "")).strip()
-            if base and path:
-                return f"I created the directory `{base}` in your workspace at `{path}`."
-        if name == "create_file":
-            base = str(data.get("basename", "")).strip()
-            path = str(data.get("filepath", "")).strip()
-            if base and path:
-                return f"I created `{base}` in your workspace at `{path}`."
-        if name == "create_files":
-            created = data.get("created")
-            if isinstance(created, list) and created:
-                names = [str(item.get("basename", "")).strip() for item in created if isinstance(item, dict)]
-                names = [name for name in names if name]
-                if names:
-                    if len(names) == 1:
-                        return f"I created `{names[0]}` in your workspace."
-                    return "I created these files in your workspace: " + ", ".join(f"`{name}`" for name in names) + "."
-        if name == "edit_file":
-            base = str(data.get("basename", "")).strip()
-            path = str(data.get("filepath", "")).strip()
-            if base and path:
-                return f"I updated `{base}` in your workspace at `{path}`."
-        if name == "delete_path":
-            path = str(data.get("filepath", "")).strip()
-            kind = str(data.get("kind", "path")).strip()
-            if path:
-                return f"I deleted the {kind} `{path}` from your workspace."
-        if name == "list_memories":
-            memories = data.get("memories")
-            if isinstance(memories, list):
-                if not memories:
-                    return "You don't have any stored memories yet."
-                lines = ["Recent memories:"]
-                for item in memories[:5]:
-                    if not isinstance(item, dict):
-                        continue
-                    memory_id = str(item.get("id", "")).strip()
-                    memory_type = str(item.get("type", "")).strip()
-                    text = str(item.get("text", "")).strip()
-                    prefix = f"- #{memory_id}" if memory_id else "- "
-                    if memory_type:
-                        prefix += f" [{memory_type}]"
-                    if text:
-                        lines.append(f"{prefix} {text}".rstrip())
-                if len(lines) > 1:
-                    return "\n".join(lines)
-        if name == "get_weather":
-            city = str(data.get("city", "")).strip()
-            temp = str(data.get("temp_c", "") or data.get("temperature_c", "")).strip()
-            desc = str(data.get("desc", "") or data.get("condition", "")).strip()
-            if city and temp:
-                return f"The current weather in {city} is {temp} C" + (f" with {desc}." if desc else ".")
-        return ""
-
-    @staticmethod
     def _build_turn_journal(state: TurnState, result: AgentTurnResult) -> Dict[str, Any]:
         return {
             "status": result.status,
@@ -2163,6 +2084,11 @@ class Agent:
             self._log_turn_summary(state, result)
             return result
 
+        def finish_finalized(result: AgentTurnResult) -> AgentTurnResult:
+            if result.status == "done" and result.content:
+                self.skill_runtime.post_response(state.selected, state.ctx, result.content)
+            return finish(result)
+
         while True:
             state.pass_index += 1
             pass_id = f"pass_{state.pass_index}"
@@ -2218,6 +2144,13 @@ class Agent:
                     "- Do not stop after create_directory alone.\n"
                     "- Materialize the requested file content with workspace file-creation tools before finishing."
                 )
+            if state.workspace_readback_required:
+                system_content += (
+                    "\n\nWorkspace readback rule:\n"
+                    "- The user explicitly asked you to read back or verify the created file content.\n"
+                    "- Do not finish after create or edit tools alone.\n"
+                    "- Use read_file or read_files to inspect the result before answering."
+                )
             if state.workspace_scaffold_action and state.forced_workspace_retry:
                 system_content += (
                     "\n\nMandatory scaffold completion rule:\n"
@@ -2231,6 +2164,19 @@ class Agent:
                     "- The previous pass stopped before creating the requested file content.\n"
                     "- Continue with workspace file-creation tools now.\n"
                     "- Do not claim completion until the requested file content exists."
+                )
+            if state.workspace_readback_required and state.forced_readback_retry:
+                system_content += (
+                    "\n\nMandatory workspace readback rule:\n"
+                    "- The previous pass stopped before reading back the created file content.\n"
+                    "- Use read_file or read_files now before answering.\n"
+                    "- Do not claim completion until you have inspected the file content."
+                )
+            if state.strict_output_requested:
+                system_content += (
+                    "\n\nExact output rule:\n"
+                    "- The user requested a strict response format.\n"
+                    "- Follow the requested final answer format exactly."
                 )
             if state.explicit_external_path:
                 system_content += (
@@ -2357,8 +2303,6 @@ class Agent:
                 state.skill_exchanges.append(assistant_msg)
 
                 force_finalize_reason = ""
-                direct_answers: List[str] = []
-                single_tool_result: Optional[Dict[str, Any]] = None
                 all_tool_success = True
                 for call in stream_result.tool_calls:
                     state.action_depth += 1
@@ -2503,22 +2447,24 @@ class Agent:
                     self._record_tool_effects(state, call, result)
                     if not result.get("ok"):
                         all_tool_success = False
-                    direct = self._direct_tool_answer(call.name, result)
-                    if direct:
-                        direct_answers.append(direct)
-                    if len(stream_result.tool_calls) == 1:
-                        single_tool_result = result
                     if (
                         call.name == "request_user_input"
                         and result.get("ok")
                         and isinstance(result.get("data"), dict)
                         and bool(result["data"].get("awaiting_user_input"))
                     ):
-                        self.skill_runtime.post_response(state.selected, state.ctx, direct or "")
+                        prompt_data = result["data"]
+                        question = str(prompt_data.get("question", "")).strip()
+                        options = prompt_data.get("options")
+                        lines = [question] if question else []
+                        if isinstance(options, list) and options:
+                            lines.append("Options: " + " | ".join(str(item) for item in options[:6]))
+                        prompt_text = "\n".join(lines)
+                        self.skill_runtime.post_response(state.selected, state.ctx, prompt_text)
                         return finish(
                             AgentTurnResult(
                                 status="done",
-                                content=direct or "",
+                                content=prompt_text,
                                 reasoning=state.full_reasoning,
                                 skill_exchanges=state.skill_exchanges,
                             )
@@ -2541,14 +2487,19 @@ class Agent:
                         )
                         break
                     if call.name == "web_search" and not result.get("ok") and state.search_failure_count >= 2 and not state.search_has_success:
-                        return finish(
-                            AgentTurnResult(
-                                status="done",
-                                content=self._unverified_search_answer(),
-                                reasoning=state.full_reasoning,
-                                skill_exchanges=state.skill_exchanges,
-                            )
+                        finalized = self._finalize_turn(
+                            system_content,
+                            state,
+                            stop_event,
+                            on_event,
+                            pass_id,
+                            self._search_rule(
+                                "Search failed repeatedly and no successful results were gathered.",
+                                "State plainly that you could not verify the answer from reliable web results in this turn.",
+                                "Do not speculate or answer from prior knowledge.",
+                            ),
                         )
+                        return finish_finalized(finalized)
                     if call.name == "fetch_url" and not result.get("ok") and state.search_has_success:
                         force_finalize_reason = self._search_rule(
                             "A page fetch failed.",
@@ -2580,31 +2531,7 @@ class Agent:
                         break
 
                 if force_finalize_reason:
-                    return finish(self._finalize_turn(system_content, state, stop_event, on_event, pass_id, force_finalize_reason))
-                search_tool_called = any(call.name in {"web_search", "fetch_url"} for call in stream_result.tool_calls)
-                if (
-                    len(stream_result.tool_calls) == 1
-                    and all_tool_success
-                    and len(direct_answers) == 1
-                    and single_tool_result is not None
-                    and self._direct_tool_completion_allowed(state, stream_result.tool_calls[0], single_tool_result)
-                    and (not state.search_mode or not search_tool_called)
-                    and not state.batch_workspace_action
-                    and not state.workspace_scaffold_action
-                    and (
-                        state.workspace_materialization_target <= 0
-                        or self._workspace_materialization_count(state) >= state.workspace_materialization_target
-                    )
-                ):
-                    self.skill_runtime.post_response(state.selected, state.ctx, direct_answers[0])
-                    return finish(
-                        AgentTurnResult(
-                            status="done",
-                            content=direct_answers[0],
-                            reasoning=state.full_reasoning,
-                            skill_exchanges=state.skill_exchanges,
-                        )
-                    )
+                    return finish_finalized(self._finalize_turn(system_content, state, stop_event, on_event, pass_id, force_finalize_reason))
                 continue
 
             raw_final = stream_result.content
@@ -2634,51 +2561,92 @@ class Agent:
                 if not state.forced_workspace_retry:
                     state.forced_workspace_retry = True
                     continue
-                return finish(
-                    AgentTurnResult(
-                        status="done",
-                        content="I completed part of the workspace setup, but I failed to finish creating all requested file content with the available workspace tools.",
-                        reasoning=state.full_reasoning,
-                        skill_exchanges=state.skill_exchanges,
-                    )
+                finalized = self._finalize_turn(
+                    system_content,
+                    state,
+                    stop_event,
+                    on_event,
+                    pass_id,
+                    (
+                        "Workspace completion rule:\n"
+                        "- The requested workspace content was only partially materialized.\n"
+                        "- Explain plainly what remains incomplete.\n"
+                        "- Do not claim completion."
+                    ),
                 )
+                return finish_finalized(finalized)
+            if state.workspace_readback_required and self._workspace_readback_count(state) <= 0:
+                if not state.forced_readback_retry:
+                    state.forced_readback_retry = True
+                    continue
+                finalized = self._finalize_turn(
+                    system_content,
+                    state,
+                    stop_event,
+                    on_event,
+                    pass_id,
+                    (
+                        "Workspace readback failure rule:\n"
+                        "- The requested workspace content was created, but it was not read back before finishing.\n"
+                        "- Say that plainly.\n"
+                        "- Do not claim the file contents were verified."
+                    ),
+                )
+                return finish_finalized(finalized)
             if state.search_mode and state.time_sensitive_query and state.tool_counts.get("web_search", 0) == 0:
                 if not state.forced_search_retry:
                     state.forced_search_retry = True
                     continue
-                return finish(
-                    AgentTurnResult(
-                        status="done",
-                        content=self._unverified_search_answer(),
-                        reasoning=state.full_reasoning,
-                        skill_exchanges=state.skill_exchanges,
-                    )
+                finalized = self._finalize_turn(
+                    system_content,
+                    state,
+                    stop_event,
+                    on_event,
+                    pass_id,
+                    self._search_rule(
+                        "This time-sensitive request never performed web_search.",
+                        "State plainly that you could not verify the answer from reliable web results in this turn.",
+                        "Do not answer from prior knowledge.",
+                    ),
                 )
+                return finish_finalized(finalized)
             if state.requires_workspace_action and not state.tool_counts:
                 if self._looks_like_manual_workspace_advice(final) or self._looks_like_workspace_action_claim(final):
                     if not state.forced_action_retry:
                         state.forced_action_retry = True
                         continue
-                    return finish(
-                        AgentTurnResult(
-                            status="done",
-                            content=self._workspace_action_failure_answer(),
-                            reasoning=state.full_reasoning,
-                            skill_exchanges=state.skill_exchanges,
-                        )
+                    finalized = self._finalize_turn(
+                        system_content,
+                        state,
+                        stop_event,
+                        on_event,
+                        pass_id,
+                        (
+                            "Workspace tool usage rule:\n"
+                            "- No workspace tool was used to complete the requested action.\n"
+                            "- Say plainly that the action was not completed.\n"
+                            "- Do not provide manual shell deletion advice.\n"
+                            "- Do not claim success."
+                        ),
                     )
+                    return finish_finalized(finalized)
                 if not state.forced_action_retry and not final.strip():
                     state.forced_action_retry = True
                     continue
             if self._needs_fetch_evidence(state):
-                return finish(
-                    AgentTurnResult(
-                        status="done",
-                        content=self._unverified_search_answer(),
-                        reasoning=state.full_reasoning,
-                        skill_exchanges=state.skill_exchanges,
-                    )
+                finalized = self._finalize_turn(
+                    system_content,
+                    state,
+                    stop_event,
+                    on_event,
+                    pass_id,
+                    self._search_rule(
+                        "This time-sensitive request does not yet have fetched source content.",
+                        "State plainly that you could not verify the answer from reliable fetched evidence in this turn.",
+                        "Do not speculate or answer from prior knowledge.",
+                    ),
                 )
+                return finish_finalized(finalized)
             if not final.strip():
                 finalized = self._finalize_turn(system_content, state, stop_event, on_event, pass_id)
                 if finalized.status != "done":
@@ -2686,14 +2654,19 @@ class Agent:
                 state.full_reasoning = finalized.reasoning
                 final = finalized.content
                 if self._needs_fetch_evidence(state):
-                    return finish(
-                        AgentTurnResult(
-                            status="done",
-                            content=self._unverified_search_answer(),
-                            reasoning=state.full_reasoning,
-                            skill_exchanges=state.skill_exchanges,
-                        )
+                    finalized = self._finalize_turn(
+                        system_content,
+                        state,
+                        stop_event,
+                        on_event,
+                        pass_id,
+                        self._search_rule(
+                            "The prior finalization still lacked fetched source evidence.",
+                            "State plainly that you could not verify the answer from reliable fetched evidence in this turn.",
+                            "Do not speculate or answer from prior knowledge.",
+                        ),
                     )
+                    return finish_finalized(finalized)
 
             self.skill_runtime.post_response(state.selected, state.ctx, final)
             return finish(
