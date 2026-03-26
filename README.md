@@ -175,6 +175,7 @@ Global config lives at `config/global_config.json`. Missing keys are merged from
 Config values are normalized and type-checked at load/save time, with invalid values falling back to safe defaults.
 Secret-like keys are stripped from config (credentials must stay in environment variables).
 Internal pruning defaults are not surfaced in the user-facing config file or config editor.
+`agent.request_timeout_s` is a stream idle timeout, not a total turn deadline. Active streaming can run longer than this value as long as chunks keep arriving.
 
 Built-in defaults:
 

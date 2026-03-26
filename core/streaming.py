@@ -81,7 +81,8 @@ def stream_chat_completions(
     if headers:
         req_headers.update(headers)
     req = urllib.request.Request(endpoint, data=body, headers=req_headers, method="POST")
-    deadline = time.monotonic() + max(0.1, float(timeout_s))
+    idle_timeout_s = max(0.1, float(timeout_s))
+    idle_deadline = time.monotonic() + idle_timeout_s
 
     try:
         if on_debug_event:
@@ -111,9 +112,9 @@ def stream_chat_completions(
                 while True:
                     if stop_event is not None and stop_event.is_set():
                         return
-                    if time.monotonic() >= deadline:
+                    if time.monotonic() >= idle_deadline:
                         raise StreamError(
-                            f"Network error: stream timed out after {timeout_s}s",
+                            f"Network error: stream was idle for {timeout_s}s",
                             retryable=True,
                         )
                     if stream_sock is not None:
@@ -126,6 +127,7 @@ def stream_chat_completions(
                         continue
                     if not raw:
                         return
+                    idle_deadline = time.monotonic() + idle_timeout_s
                     line = raw.decode(errors="replace").strip()
                     if not line.startswith("data:"):
                         continue
