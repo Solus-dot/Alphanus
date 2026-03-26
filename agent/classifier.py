@@ -66,30 +66,6 @@ class TurnClassifier:
         affirmative_prefixes = ("yes ", "yeah ", "yep ", "ok ", "okay ", "sure ")
         return len(lowered.split()) <= 6 and any(lowered.startswith(prefix) for prefix in affirmative_prefixes)
 
-    @classmethod
-    def is_contextual_followup_like(cls, text: str) -> bool:
-        lowered = " ".join(text.strip().lower().split())
-        if not lowered or cls.is_confirmation_like(lowered):
-            return False
-        words = lowered.split()
-        if len(words) > 6:
-            return False
-        prefixes = (
-            "where is",
-            "where's",
-            "what about",
-            "and ",
-            "also ",
-            "add ",
-            "include ",
-            "make ",
-            "put ",
-            "now ",
-        )
-        if any(lowered.startswith(prefix) for prefix in prefixes):
-            return True
-        return bool(re.search(r"\b(?:js|css|html|script|style|that|it)\b", lowered))
-
     def recent_routing_context(self, history_messages: List[Dict[str, Any]]) -> tuple[str, List[str]]:
         if not history_messages:
             return "", []
@@ -187,7 +163,7 @@ class TurnClassifier:
     def should_use_recent_routing_hint(cls, ctx: SkillContext) -> bool:
         if not (ctx.recent_routing_hint or ctx.sticky_skill_ids):
             return False
-        return cls.is_confirmation_like(ctx.user_input) or cls.is_contextual_followup_like(ctx.user_input)
+        return cls.is_confirmation_like(ctx.user_input)
 
     def _combined_request_text(self, ctx: SkillContext) -> str:
         if self.is_confirmation_like(ctx.user_input):
@@ -221,17 +197,13 @@ class TurnClassifier:
         return ""
 
     def _deterministic_classification(self, ctx: SkillContext) -> TurnClassification:
-        recent_hint_active = self.should_use_recent_routing_hint(ctx)
+        recent_hint_active = self.is_confirmation_like(ctx.user_input) and bool(ctx.recent_routing_hint or ctx.sticky_skill_ids)
         merged_text = " ".join(part for part in (ctx.user_input, ctx.recent_routing_hint if recent_hint_active else "") if part).lower()
         if not merged_text:
             merged_text = str(ctx.user_input or "").lower()
         request_text = self._combined_request_text(ctx)
         explicit_external_path = self._explicit_path_outside_workspace(ctx.user_input)
-        followup_kind = "new_request"
-        if self.is_confirmation_like(ctx.user_input):
-            followup_kind = "confirmation"
-        elif self.is_contextual_followup_like(ctx.user_input):
-            followup_kind = "contextual_followup"
+        followup_kind = "confirmation" if self.is_confirmation_like(ctx.user_input) else "new_request"
 
         time_sensitive = any(
             phrase in merged_text
@@ -409,7 +381,7 @@ class TurnClassifier:
             workspace_materialization_target = requested_files
 
         candidate_skill_ids: List[str] = []
-        if self.should_use_recent_routing_hint(ctx):
+        if recent_hint_active:
             candidate_skill_ids.extend(ctx.sticky_skill_ids[:3])
         return TurnClassification(
             time_sensitive=time_sensitive,
@@ -434,11 +406,7 @@ class TurnClassifier:
             or "assistant just said:" in (ctx.recent_routing_hint or "")
             or "tools just used:" in (ctx.recent_routing_hint or "")
         )
-        return bool(
-            has_execution_context
-            or seed.requires_workspace_action
-            or seed.explicit_external_path
-        )
+        return bool(has_execution_context or seed.requires_workspace_action or seed.explicit_external_path)
 
     @staticmethod
     def _parse_json_object(content: str) -> Dict[str, Any]:
@@ -583,7 +551,7 @@ class TurnClassifier:
         return self.skill_runtime.should_use_deterministic_selection(ranked)
 
     def _contextual_skill_fallback(self, ctx: SkillContext) -> List[Any]:
-        if not self.should_use_recent_routing_hint(ctx):
+        if not (self.is_confirmation_like(ctx.user_input) and (ctx.recent_routing_hint or ctx.sticky_skill_ids)):
             return []
         merged_text = "\n".join(part for part in (ctx.user_input, ctx.recent_routing_hint) if part).strip()
         if not merged_text:
@@ -641,7 +609,7 @@ class TurnClassifier:
         if not enabled:
             return SkillRouteDecision(source="empty")
 
-        use_recent_hint = self.should_use_recent_routing_hint(ctx)
+        use_recent_hint = classification.followup_kind in {"confirmation", "contextual_followup"} and bool(ctx.recent_routing_hint or ctx.sticky_skill_ids)
         shortlisted_skills = [item.skill for item in candidate_items[: min(len(candidate_items), max(limit * 2, self.skill_runtime.shortlist_size))]]
         if classification.candidate_skill_ids:
             preferred = [skill for skill in shortlisted_skills if skill.id in set(classification.candidate_skill_ids)]

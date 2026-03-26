@@ -206,6 +206,15 @@ def test_shell_confirmation_reuses_recent_assistant_action_context(mocker, tmp_p
     agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        if pass_id == "turn_classify":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "stop",
+                    "content": '{"followup_kind":"confirmation","candidate_skill_ids":["shell-ops"]}',
+                },
+            )()
         assert pass_id == "skill_route"
         return type("R", (), {"finish_reason": "stop", "content": '{"skills": []}'})()
 

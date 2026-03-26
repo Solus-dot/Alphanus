@@ -515,7 +515,21 @@ def test_contextual_followup_reuses_immediate_prior_skill_context(mocker, runtim
     runtime.config = {"skills": {"selection_mode": "model", "max_active_skills": 2}}
     agent = Agent({"agent": {}}, runtime)
 
+    calls = []
+
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        calls.append(pass_id)
+        if pass_id == "turn_classify":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "stop",
+                    "content": '{"followup_kind":"contextual_followup","candidate_skill_ids":["workspace-ops"]}',
+                },
+            )()
+        if pass_id == "skill_route":
+            return type("R", (), {"finish_reason": "stop", "content": '{"skills":["workspace-ops"]}'})()
         return type("R", (), {"finish_reason": "stop", "content": '{"skills":["workspace-ops"]}'})()
 
     mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
@@ -537,10 +551,11 @@ def test_contextual_followup_reuses_immediate_prior_skill_context(mocker, runtim
     ]
 
     ctx = agent._build_skill_context("Where is JS?", [], [], history_messages)
-    assert agent._should_use_recent_routing_hint(ctx) is True
 
     selected = agent._select_skills(ctx, threading.Event())
     assert [skill.id for skill in selected] == ["workspace-ops"]
+    assert "turn_classify" in calls
+    assert "skill_route" not in calls
 
 
 def test_confirmation_workspace_action_retries_instead_of_accepting_manual_terminal_advice(mocker, runtime: SkillRuntime):

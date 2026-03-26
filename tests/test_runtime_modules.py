@@ -91,7 +91,7 @@ def test_console_logging_suppresses_info_telemetry_but_keeps_file_events(tmp_pat
     assert any(item.get("event") == "http_stream" for item in events)
 
 
-def test_classifier_skips_model_call_for_plain_local_workspace_task(mocker, tmp_path: Path) -> None:
+def test_classifier_keeps_plain_local_workspace_task_in_deterministic_fallback(mocker, tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
     llm_client = LLMClient(cfg)
@@ -132,3 +132,47 @@ def test_classifier_counts_opaque_artifact_request_as_materialization_target(moc
 
     assert classification.used_model is False
     assert classification.workspace_materialization_target >= 1
+
+
+def test_classifier_uses_model_for_contextual_followup(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": True}}
+    llm_client = LLMClient(cfg)
+    classifier = TurnClassifier(cfg, runtime, llm_client)
+    history_messages = [
+        {"role": "user", "content": "create a bakery landing page in a folder called 1738 with html css js"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "create_file",
+                        "arguments": '{"filepath":"1738/index.html","content":"<html></html>"}',
+                    }
+                }
+            ],
+        },
+        {"role": "tool", "name": "create_file", "content": '{"ok": true, "data": {"filepath": "1738/index.html"}}'},
+    ]
+    ctx = classifier.build_skill_context("Where is JS?", [], [], history_messages)
+    calls = []
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        calls.append(pass_id)
+        return type(
+            "R",
+            (),
+            {
+                "finish_reason": "stop",
+                "content": json.dumps({"followup_kind": "contextual_followup", "candidate_skill_ids": ["workspace-ops"]}),
+            },
+        )()
+
+    llm_client.call_with_retry = fake_call_with_retry
+    classifier.call_with_retry = fake_call_with_retry
+
+    classification = classifier.classify(ctx)
+
+    assert classification.used_model is True
+    assert classification.followup_kind == "contextual_followup"
+    assert "turn_classify" in calls
