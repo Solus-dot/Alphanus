@@ -2087,6 +2087,40 @@ class SkillRuntime:
                 out.append(skill)
         return out
 
+    def tool_registration(self, tool_name: str) -> Optional[RegisteredTool]:
+        return self._tool_registry.get(str(tool_name).strip())
+
+    def tool_is_mutating(self, tool_name: str) -> bool:
+        reg = self.tool_registration(tool_name)
+        if reg is None:
+            return False
+        capability = str(reg.capability or "").strip().lower()
+        if capability.startswith("workspace_") and capability != "workspace_read":
+            return True
+        if reg.tool_scope == "skill" and capability.endswith("_runner"):
+            return True
+        return False
+
+    def tool_is_blocked_for_local_workspace(self, tool_name: str) -> bool:
+        normalized_name = str(tool_name).strip().lower()
+        reg = self.tool_registration(tool_name)
+        if reg is None:
+            return (
+                "shell" in normalized_name
+                or normalized_name.startswith("fetch_")
+                or normalized_name.startswith("open_")
+                or normalized_name.startswith("play_")
+                or normalized_name.endswith("_search")
+            )
+        capability = str(reg.capability or "").strip().lower()
+        if capability == "run_shell_command":
+            return True
+        if capability.startswith("web_"):
+            return True
+        if capability.startswith("utility_open") or capability.startswith("utility_play"):
+            return True
+        return False
+
     def skill_cards_text(self, skills: List[SkillManifest]) -> str:
         key = (tuple(getattr(skill, "id", "") for skill in skills), True)
         cached = self._skill_cards_cache.get(key)

@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.classifier import TurnClassifier
-from agent.constants import CORE_SKILL_IDS, LOCAL_WORKSPACE_BLOCKED_TOOLS, MUTATING_TOOL_NAMES
 from agent.llm_client import LLMClient
 from agent.policies import OutputSanitizer, PromptPolicyRenderer, search_rule
 from agent.telemetry import TelemetryEmitter
@@ -133,22 +132,9 @@ class TurnOrchestrator:
 
     def build_turn_state(self, ctx, selected: List[Any], history_messages: List[Dict[str, Any]], classification, route_source: str) -> TurnState:
         loaded_skill_ids = self.skill_runtime.default_loaded_skill_ids(selected, ctx)
-        selection_mode = str(getattr(self.skill_runtime, "selection_mode", "")).strip().lower()
-        auto_load_ids: List[str] = []
         explicit = self.skill_runtime.resolve_skill_reference(ctx.explicit_skill_id) if ctx.explicit_skill_id else None
         if explicit is not None:
-            auto_load_ids.append(explicit.id)
-        elif selection_mode in {"model", "hybrid_lazy"}:
-            non_core_selected = [
-                getattr(skill, "id", "")
-                for skill in selected
-                if getattr(skill, "id", "")
-                and getattr(skill, "id", "") not in CORE_SKILL_IDS
-                and not bool(getattr(skill, "disable_model_invocation", False))
-            ]
-            if len(non_core_selected) == 1:
-                auto_load_ids.append(non_core_selected[0])
-        loaded_skill_ids = sorted(dict.fromkeys([skill_id for skill_id in loaded_skill_ids + auto_load_ids if skill_id]))
+            loaded_skill_ids = sorted(dict.fromkeys([skill_id for skill_id in loaded_skill_ids + [explicit.id] if skill_id]))
         return TurnState(
             ctx=ctx,
             selected=selected,
@@ -176,12 +162,13 @@ class TurnOrchestrator:
     def workspace_materialization_count(state: TurnState) -> int:
         return len(state.completion.materialized_paths)
 
-    @staticmethod
-    def workspace_mutation_count(state: TurnState) -> int:
+    def workspace_mutation_count(self, state: TurnState) -> int:
         return sum(
             1
             for record in state.evidence
-            if record.name in MUTATING_TOOL_NAMES and not record.policy_blocked and bool(record.result.get("ok"))
+            if self.skill_runtime.tool_is_mutating(record.name)
+            and not record.policy_blocked
+            and bool(record.result.get("ok"))
         )
 
     @staticmethod
@@ -612,7 +599,7 @@ class TurnOrchestrator:
                             return finish(AgentTurnResult(status="error", content="", reasoning=state.full_reasoning, skill_exchanges=state.skill_exchanges, error=force_finalize_reason))
                         break
 
-                    if state.prefer_local_workspace_tools and call.name in LOCAL_WORKSPACE_BLOCKED_TOOLS:
+                    if state.prefer_local_workspace_tools and self.skill_runtime.tool_is_blocked_for_local_workspace(call.name):
                         if call.name != "shell_command" or not allow_shell_workflow:
                             result = {
                                 "ok": False,

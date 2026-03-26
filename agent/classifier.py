@@ -13,6 +13,62 @@ from agent.llm_client import LLMClient
 from agent.telemetry import TelemetryEmitter
 from agent.types import SkillRouteDecision, SkillRoutingSnapshot, TurnClassification
 
+_TIME_SENSITIVE_MARKERS: tuple[str, ...] = (
+    "latest",
+    "recent",
+    "current",
+    "today",
+    "right now",
+    "up to date",
+    "as of",
+    "news",
+    "this week",
+    "this month",
+)
+_WORKSPACE_ACTION_RE = re.compile(r"\b(?:create|make|build|generate|write|save|edit|modify|update|rename|move|delete|remove|clear|wipe|fix|patch)\b")
+_WORKSPACE_TARGET_MARKERS: tuple[str, ...] = (
+    "workspace",
+    "folder",
+    "directory",
+    "file",
+    "files",
+    "repo",
+    "project",
+    "module",
+    "package",
+    "component",
+    "script",
+    "code",
+    "landing page",
+    "scaffold",
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".html",
+    ".css",
+    ".json",
+    ".md",
+)
+_LOCAL_TOOL_BLOCKING_MARKERS: tuple[str, ...] = (
+    "shell",
+    "terminal",
+    "bash",
+    "zsh",
+    "powershell",
+    "run this command",
+    "http://",
+    "https://",
+    "website",
+    "web ",
+    "search ",
+    "google ",
+    "fetch ",
+)
+_FOLLOWUP_STANDALONE_RE = re.compile(r"\b(?:create|make|build|write|edit|modify|update|rename|delete|remove|search|find|open|play|run|install)\b")
+_FOLLOWUP_CONTEXT_RE = re.compile(r"\b(?:where|what|which|why|how|it|that|those|them|there|also|then|js|css|html)\b")
+
 
 class TurnClassifier:
     def __init__(self, config: Dict[str, Any], skill_runtime: SkillRuntime, llm_client: LLMClient, telemetry: Optional[TelemetryEmitter] = None) -> None:
@@ -167,12 +223,36 @@ class TurnClassifier:
             return False
         return cls.is_confirmation_like(ctx.user_input)
 
-    def _combined_request_text(self, ctx: SkillContext) -> str:
-        if self.is_confirmation_like(ctx.user_input):
-            text = " ".join(part for part in (ctx.recent_routing_hint, ctx.user_input) if part).strip()
-        else:
-            text = str(ctx.user_input or "").strip()
+    def _combined_request_text(self, ctx: SkillContext, *, include_recent: bool = False) -> str:
+        text = str(ctx.user_input or "").strip()
+        if include_recent and ctx.recent_routing_hint:
+            text = " ".join(part for part in (ctx.recent_routing_hint, text) if part).strip()
         return text.lower()
+
+    def _looks_time_sensitive(self, text: str) -> bool:
+        return any(marker in text for marker in _TIME_SENSITIVE_MARKERS)
+
+    def _looks_local_workspace_task(self, text: str, *, explicit_external_path: str) -> bool:
+        if explicit_external_path:
+            return False
+        if any(marker in text for marker in _LOCAL_TOOL_BLOCKING_MARKERS):
+            return False
+        return bool(_WORKSPACE_ACTION_RE.search(text) or any(marker in text for marker in _WORKSPACE_TARGET_MARKERS))
+
+    def _looks_contextual_followup(self, ctx: SkillContext) -> bool:
+        if self.is_confirmation_like(ctx.user_input):
+            return False
+        if not (ctx.recent_routing_hint or ctx.sticky_skill_ids):
+            return False
+        text = str(ctx.user_input or "").strip().lower()
+        if not text:
+            return False
+        if _FOLLOWUP_STANDALONE_RE.search(text):
+            return False
+        tokens = re.findall(r"[a-z0-9']+", text)
+        if len(tokens) > 8 and not text.endswith("?"):
+            return False
+        return bool(text.endswith("?") or _FOLLOWUP_CONTEXT_RE.search(text) or len(tokens) <= 4)
 
     def _explicit_path_outside_workspace(self, text: str) -> str:
         workspace_root = Path(self.skill_runtime.workspace.workspace_root)
@@ -199,16 +279,22 @@ class TurnClassifier:
         return ""
 
     def _deterministic_classification(self, ctx: SkillContext) -> TurnClassification:
-        """Minimal seed classification for structural facts only."""
+        """Minimal seed classification for safety-critical fallback behavior."""
         explicit_external_path = self._explicit_path_outside_workspace(ctx.user_input)
-        followup_kind = "confirmation" if self.is_confirmation_like(ctx.user_input) else "new_request"
+        is_confirmation = self.is_confirmation_like(ctx.user_input)
+        is_contextual_followup = self._looks_contextual_followup(ctx)
+        followup_kind = "confirmation" if is_confirmation else "contextual_followup" if is_contextual_followup else "new_request"
+        merged_text = self._combined_request_text(ctx, include_recent=is_confirmation or is_contextual_followup)
+        recent_hint_active = bool(ctx.recent_routing_hint or ctx.sticky_skill_ids)
 
         candidate_skill_ids: List[str] = []
-        recent_hint_active = self.is_confirmation_like(ctx.user_input) and bool(ctx.recent_routing_hint or ctx.sticky_skill_ids)
-        if recent_hint_active:
+        if recent_hint_active and followup_kind in {"confirmation", "contextual_followup"}:
             candidate_skill_ids.extend(ctx.sticky_skill_ids[:3])
 
         return TurnClassification(
+            time_sensitive=self._looks_time_sensitive(merged_text),
+            requires_workspace_action=is_confirmation and recent_hint_active and self._looks_local_workspace_task(merged_text, explicit_external_path=explicit_external_path),
+            prefer_local_workspace_tools=self._looks_local_workspace_task(merged_text, explicit_external_path=explicit_external_path),
             explicit_external_path=explicit_external_path,
             followup_kind=followup_kind,
             candidate_skill_ids=candidate_skill_ids,

@@ -560,6 +560,32 @@ def test_contextual_followup_reuses_immediate_prior_skill_context(mocker, runtim
     assert "skill_route" not in calls
 
 
+def test_contextual_followup_seed_reuses_immediate_prior_skill_context(runtime: SkillRuntime):
+    runtime.config = {"skills": {"selection_mode": "model", "max_active_skills": 2}}
+    agent = Agent({"agent": {}}, runtime)
+
+    history_messages = [
+        {"role": "user", "content": "create a bakery landing page in a folder called 1738 with html css js"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "create_file",
+                        "arguments": '{"filepath":"1738/index.html","content":"<html></html>"}',
+                    }
+                }
+            ],
+        },
+        {"role": "tool", "name": "create_file", "content": '{"ok": true, "data": {"filepath": "1738/index.html"}}'},
+    ]
+
+    ctx = agent._build_skill_context("Where is JS?", [], [], history_messages)
+
+    selected = agent._select_skills(ctx, threading.Event())
+    assert [skill.id for skill in selected] == ["workspace-ops"]
+
+
 def test_confirmation_workspace_action_retries_instead_of_accepting_manual_terminal_advice(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
@@ -1882,6 +1908,100 @@ def execute(tool_name, args, env):
         "_classify_turn",
         return_value=TurnClassification(time_sensitive=True, candidate_skill_ids=["search-ops"]),
     )
+
+    chat_reqs = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"As of my knowledge, Meta has not announced major new acquisitions."}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        if len(chat_reqs) == 2:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"meta latest acquisitions\\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"I could not verify the latest open source models from reliable current web results in this turn."}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "tell me about the latest open source models"}],
+        user_input="tell me about the latest open source models",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert "could not verify" in result.content.lower()
+    assert len(chat_reqs) == 4
+
+
+def test_time_sensitive_query_seed_forces_search_before_accepting_answer(mocker, runtime: SkillRuntime):
+    search_skill = runtime.skills_dir / "search-ops"
+    search_skill.mkdir(parents=True)
+    (search_skill / "SKILL.md").write_text(
+        """
+---
+name: search-ops
+description: Search the web for recent information.
+allowed-tools: web_search
+metadata:
+  tags: [web, latest, recent, current, news]
+---
+Search the internet.
+""".strip(),
+        encoding="utf-8",
+    )
+    (search_skill / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "web_search": {
+    "capability": "web_search",
+    "description": "Search web",
+    "parameters": {
+      "type": "object",
+      "properties": {"query": {"type": "string"}},
+      "required": ["query"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    return {"ok": True, "data": {"results": [{"title": "Example", "url": "https://example.com", "domain": "example.com", "snippet": "Verified"}]}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+    runtime.load_skills()
+
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
 
     chat_reqs = []
 

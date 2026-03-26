@@ -148,6 +148,82 @@ def test_classifier_seed_keeps_explicit_external_path_without_model(tmp_path: Pa
     assert classification.explicit_external_path == str(Path("/tmp/proposal.docx").resolve(strict=False))
 
 
+def test_classifier_seed_keeps_time_sensitive_flag_without_model(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": True}}
+    llm_client = LLMClient(cfg)
+    classifier = TurnClassifier(cfg, runtime, llm_client)
+    ctx = classifier.build_skill_context(
+        "latest OpenAI news",
+        [],
+        [],
+        [],
+    )
+
+    classification = classifier.classify(ctx)
+
+    assert classification.used_model is False
+    assert classification.time_sensitive is True
+
+
+def test_classifier_seed_restores_workspace_safety_flags_without_model(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": True}}
+    llm_client = LLMClient(cfg)
+    classifier = TurnClassifier(cfg, runtime, llm_client)
+    history_messages = [
+        {"role": "user", "content": "delete all files in the workspace"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "create_file",
+                        "arguments": '{"filepath":"a.txt","content":"alpha"}',
+                    }
+                }
+            ],
+        },
+        {"role": "tool", "name": "create_file", "content": '{"ok": true, "data": {"filepath": "a.txt"}}'},
+    ]
+    ctx = classifier.build_skill_context("yes", [], [], history_messages)
+
+    classification = classifier.classify(ctx)
+
+    assert classification.used_model is False
+    assert classification.requires_workspace_action is True
+    assert classification.prefer_local_workspace_tools is True
+    assert classification.followup_kind == "confirmation"
+
+
+def test_classifier_seed_preserves_contextual_followup_without_model(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": True}}
+    llm_client = LLMClient(cfg)
+    classifier = TurnClassifier(cfg, runtime, llm_client)
+    history_messages = [
+        {"role": "user", "content": "create a bakery landing page in a folder called 1738 with html css js"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "create_file",
+                        "arguments": '{"filepath":"1738/index.html","content":"<html></html>"}',
+                    }
+                }
+            ],
+        },
+        {"role": "tool", "name": "create_file", "content": '{"ok": true, "data": {"filepath": "1738/index.html"}}'},
+    ]
+    ctx = classifier.build_skill_context("Where is JS?", [], [], history_messages)
+
+    classification = classifier.classify(ctx)
+
+    assert classification.used_model is False
+    assert classification.followup_kind == "contextual_followup"
+
+
 def test_classifier_uses_model_for_contextual_followup(mocker, tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
