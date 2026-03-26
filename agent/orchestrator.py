@@ -130,15 +130,10 @@ class TurnOrchestrator:
                 out[key] = self.compact_jsonish(value)
         return out
 
-    def build_turn_state(self, ctx, selected: List[Any], history_messages: List[Dict[str, Any]], classification, route_source: str) -> TurnState:
-        loaded_skill_ids = self.skill_runtime.default_loaded_skill_ids(selected, ctx)
-        explicit = self.skill_runtime.resolve_skill_reference(ctx.explicit_skill_id) if ctx.explicit_skill_id else None
-        if explicit is not None:
-            loaded_skill_ids = sorted(dict.fromkeys([skill_id for skill_id in loaded_skill_ids + [explicit.id] if skill_id]))
+    def build_turn_state(self, ctx, selected: List[Any], history_messages: List[Dict[str, Any]], classification) -> TurnState:
         return TurnState(
             ctx=ctx,
             selected=selected,
-            loaded_skill_ids=loaded_skill_ids,
             dynamic_history=list(history_messages),
             skill_exchanges=[],
             classification=classification,
@@ -146,7 +141,6 @@ class TurnOrchestrator:
             telemetry=TurnTelemetry(
                 turn_id=f"turn_{uuid.uuid4().hex[:10]}",
                 classification_source=classification.source,
-                skill_route_source=route_source,
             ),
             evidence=[],
             tool_budgets=dict(self.default_tool_budgets),
@@ -154,9 +148,8 @@ class TurnOrchestrator:
 
     def _default_select_skills(self, ctx, stop_event):
         classification = self.classify_context(ctx, stop_event=stop_event)
-        route = self.classifier.route_skills(ctx, classification, stop_event=stop_event)
-        selected = self.skill_runtime.expand_selected_skills(ctx, self.skill_runtime.skills_by_ids(route.selected_skill_ids))
-        return classification, route, selected
+        selected = self.skill_runtime.select_skills(ctx)
+        return classification, selected
 
     @staticmethod
     def workspace_materialization_count(state: TurnState) -> int:
@@ -220,13 +213,6 @@ class TurnOrchestrator:
         state.completion.tool_counts[call.name] = state.completion.tool_counts.get(call.name, 0) + 1
         record = ToolExecutionRecord(name=call.name, args=dict(call.arguments), result=result, policy_blocked=policy_blocked)
         state.evidence.append(record)
-        if call.name == "load_skill" and result.get("ok"):
-            data = result.get("data") if isinstance(result.get("data"), dict) else {}
-            skill_id = str(data.get("skill_id", "")).strip() if isinstance(data, dict) else ""
-            if skill_id and skill_id not in state.loaded_skill_ids:
-                state.loaded_skill_ids.append(skill_id)
-                state.loaded_skill_ids.sort()
-
         if result.get("ok"):
             paths = self.tool_result_paths(call.name, result)
             if call.name in {"create_file", "create_files", "edit_file"}:
@@ -309,7 +295,6 @@ class TurnOrchestrator:
             "status": result.status,
             "error": result.error or "",
             "selected_skills": [getattr(skill, "id", "") for skill in state.selected],
-            "loaded_skills": list(state.loaded_skill_ids),
             "tool_counts": dict(state.completion.tool_counts),
             "tool_evidence": [
                 {"name": item.name, "args": item.args, "result": item.result, "policy_blocked": item.policy_blocked}
@@ -321,7 +306,6 @@ class TurnOrchestrator:
                 "time_sensitive": state.classification.time_sensitive,
                 "requires_workspace_action": state.classification.requires_workspace_action,
                 "prefer_local_workspace_tools": state.classification.prefer_local_workspace_tools,
-                "candidate_skill_ids": list(state.classification.candidate_skill_ids),
             },
             "search_mode": state.search_mode,
             "search_failures": state.completion.search_failure_count,
@@ -483,8 +467,8 @@ class TurnOrchestrator:
         branch_labels = branch_labels or []
         attachments = attachments or []
         ctx = self.build_skill_context(user_input, branch_labels, attachments, history_messages)
-        classification, route, selected = self.select_skills(ctx, stop_event)
-        state = self.build_turn_state(ctx, selected, history_messages, classification, route.source)
+        classification, selected = self.select_skills(ctx, stop_event)
+        state = self.build_turn_state(ctx, selected, history_messages, classification)
 
         def finish(result: AgentTurnResult) -> AgentTurnResult:
             result.journal = self.build_turn_journal(state, result)
@@ -504,14 +488,14 @@ class TurnOrchestrator:
                 return finish(AgentTurnResult(status="cancelled", content="", reasoning=state.full_reasoning, skill_exchanges=state.skill_exchanges))
 
             policy_snapshot = self.build_policy_snapshot(state)
-            system_content = self.prompt_renderer.compose_system_content(state.selected, state.ctx, state.loaded_skill_ids)
+            system_content = self.prompt_renderer.compose_system_content(state.selected, state.ctx)
             policy_rules = self.prompt_renderer.render_policy_rules(policy_snapshot)
             if policy_rules:
                 system_content += "\n\n" + policy_rules
             system_messages = [{"role": "system", "content": system_content}]
 
             model_messages = self.context_mgr.prune(system_messages + state.dynamic_history, self.context_budget_max_tokens)
-            tools = self.skill_runtime.tools_for_turn(state.selected, ctx=state.ctx, loaded_skill_ids=state.loaded_skill_ids)
+            tools = self.skill_runtime.tools_for_turn(state.selected, ctx=state.ctx)
             payload = self.llm_client.build_payload(model_messages, thinking=thinking, tools=tools or None)
 
             try:
@@ -638,7 +622,6 @@ class TurnOrchestrator:
                         call.arguments,
                         selected=state.selected,
                         ctx=state.ctx,
-                        loaded_skill_ids=state.loaded_skill_ids,
                         confirm_shell=confirm_shell,
                         spawn_skill_agent=spawn_skill_agent,
                         request_user_input=request_user_input,

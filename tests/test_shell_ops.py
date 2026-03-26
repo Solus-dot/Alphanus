@@ -169,8 +169,8 @@ def test_shell_command_nonzero_exit_bubbles_up_as_tool_failure(tmp_path: Path):
     assert out["data"]["returncode"] == 3
 
 
-def test_runtime_select_skills_does_not_guess_shell_skill_in_model_mode(tmp_path: Path):
-    runtime = _runtime(tmp_path, {"skills": {"selection_mode": "model", "max_active_skills": 2}})
+def test_runtime_select_skills_returns_all_enabled_skills(tmp_path: Path):
+    runtime = _runtime(tmp_path, {})
     ctx = SkillContext(
         user_input="check my go version",
         branch_labels=[],
@@ -179,39 +179,19 @@ def test_runtime_select_skills_does_not_guess_shell_skill_in_model_mode(tmp_path
         memory_hits=[],
     )
 
-    assert runtime.select_skills(ctx) == []
-
-
-def test_runtime_select_skills_does_not_guess_memory_skill_in_model_mode(tmp_path: Path):
-    runtime = _runtime(tmp_path, {"skills": {"selection_mode": "model", "max_active_skills": 2}})
-    ctx = SkillContext(
-        user_input="what's my birthday",
-        branch_labels=[],
-        attachments=[],
-        workspace_root=str(runtime.workspace.workspace_root),
-        memory_hits=[],
-    )
-
-    assert runtime.select_skills(ctx) == []
+    selected_ids = {skill.id for skill in runtime.select_skills(ctx)}
+    assert "shell-ops" in selected_ids
+    assert "memory-rag" in selected_ids
 
 
 def test_shell_confirmation_reuses_recent_assistant_action_context(mocker, tmp_path: Path):
-    runtime = _runtime(tmp_path, {"skills": {"selection_mode": "model", "max_active_skills": 2}})
-    agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
+    runtime = _runtime(tmp_path, {})
+    agent = Agent({"agent": {}}, runtime)
     mocker.patch("agent.classifier.TurnClassifier._should_model_classify", return_value=True)
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
-        if pass_id == "turn_classify":
-            return type(
-                "R",
-                (),
-                {
-                    "finish_reason": "stop",
-                    "content": '{"followup_kind":"confirmation","candidate_skill_ids":["shell-ops"]}',
-                },
-            )()
-        assert pass_id == "skill_route"
-        return type("R", (), {"finish_reason": "stop", "content": '{"skills": []}'})()
+        assert pass_id == "turn_classify"
+        return type("R", (), {"finish_reason": "stop", "content": '{"followup_kind":"confirmation"}'})()
 
     mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
 
@@ -228,4 +208,4 @@ def test_shell_confirmation_reuses_recent_assistant_action_context(mocker, tmp_p
     selected = agent._select_skills(ctx, threading.Event())
 
     assert selected
-    assert selected[0].id == "shell-ops"
+    assert any(skill.id == "shell-ops" for skill in selected)

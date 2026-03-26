@@ -146,7 +146,6 @@ _TEXT_LIKE_EXTENSIONS = frozenset(
 
 _GENERIC_SCRIPT_TOOL_NAME = "run_skill_script"
 _GENERIC_ENTRYPOINT_TOOL_NAME = "run_skill_entrypoint"
-_LOAD_SKILL_TOOL_NAME = "load_skill"
 _READ_SKILL_RESOURCE_TOOL_NAME = "read_skill_resource"
 _RUN_SKILL_COMMAND_TOOL_NAME = "run_skill_command"
 _SPAWN_SKILL_AGENT_TOOL_NAME = "spawn_skill_agent"
@@ -326,23 +325,6 @@ class AgentRecord:
 
 
 @dataclass(slots=True)
-class LoadedSkillContract:
-    skill_id: str
-    prompt: str
-    resources: List[str]
-    scripts: List[str]
-    blocked_scripts: List[Dict[str, str]]
-    commands: List[str]
-    install_commands: List[str]
-    verify_commands: List[str]
-    entrypoints: List[str]
-    agents: List[str]
-    availability_code: str = "ready"
-    availability_reason: str = ""
-    argument_text: str = ""
-
-
-@dataclass(slots=True)
 class LoadedAgentContract:
     agent_name: str
     prompt: str
@@ -366,10 +348,6 @@ class SkillRuntime:
         self.debug = debug
         self.skills_cfg = self.config.get("skills", {})
         self.tools_cfg = self.config.get("tools", {})
-        self.selection_mode = str(self.skills_cfg.get("selection_mode", "model")).strip().lower()
-        if self.selection_mode not in {"model", "all_enabled"}:
-            self.selection_mode = "model"
-        self.max_active_skills = int(self.skills_cfg.get("max_active_skills", 6))
         load_cfg = self.skills_cfg.get("load", {}) if isinstance(self.skills_cfg.get("load"), dict) else {}
         self.upward_scan = bool(load_cfg.get("upward_scan", True))
         extra_dirs = load_cfg.get("extra_dirs", [])
@@ -398,7 +376,6 @@ class SkillRuntime:
         self._enabled_skills_cache: Optional[Tuple[SkillManifest, ...]] = None
         self._skill_catalog_cache: Dict[int, str] = {}
         self._skill_cards_cache: Dict[Tuple[Tuple[str, ...], bool], str] = {}
-        self._loaded_skill_contracts: Dict[tuple[str, str], LoadedSkillContract] = {}
         self._python_module_probe_cache: Dict[str, bool] = {}
         self._proc_env_base = self._build_proc_env_base()
         self.load_skills()
@@ -810,27 +787,12 @@ class SkillRuntime:
         return names
 
     def _register_runtime_tools(self) -> None:
-        self._tool_registry[_LOAD_SKILL_TOOL_NAME] = RegisteredTool(
-            name=_LOAD_SKILL_TOOL_NAME,
-            skill_id="__runtime__",
-            tool_scope="skill",
-            capability="skill_loader",
-            description="Load the full content and packaged resources for a selected skill.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "skill_id": {"type": "string"},
-                    "arguments": {"type": "string"},
-                },
-                "required": ["skill_id"],
-            },
-        )
         self._tool_registry[_READ_SKILL_RESOURCE_TOOL_NAME] = RegisteredTool(
             name=_READ_SKILL_RESOURCE_TOOL_NAME,
             skill_id="__runtime__",
             tool_scope="skill",
             capability="skill_resource_reader",
-            description="Read a supporting file bundled with a loaded skill.",
+            description="Read a supporting file bundled with an active skill.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -940,7 +902,6 @@ class SkillRuntime:
         self._skill_agents_by_pack = {}
         self._skill_index = {}
         self._tool_registry = {}
-        self._loaded_skill_contracts = {}
         self._invalidate_skill_caches()
         self._register_runtime_tools()
         if not any(root.exists() for root in self.skill_roots):
@@ -1822,17 +1783,13 @@ class SkillRuntime:
         return expanded
 
     def select_skills(self, ctx: SkillContext, top_n: int = 3) -> List[SkillManifest]:
-        if ctx.explicit_skill_id:
-            explicit = self.resolve_skill_reference(ctx.explicit_skill_id)
-            if explicit and explicit.enabled and explicit.available and explicit.execution_allowed:
-                return self.expand_selected_skills(ctx, [explicit])
-        if self.selection_mode == "all_enabled":
-            enabled = self.enabled_skills()
-            enabled.sort(key=lambda s: s.id)
-            if self.max_active_skills <= 0:
-                return self.expand_selected_skills(ctx, enabled)
-            return self.expand_selected_skills(ctx, enabled[: self.max_active_skills])
-        return []
+        selected = [
+            skill
+            for skill in self.enabled_skills()
+            if not skill.disable_model_invocation or (ctx.explicit_skill_id and ctx.explicit_skill_id == skill.id)
+        ]
+        selected.sort(key=lambda skill: (0 if ctx.explicit_skill_id and skill.id == ctx.explicit_skill_id else 1, skill.id))
+        return self.expand_selected_skills(ctx, selected)
 
     @staticmethod
     def _skill_has_runtime_surface(skill: SkillManifest) -> bool:
@@ -1842,28 +1799,6 @@ class SkillRuntime:
             or getattr(skill, "entrypoints", None)
             or getattr(skill, "bundled_files", None)
         )
-
-    def default_loaded_skill_ids(self, selected: List[SkillManifest], ctx: SkillContext) -> List[str]:
-        loaded: List[str] = []
-        for skill in selected:
-            skill_id = str(getattr(skill, "id", "")).strip()
-            if ctx.explicit_skill_id and skill_id == ctx.explicit_skill_id:
-                loaded.append(skill_id)
-                continue
-            if bool(getattr(skill, "disable_model_invocation", False)):
-                continue
-            if not self._skill_has_runtime_surface(skill):
-                loaded.append(skill_id)
-        return sorted(dict.fromkeys(loaded))
-
-    def loaded_skills(self, selected: List[SkillManifest], loaded_skill_ids: List[str]) -> List[SkillManifest]:
-        selected_map = {skill.id: skill for skill in selected}
-        out: List[SkillManifest] = []
-        for skill_id in loaded_skill_ids:
-            skill = selected_map.get(skill_id) or self.get_skill(skill_id)
-            if skill:
-                out.append(skill)
-        return out
 
     def tool_registration(self, tool_name: str) -> Optional[RegisteredTool]:
         return self._tool_registry.get(str(tool_name).strip())
@@ -1988,9 +1923,10 @@ class SkillRuntime:
         ctx: SkillContext,
         context_limit: int,
         ratio: float = 0.15,
-        hard_cap: int = 2,
+        hard_cap: int = 0,
     ) -> str:
-        selected = selected[:hard_cap]
+        if hard_cap > 0:
+            selected = selected[:hard_cap]
         if not selected:
             return ""
 
@@ -2093,41 +2029,6 @@ class SkillRuntime:
         if "$ARGUMENTS" not in text and "$0" not in text and "$ARGUMENTS[" not in text:
             out = out.rstrip() + f"\n\nARGUMENTS: {argument_text}"
         return out
-
-    def load_skill_contract(self, skill_id: str, argument_text: str = "") -> LoadedSkillContract:
-        skill = self.resolve_skill_reference(skill_id)
-        resolved_skill_id = skill.id if skill else str(skill_id).strip()
-        key = (resolved_skill_id, argument_text.strip())
-        cached = self._loaded_skill_contracts.get(key)
-        if cached is not None:
-            return cached
-        if skill is None or not skill.path:
-            raise FileNotFoundError(f"Skill not found: {skill_id}")
-        prompt = self._ensure_skill_prompt(skill).strip()
-        prompt = prompt.replace("${CLAUDE_SKILL_DIR}", str(skill.path)).replace("${OPENCODE_SKILL_DIR}", str(skill.path))
-        prompt = self._apply_skill_arguments(prompt, argument_text.strip())
-        prompt = self._rebase_vendor_paths(prompt, skill)
-        contract = LoadedSkillContract(
-            skill_id=skill.id,
-            prompt=prompt,
-            resources=sorted(
-                rel
-                for rel in skill.bundled_files
-                if not self._is_skill_script_candidate(rel) and rel != "tools.py" and rel != "hooks.py"
-            ),
-            scripts=self._reported_skill_scripts(skill),
-            blocked_scripts=self._blocked_skill_scripts(skill) if skill.execution_allowed else [],
-            commands=self._runtime_visible_skill_commands(skill, None),
-            install_commands=self._skill_install_commands(skill),
-            verify_commands=self._skill_verify_commands(skill),
-            entrypoints=[entry.name for entry in self._reported_skill_entrypoints(skill)],
-            agents=self._reported_skill_agents(skill),
-            availability_code=str(skill.availability_code or "ready"),
-            availability_reason=str(skill.availability_reason or ""),
-            argument_text=argument_text.strip(),
-        )
-        self._loaded_skill_contracts[key] = contract
-        return contract
 
     def load_agent_contract(self, agent_name: str, skill_id: str = "") -> LoadedAgentContract:
         agent = self.get_agent(agent_name)
@@ -2250,25 +2151,31 @@ class SkillRuntime:
             allowed.append(tool_name)
         return sorted(allowed)
 
+    @staticmethod
+    def _active_skill_ids(selected: List[SkillManifest]) -> List[str]:
+        return sorted(
+            dict.fromkeys(
+                str(getattr(skill, "id", "")).strip()
+                for skill in selected
+                if str(getattr(skill, "id", "")).strip()
+            )
+        )
+
     def allowed_tool_names(
         self,
         selected: List[SkillManifest],
         ctx: Optional[SkillContext] = None,
-        loaded_skill_ids: Optional[List[str]] = None,
     ) -> List[str]:
-        loaded_skill_ids = loaded_skill_ids or []
         names = self.core_tool_names()
         names.extend(self.optional_tool_names(selected, ctx=ctx))
-        if any(getattr(skill, "id", "") not in set(loaded_skill_ids) for skill in selected):
-            names.append(_LOAD_SKILL_TOOL_NAME)
-        if loaded_skill_ids:
-            names.extend(
-                [
-                    _READ_SKILL_RESOURCE_TOOL_NAME,
-                    _RUN_SKILL_COMMAND_TOOL_NAME,
-                    _SPAWN_SKILL_AGENT_TOOL_NAME,
-                ]
-            )
+        active_skill_ids = self._active_skill_ids(selected)
+        if active_skill_ids:
+            if any(skill.bundled_files for skill in selected):
+                names.append(_READ_SKILL_RESOURCE_TOOL_NAME)
+            if any(self._runtime_visible_skill_commands(skill, ctx) for skill in selected):
+                names.append(_RUN_SKILL_COMMAND_TOOL_NAME)
+            if any(self._agents_for_skill(skill) for skill in selected):
+                names.append(_SPAWN_SKILL_AGENT_TOOL_NAME)
             runtime_cfg = self.config.get("runtime", {}) if isinstance(self.config.get("runtime"), dict) else {}
             if bool(runtime_cfg.get("ask_user_tool", True)):
                 names.append(_REQUEST_USER_INPUT_TOOL_NAME)
@@ -2425,32 +2332,19 @@ class SkillRuntime:
         names: List[str],
         selected: Optional[List[SkillManifest]] = None,
         ctx: Optional[SkillContext] = None,
-        loaded_skill_ids: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         tools = []
-        loaded_skill_ids = loaded_skill_ids or []
+        active_skill_ids = self._active_skill_ids(selected or [])
         for name in names:
             reg = self._tool_registry[name]
             parameters = reg.parameters
             description = reg.description
-            if reg.name == _LOAD_SKILL_TOOL_NAME and selected is not None:
-                candidates = [skill.id for skill in selected if not skill.disable_model_invocation or (ctx and ctx.explicit_skill_id == skill.id)]
-                if candidates:
-                    parameters = {
-                        "type": "object",
-                        "properties": {
-                            "skill_id": {"type": "string", "enum": sorted(dict.fromkeys(candidates))},
-                            "arguments": {"type": "string"},
-                        },
-                        "required": ["skill_id"],
-                    }
-                    description = f"{reg.description} Available skills: {', '.join(sorted(dict.fromkeys(candidates))[:8])}."
-            if reg.name in {_READ_SKILL_RESOURCE_TOOL_NAME, _RUN_SKILL_COMMAND_TOOL_NAME, _SPAWN_SKILL_AGENT_TOOL_NAME} and loaded_skill_ids:
+            if reg.name in {_READ_SKILL_RESOURCE_TOOL_NAME, _RUN_SKILL_COMMAND_TOOL_NAME, _SPAWN_SKILL_AGENT_TOOL_NAME} and active_skill_ids:
                 parameters = dict(parameters) if isinstance(parameters, dict) else {}
                 properties = dict(parameters.get("properties", {}))
-                properties["skill_id"] = {"type": "string", "enum": sorted(dict.fromkeys(loaded_skill_ids))}
+                properties["skill_id"] = {"type": "string", "enum": active_skill_ids}
                 required = list(parameters.get("required", [])) if isinstance(parameters.get("required"), list) else []
-                if reg.name in {_READ_SKILL_RESOURCE_TOOL_NAME, _RUN_SKILL_COMMAND_TOOL_NAME} and len(set(loaded_skill_ids)) > 1:
+                if reg.name in {_READ_SKILL_RESOURCE_TOOL_NAME, _RUN_SKILL_COMMAND_TOOL_NAME} and len(active_skill_ids) > 1:
                     if "skill_id" not in required:
                         required.append("skill_id")
                 elif "skill_id" in required:
@@ -2460,7 +2354,7 @@ class SkillRuntime:
                 parameters["required"] = required
                 if reg.name == _RUN_SKILL_COMMAND_TOOL_NAME:
                     command_values: List[str] = []
-                    for skill_id in loaded_skill_ids:
+                    for skill_id in active_skill_ids:
                         skill = self.get_skill(skill_id)
                         if skill:
                             command_values.extend(self._runtime_visible_skill_commands(skill, None))
@@ -2468,13 +2362,13 @@ class SkillRuntime:
                     if command_values:
                         properties["command"] = {"type": "string", "enum": command_values}
                         description = (
-                            "Run one documented shell workflow command declared by the loaded skill. "
+                            "Run one documented shell workflow command declared by an active skill. "
                             "Do not invent commands. "
                             f"Available commands: {', '.join(command_values[:6])}."
                         )
                 if reg.name == _SPAWN_SKILL_AGENT_TOOL_NAME:
                     agent_names: List[str] = []
-                    for skill_id in loaded_skill_ids:
+                    for skill_id in active_skill_ids:
                         skill = self.get_skill(skill_id)
                         if skill:
                             agent_names.extend(self._agents_for_skill(skill))
@@ -2520,13 +2414,11 @@ class SkillRuntime:
         self,
         selected: List[SkillManifest],
         ctx: Optional[SkillContext] = None,
-        loaded_skill_ids: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         return self._tool_schemas(
-            self.allowed_tool_names(selected, ctx=ctx, loaded_skill_ids=loaded_skill_ids),
+            self.allowed_tool_names(selected, ctx=ctx),
             selected=selected,
             ctx=ctx,
-            loaded_skill_ids=loaded_skill_ids,
         )
 
     def _run_pre_action_hooks(
@@ -2655,7 +2547,6 @@ class SkillRuntime:
             raise LookupError(f"No adapter for tool '{tool_name}'")
 
         if reg.name in {
-            _LOAD_SKILL_TOOL_NAME,
             _READ_SKILL_RESOURCE_TOOL_NAME,
             _RUN_SKILL_COMMAND_TOOL_NAME,
             _SPAWN_SKILL_AGENT_TOOL_NAME,
@@ -2702,82 +2593,59 @@ class SkillRuntime:
         args: Dict[str, Any],
         selected: List[SkillManifest],
         ctx: SkillContext,
-        loaded_skill_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         recovered = _recover_tool_args(args)
         validated = self._validate_tool_args(reg, recovered)
-        if reg.name == _LOAD_SKILL_TOOL_NAME:
-            validated = self._validate_load_skill_args(validated, selected, ctx)
         if reg.name == _READ_SKILL_RESOURCE_TOOL_NAME:
-            validated = self._validate_skill_resource_args(validated, loaded_skill_ids or [])
+            validated = self._validate_skill_resource_args(validated, selected)
         if reg.name == _GENERIC_ENTRYPOINT_TOOL_NAME:
             validated = self._validate_skill_entrypoint_args(validated, selected, ctx)
         if reg.name == _GENERIC_SCRIPT_TOOL_NAME:
             validated = self._validate_skill_script_args(validated, selected, ctx)
         if reg.name == _RUN_SKILL_COMMAND_TOOL_NAME:
-            validated = self._validate_skill_command_args(validated, selected, loaded_skill_ids=loaded_skill_ids or [])
+            validated = self._validate_skill_command_args(validated, selected)
         if reg.name == _SPAWN_SKILL_AGENT_TOOL_NAME:
-            validated = self._validate_spawn_skill_agent_args(validated, loaded_skill_ids or [])
+            validated = self._validate_spawn_skill_agent_args(validated, selected)
         self._enforce_artifact_materialization_policy(reg, validated, selected, ctx)
         allowed, reason = self._run_pre_action_hooks(selected, ctx, reg.name, validated)
         if not allowed:
             raise PermissionError(reason or "Denied by skill policy")
         return validated
 
-    def _validate_load_skill_args(
-        self,
-        args: Dict[str, Any],
-        selected: List[SkillManifest],
-        ctx: SkillContext,
-    ) -> Dict[str, Any]:
-        requested_skill_id = str(args.get("skill_id", "")).strip()
-        if not requested_skill_id:
-            raise ValueError("Missing required argument: skill_id")
-
-        selected_map = {skill.id: skill for skill in selected}
-        skill = selected_map.get(requested_skill_id)
-        if skill is None:
-            raise PermissionError(f"Skill '{requested_skill_id}' is not selected for this turn")
-        if skill.disable_model_invocation and ctx.explicit_skill_id != skill.id:
-            raise PermissionError(f"Skill '{skill.id}' is disabled for model invocation")
-
-        out = dict(args)
-        out["skill_id"] = skill.id
-        out["arguments"] = str(args.get("arguments", "")).strip()
-        return out
-
-    def _resolve_loaded_skill(
+    def _resolve_active_skill(
         self,
         requested_skill_id: str,
-        loaded_skill_ids: List[str],
+        selected: List[SkillManifest],
         tool_name: str,
+        *,
+        predicate: Optional[Callable[[SkillManifest], bool]] = None,
     ) -> SkillManifest:
-        allowed_ids = sorted(dict.fromkeys(str(skill_id).strip() for skill_id in loaded_skill_ids if str(skill_id).strip()))
-        if not allowed_ids:
-            raise PermissionError(f"{tool_name} requires a loaded skill")
+        candidates = [skill for skill in selected if skill.path and (predicate(skill) if predicate else True)]
+        if not candidates:
+            raise PermissionError(f"{tool_name} requires an active skill")
         if requested_skill_id:
-            if requested_skill_id not in allowed_ids:
-                raise PermissionError(f"Skill '{requested_skill_id}' is not loaded for this turn")
-            resolved_skill_id = requested_skill_id
-        elif len(allowed_ids) == 1:
-            resolved_skill_id = allowed_ids[0]
-        else:
-            raise ValueError(f"{tool_name} requires skill_id when multiple skills are loaded")
-
-        skill = self.get_skill(resolved_skill_id)
-        if skill is None or not skill.path:
-            raise FileNotFoundError(f"Skill not found: {resolved_skill_id}")
-        return skill
+            skill = next((skill for skill in candidates if skill.id == requested_skill_id), None)
+            if skill is None:
+                raise PermissionError(f"Skill '{requested_skill_id}' is not active for this turn")
+            return skill
+        if len(candidates) == 1:
+            return candidates[0]
+        raise ValueError(f"{tool_name} requires skill_id when multiple active skills are available")
 
     def _validate_skill_resource_args(
         self,
         args: Dict[str, Any],
-        loaded_skill_ids: List[str],
+        selected: List[SkillManifest],
     ) -> Dict[str, Any]:
         path = str(args.get("path", "")).strip()
         if not path:
             raise ValueError("Missing required argument: path")
-        skill = self._resolve_loaded_skill(str(args.get("skill_id", "")).strip(), loaded_skill_ids, _READ_SKILL_RESOURCE_TOOL_NAME)
+        skill = self._resolve_active_skill(
+            str(args.get("skill_id", "")).strip(),
+            selected,
+            _READ_SKILL_RESOURCE_TOOL_NAME,
+            predicate=lambda item: bool(item.bundled_files),
+        )
         out = dict(args)
         out["skill_id"] = skill.id
         out["path"] = path
@@ -2787,19 +2655,14 @@ class SkillRuntime:
         self,
         args: Dict[str, Any],
         selected: List[SkillManifest],
-        loaded_skill_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         requested_skill_id = str(args.get("skill_id", "")).strip()
-        if loaded_skill_ids:
-            skill = self._resolve_loaded_skill(requested_skill_id, loaded_skill_ids, _RUN_SKILL_COMMAND_TOOL_NAME)
-        elif requested_skill_id:
-            skill = self.resolve_skill_reference(requested_skill_id)
-        elif len(selected) == 1:
-            skill = selected[0]
-        else:
-            raise ValueError("run_skill_command requires skill_id when multiple skills are selected")
-        if skill is None or not skill.path:
-            raise FileNotFoundError(f"Skill not found: {requested_skill_id or 'selected skill'}")
+        skill = self._resolve_active_skill(
+            requested_skill_id,
+            selected,
+            _RUN_SKILL_COMMAND_TOOL_NAME,
+            predicate=lambda item: bool(self._runtime_visible_skill_commands(item, None)),
+        )
         if not skill.execution_allowed:
             raise PermissionError(f"Skill '{skill.id}' is blocked by trust policy")
 
@@ -2809,7 +2672,7 @@ class SkillRuntime:
         declared = self._runtime_visible_skill_commands(skill, None)
         if command not in declared:
             raise PermissionError(
-                f"Command is not declared by skill '{skill.id}'. Use one of the documented commands exposed by load_skill."
+                f"Command is not declared by skill '{skill.id}'. Use one of the documented commands exposed for this turn."
             )
         out = dict(args)
         out["skill_id"] = skill.id
@@ -2819,7 +2682,7 @@ class SkillRuntime:
     def _validate_spawn_skill_agent_args(
         self,
         args: Dict[str, Any],
-        loaded_skill_ids: List[str],
+        selected: List[SkillManifest],
     ) -> Dict[str, Any]:
         action = str(args.get("action", "start")).strip().lower() or "start"
         out = dict(args)
@@ -2831,23 +2694,12 @@ class SkillRuntime:
         if not agent_name:
             raise ValueError("Missing required argument: agent_name")
 
-        requested_skill_id = str(args.get("skill_id", "")).strip()
-        if requested_skill_id:
-            skill = self._resolve_loaded_skill(requested_skill_id, loaded_skill_ids, _SPAWN_SKILL_AGENT_TOOL_NAME)
-        else:
-            candidate_skills = [
-                self.get_skill(skill_id)
-                for skill_id in sorted(dict.fromkeys(str(skill_id).strip() for skill_id in loaded_skill_ids if str(skill_id).strip()))
-            ]
-            candidate_skills = [
-                skill for skill in candidate_skills if skill is not None and skill.path and agent_name in self._agents_for_skill(skill)
-            ]
-            if len(candidate_skills) == 1:
-                skill = candidate_skills[0]
-            elif len(candidate_skills) > 1:
-                raise ValueError("spawn_skill_agent requires skill_id when multiple loaded skills expose the requested agent")
-            else:
-                skill = self._resolve_loaded_skill("", loaded_skill_ids, _SPAWN_SKILL_AGENT_TOOL_NAME)
+        skill = self._resolve_active_skill(
+            str(args.get("skill_id", "")).strip(),
+            selected,
+            _SPAWN_SKILL_AGENT_TOOL_NAME,
+            predicate=lambda item: agent_name in self._agents_for_skill(item),
+        )
         if agent_name not in self._agents_for_skill(skill):
             raise PermissionError(f"Agent '{agent_name}' is not available for skill '{skill.id}' in this turn")
 
@@ -3003,23 +2855,6 @@ class SkillRuntime:
         args: Dict[str, Any],
         env: ToolExecutionEnv,
     ) -> Any:
-        if reg.name == _LOAD_SKILL_TOOL_NAME:
-            contract = self.load_skill_contract(str(args.get("skill_id", "")).strip(), str(args.get("arguments", "")).strip())
-            return {
-                "skill_id": contract.skill_id,
-                "prompt": contract.prompt,
-                "resources": contract.resources,
-                "scripts": contract.scripts,
-                "blocked_scripts": contract.blocked_scripts,
-                "commands": contract.commands,
-                "install_commands": contract.install_commands,
-                "verify_commands": contract.verify_commands,
-                "entrypoints": contract.entrypoints,
-                "agents": contract.agents,
-                "availability_code": contract.availability_code,
-                "availability_reason": contract.availability_reason,
-                "arguments": contract.argument_text,
-            }
         if reg.name == _READ_SKILL_RESOURCE_TOOL_NAME:
             return self.read_skill_resource(str(args.get("skill_id", "")).strip(), str(args.get("path", "")).strip())
         if reg.name == _RUN_SKILL_COMMAND_TOOL_NAME:
@@ -3048,7 +2883,6 @@ class SkillRuntime:
         args: Dict[str, Any],
         selected: List[SkillManifest],
         ctx: SkillContext,
-        loaded_skill_ids: Optional[List[str]] = None,
         confirm_shell: Optional[Callable[[str], bool]] = None,
         spawn_skill_agent: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
         request_user_input: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
@@ -3056,7 +2890,7 @@ class SkillRuntime:
         start = time.perf_counter()
         try:
             reg, _owner = self._resolve_tool_call(tool_name, selected)
-            normalized_args = self._prepare_tool_args(reg, args, selected, ctx, loaded_skill_ids=loaded_skill_ids)
+            normalized_args = self._prepare_tool_args(reg, args, selected, ctx)
             env = ToolExecutionEnv(
                 workspace=self.workspace,
                 memory=self.memory,

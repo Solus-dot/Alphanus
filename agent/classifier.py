@@ -11,63 +11,7 @@ from core.skills import SkillContext, SkillRuntime
 
 from agent.llm_client import LLMClient
 from agent.telemetry import TelemetryEmitter
-from agent.types import SkillRouteDecision, SkillRoutingSnapshot, TurnClassification
-
-_TIME_SENSITIVE_MARKERS: tuple[str, ...] = (
-    "latest",
-    "recent",
-    "current",
-    "today",
-    "right now",
-    "up to date",
-    "as of",
-    "news",
-    "this week",
-    "this month",
-)
-_WORKSPACE_ACTION_RE = re.compile(r"\b(?:create|make|build|generate|write|save|edit|modify|update|rename|move|delete|remove|clear|wipe|fix|patch)\b")
-_WORKSPACE_TARGET_MARKERS: tuple[str, ...] = (
-    "workspace",
-    "folder",
-    "directory",
-    "file",
-    "files",
-    "repo",
-    "project",
-    "module",
-    "package",
-    "component",
-    "script",
-    "code",
-    "landing page",
-    "scaffold",
-    ".py",
-    ".js",
-    ".ts",
-    ".tsx",
-    ".jsx",
-    ".html",
-    ".css",
-    ".json",
-    ".md",
-)
-_LOCAL_TOOL_BLOCKING_MARKERS: tuple[str, ...] = (
-    "shell",
-    "terminal",
-    "bash",
-    "zsh",
-    "powershell",
-    "run this command",
-    "http://",
-    "https://",
-    "website",
-    "web ",
-    "search ",
-    "google ",
-    "fetch ",
-)
-_FOLLOWUP_STANDALONE_RE = re.compile(r"\b(?:create|make|build|write|edit|modify|update|rename|delete|remove|search|find|open|play|run|install)\b")
-_FOLLOWUP_CONTEXT_RE = re.compile(r"\b(?:where|what|which|why|how|it|that|those|them|there|also|then|js|css|html)\b")
+from agent.types import TurnClassification
 
 
 class TurnClassifier:
@@ -76,7 +20,6 @@ class TurnClassifier:
         self.skill_runtime = skill_runtime
         self.llm_client = llm_client
         self.telemetry = telemetry or TelemetryEmitter()
-        self._skill_snapshot: Optional[SkillRoutingSnapshot] = None
         self.call_with_retry = llm_client.call_with_retry
 
     def reload_config(self, config: Dict[str, Any]) -> None:
@@ -217,43 +160,6 @@ class TurnClassifier:
             explicit_skill_args=explicit_skill_args,
         )
 
-    @classmethod
-    def should_use_recent_routing_hint(cls, ctx: SkillContext) -> bool:
-        if not (ctx.recent_routing_hint or ctx.sticky_skill_ids):
-            return False
-        return cls.is_confirmation_like(ctx.user_input)
-
-    def _combined_request_text(self, ctx: SkillContext, *, include_recent: bool = False) -> str:
-        text = str(ctx.user_input or "").strip()
-        if include_recent and ctx.recent_routing_hint:
-            text = " ".join(part for part in (ctx.recent_routing_hint, text) if part).strip()
-        return text.lower()
-
-    def _looks_time_sensitive(self, text: str) -> bool:
-        return any(marker in text for marker in _TIME_SENSITIVE_MARKERS)
-
-    def _looks_local_workspace_task(self, text: str, *, explicit_external_path: str) -> bool:
-        if explicit_external_path:
-            return False
-        if any(marker in text for marker in _LOCAL_TOOL_BLOCKING_MARKERS):
-            return False
-        return bool(_WORKSPACE_ACTION_RE.search(text) or any(marker in text for marker in _WORKSPACE_TARGET_MARKERS))
-
-    def _looks_contextual_followup(self, ctx: SkillContext) -> bool:
-        if self.is_confirmation_like(ctx.user_input):
-            return False
-        if not (ctx.recent_routing_hint or ctx.sticky_skill_ids):
-            return False
-        text = str(ctx.user_input or "").strip().lower()
-        if not text:
-            return False
-        if _FOLLOWUP_STANDALONE_RE.search(text):
-            return False
-        tokens = re.findall(r"[a-z0-9']+", text)
-        if len(tokens) > 8 and not text.endswith("?"):
-            return False
-        return bool(text.endswith("?") or _FOLLOWUP_CONTEXT_RE.search(text) or len(tokens) <= 4)
-
     def _explicit_path_outside_workspace(self, text: str) -> str:
         workspace_root = Path(self.skill_runtime.workspace.workspace_root)
         seen: set[str] = set()
@@ -277,31 +183,6 @@ class TurnClassifier:
             except ValueError:
                 return resolved_str
         return ""
-
-    def _deterministic_classification(self, ctx: SkillContext) -> TurnClassification:
-        """Minimal seed classification for safety-critical fallback behavior."""
-        explicit_external_path = self._explicit_path_outside_workspace(ctx.user_input)
-        is_confirmation = self.is_confirmation_like(ctx.user_input)
-        is_contextual_followup = self._looks_contextual_followup(ctx)
-        followup_kind = "confirmation" if is_confirmation else "contextual_followup" if is_contextual_followup else "new_request"
-        merged_text = self._combined_request_text(ctx, include_recent=is_confirmation or is_contextual_followup)
-        recent_hint_active = bool(ctx.recent_routing_hint or ctx.sticky_skill_ids)
-        time_sensitive = self._looks_time_sensitive(merged_text)
-        local_workspace_task = self._looks_local_workspace_task(merged_text, explicit_external_path=explicit_external_path)
-
-        candidate_skill_ids: List[str] = []
-        if recent_hint_active and followup_kind in {"confirmation", "contextual_followup"}:
-            candidate_skill_ids.extend(ctx.sticky_skill_ids[:3])
-        candidate_skill_ids = list(dict.fromkeys(candidate_skill_ids))
-
-        return TurnClassification(
-            time_sensitive=time_sensitive,
-            requires_workspace_action=is_confirmation and recent_hint_active and local_workspace_task,
-            prefer_local_workspace_tools=local_workspace_task,
-            explicit_external_path=explicit_external_path,
-            followup_kind=followup_kind,
-            candidate_skill_ids=candidate_skill_ids,
-        )
 
     def _should_model_classify(self, ctx: SkillContext, seed: TurnClassification) -> bool:
         """Model classification is the default path.
@@ -330,27 +211,23 @@ class TurnClassifier:
             return payload if isinstance(payload, dict) else {}
 
     def classify(self, ctx: SkillContext, stop_event=None) -> TurnClassification:
-        seed = self._deterministic_classification(ctx)
+        seed = TurnClassification(
+            explicit_external_path=self._explicit_path_outside_workspace(ctx.user_input),
+            source="fallback",
+        )
         if not self._should_model_classify(ctx, seed):
-            return seed
-
-        snapshot = self.get_skill_snapshot()
-        enabled = snapshot.skills
-        if not enabled:
             return seed
         prompt = (
             "Classify the next local assistant turn.\n"
             "Return strict JSON only with these fields:\n"
             '{"time_sensitive":false,"requires_workspace_action":false,'
-            '"prefer_local_workspace_tools":false,"followup_kind":"new_request","candidate_skill_ids":[]}\n'
+            '"prefer_local_workspace_tools":false,"followup_kind":"new_request"}\n'
             "Allowed followup_kind values: new_request, confirmation, contextual_followup.\n"
-            "Use candidate_skill_ids only from the supplied available skills catalog.\n"
             "Do not explain."
         )
         user_lines = [f"User request:\n{ctx.user_input}"]
         if ctx.recent_routing_hint:
             user_lines.append(f"Immediate prior exchange:\n{ctx.recent_routing_hint}")
-        user_lines.append("Available skills:\n" + snapshot.catalog)
         payload = self.llm_client.build_payload(
             [{"role": "system", "content": prompt}, {"role": "user", "content": "\n\n".join(user_lines)}],
             thinking=False,
@@ -366,11 +243,6 @@ class TurnClassifier:
         parsed = self._parse_json_object(result.content)
         if not parsed:
             return seed
-        allowed_skills = {skill.id for skill in enabled}
-        candidate_skill_ids = [
-            skill_id for skill_id in [str(item).strip() for item in parsed.get("candidate_skill_ids", []) if str(item).strip()]
-            if skill_id in allowed_skills
-        ]
         followup_kind = str(parsed.get("followup_kind", seed.followup_kind)).strip().lower() or seed.followup_kind
         if followup_kind not in {"new_request", "confirmation", "contextual_followup"}:
             followup_kind = seed.followup_kind
@@ -380,7 +252,6 @@ class TurnClassifier:
             prefer_local_workspace_tools=bool(parsed.get("prefer_local_workspace_tools", seed.prefer_local_workspace_tools)),
             explicit_external_path=seed.explicit_external_path,
             followup_kind=followup_kind,
-            candidate_skill_ids=candidate_skill_ids or seed.candidate_skill_ids,
             used_model=True,
             source="model",
         )
@@ -389,168 +260,9 @@ class TurnClassifier:
             source=merged.source,
             followup_kind=merged.followup_kind,
             time_sensitive=merged.time_sensitive,
-            candidate_skill_ids=merged.candidate_skill_ids,
         )
         return merged
 
-    def get_skill_snapshot(self, force_refresh: bool = False) -> SkillRoutingSnapshot:
-        generation = int(getattr(self.skill_runtime, "generation", 0))
-        if not force_refresh and self._skill_snapshot and self._skill_snapshot.generation == generation:
-            return self._skill_snapshot
-        skills = list(self.skill_runtime.enabled_skills())
-        catalog = self.skill_runtime.skill_cards_text(skills)
-        self._skill_snapshot = SkillRoutingSnapshot(generation=generation, skills=skills, catalog=catalog)
-        return self._skill_snapshot
-
     def reload_skills(self) -> int:
         self.skill_runtime.load_skills()
-        self._skill_snapshot = None
         return int(getattr(self.skill_runtime, "generation", 0))
-
-    @staticmethod
-    def _parse_skill_route(content: str, valid_ids: List[str], limit: int) -> Optional[List[str]]:
-        try:
-            parsed = json.loads(content.strip())
-            raw = parsed.get("skills")
-            parsed_ids: List[str] = []
-            parsed_explicitly = False
-            if isinstance(raw, list):
-                parsed_explicitly = True
-                parsed_ids = [str(item).strip() for item in raw]
-            elif raw == []:
-                parsed_explicitly = True
-        except Exception:
-            parsed_ids = []
-            parsed_explicitly = False
-
-        lowered = content.lower()
-        if parsed_explicitly and not parsed_ids:
-            return []
-        if lowered in {"none", "no skills", "[]", "{\"skills\": []}", "{\"skills\":[]}"}:
-            return []
-        if not parsed_ids:
-            parsed_ids = [skill_id for skill_id in valid_ids if skill_id.lower() in lowered]
-        out: List[str] = []
-        seen = set()
-        valid = set(valid_ids)
-        for skill_id in parsed_ids:
-            if skill_id in valid and skill_id not in seen:
-                out.append(skill_id)
-                seen.add(skill_id)
-            if len(out) >= limit:
-                break
-        return out or None
-
-    def _contextual_skill_fallback(self, ctx: SkillContext) -> List[Any]:
-        if not (self.is_confirmation_like(ctx.user_input) and (ctx.recent_routing_hint or ctx.sticky_skill_ids)):
-            return []
-        fallback = self.skill_runtime.skills_by_ids(list(ctx.sticky_skill_ids))
-        return self.skill_runtime.expand_selected_skills(ctx, fallback)
-
-    def _route_fallback_ids(self, ctx: SkillContext, classification: TurnClassification, limit: int) -> List[str]:
-        if classification.candidate_skill_ids:
-            return [skill.id for skill in self.skill_runtime.skills_by_ids(classification.candidate_skill_ids[:limit])]
-        if classification.followup_kind in {"confirmation", "contextual_followup"} and ctx.sticky_skill_ids:
-            return [skill.id for skill in self.skill_runtime.skills_by_ids(ctx.sticky_skill_ids[:limit])]
-        return []
-
-    def route_skills(self, ctx: SkillContext, classification: TurnClassification, stop_event=None) -> SkillRouteDecision:
-        skills_cfg = self.config.get("skills", {}) if isinstance(self.config, dict) else {}
-        mode = str(skills_cfg.get("selection_mode", getattr(self.skill_runtime, "selection_mode", ""))).strip().lower()
-        configured_limit = int(skills_cfg.get("max_active_skills", getattr(self.skill_runtime, "max_active_skills", 2)))
-        limit = configured_limit if configured_limit > 0 else 2
-
-        if ctx.explicit_skill_id:
-            selected = self.skill_runtime.skills_by_ids([ctx.explicit_skill_id])
-            return SkillRouteDecision(
-                selected_skill_ids=[skill.id for skill in selected],
-                shortlisted_skill_ids=[skill.id for skill in selected],
-                candidate_skill_ids=[ctx.explicit_skill_id],
-                used_model=False,
-                source="explicit",
-            )
-
-        if mode == "all_enabled":
-            selected = self.skill_runtime.enabled_skills()
-            selected.sort(key=lambda skill: skill.id)
-            if limit > 0:
-                selected = selected[:limit]
-            return SkillRouteDecision(
-                selected_skill_ids=[skill.id for skill in selected],
-                shortlisted_skill_ids=[skill.id for skill in selected],
-                candidate_skill_ids=list(classification.candidate_skill_ids),
-                used_model=False,
-                source="all_enabled",
-            )
-
-        classified_selection = self.skill_runtime.skills_by_ids(classification.candidate_skill_ids[:limit])
-        if classified_selection:
-            return SkillRouteDecision(
-                selected_skill_ids=[skill.id for skill in classified_selection],
-                shortlisted_skill_ids=[],
-                candidate_skill_ids=[skill.id for skill in classified_selection],
-                used_model=classification.used_model,
-                source="classification" if classification.used_model else "contextual",
-            )
-
-        snapshot = self.get_skill_snapshot()
-        enabled = snapshot.skills
-        if not enabled:
-            return SkillRouteDecision(source="empty")
-
-        use_recent_hint = classification.followup_kind in {"confirmation", "contextual_followup"} and bool(ctx.recent_routing_hint or ctx.sticky_skill_ids)
-        routing_system = (
-            "You are selecting local skills for the next assistant turn.\n"
-            "Choose the smallest set of skills needed for the user's request.\n"
-            "Use the skill descriptions, tags, produced artifact hints, available tool names, and any supplied candidate skills.\n"
-            f"Return strict JSON only in the form {{\"skills\": [\"skill-id\"]}} with at most {limit} ids.\n"
-            "Return an empty list when no skill is needed.\n"
-            "Do not explain your choice."
-        )
-        if use_recent_hint:
-            routing_system += (
-                "\nFor short confirmations like yes/continue/do it, use only the immediate prior exchange summary below."
-                "\nDo not infer tools from older conversation context."
-            )
-        user_content = f"User request:\n{ctx.user_input}"
-        if use_recent_hint and ctx.recent_routing_hint:
-            user_content += f"\n\nImmediate prior exchange:\n{ctx.recent_routing_hint}"
-        if classification.candidate_skill_ids:
-            user_content += f"\n\nCandidate skills from turn classification:\n{', '.join(classification.candidate_skill_ids[:limit])}"
-        user_content += "\n\nAvailable skills:\n" + snapshot.catalog
-
-        payload = self.llm_client.build_payload(
-            [{"role": "system", "content": routing_system}, {"role": "user", "content": user_content}],
-            thinking=False,
-            tools=None,
-            max_tokens_override=self.llm_client.max_classifier_tokens,
-            model_override=self.llm_client.classifier_model if not self.llm_client.classifier_use_primary_model else "",
-        )
-        try:
-            result = self.call_with_retry(payload, stop_event, None, pass_id="skill_route")
-        except Exception as exc:
-            self.telemetry.emit("skill_route_failed", error=str(exc))
-            fallback_ids = self._route_fallback_ids(ctx, classification, limit)
-            return SkillRouteDecision(
-                selected_skill_ids=fallback_ids[:limit],
-                shortlisted_skill_ids=[],
-                candidate_skill_ids=list(classification.candidate_skill_ids),
-                used_model=False,
-                source="fallback",
-            )
-        skill_ids = self._parse_skill_route(result.content, [skill.id for skill in enabled], limit)
-        if skill_ids is None:
-            skill_ids = self._route_fallback_ids(ctx, classification, limit)
-            source = "fallback"
-            used_model = False
-        else:
-            source = "model"
-            used_model = True
-        self.telemetry.emit("skill_routed", source=source, selected_skill_ids=skill_ids, shortlisted=[])
-        return SkillRouteDecision(
-            selected_skill_ids=skill_ids,
-            shortlisted_skill_ids=[],
-            candidate_skill_ids=list(classification.candidate_skill_ids),
-            used_model=used_model,
-            source=source,
-        )

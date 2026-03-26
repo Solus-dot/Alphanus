@@ -279,7 +279,7 @@ def execute(tool_name, args, env):
     search_skill = runtime.get_skill("search-ops")
     assert search_skill is not None
     merged_tool_names = [tool["function"]["name"] for tool in runtime.tools_for_turn([search_skill])]
-    assert merged_tool_names == ["create_file", "load_skill", "read_file", "web_search"]
+    assert merged_tool_names == ["create_file", "read_file", "read_skill_resource", "request_user_input", "web_search"]
 
 
 def test_tools_for_turn_includes_generic_script_runner_for_selected_script_skill(tmp_path: Path):
@@ -316,8 +316,8 @@ Use the helper script when available.
     assert skill is not None
     tools = runtime.tools_for_turn([skill])
     tool_names = [tool["function"]["name"] for tool in tools]
-    assert tool_names == ["load_skill", "run_skill_script"]
-    script_tool = tools[1]["function"]
+    assert tool_names == ["read_skill_resource", "request_user_input", "run_skill_script"]
+    script_tool = tools[2]["function"]
     assert "scripts/helper.py" in script_tool["description"]
     assert script_tool["parameters"]["properties"]["script"]["enum"] == ["scripts/helper.py"]
 
@@ -378,8 +378,8 @@ Create PDFs with the declared entrypoint.
 
     tools = runtime.tools_for_turn([skill], ctx=ctx)
     tool_names = [tool["function"]["name"] for tool in tools]
-    assert tool_names == ["load_skill", "run_skill_entrypoint"]
-    entry_tool = tools[1]["function"]
+    assert tool_names == ["read_skill_resource", "request_user_input", "run_skill_entrypoint"]
+    entry_tool = tools[2]["function"]
     assert "report-pdf:create_report" in entry_tool["description"]
     assert entry_tool["parameters"]["properties"]["entrypoint"]["enum"] == ["create_report"]
 
@@ -417,10 +417,8 @@ Use validate_json.py when available.
     skill = runtime.get_skill("research-helper")
     assert skill is not None
     tools = runtime.tools_for_turn([skill])
-    assert [tool["function"]["name"] for tool in tools] == ["load_skill", "run_skill_script"]
-    contract = runtime.load_skill_contract("research-helper")
-    assert contract.scripts == ["validate_json.py"]
-    assert contract.resources == []
+    assert [tool["function"]["name"] for tool in tools] == ["read_skill_resource", "request_user_input", "run_skill_script"]
+    assert runtime._reported_skill_scripts(skill) == ["validate_json.py"]
 
 
 def test_produces_entrypoint_still_matches_create_plus_review_request(tmp_path: Path):
@@ -479,7 +477,7 @@ Create PDFs through the declared entrypoint.
 
     assert runtime._skill_supports_artifact(skill, [".pdf"], intents=runtime.task_intents(ctx)) is True
     tools = runtime.tools_for_turn([skill], ctx=ctx)
-    assert [tool["function"]["name"] for tool in tools] == ["load_skill", "run_skill_entrypoint"]
+    assert [tool["function"]["name"] for tool in tools] == ["read_skill_resource", "request_user_input", "run_skill_entrypoint"]
 
 
 def test_core_tool_executes_without_selected_skill(tmp_path: Path):
@@ -675,7 +673,7 @@ def execute(tool_name, args, env):
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"skills": {"selection_mode": "model", "max_active_skills": 1}},
+        config={},
     )
 
     ctx = SkillContext(
@@ -686,10 +684,10 @@ def execute(tool_name, args, env):
         memory_hits=[],
     )
 
-    assert runtime.select_skills(ctx) == []
+    assert {skill.id for skill in runtime.select_skills(ctx)} == {"frontend-design", "shell-ops"}
 
 
-def test_runtime_select_skills_stays_empty_without_explicit_or_all_enabled_override(tmp_path: Path):
+def test_runtime_select_skills_returns_all_enabled_skills_for_neutral_request(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -727,7 +725,7 @@ Search the internet.
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"skills": {"selection_mode": "model", "max_active_skills": 2}},
+        config={},
     )
 
     ctx = SkillContext(
@@ -738,10 +736,10 @@ Search the internet.
         memory_hits=[],
     )
 
-    assert runtime.select_skills(ctx) == []
+    assert {skill.id for skill in runtime.select_skills(ctx)} == {"frontend-design", "search-ops"}
 
 
-def test_runtime_select_skills_does_not_guess_search_skill_in_model_mode(tmp_path: Path):
+def test_runtime_select_skills_keeps_search_skill_active_without_guessing(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -779,7 +777,7 @@ Design well.
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"skills": {"selection_mode": "model", "max_active_skills": 2}},
+        config={},
     )
 
     ctx = SkillContext(
@@ -790,7 +788,7 @@ Design well.
         memory_hits=[],
     )
 
-    assert runtime.select_skills(ctx) == []
+    assert {skill.id for skill in runtime.select_skills(ctx)} == {"frontend-design", "search-ops"}
 
 
 def test_skill_catalog_includes_tools_for_model_routing(tmp_path: Path):
@@ -855,7 +853,7 @@ Search.
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"skills": {"selection_mode": "model", "max_active_skills": 1}},
+        config={},
     )
 
     skill = runtime.get_skill("search-skill")
@@ -1237,9 +1235,8 @@ Use the helper script if your runtime knows how.
     assert skill is not None
 
     tools = runtime.tools_for_turn([skill])
-    assert [tool["function"]["name"] for tool in tools] == ["load_skill", "run_skill_script"]
-    contract = runtime.load_skill_contract("script-only")
-    assert contract.scripts == ["scripts/helper.py"]
+    assert [tool["function"]["name"] for tool in tools] == ["read_skill_resource", "request_user_input", "run_skill_script"]
+    assert runtime._reported_skill_scripts(skill) == ["scripts/helper.py"]
 
 
 def test_generic_script_runner_executes_selected_skill_script(tmp_path: Path):
@@ -1342,7 +1339,7 @@ Do not expose the raw script runner.
         memory_hits=[],
     )
 
-    assert [tool["function"]["name"] for tool in runtime.tools_for_turn([skill], ctx=ctx)] == ["load_skill"]
+    assert [tool["function"]["name"] for tool in runtime.tools_for_turn([skill], ctx=ctx)] == ["read_skill_resource", "request_user_input"]
 
     out = runtime.execute_tool_call(
         "run_skill_script",
@@ -1497,7 +1494,7 @@ if __name__ == "__main__":
 
     assert skill.validation_errors == ["command_tools are disabled_pending_safe_runner"]
     assert skill.validation_warnings == ["command_tools disabled_pending_safe_runner"]
-    assert [tool["function"]["name"] for tool in runtime.tools_for_turn([skill])] == ["load_skill"]
+    assert [tool["function"]["name"] for tool in runtime.tools_for_turn([skill])] == ["read_skill_resource", "request_user_input"]
 
 
 def test_disabled_command_tool_does_not_invoke_subprocess(tmp_path: Path, monkeypatch):
@@ -1705,7 +1702,7 @@ def execute(tool_name, args, env):
     assert skill.trust_level == "trusted"
     assert skill.execution_allowed is True
     assert skill.available is True
-    assert [tool["function"]["name"] for tool in runtime.tools_for_turn([skill])] == ["echo_text", "load_skill"]
+    assert [tool["function"]["name"] for tool in runtime.tools_for_turn([skill])] == ["echo_text", "read_skill_resource", "request_user_input"]
 
 
 def test_bundled_skill_under_home_outside_workspace_stays_trusted(tmp_path: Path):
@@ -1824,12 +1821,11 @@ Do work.
     assert "command_tools" in skill.blocked_features
     assert runtime.get_agent("researcher") is None
 
-    contract = runtime.load_skill_contract("home-helper")
-    assert contract.scripts == []
-    assert contract.blocked_scripts == []
-    assert contract.commands == []
-    assert contract.entrypoints == []
-    assert contract.agents == []
+    assert runtime._reported_skill_scripts(skill) == []
+    assert runtime._blocked_skill_scripts(skill) == []
+    assert runtime._runtime_visible_skill_commands(skill, None) == []
+    assert runtime._reported_skill_entrypoints(skill) == []
+    assert runtime._reported_skill_agents(skill) == []
 
     report = runtime.skill_health_report()
     skill_report = next(item for item in report if item["id"] == "home-helper")
@@ -2003,7 +1999,7 @@ Ask for clarification when needed.
     assert out["data"]["options"] == ["a", "b"]
 
 
-def test_load_skill_contract_exposes_declared_commands(tmp_path: Path):
+def test_runtime_visible_skill_commands_expose_declared_commands(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -2033,8 +2029,9 @@ python scripts/build.py proposal.md proposal.docx
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
-    contract = runtime.load_skill_contract("doc-helper")
-    assert contract.commands == ["npm install -g docx", "python scripts/build.py proposal.md proposal.docx"]
+    skill = runtime.get_skill("doc-helper")
+    assert skill is not None
+    assert runtime._runtime_visible_skill_commands(skill, None) == ["npm install -g docx", "python scripts/build.py proposal.md proposal.docx"]
 
 
 def test_shell_workflow_commands_keep_inline_install_and_ignore_javascript_fence(tmp_path: Path):
@@ -2074,13 +2071,14 @@ python scripts/office/validate.py doc.docx
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
-    contract = runtime.load_skill_contract("doc-helper")
-    assert contract.commands == ["npm install -g docx", "python scripts/office/validate.py doc.docx"]
-    assert contract.install_commands == ["npm install -g docx"]
-    assert contract.verify_commands == ["python scripts/office/validate.py doc.docx"]
+    skill = runtime.get_skill("doc-helper")
+    assert skill is not None
+    assert runtime._runtime_visible_skill_commands(skill, None) == ["npm install -g docx", "python scripts/office/validate.py doc.docx"]
+    assert runtime._skill_install_commands(skill) == ["npm install -g docx"]
+    assert runtime._skill_verify_commands(skill) == ["python scripts/office/validate.py doc.docx"]
 
 
-def test_load_skill_contract_reports_blocked_python_scripts(tmp_path: Path):
+def test_blocked_python_scripts_are_reported_from_runtime_metadata(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -2112,15 +2110,14 @@ Use the bundled helper script when available.
     skill = runtime.get_skill("script-check")
     assert skill is not None
     assert runtime._skill_runnable_scripts(skill) == []
-    contract = runtime.load_skill_contract("script-check")
-    assert contract.scripts == []
-    assert contract.blocked_scripts == [
+    assert runtime._reported_skill_scripts(skill) == []
+    assert runtime._blocked_skill_scripts(skill) == [
         {
             "script": "scripts/helper.py",
             "reason": "missing python modules: definitely_missing_mod_xyz",
         }
     ]
-    assert [tool["function"]["name"] for tool in runtime.tools_for_turn([skill])] == ["load_skill"]
+    assert [tool["function"]["name"] for tool in runtime.tools_for_turn([skill])] == ["read_skill_resource", "request_user_input"]
 
 
 def test_python_script_without_main_guard_stays_exposed(tmp_path: Path):
@@ -2155,8 +2152,7 @@ Use the bundled helper script when available.
     skill = runtime.get_skill("script-check")
     assert skill is not None
     assert runtime._skill_runnable_scripts(skill) == ["scripts/helper.py"]
-    contract = runtime.load_skill_contract("script-check")
-    assert contract.scripts == ["scripts/helper.py"]
+    assert runtime._reported_skill_scripts(skill) == ["scripts/helper.py"]
 
 
 def test_configured_python_executable_controls_script_availability(tmp_path: Path):
@@ -2193,8 +2189,7 @@ Use the bundled helper script when available.
     skill = runtime.get_skill("script-check")
     assert skill is not None
     assert runtime._skill_runnable_scripts(skill) == []
-    contract = runtime.load_skill_contract("script-check")
-    assert contract.blocked_scripts == [
+    assert runtime._blocked_skill_scripts(skill) == [
         {
             "script": "scripts/helper.py",
             "reason": f"missing interpreter: {missing_python}",
@@ -2250,7 +2245,7 @@ npm install -g docx
     assert out["error"]["code"] == "E_POLICY"
 
 
-def test_load_skill_rejects_non_selected_skill_id(tmp_path: Path):
+def test_load_skill_tool_is_removed(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -2293,10 +2288,10 @@ Use {skill_id}.
     )
 
     assert out["ok"] is False
-    assert out["error"]["code"] == "E_POLICY"
+    assert out["error"]["code"] == "E_UNSUPPORTED"
 
 
-def test_read_skill_resource_uses_single_loaded_skill_when_skill_id_is_omitted(tmp_path: Path):
+def test_read_skill_resource_uses_single_active_skill_when_skill_id_is_omitted(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -2336,7 +2331,6 @@ Read the bundled README when needed.
         {"path": "README.md"},
         selected=[skill],
         ctx=ctx,
-        loaded_skill_ids=["doc-helper"],
     )
 
     assert out["ok"] is True
@@ -2344,7 +2338,7 @@ Read the bundled README when needed.
     assert out["data"]["path"] == "README.md"
 
 
-def test_run_skill_command_rejects_non_loaded_skill_id(tmp_path: Path):
+def test_run_skill_command_rejects_inactive_skill_id(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -2372,8 +2366,7 @@ echo {skill_id}
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     alpha = runtime.get_skill("alpha")
-    beta = runtime.get_skill("beta")
-    assert alpha is not None and beta is not None
+    assert alpha is not None
     ctx = SkillContext(
         user_input="use alpha then beta",
         branch_labels=[],
@@ -2385,16 +2378,15 @@ echo {skill_id}
     out = runtime.execute_tool_call(
         "run_skill_command",
         {"skill_id": "beta", "command": "echo beta"},
-        selected=[alpha, beta],
+        selected=[alpha],
         ctx=ctx,
-        loaded_skill_ids=["alpha"],
     )
 
     assert out["ok"] is False
     assert out["error"]["code"] == "E_POLICY"
 
 
-def test_spawn_skill_agent_rejects_non_loaded_skill_id(tmp_path: Path):
+def test_spawn_skill_agent_rejects_inactive_skill_id(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     pack = tmp_path / "pack"
@@ -2433,8 +2425,7 @@ You are a helper agent.
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     alpha = runtime.get_skill("alpha")
-    beta = runtime.get_skill("beta")
-    assert alpha is not None and beta is not None
+    assert alpha is not None
     assert "helper-agent" in runtime._agents_for_skill(alpha)
     ctx = SkillContext(
         user_input="use alpha",
@@ -2447,9 +2438,8 @@ You are a helper agent.
     out = runtime.execute_tool_call(
         "spawn_skill_agent",
         {"skill_id": "beta", "agent_name": "helper-agent", "prompt": "hi"},
-        selected=[alpha, beta],
+        selected=[alpha],
         ctx=ctx,
-        loaded_skill_ids=["alpha"],
         spawn_skill_agent=lambda args: {"ok": True, "data": args, "error": None, "meta": {}},
     )
 
@@ -2457,7 +2447,7 @@ You are a helper agent.
     assert out["error"]["code"] == "E_POLICY"
 
 
-def test_runtime_tool_schema_requires_skill_id_only_when_multiple_skills_are_loaded(tmp_path: Path):
+def test_runtime_tool_schema_requires_skill_id_only_when_multiple_active_skills_are_available(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -2496,8 +2486,8 @@ echo {skill_id}
         memory_hits=[],
     )
 
-    single_tools = runtime.tools_for_turn([alpha, beta], ctx=ctx, loaded_skill_ids=["alpha"])
-    multi_tools = runtime.tools_for_turn([alpha, beta], ctx=ctx, loaded_skill_ids=["alpha", "beta"])
+    single_tools = runtime.tools_for_turn([alpha], ctx=ctx)
+    multi_tools = runtime.tools_for_turn([alpha, beta], ctx=ctx)
 
     def tool_params(tools, name):
         for item in tools:
@@ -2508,13 +2498,8 @@ echo {skill_id}
 
     single_read = tool_params(single_tools, "read_skill_resource")
     multi_read = tool_params(multi_tools, "read_skill_resource")
-    single_run = tool_params(single_tools, "run_skill_command")
-    multi_run = tool_params(multi_tools, "run_skill_command")
-
     assert "skill_id" not in (single_read.get("required") or [])
     assert "skill_id" in (multi_read.get("required") or [])
-    assert "skill_id" not in (single_run.get("required") or [])
-    assert "skill_id" in (multi_run.get("required") or [])
 
 
 def test_run_skill_command_allows_external_skill_root_as_cwd(tmp_path: Path):
@@ -2566,7 +2551,6 @@ version: 1.0.0
         {"skill_id": "doc-helper", "command": command},
         selected=[skill],
         ctx=ctx,
-        loaded_skill_ids=["doc-helper"],
         confirm_shell=lambda _command: True,
     )
 

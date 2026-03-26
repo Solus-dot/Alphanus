@@ -92,22 +92,11 @@ class PromptPolicyRenderer:
         self.system_prompt = system_prompt
         self.skill_runtime = skill_runtime
 
-    def compose_system_content(self, selected: List[Any], ctx: SkillContext, loaded_skill_ids: Optional[List[str]] = None) -> str:
-        loaded_skill_ids = loaded_skill_ids or []
+    def compose_system_content(self, selected: List[Any], ctx: SkillContext) -> str:
         parts = [self.system_prompt]
-        unloaded = [skill for skill in selected if getattr(skill, "id", "") not in set(loaded_skill_ids)]
-        if unloaded:
-            cards = self.skill_runtime.skill_cards_text(unloaded)
-            if cards:
-                parts.append(
-                    "Available skills:\n"
-                    "- These are compact routing cards. Use `load_skill` before relying on full skill instructions or bundled resources.\n"
-                    f"{cards}"
-                )
-        loaded = self.skill_runtime.loaded_skills(selected, loaded_skill_ids)
-        if loaded:
+        if selected:
             skill_block = self.skill_runtime.compose_skill_block(
-                loaded,
+                selected,
                 ctx,
                 context_limit=8192,
             )

@@ -30,7 +30,6 @@ _SECRET_KEYS = {
     "secret",
 }
 _SECRET_SUFFIXES = ("_api_key", "_apikey", "_token", "_secret", "_password")
-_ALLOWED_SKILL_SELECTION_MODES = {"model", "all_enabled"}
 _ALLOWED_SEARCH_PROVIDERS = {"tavily", "brave"}
 _ALLOWED_EMBEDDING_BACKENDS = {"transformer", "hash"}
 _ALLOWED_CORE_EXPOSURE_POLICIES = {"coding_core"}
@@ -80,8 +79,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "dangerously_skip_permissions": False,
     },
     "skills": {
-        "selection_mode": "model",
-        "max_active_skills": 2,
         "strict_capability_policy": False,
         "load": {
             "extra_dirs": [],
@@ -600,28 +597,12 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
     merged["capabilities"] = caps_cfg
 
     skills_cfg = merged.get("skills", {}) if isinstance(merged.get("skills"), dict) else {}
-    mode = _coerce_string(
-        skills_cfg.get("selection_mode"),
-        str(DEFAULT_CONFIG["skills"]["selection_mode"]),
-        path="skills.selection_mode",
-        warnings=warnings,
-        allow_empty=False,
-    ).lower()
-    if mode in {"heuristic", "hybrid_lazy"}:
-        _warn(warnings, f"skills.selection_mode: {mode!r} is deprecated, using 'model'")
-        mode = "model"
-    if mode not in _ALLOWED_SKILL_SELECTION_MODES:
-        _warn(warnings, f"skills.selection_mode: unsupported {mode!r}, using default")
-        mode = str(DEFAULT_CONFIG["skills"]["selection_mode"])
-    skills_cfg["selection_mode"] = mode
-    skills_cfg["max_active_skills"] = _coerce_int(
-        skills_cfg.get("max_active_skills"),
-        int(DEFAULT_CONFIG["skills"]["max_active_skills"]),
-        path="skills.max_active_skills",
-        warnings=warnings,
-        minimum=0,
-        maximum=20,
-    )
+    if "selection_mode" in skills_cfg:
+        _warn(warnings, "skills.selection_mode: ignored; all enabled skills are active every turn")
+        skills_cfg.pop("selection_mode", None)
+    if "max_active_skills" in skills_cfg:
+        _warn(warnings, "skills.max_active_skills: ignored; all enabled skills are active every turn")
+        skills_cfg.pop("max_active_skills", None)
     skills_cfg["strict_capability_policy"] = _coerce_bool(
         skills_cfg.get("strict_capability_policy"),
         bool(DEFAULT_CONFIG["skills"]["strict_capability_policy"]),

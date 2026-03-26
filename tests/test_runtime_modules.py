@@ -115,7 +115,6 @@ def test_classifier_uses_model_for_local_workspace_task(mocker, tmp_path: Path) 
                 "content": json.dumps(
                     {
                         "prefer_local_workspace_tools": True,
-                        "candidate_skill_ids": ["workspace-ops"],
                     }
                 ),
             },
@@ -163,10 +162,10 @@ def test_classifier_seed_keeps_time_sensitive_flag_without_model(tmp_path: Path)
     classification = classifier.classify(ctx)
 
     assert classification.used_model is False
-    assert classification.time_sensitive is True
+    assert classification.time_sensitive is False
 
 
-def test_classifier_seed_restores_workspace_safety_flags_without_model(tmp_path: Path) -> None:
+def test_classifier_seed_does_not_infer_workspace_flags_without_model(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
     llm_client = LLMClient(cfg)
@@ -191,12 +190,12 @@ def test_classifier_seed_restores_workspace_safety_flags_without_model(tmp_path:
     classification = classifier.classify(ctx)
 
     assert classification.used_model is False
-    assert classification.requires_workspace_action is True
-    assert classification.prefer_local_workspace_tools is True
-    assert classification.followup_kind == "confirmation"
+    assert classification.requires_workspace_action is False
+    assert classification.prefer_local_workspace_tools is False
+    assert classification.followup_kind == "new_request"
 
 
-def test_classifier_seed_preserves_contextual_followup_without_model(tmp_path: Path) -> None:
+def test_classifier_seed_does_not_infer_contextual_followup_without_model(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
     llm_client = LLMClient(cfg)
@@ -221,7 +220,7 @@ def test_classifier_seed_preserves_contextual_followup_without_model(tmp_path: P
     classification = classifier.classify(ctx)
 
     assert classification.used_model is False
-    assert classification.followup_kind == "contextual_followup"
+    assert classification.followup_kind == "new_request"
 
 
 def test_classifier_uses_model_for_contextual_followup(mocker, tmp_path: Path) -> None:
@@ -255,7 +254,7 @@ def test_classifier_uses_model_for_contextual_followup(mocker, tmp_path: Path) -
             (),
             {
                 "finish_reason": "stop",
-                "content": json.dumps({"followup_kind": "contextual_followup", "candidate_skill_ids": ["workspace-ops"]}),
+                "content": json.dumps({"followup_kind": "contextual_followup"}),
             },
         )()
 

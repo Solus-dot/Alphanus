@@ -177,7 +177,7 @@ Hook failures are non-fatal and do not crash the turn.
 5. Command tools are registered.
 6. Native and command tools are merged into one registry.
 7. Native `tools.py` modules are imported only on first execution.
-8. Skills are selected per turn (`selection_mode`, triggers, limits).
+8. All enabled skills are active from the start of each turn.
 9. Selected tools are exposed to the model via OpenAI `tools` payload.
 10. Tool calls execute via `core/skills.py` and normalized results return to agent loop.
 

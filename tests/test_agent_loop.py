@@ -349,7 +349,7 @@ def test_agent_does_not_finish_after_helper_file_for_opaque_artifact_request(moc
     assert len(chat_reqs) == 2
 
 
-def test_skill_snapshot_refreshes_only_after_runtime_generation_changes(tmp_path: Path):
+def test_runtime_list_skills_refreshes_after_generation_changes(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -372,14 +372,9 @@ Alpha.
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"skills": {"selection_mode": "model", "max_active_skills": 2}},
+        config={},
     )
-    agent = Agent({"agent": {}}, runtime)
-
-    snap1 = agent._get_skill_snapshot()
-    snap2 = agent._get_skill_snapshot()
-    assert snap1 is snap2
-    assert [skill.id for skill in snap1.skills] == ["alpha"]
+    assert [skill.id for skill in runtime.enabled_skills()] == ["alpha"]
 
     (skills / "beta").mkdir(parents=True)
     (skills / "beta" / "SKILL.md").write_text(
@@ -394,13 +389,11 @@ Beta.
     )
     runtime.load_skills()
 
-    snap3 = agent._get_skill_snapshot()
-    assert snap3 is not snap1
-    assert snap3.generation == runtime.generation
-    assert [skill.id for skill in snap3.skills] == ["alpha", "beta"]
+    assert runtime.generation >= 2
+    assert [skill.id for skill in runtime.enabled_skills()] == ["alpha", "beta"]
 
 
-def test_agent_reload_skills_clears_cached_snapshot(tmp_path: Path):
+def test_agent_reload_skills_returns_latest_generation(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -423,20 +416,17 @@ Alpha.
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"skills": {"selection_mode": "model", "max_active_skills": 2}},
+        config={},
     )
     agent = Agent({"agent": {}}, runtime)
 
-    snap1 = agent._get_skill_snapshot()
     generation = agent.reload_skills()
-    snap2 = agent._get_skill_snapshot()
 
     assert generation == runtime.generation
-    assert snap2 is not snap1
-    assert snap2.generation == runtime.generation
+    assert [skill.id for skill in runtime.enabled_skills()] == ["alpha"]
 
 
-def test_skill_toggle_bumps_generation_and_invalidates_snapshot(tmp_path: Path):
+def test_skill_toggle_bumps_generation_and_updates_enabled_skills(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -459,23 +449,18 @@ Alpha.
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"skills": {"selection_mode": "model", "max_active_skills": 2}},
+        config={},
     )
-    agent = Agent({"agent": {}}, runtime)
-
-    snap1 = agent._get_skill_snapshot()
     generation_before = runtime.generation
 
     assert runtime.set_enabled("alpha", False) is True
 
-    snap2 = agent._get_skill_snapshot()
     assert runtime.generation == generation_before + 1
-    assert snap2 is not snap1
-    assert snap2.skills == []
+    assert runtime.enabled_skills() == []
 
 
 def test_confirmation_turn_reuses_immediate_prior_skill_context(mocker, runtime: SkillRuntime):
-    runtime.config = {"skills": {"selection_mode": "model", "max_active_skills": 2}}
+    runtime.config = {}
     agent = Agent({"agent": {}}, runtime)
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
@@ -510,28 +495,8 @@ def test_confirmation_turn_reuses_immediate_prior_skill_context(mocker, runtime:
 
 
 def test_contextual_followup_reuses_immediate_prior_skill_context(mocker, runtime: SkillRuntime):
-    runtime.config = {"skills": {"selection_mode": "model", "max_active_skills": 2}}
+    runtime.config = {}
     agent = Agent({"agent": {}}, runtime)
-    mocker.patch("agent.classifier.TurnClassifier._should_model_classify", return_value=True)
-
-    calls = []
-
-    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
-        calls.append(pass_id)
-        if pass_id == "turn_classify":
-            return type(
-                "R",
-                (),
-                {
-                    "finish_reason": "stop",
-                    "content": '{"followup_kind":"contextual_followup","candidate_skill_ids":["workspace-ops"]}',
-                },
-            )()
-        if pass_id == "skill_route":
-            return type("R", (), {"finish_reason": "stop", "content": '{"skills":["workspace-ops"]}'})()
-        return type("R", (), {"finish_reason": "stop", "content": '{"skills":["workspace-ops"]}'})()
-
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
 
     history_messages = [
         {"role": "user", "content": "create a bakery landing page in a folder called 1738 with html css js"},
@@ -552,13 +517,11 @@ def test_contextual_followup_reuses_immediate_prior_skill_context(mocker, runtim
     ctx = agent._build_skill_context("Where is JS?", [], [], history_messages)
 
     selected = agent._select_skills(ctx, threading.Event())
-    assert [skill.id for skill in selected] == ["workspace-ops"]
-    assert "turn_classify" in calls
-    assert "skill_route" not in calls
+    assert "workspace-ops" in {skill.id for skill in selected}
 
 
 def test_contextual_followup_seed_reuses_immediate_prior_skill_context(runtime: SkillRuntime):
-    runtime.config = {"skills": {"selection_mode": "model", "max_active_skills": 2}}
+    runtime.config = {}
     agent = Agent({"agent": {}}, runtime)
 
     history_messages = [
@@ -584,7 +547,7 @@ def test_contextual_followup_seed_reuses_immediate_prior_skill_context(runtime: 
 
 
 def test_confirmation_workspace_action_retries_instead_of_accepting_manual_terminal_advice(mocker, runtime: SkillRuntime):
-    agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
+    agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation"))
 
@@ -592,8 +555,6 @@ def test_confirmation_workspace_action_retries_instead_of_accepting_manual_termi
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
         calls.append(pass_id)
-        if pass_id == "skill_route":
-            return type("R", (), {"finish_reason": "stop", "content": '{"skills":["workspace-ops"]}'})()
         if pass_id == "pass_1":
             return type(
                 "R",
@@ -632,7 +593,7 @@ def test_confirmation_workspace_action_retries_instead_of_accepting_manual_termi
 
 
 def test_confirmation_workspace_action_rejects_manual_terminal_advice_after_retry(mocker, runtime: SkillRuntime):
-    agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
+    agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation"))
 
@@ -640,8 +601,6 @@ def test_confirmation_workspace_action_rejects_manual_terminal_advice_after_retr
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
         calls.append(pass_id)
-        if pass_id == "skill_route":
-            return type("R", (), {"finish_reason": "stop", "content": '{"skills":["workspace-ops"]}'})()
         if pass_id == "pass_2_final":
             return type(
                 "R",
@@ -679,7 +638,7 @@ def test_confirmation_workspace_action_rejects_manual_terminal_advice_after_retr
 
 
 def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_use(mocker, runtime: SkillRuntime):
-    agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
+    agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation"))
 
@@ -687,8 +646,6 @@ def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_u
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
         calls.append(pass_id)
-        if pass_id == "skill_route":
-            return type("R", (), {"finish_reason": "stop", "content": '{"skills":["workspace-ops"]}'})()
         if pass_id == "pass_2_final":
             return type(
                 "R",
@@ -726,7 +683,7 @@ def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_u
 
 
 def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_success_claim(mocker, runtime: SkillRuntime):
-    agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
+    agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation"))
 
@@ -734,8 +691,6 @@ def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_s
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
         calls.append(pass_id)
-        if pass_id == "skill_route":
-            return type("R", (), {"finish_reason": "stop", "content": '{"skills":["workspace-ops"]}'})()
         if pass_id == "pass_1":
             return type(
                 "R",
@@ -801,7 +756,6 @@ def test_run_turn_allows_same_host_endpoints_with_different_ports(mocker, runtim
                 "models_endpoint": "http://127.0.0.1:9000/v1/models",
                 "allow_cross_host_endpoints": False,
             },
-            "skills": {"selection_mode": "all_enabled", "max_active_skills": 2},
         },
         runtime,
     )
@@ -1561,7 +1515,7 @@ def test_finalization_returns_error_when_markup_repeats(mocker, runtime: SkillRu
 
     assert result.status == "error"
     assert "Finalization failed to produce a clean user-facing answer" in (result.error or "")
-    assert len(chat_reqs) == 4
+    assert len(chat_reqs) == 3
 
 
 def test_finalization_strips_think_tags_from_model_output(mocker, runtime: SkillRuntime):
@@ -1900,7 +1854,7 @@ def execute(tool_name, args, env):
     mocker.patch.object(
         agent,
         "_classify_turn",
-        return_value=TurnClassification(time_sensitive=True, candidate_skill_ids=["search-ops"]),
+        return_value=TurnClassification(time_sensitive=True),
     )
 
     chat_reqs = []
@@ -1946,7 +1900,7 @@ def execute(tool_name, args, env):
     assert len(chat_reqs) == 4
 
 
-def test_time_sensitive_query_seed_forces_search_before_accepting_answer(mocker, runtime: SkillRuntime):
+def test_time_sensitive_query_without_model_classification_does_not_force_search(mocker, runtime: SkillRuntime):
     search_skill = runtime.skills_dir / "search-ops"
     search_skill.mkdir(parents=True)
     (search_skill / "SKILL.md").write_text(
@@ -2036,11 +1990,11 @@ def execute(tool_name, args, env):
     )
 
     assert result.status == "done"
-    assert "could not verify" in result.content.lower()
-    assert len(chat_reqs) == 4
+    assert "as of my knowledge" in result.content.lower()
+    assert len(chat_reqs) == 1
 
 
-def test_model_skill_router_selects_skill_before_tool_turn(mocker, runtime: SkillRuntime):
+def test_all_active_skills_expose_search_tool_on_first_turn(mocker, runtime: SkillRuntime):
     search_skill = runtime.skills_dir / "search-ops"
     search_skill.mkdir(parents=True)
     (search_skill / "SKILL.md").write_text(
@@ -2088,10 +2042,6 @@ def execute(tool_name, args, env):
             "tls_verify": True,
             "max_tokens": 256,
         },
-        "skills": {
-            "selection_mode": "model",
-            "max_active_skills": 2,
-        },
     }
     agent = Agent(cfg, runtime)
 
@@ -2102,17 +2052,9 @@ def execute(tool_name, args, env):
             return FakeResponse([])
         chat_reqs.append(req)
         if len(chat_reqs) == 1:
-            return FakeResponse(
-                [
-                    'data: {"choices":[{"delta":{"content":"{\\"skills\\": [\\"search-ops\\"]}"}}]}',
-                    'data: {"choices":[{"finish_reason":"stop"}]}',
-                    "data: [DONE]",
-                ]
-            )
-        if len(chat_reqs) == 2:
             payload = json.loads(req.data.decode("utf-8"))
             tool_names = [tool["function"]["name"] for tool in payload.get("tools", [])]
-            assert tool_names == ["create_directory", "create_file", "create_files", "load_skill", "web_search"]
+            assert "web_search" in tool_names
             return FakeResponse(
                 [
                     'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"meta latest acquisitions\\\"}"}}]}}]}',
@@ -2139,7 +2081,7 @@ def execute(tool_name, args, env):
     assert result.status == "done"
 
 
-def test_model_skill_router_prompt_keeps_full_catalog_available(mocker, runtime: SkillRuntime):
+def test_all_active_skill_guidance_keeps_full_catalog_available(runtime: SkillRuntime):
     hidden_skill = runtime.skills_dir / "hidden-tool"
     hidden_skill.mkdir(parents=True)
     (hidden_skill / "SKILL.md").write_text(
@@ -2174,7 +2116,7 @@ def execute(tool_name, args, env):
         encoding="utf-8",
     )
     runtime.load_skills()
-    runtime.config = {"skills": {"selection_mode": "model", "max_active_skills": 2}}
+    runtime.config = {}
 
     agent = Agent({"agent": {}}, runtime)
     ctx = SkillContext(
@@ -2184,84 +2126,11 @@ def execute(tool_name, args, env):
         workspace_root=str(runtime.workspace.workspace_root),
         memory_hits=[],
     )
-    snapshot = agent._get_skill_snapshot()
-
-    captured = {}
-
-    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
-        captured["payload"] = payload
-        return type("R", (), {"finish_reason": "stop", "content": '{"skills":[]}'})()
-
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
-
-    selected = agent._route_skills_with_model(ctx, snapshot, threading.Event())
-
-    assert selected == []
-    user_content = captured["payload"]["messages"][1]["content"]
-    assert "Available skills:" in user_content
-    assert "- workspace-ops" in user_content
-    assert "- hidden-tool" in user_content
-    assert "artifact_forge" in user_content
-    assert "Skill shortlist:" not in user_content
-
-
-def test_model_skill_router_respects_explicit_empty_selection(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-        },
-        "skills": {
-            "selection_mode": "model",
-            "max_active_skills": 2,
-        },
-    }
-    agent = Agent(cfg, runtime)
-    workspace_skill = runtime.get_skill("workspace-ops")
-    assert workspace_skill is not None
-
-    chat_reqs = []
-
-    def fake_urlopen(req, timeout=None, context=None):
-        if req.full_url.endswith("/v1/models"):
-            return FakeResponse([])
-        chat_reqs.append(req)
-        if len(chat_reqs) == 1:
-            return FakeResponse(
-                [
-                    'data: {"choices":[{"delta":{"content":"{\\"skills\\": []}"}}]}',
-                    'data: {"choices":[{"finish_reason":"stop"}]}',
-                    "data: [DONE]",
-                ]
-            )
-        payload = json.loads(req.data.decode("utf-8"))
-        tool_names = [tool["function"]["name"] for tool in payload.get("tools", [])]
-        assert tool_names == ["create_directory", "create_file", "create_files"]
-        return FakeResponse(
-            [
-                'data: {"choices":[{"delta":{"content":"Hello"}}]}',
-                'data: {"choices":[{"finish_reason":"stop"}]}',
-                "data: [DONE]",
-            ]
-        )
-
-    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
-
-    result = agent.run_turn(
-        history_messages=[{"role": "user", "content": "hi"}],
-        user_input="hi",
-        thinking=True,
-    )
-
-    assert result.status == "done"
-    assert result.content == "Hello"
-    assert len(chat_reqs) == 2
+    selected = agent.skill_runtime.select_skills(ctx)
+    system_content = agent.prompt_renderer.compose_system_content(selected, ctx)
+    assert "workspace-ops" in system_content
+    assert "hidden-tool" in system_content
+    assert "artifact_forge" in system_content
 
 
 def test_large_tool_call_args_are_compacted_in_history(runtime: SkillRuntime):
@@ -2678,8 +2547,8 @@ def test_fetch_model_metadata_reads_model_id_and_context_window(mocker, runtime:
     assert agent.fetch_model_metadata() == ("llama-3.2-3b-instruct", 40960)
 
 
-def test_model_skill_router_does_not_invent_fallback_skills_without_model_selection(mocker, runtime: SkillRuntime):
-    runtime.config = {"skills": {"selection_mode": "model", "max_active_skills": 2}}
+def test_select_skills_returns_all_enabled_skills_without_router(runtime: SkillRuntime):
+    runtime.config = {}
     agent = Agent({"agent": {}}, runtime)
     ctx = SkillContext(
         user_input="write a file",
@@ -2688,17 +2557,9 @@ def test_model_skill_router_does_not_invent_fallback_skills_without_model_select
         workspace_root=str(runtime.workspace.workspace_root),
         memory_hits=[],
     )
-    snapshot = agent._get_skill_snapshot()
-
-    mocker.patch.object(
-        agent,
-        "_call_with_retry",
-        return_value=type("R", (), {"finish_reason": "stop", "content": "not-json"})(),
-    )
-
-    selected = agent._route_skills_with_model(ctx, snapshot, threading.Event())
-
-    assert selected == []
+    selected = agent._select_skills(ctx, threading.Event())
+    assert selected
+    assert "workspace-ops" in {skill.id for skill in selected}
 
 
 def test_fetch_model_metadata_falls_back_to_props_for_context_window(mocker, runtime: SkillRuntime):
@@ -2867,7 +2728,6 @@ def execute(tool_name, args, env):
             "enable_thinking": True,
             "tls_verify": True,
         },
-        "skills": {"selection_mode": "all_enabled", "max_active_skills": 2},
     }
     agent = Agent(cfg, runtime)
     chat_reqs = []
@@ -2942,7 +2802,6 @@ Use scripts/convert.py when needed.
             "enable_thinking": True,
             "tls_verify": True,
         },
-        "skills": {"selection_mode": "model", "max_active_skills": 2},
     }
     agent = Agent(cfg, runtime)
     chat_reqs: list[urllib.request.Request] = []

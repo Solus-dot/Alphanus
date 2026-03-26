@@ -51,18 +51,8 @@ class TurnClassification:
     prefer_local_workspace_tools: bool = False
     explicit_external_path: str = ""
     followup_kind: str = "new_request"
-    candidate_skill_ids: List[str] = field(default_factory=list)
     used_model: bool = False
-    source: str = "deterministic"
-
-
-@dataclass(slots=True)
-class SkillRouteDecision:
-    selected_skill_ids: List[str] = field(default_factory=list)
-    shortlisted_skill_ids: List[str] = field(default_factory=list)
-    candidate_skill_ids: List[str] = field(default_factory=list)
-    used_model: bool = False
-    source: str = "deterministic"
+    source: str = "fallback"
 
 
 @dataclass(slots=True)
@@ -98,7 +88,6 @@ class TurnTelemetry:
     pass_index: int = 0
     model_usage: Dict[str, int] = field(default_factory=dict)
     classification_source: str = ""
-    skill_route_source: str = ""
 
 
 @dataclass(slots=True)
@@ -115,17 +104,9 @@ class BackgroundSkillAgentTask:
 
 
 @dataclass(slots=True)
-class SkillRoutingSnapshot:
-    generation: int
-    skills: List[Any]
-    catalog: str
-
-
-@dataclass(slots=True)
 class TurnState:
     ctx: SkillContext
     selected: List[Any]
-    loaded_skill_ids: List[str]
     dynamic_history: List[Dict[str, Any]]
     skill_exchanges: List[Dict[str, Any]]
     classification: TurnClassification
@@ -144,7 +125,7 @@ class TurnState:
     def search_mode(self) -> bool:
         if self._search_mode_override is not None:
             return self._search_mode_override
-        return any(getattr(skill, "id", "") == "search-ops" for skill in self.selected)
+        return self.classification.time_sensitive and any(getattr(skill, "id", "") == "search-ops" for skill in self.selected)
 
     @search_mode.setter
     def search_mode(self, value: bool) -> None:

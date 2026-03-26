@@ -16,7 +16,7 @@ from agent.orchestrator import TurnOrchestrator, new_stop_event, request_user_in
 from agent.policies import PromptPolicyRenderer
 from agent.prompts import build_system_prompt
 from agent.telemetry import TelemetryEmitter
-from agent.types import AgentTurnResult, BackgroundSkillAgentTask, TurnClassification
+from agent.types import AgentTurnResult, BackgroundSkillAgentTask
 from core.configuration import validate_endpoint_policy
 from core.skills import SkillRuntime
 
@@ -213,47 +213,10 @@ class Agent:
     def _select_turn(self, ctx, stop_event):
         classification = self._classify_turn(ctx, stop_event=stop_event)
         selected = self._select_skills(ctx, stop_event, classification=classification)
-        route = type(
-            "SkillRouteCompat",
-            (),
-            {
-                "source": getattr(self, "_last_route_source", "deterministic"),
-                "selected_skill_ids": [getattr(skill, "id", "") for skill in selected],
-            },
-        )()
-        return classification, route, selected
+        return classification, selected
 
     def _select_skills(self, ctx, stop_event, classification=None):
-        classification = classification or self._classify_turn(ctx, stop_event=stop_event)
-        route = self.classifier.route_skills(ctx, classification, stop_event=stop_event)
-        self._last_route_source = route.source
-        selected = self.skill_runtime.expand_selected_skills(ctx, self.skill_runtime.skills_by_ids(route.selected_skill_ids))
-        if selected:
-            return selected
-        fallback = self.classifier._contextual_skill_fallback(ctx)
-        if fallback:
-            self._last_route_source = "contextual_fallback"
-            return fallback
-        return selected
-
-    def _route_skills_with_model(self, ctx, snapshot, stop_event):
-        skills_cfg = self.config.get("skills", {}) if isinstance(self.config, dict) else {}
-        configured_limit = int(skills_cfg.get("max_active_skills", getattr(self.skill_runtime, "max_active_skills", 2)))
-        limit = configured_limit if configured_limit > 0 else 2
-        followup_kind = "confirmation" if self._should_use_recent_routing_hint(ctx) else "new_request"
-        classification = TurnClassification(
-            followup_kind=followup_kind,
-            candidate_skill_ids=list(ctx.sticky_skill_ids[:limit]) if followup_kind == "confirmation" else [],
-            source="compat",
-        )
-        route = self.classifier.route_skills(ctx, classification, stop_event=stop_event)
-        return self.skill_runtime.expand_selected_skills(ctx, self.skill_runtime.skills_by_ids(route.selected_skill_ids))
-
-    def _get_skill_snapshot(self, force_refresh: bool = False):
-        return self.classifier.get_skill_snapshot(force_refresh=force_refresh)
-
-    def _should_use_recent_routing_hint(self, ctx) -> bool:
-        return self.classifier.should_use_recent_routing_hint(ctx)
+        return self.skill_runtime.select_skills(ctx)
 
     def _explicit_path_outside_workspace(self, text: str) -> str:
         return self.classifier._explicit_path_outside_workspace(text)
@@ -267,7 +230,7 @@ class Agent:
 
     def _build_turn_state(self, ctx, selected, history_messages, user_input):
         classification = self._classify_turn(ctx)
-        return self.orchestrator.build_turn_state(ctx, selected, history_messages, classification, getattr(self, "_last_route_source", "deterministic"))
+        return self.orchestrator.build_turn_state(ctx, selected, history_messages, classification)
 
     def _record_tool_effects(self, state, call, result) -> None:
         self.orchestrator.record_tool_effects(state, call, result)

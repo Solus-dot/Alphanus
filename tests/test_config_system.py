@@ -43,7 +43,7 @@ def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
             "max_tokens": "0",
         },
         "context": {"context_limit": 200, "safety_margin": 5000},
-        "skills": {"selection_mode": "unknown", "max_active_skills": 999},
+        "skills": {"strict_capability_policy": "bad"},
         "tools": {"core_exposure_policy": "everything"},
         "search": {"provider": "bing"},
         "memory": {"embedding_backend": "invalid"},
@@ -59,19 +59,19 @@ def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
     assert normalized["agent"]["max_tokens"] is None
     assert normalized["context"]["context_limit"] == 512
     assert normalized["context"]["safety_margin"] < normalized["context"]["context_limit"]
-    assert normalized["skills"]["selection_mode"] == DEFAULT_CONFIG["skills"]["selection_mode"]
-    assert normalized["skills"]["max_active_skills"] == 20
+    assert normalized["skills"]["strict_capability_policy"] == DEFAULT_CONFIG["skills"]["strict_capability_policy"]
     assert normalized["tools"]["core_exposure_policy"] == DEFAULT_CONFIG["tools"]["core_exposure_policy"]
     assert normalized["search"]["provider"] == DEFAULT_CONFIG["search"]["provider"]
     assert normalized["memory"]["embedding_backend"] == DEFAULT_CONFIG["memory"]["embedding_backend"]
     assert normalized["tui"]["chat_log_max_lines"] == 100
 
 
-def test_normalize_config_maps_deprecated_heuristic_selection_to_model() -> None:
-    normalized, warnings = normalize_config({"schema_version": "1.0.0", "skills": {"selection_mode": "heuristic"}})
+def test_normalize_config_ignores_legacy_skill_selection_knobs() -> None:
+    normalized, warnings = normalize_config({"schema_version": "1.0.0", "skills": {"selection_mode": "heuristic", "max_active_skills": 1}})
 
-    assert normalized["skills"]["selection_mode"] == "model"
-    assert any("deprecated" in item for item in warnings)
+    assert "selection_mode" not in normalized["skills"]
+    assert "max_active_skills" not in normalized["skills"]
+    assert any("ignored" in item for item in warnings)
 
 
 def test_load_or_create_global_config_reports_and_rejects_bad_json(tmp_path: Path) -> None:

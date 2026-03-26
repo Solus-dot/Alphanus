@@ -40,10 +40,7 @@ def _build_agent(root: Path, workspace_root: Path, memory_path: Path) -> tuple[A
                 "dangerously_skip_permissions": True,
                 "shell_require_confirmation": False,
             },
-            "skills": {
-                "selection_mode": "all_enabled",
-                "max_active_skills": 6,
-            },
+            "skills": {},
             "agent": {
                 "request_timeout_s": 120,
                 "readiness_timeout_s": 5,
