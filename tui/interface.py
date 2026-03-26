@@ -18,7 +18,6 @@ from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
-from textual.geometry import Offset
 from textual.reactive import reactive
 from textual.widgets import Button, Input, OptionList, RichLog, Static
 from textual.widgets.option_list import Option
@@ -41,6 +40,7 @@ from tui.commands import (
     command_entries_for_query,
     command_label,
     exact_command_inputs,
+    popup_command_query,
 )
 from tui.live_tool_preview import LiveToolPreviewManager
 from tui.markdown_utils import fence_language, hanging_indent, render_md
@@ -277,10 +277,11 @@ class AlphanusTUI(App):
 
     #command-popup {
         width: 64;
-        max-height: 12;
+        max-height: 13;
         background: #121214;
         border: round #27272a;
         display: none;
+        position: absolute;
         overlay: screen;
         padding: 0 1;
     }
@@ -498,7 +499,6 @@ class AlphanusTUI(App):
         self._shell_confirm_event: Optional[threading.Event] = None
         self._shell_confirm_result: Optional[Dict[str, bool]] = None
         self._command_matches: List[CommandEntry] = []
-        self._command_anchor_region = None
         self._code_blocks: List[Tuple[str, Optional[str]]] = []
         self._show_tool_details = True
         self._show_historical_tool_details = False
@@ -537,10 +537,6 @@ class AlphanusTUI(App):
 
         with Vertical(id="footer"):
             yield Static("", id="footer-sep")
-            with Vertical(id="command-popup"):
-                yield Static("commands", id="command-popup-title")
-                yield Static("type to filter · tab to insert", id="command-popup-hint")
-                yield OptionList(id="command-options")
             with Horizontal(id="input-row"):
                 with Horizontal(id="composer-shell"):
                     yield ChatInput(id="chat-input", placeholder="Type a message…")
@@ -550,6 +546,10 @@ class AlphanusTUI(App):
             with Horizontal(id="status-bar"):
                 yield Static("", id="status-left")
                 yield Static("", id="status-right")
+        with Vertical(id="command-popup"):
+            yield Static("commands", id="command-popup-title")
+            yield Static("type to filter · tab to insert", id="command-popup-hint")
+            yield OptionList(id="command-options")
 
     def on_mount(self) -> None:
         self.thinking = bool(self.agent.config.get("agent", {}).get("enable_thinking", True))
@@ -569,9 +569,6 @@ class AlphanusTUI(App):
         sidebar = self.query_one("#sidebar", Vertical)
         sidebar.display = event.size.width >= 120
         self._update_sidebar()
-        if self._command_popup_active():
-            self._command_anchor_region = self.query_one(ChatInput).region
-            self._position_command_popup()
 
     def _new_conv_tree(self) -> ConvTree:
         return ConvTree(
@@ -1619,7 +1616,7 @@ class AlphanusTUI(App):
         popup = self._command_popup()
         options = self._command_options()
         chat_input = self.query_one(ChatInput)
-        query = active_command_query(value, chat_input.cursor_position)
+        query = popup_command_query(value, chat_input.cursor_position)
         next_matches = command_entries_for_query(query)
         if not next_matches or self.streaming or self._await_shell_confirm:
             next_matches = []
@@ -1629,17 +1626,20 @@ class AlphanusTUI(App):
             popup.display = False
             options.clear_options()
             options.styles.height = 0
-            popup.absolute_offset = None
+            popup.styles.height = 0
+            popup.offset = (0, 0)
             return
 
-        was_hidden = not bool(popup.display)
-        geometry_changed = self._command_anchor_region != self.query_one(ChatInput).region
-        self._command_anchor_region = self.query_one(ChatInput).region
         self._command_matches = next_matches
         option_rows = min(len(self._command_matches), 8)
+        option_height = option_rows + 1
+        popup_height = option_height + 5
+        separator = self.query_one("#footer-sep", Static)
         popup.display = True
-        popup.styles.height = option_rows + 4
-        options.styles.height = option_rows
+        popup.styles.height = popup_height
+        popup.styles.width = max(44, min(72, max(chat_input.region.width, 44)))
+        popup.offset = (max(1, int(chat_input.region.x)), max(1, int(separator.region.y) - popup_height))
+        options.styles.height = option_height
         rendered = [
             Option(
                 f"[bold #6366f1]{esc(command_label(entry))}[/bold #6366f1] [dim]{esc(entry.description)}[/dim]",
@@ -1650,35 +1650,13 @@ class AlphanusTUI(App):
         options.clear_options()
         options.add_options(rendered)
         options.highlighted = 0
-        if was_hidden or geometry_changed:
-            self.call_after_refresh(self._position_command_popup)
-            if was_hidden:
-                self.set_timer(0.02, self._position_command_popup)
-
-    def _position_command_popup(self) -> None:
-        if not self._command_matches:
-            return
-        popup = self._command_popup()
-        chat_input = self.query_one(ChatInput)
-        option_rows = min(len(self._command_matches), 8)
-        popup_height = option_rows + 4
-        popup_width = max(44, min(72, max(chat_input.region.width, 44)))
-        popup.styles.height = popup_height
-        popup.styles.width = popup_width
-
-        input_region = self._command_anchor_region or chat_input.region
-        x = max(1, int(input_region.x))
-        above_y = int(input_region.y) - popup_height - 1
-        below_y = int(input_region.y + input_region.height)
-        y = above_y if above_y >= 1 else below_y
-        popup.absolute_offset = Offset(x, y)
 
     def _hide_command_popup(self) -> None:
         self._command_matches = []
-        self._command_anchor_region = None
         self._command_options().clear_options()
         self._command_popup().display = False
-        self._command_popup().absolute_offset = None
+        self._command_popup().styles.height = 0
+        self._command_popup().offset = (0, 0)
 
     def _command_popup_active(self) -> bool:
         return bool(self._command_matches) and bool(self._command_popup().display)

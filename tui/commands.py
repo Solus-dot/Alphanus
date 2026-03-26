@@ -141,6 +141,10 @@ def active_command_span(value: str, cursor_position: Optional[int] = None) -> Op
     return (start, end)
 
 
+def popup_command_query(value: str, cursor_position: Optional[int] = None) -> str:
+    return active_command_query(value, cursor_position)
+
+
 def command_entries_for_query(value: str) -> List[CommandEntry]:
     query = value.strip().lower()
     if not query.startswith("/"):

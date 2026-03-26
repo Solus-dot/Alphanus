@@ -3,13 +3,30 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from core.conv_tree import ConvTree
 from core.sessions import ChatSession
 from core.workspace import WorkspaceManager
 from tui.live_tool_preview import LiveToolPreviewManager
-from tui.commands import active_command_query, active_command_span, command_entries_for_query
+from tui.commands import active_command_query, active_command_span, command_entries_for_query, popup_command_query
 from tui.interface import AlphanusTUI, ChatInput
 from tui.popups import SessionPickerModal
+
+
+def _tui_agent_stub(tmp_path: Path) -> SimpleNamespace:
+    workspace_root = tmp_path / "ws"
+    workspace_root.mkdir()
+    return SimpleNamespace(
+        config={"tui": {}},
+        skill_runtime=SimpleNamespace(workspace=SimpleNamespace(workspace_root=workspace_root)),
+        connect_timeout_s=1.0,
+        model_endpoint="http://127.0.0.1:8080/v1/chat/completions",
+        fetch_model_metadata=lambda timeout_s=None: (None, None),
+        reload_skills=lambda: 0,
+        run_turn=lambda *args, **kwargs: None,
+        doctor_report=lambda: {},
+    )
 
 
 def test_command_entries_match_quit_aliases() -> None:
@@ -43,6 +60,73 @@ def test_active_command_query_tracks_command_token_at_cursor() -> None:
 
 def test_active_command_query_ignores_non_command_prefix_text() -> None:
     assert active_command_query("note /cont", 6) == ""
+
+
+def test_popup_command_query_keeps_exact_commands() -> None:
+    assert popup_command_query("/exit", 5) == "/exit"
+    assert popup_command_query("/quit", 5) == "/quit"
+
+
+def test_popup_command_query_keeps_partial_command_matches() -> None:
+    assert popup_command_query("/ex", 3) == "/ex"
+    assert popup_command_query("/cont", 5) == "/cont"
+
+
+@pytest.mark.anyio
+async def test_command_popup_tracks_chat_input_geometry(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    tui._open_startup_session_picker = lambda: None
+    tui._maybe_refresh_model_name = lambda force=False: None
+
+    async with tui.run_test() as pilot:
+        await pilot.press("/")
+        await pilot.pause()
+        popup = tui.query_one("#command-popup")
+        chat_input = tui.query_one(ChatInput)
+        separator = tui.query_one("#footer-sep")
+
+        assert popup.display is True
+        assert popup.region.width <= 72
+        assert popup.region.y < separator.region.y
+        assert popup.region.bottom <= separator.region.y
+        assert popup.region.x >= chat_input.region.x
+        assert tui.query_one("#command-options").region.bottom <= popup.region.bottom
+
+
+@pytest.mark.anyio
+async def test_command_popup_hides_for_unknown_query_and_reappears_when_query_matches(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    tui._open_startup_session_picker = lambda: None
+    tui._maybe_refresh_model_name = lambda force=False: None
+
+    async with tui.run_test() as pilot:
+        await pilot.press("/", "z")
+        await pilot.pause()
+        popup = tui.query_one("#command-popup")
+        assert popup.display is False
+
+        await pilot.press("backspace", "h")
+        await pilot.pause()
+        assert popup.display is True
+
+
+@pytest.mark.anyio
+async def test_command_popup_narrows_from_he_to_hel_and_keeps_help_visible(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    tui._open_startup_session_picker = lambda: None
+    tui._maybe_refresh_model_name = lambda force=False: None
+
+    async with tui.run_test() as pilot:
+        await pilot.press("/", "h", "e")
+        await pilot.pause()
+        assert tui.query_one("#command-popup").display is True
+        assert "/help" in [entry.prompt for entry in tui._command_matches]
+
+        await pilot.press("l")
+        await pilot.pause()
+        assert tui.query_one("#command-popup").display is True
+        assert [entry.prompt for entry in tui._command_matches] == ["/help"]
+        assert tui.query_one("#command-options").region.bottom <= tui.query_one("#command-popup").region.bottom
 
 
 def test_active_command_span_covers_command_token() -> None:
