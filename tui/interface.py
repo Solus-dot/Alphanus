@@ -66,6 +66,7 @@ ACCENT_COLOR = "#6366f1"
 
 class ChatInput(Input):
     BINDINGS = [
+        Binding("ctrl+h", "delete_left", show=False),
         Binding("ctrl+u", "clear_all", show=False),
         Binding("ctrl+k", "kill_to_end", show=False),
         Binding("ctrl+g", "focus_input", show=False),
@@ -1627,6 +1628,7 @@ class AlphanusTUI(App):
             self._command_matches = []
             popup.display = False
             options.clear_options()
+            options.styles.height = 0
             popup.absolute_offset = None
             return
 
@@ -1634,7 +1636,10 @@ class AlphanusTUI(App):
         geometry_changed = self._command_anchor_region != self.query_one(ChatInput).region
         self._command_anchor_region = self.query_one(ChatInput).region
         self._command_matches = next_matches
+        option_rows = min(len(self._command_matches), 8)
         popup.display = True
+        popup.styles.height = option_rows + 4
+        options.styles.height = option_rows
         rendered = [
             Option(
                 f"[bold #6366f1]{esc(command_label(entry))}[/bold #6366f1] [dim]{esc(entry.description)}[/dim]",
