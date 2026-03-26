@@ -2251,3 +2251,270 @@ npm install -g docx
 
     assert out["ok"] is False
     assert out["error"]["code"] == "E_POLICY"
+
+
+def test_load_skill_rejects_non_selected_skill_id(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    for skill_id in ("alpha", "beta"):
+        (skills / skill_id).mkdir(parents=True)
+        (skills / skill_id / "SKILL.md").write_text(
+            f"""
+---
+name: {skill_id}
+description: {skill_id} helper
+version: 1.0.0
+---
+Use {skill_id}.
+""".strip(),
+            encoding="utf-8",
+        )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    alpha = runtime.get_skill("alpha")
+    assert alpha is not None
+    ctx = SkillContext(
+        user_input="use alpha",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    out = runtime.execute_tool_call(
+        "load_skill",
+        {"skill_id": "beta"},
+        selected=[alpha],
+        ctx=ctx,
+    )
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_POLICY"
+
+
+def test_read_skill_resource_uses_single_loaded_skill_when_skill_id_is_omitted(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "doc-helper").mkdir(parents=True)
+    (skills / "doc-helper" / "SKILL.md").write_text(
+        """
+---
+name: doc-helper
+description: helper for docs
+version: 1.0.0
+---
+Read the bundled README when needed.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "doc-helper" / "README.md").write_text("# hello\n", encoding="utf-8")
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("doc-helper")
+    assert skill is not None
+    ctx = SkillContext(
+        user_input="read the doc helper resource",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    out = runtime.execute_tool_call(
+        "read_skill_resource",
+        {"path": "README.md"},
+        selected=[skill],
+        ctx=ctx,
+        loaded_skill_ids=["doc-helper"],
+    )
+
+    assert out["ok"] is True
+    assert out["data"]["skill_id"] == "doc-helper"
+    assert out["data"]["path"] == "README.md"
+
+
+def test_run_skill_command_rejects_non_loaded_skill_id(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    for skill_id in ("alpha", "beta"):
+        (skills / skill_id).mkdir(parents=True)
+        (skills / skill_id / "SKILL.md").write_text(
+            f"""
+---
+name: {skill_id}
+description: {skill_id} helper
+version: 1.0.0
+---
+```bash
+echo {skill_id}
+```
+""".strip(),
+            encoding="utf-8",
+        )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    alpha = runtime.get_skill("alpha")
+    beta = runtime.get_skill("beta")
+    assert alpha is not None and beta is not None
+    ctx = SkillContext(
+        user_input="use alpha then beta",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    out = runtime.execute_tool_call(
+        "run_skill_command",
+        {"skill_id": "beta", "command": "echo beta"},
+        selected=[alpha, beta],
+        ctx=ctx,
+        loaded_skill_ids=["alpha"],
+    )
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_POLICY"
+
+
+def test_spawn_skill_agent_rejects_non_loaded_skill_id(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    pack = tmp_path / "pack"
+    skills = pack / "skills"
+    agents = pack / "agents"
+    home.mkdir()
+    ws.mkdir()
+    agents.mkdir(parents=True)
+    for skill_id in ("alpha", "beta"):
+        (skills / skill_id).mkdir(parents=True)
+        (skills / skill_id / "SKILL.md").write_text(
+            f"""
+---
+name: {skill_id}
+description: {skill_id} helper
+version: 1.0.0
+---
+Use {skill_id}.
+""".strip(),
+            encoding="utf-8",
+        )
+    (agents / "helper.md").write_text(
+        """
+---
+name: helper-agent
+description: helper agent
+---
+You are a helper agent.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    alpha = runtime.get_skill("alpha")
+    beta = runtime.get_skill("beta")
+    assert alpha is not None and beta is not None
+    assert "helper-agent" in runtime._agents_for_skill(alpha)
+    ctx = SkillContext(
+        user_input="use alpha",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    out = runtime.execute_tool_call(
+        "spawn_skill_agent",
+        {"skill_id": "beta", "agent_name": "helper-agent", "prompt": "hi"},
+        selected=[alpha, beta],
+        ctx=ctx,
+        loaded_skill_ids=["alpha"],
+        spawn_skill_agent=lambda args: {"ok": True, "data": args, "error": None, "meta": {}},
+    )
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_POLICY"
+
+
+def test_runtime_tool_schema_requires_skill_id_only_when_multiple_skills_are_loaded(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    for skill_id in ("alpha", "beta"):
+        (skills / skill_id).mkdir(parents=True)
+        (skills / skill_id / "SKILL.md").write_text(
+            f"""
+---
+name: {skill_id}
+description: {skill_id} helper
+version: 1.0.0
+---
+```bash
+echo {skill_id}
+```
+""".strip(),
+            encoding="utf-8",
+        )
+        (skills / skill_id / "README.md").write_text(f"# {skill_id}\n", encoding="utf-8")
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    alpha = runtime.get_skill("alpha")
+    beta = runtime.get_skill("beta")
+    assert alpha is not None and beta is not None
+    ctx = SkillContext(
+        user_input="use both skills",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    single_tools = runtime.tools_for_turn([alpha, beta], ctx=ctx, loaded_skill_ids=["alpha"])
+    multi_tools = runtime.tools_for_turn([alpha, beta], ctx=ctx, loaded_skill_ids=["alpha", "beta"])
+
+    def tool_params(tools, name):
+        for item in tools:
+            fn = item.get("function", {})
+            if fn.get("name") == name:
+                return fn.get("parameters", {})
+        raise AssertionError(f"missing tool schema for {name}")
+
+    single_read = tool_params(single_tools, "read_skill_resource")
+    multi_read = tool_params(multi_tools, "read_skill_resource")
+    single_run = tool_params(single_tools, "run_skill_command")
+    multi_run = tool_params(multi_tools, "run_skill_command")
+
+    assert "skill_id" not in (single_read.get("required") or [])
+    assert "skill_id" in (multi_read.get("required") or [])
+    assert "skill_id" not in (single_run.get("required") or [])
+    assert "skill_id" in (multi_run.get("required") or [])

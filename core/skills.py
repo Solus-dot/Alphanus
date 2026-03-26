@@ -2646,8 +2646,15 @@ class SkillRuntime:
                 parameters = dict(parameters) if isinstance(parameters, dict) else {}
                 properties = dict(parameters.get("properties", {}))
                 properties["skill_id"] = {"type": "string", "enum": sorted(dict.fromkeys(loaded_skill_ids))}
+                required = list(parameters.get("required", [])) if isinstance(parameters.get("required"), list) else []
+                if reg.name in {_READ_SKILL_RESOURCE_TOOL_NAME, _RUN_SKILL_COMMAND_TOOL_NAME} and len(set(loaded_skill_ids)) > 1:
+                    if "skill_id" not in required:
+                        required.append("skill_id")
+                elif "skill_id" in required:
+                    required = [item for item in required if item != "skill_id"]
                 parameters["type"] = "object"
                 parameters["properties"] = properties
+                parameters["required"] = required
                 if reg.name == _RUN_SKILL_COMMAND_TOOL_NAME:
                     command_values: List[str] = []
                     for skill_id in loaded_skill_ids:
@@ -2890,28 +2897,97 @@ class SkillRuntime:
         args: Dict[str, Any],
         selected: List[SkillManifest],
         ctx: SkillContext,
+        loaded_skill_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         recovered = _recover_tool_args(args)
         validated = self._validate_tool_args(reg, recovered)
+        if reg.name == _LOAD_SKILL_TOOL_NAME:
+            validated = self._validate_load_skill_args(validated, selected, ctx)
+        if reg.name == _READ_SKILL_RESOURCE_TOOL_NAME:
+            validated = self._validate_skill_resource_args(validated, loaded_skill_ids or [])
         if reg.name == _GENERIC_ENTRYPOINT_TOOL_NAME:
             validated = self._validate_skill_entrypoint_args(validated, selected, ctx)
         if reg.name == _GENERIC_SCRIPT_TOOL_NAME:
             validated = self._validate_skill_script_args(validated, selected, ctx)
         if reg.name == _RUN_SKILL_COMMAND_TOOL_NAME:
-            validated = self._validate_skill_command_args(validated, selected)
+            validated = self._validate_skill_command_args(validated, selected, loaded_skill_ids=loaded_skill_ids or [])
+        if reg.name == _SPAWN_SKILL_AGENT_TOOL_NAME:
+            validated = self._validate_spawn_skill_agent_args(validated, loaded_skill_ids or [])
         self._enforce_artifact_materialization_policy(reg, validated, selected, ctx)
         allowed, reason = self._run_pre_action_hooks(selected, ctx, reg.name, validated)
         if not allowed:
             raise PermissionError(reason or "Denied by skill policy")
         return validated
 
+    def _validate_load_skill_args(
+        self,
+        args: Dict[str, Any],
+        selected: List[SkillManifest],
+        ctx: SkillContext,
+    ) -> Dict[str, Any]:
+        requested_skill_id = str(args.get("skill_id", "")).strip()
+        if not requested_skill_id:
+            raise ValueError("Missing required argument: skill_id")
+
+        selected_map = {skill.id: skill for skill in selected}
+        skill = selected_map.get(requested_skill_id)
+        if skill is None:
+            raise PermissionError(f"Skill '{requested_skill_id}' is not selected for this turn")
+        if skill.disable_model_invocation and ctx.explicit_skill_id != skill.id:
+            raise PermissionError(f"Skill '{skill.id}' is disabled for model invocation")
+
+        out = dict(args)
+        out["skill_id"] = skill.id
+        out["arguments"] = str(args.get("arguments", "")).strip()
+        return out
+
+    def _resolve_loaded_skill(
+        self,
+        requested_skill_id: str,
+        loaded_skill_ids: List[str],
+        tool_name: str,
+    ) -> SkillManifest:
+        allowed_ids = sorted(dict.fromkeys(str(skill_id).strip() for skill_id in loaded_skill_ids if str(skill_id).strip()))
+        if not allowed_ids:
+            raise PermissionError(f"{tool_name} requires a loaded skill")
+        if requested_skill_id:
+            if requested_skill_id not in allowed_ids:
+                raise PermissionError(f"Skill '{requested_skill_id}' is not loaded for this turn")
+            resolved_skill_id = requested_skill_id
+        elif len(allowed_ids) == 1:
+            resolved_skill_id = allowed_ids[0]
+        else:
+            raise ValueError(f"{tool_name} requires skill_id when multiple skills are loaded")
+
+        skill = self.get_skill(resolved_skill_id)
+        if skill is None or not skill.path:
+            raise FileNotFoundError(f"Skill not found: {resolved_skill_id}")
+        return skill
+
+    def _validate_skill_resource_args(
+        self,
+        args: Dict[str, Any],
+        loaded_skill_ids: List[str],
+    ) -> Dict[str, Any]:
+        path = str(args.get("path", "")).strip()
+        if not path:
+            raise ValueError("Missing required argument: path")
+        skill = self._resolve_loaded_skill(str(args.get("skill_id", "")).strip(), loaded_skill_ids, _READ_SKILL_RESOURCE_TOOL_NAME)
+        out = dict(args)
+        out["skill_id"] = skill.id
+        out["path"] = path
+        return out
+
     def _validate_skill_command_args(
         self,
         args: Dict[str, Any],
         selected: List[SkillManifest],
+        loaded_skill_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         requested_skill_id = str(args.get("skill_id", "")).strip()
-        if requested_skill_id:
+        if loaded_skill_ids:
+            skill = self._resolve_loaded_skill(requested_skill_id, loaded_skill_ids, _RUN_SKILL_COMMAND_TOOL_NAME)
+        elif requested_skill_id:
             skill = self.resolve_skill_reference(requested_skill_id)
         elif len(selected) == 1:
             skill = selected[0]
@@ -2933,6 +3009,45 @@ class SkillRuntime:
         out = dict(args)
         out["skill_id"] = skill.id
         out["command"] = command
+        return out
+
+    def _validate_spawn_skill_agent_args(
+        self,
+        args: Dict[str, Any],
+        loaded_skill_ids: List[str],
+    ) -> Dict[str, Any]:
+        action = str(args.get("action", "start")).strip().lower() or "start"
+        out = dict(args)
+        out["action"] = action
+        if action in {"status", "wait"}:
+            return out
+
+        agent_name = str(args.get("agent_name", "")).strip()
+        if not agent_name:
+            raise ValueError("Missing required argument: agent_name")
+
+        requested_skill_id = str(args.get("skill_id", "")).strip()
+        if requested_skill_id:
+            skill = self._resolve_loaded_skill(requested_skill_id, loaded_skill_ids, _SPAWN_SKILL_AGENT_TOOL_NAME)
+        else:
+            candidate_skills = [
+                self.get_skill(skill_id)
+                for skill_id in sorted(dict.fromkeys(str(skill_id).strip() for skill_id in loaded_skill_ids if str(skill_id).strip()))
+            ]
+            candidate_skills = [
+                skill for skill in candidate_skills if skill is not None and skill.path and agent_name in self._agents_for_skill(skill)
+            ]
+            if len(candidate_skills) == 1:
+                skill = candidate_skills[0]
+            elif len(candidate_skills) > 1:
+                raise ValueError("spawn_skill_agent requires skill_id when multiple loaded skills expose the requested agent")
+            else:
+                skill = self._resolve_loaded_skill("", loaded_skill_ids, _SPAWN_SKILL_AGENT_TOOL_NAME)
+        if agent_name not in self._agents_for_skill(skill):
+            raise PermissionError(f"Agent '{agent_name}' is not available for skill '{skill.id}' in this turn")
+
+        out["skill_id"] = skill.id
+        out["agent_name"] = agent_name
         return out
 
     def _validate_skill_script_args(
@@ -3128,6 +3243,7 @@ class SkillRuntime:
         args: Dict[str, Any],
         selected: List[SkillManifest],
         ctx: SkillContext,
+        loaded_skill_ids: Optional[List[str]] = None,
         confirm_shell: Optional[Callable[[str], bool]] = None,
         spawn_skill_agent: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
         request_user_input: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
@@ -3135,7 +3251,7 @@ class SkillRuntime:
         start = time.perf_counter()
         try:
             reg, _owner = self._resolve_tool_call(tool_name, selected)
-            normalized_args = self._prepare_tool_args(reg, args, selected, ctx)
+            normalized_args = self._prepare_tool_args(reg, args, selected, ctx, loaded_skill_ids=loaded_skill_ids)
             env = ToolExecutionEnv(
                 workspace=self.workspace,
                 memory=self.memory,

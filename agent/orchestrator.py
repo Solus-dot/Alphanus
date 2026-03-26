@@ -633,6 +633,7 @@ class TurnOrchestrator:
                         call.arguments,
                         selected=state.selected,
                         ctx=state.ctx,
+                        loaded_skill_ids=state.loaded_skill_ids,
                         confirm_shell=confirm_shell,
                         spawn_skill_agent=spawn_skill_agent,
                         request_user_input=request_user_input,
