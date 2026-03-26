@@ -1075,10 +1075,14 @@ def execute(tool_name, args, env):
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
-    assert runtime.list_skills() == []
+    listed = runtime.list_skills()
+    assert len(listed) == 1
+    assert listed[0].available is False
+    assert listed[0].execution_allowed is False
+    assert listed[0].validation_errors == ["missing required tools: create_file"]
 
 
-def test_command_definition_tool_executes(tmp_path: Path):
+def test_command_definition_tool_is_blocked(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -1139,6 +1143,14 @@ if __name__ == "__main__":
     skill = runtime.get_skill("echo-skill")
     assert skill is not None
 
+    assert "command_tools" in skill.blocked_features
+    assert "command_tools are disabled_pending_safe_runner" in skill.validation_errors
+    assert "command_tools disabled_pending_safe_runner" in skill.validation_warnings
+
+    report = runtime.skill_health_report()
+    assert report[0]["tools"] == []
+    assert report[0]["blocked_features"] == ["command_tools"]
+
     ctx = SkillContext(
         user_input="echo this",
         branch_labels=[],
@@ -1147,12 +1159,8 @@ if __name__ == "__main__":
         memory_hits=[],
     )
     out = runtime.execute_tool_call("echo_text", {"text": "hello"}, selected=[skill], ctx=ctx)
-    assert out["ok"] is True
-    assert out["data"]["text"] == "hello"
-
-    out_raw = runtime.execute_tool_call("echo_text", {"_raw": '{"text":"raw-hello"}'}, selected=[skill], ctx=ctx)
-    assert out_raw["ok"] is True
-    assert out_raw["data"]["text"] == "raw-hello"
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_UNSUPPORTED"
 
 
 def test_skill_prompt_is_loaded_lazily(tmp_path: Path):
@@ -1423,7 +1431,7 @@ Create PDFs with the declared entrypoint.
     assert (ws / "report.pdf").read_text(encoding="utf-8") == "artifact"
 
 
-def test_frontmatter_metadata_format_executes(tmp_path: Path):
+def test_frontmatter_metadata_command_tool_is_blocked(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -1490,19 +1498,12 @@ if __name__ == "__main__":
     skill = runtime.get_skill("meta-skill")
     assert skill is not None
 
-    ctx = SkillContext(
-        user_input="echo this",
-        branch_labels=[],
-        attachments=[],
-        workspace_root=str(ws),
-        memory_hits=[],
-    )
-    out = runtime.execute_tool_call("echo_text", {"text": "hello"}, selected=[skill], ctx=ctx)
-    assert out["ok"] is True
-    assert out["data"]["text"] == "hello"
+    assert skill.validation_errors == ["command_tools are disabled_pending_safe_runner"]
+    assert skill.validation_warnings == ["command_tools disabled_pending_safe_runner"]
+    assert [tool["function"]["name"] for tool in runtime.tools_for_turn([skill])] == ["load_skill"]
 
 
-def test_invalid_command_tool_output_maps_to_e_protocol(tmp_path: Path):
+def test_disabled_command_tool_does_not_invoke_subprocess(tmp_path: Path, monkeypatch):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -1554,12 +1555,22 @@ print("definitely not json")
         workspace_root=str(ws),
         memory_hits=[],
     )
+    called = False
+
+    def fail_run(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("subprocess.run should not be called for disabled command tools")
+
+    monkeypatch.setattr(skills_module.subprocess, "run", fail_run)
+
     out = runtime.execute_tool_call("bad_tool", {}, selected=[skill], ctx=ctx)
     assert out["ok"] is False
-    assert out["error"]["code"] == "E_PROTOCOL"
+    assert out["error"]["code"] == "E_UNSUPPORTED"
+    assert called is False
 
 
-def test_command_timeout_maps_to_e_timeout(tmp_path: Path):
+def test_command_tool_timeout_definition_is_reported_as_blocked(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -1607,16 +1618,11 @@ time.sleep(2)
     skill = runtime.get_skill("slow-skill")
     assert skill is not None
 
-    ctx = SkillContext(
-        user_input="wait",
-        branch_labels=[],
-        attachments=[],
-        workspace_root=str(ws),
-        memory_hits=[],
-    )
-    out = runtime.execute_tool_call("slow_tool", {}, selected=[skill], ctx=ctx)
-    assert out["ok"] is False
-    assert out["error"]["code"] == "E_TIMEOUT"
+    assert "command_tools" in skill.blocked_features
+    assert skill.validation_errors == ["command_tools are disabled_pending_safe_runner"]
+    report = runtime.skill_health_report()
+    assert report[0]["tools"] == []
+    assert report[0]["validation_errors"] == ["command_tools are disabled_pending_safe_runner"]
 
 
 def test_skill_health_report_includes_provenance(tmp_path: Path):
@@ -1646,6 +1652,251 @@ Hello
 
     assert report[0]["source_tier"] == "bundled"
     assert report[0]["availability_code"] == "ready"
+
+
+def test_bundled_skill_inside_workspace_repo_stays_trusted(tmp_path: Path):
+    home = tmp_path / "home"
+    repo = home / "Desktop" / "Alphanus"
+    skills = repo / "skills"
+    skill_dir = skills / "repo-helper"
+    home.mkdir()
+    skill_dir.mkdir(parents=True)
+
+    (skill_dir / "SKILL.md").write_text(
+        """
+---
+name: repo-helper
+description: bundled repo helper
+version: 1.0.0
+tools:
+  allowed-tools:
+    - echo_text
+---
+Bundled repo helper.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skill_dir / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "echo_text": {
+    "capability": "utility_echo",
+    "description": "Echo text",
+    "parameters": {
+      "type": "object",
+      "properties": {"text": {"type": "string"}},
+      "required": ["text"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    return {"ok": True, "data": {"text": args["text"]}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(repo), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    skill = runtime.get_skill("repo-helper")
+    assert skill is not None
+    assert skill.source_tier == "bundled"
+    assert skill.trust_level == "trusted"
+    assert skill.execution_allowed is True
+    assert skill.available is True
+    assert [tool["function"]["name"] for tool in runtime.tools_for_turn([skill])] == ["echo_text", "load_skill"]
+
+
+def test_bundled_skill_under_home_outside_workspace_stays_trusted(tmp_path: Path):
+    home = tmp_path / "home"
+    repo = home / "Desktop" / "Alphanus"
+    workspace_root = home / "projects" / "demo"
+    skills = repo / "skills"
+    skill_dir = skills / "repo-helper"
+    home.mkdir()
+    workspace_root.mkdir(parents=True)
+    skill_dir.mkdir(parents=True)
+
+    (skill_dir / "SKILL.md").write_text(
+        """
+---
+name: repo-helper
+description: bundled repo helper
+version: 1.0.0
+---
+Bundled repo helper.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(workspace_root), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    skill = runtime.get_skill("repo-helper")
+    assert skill is not None
+    assert skill.source_tier == "bundled"
+    assert skill.trust_level == "trusted"
+    assert skill.execution_allowed is True
+    assert skill.available is True
+    report = runtime.skill_health_report()
+    skill_report = next(item for item in report if item["id"] == "repo-helper")
+    assert skill_report["source_tier"] == "bundled"
+    assert skill_report["execution_allowed"] is True
+
+
+def test_untrusted_home_skill_is_metadata_only(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    bundled = tmp_path / "bundled"
+    user_pack_root = home / ".claude"
+    skill_dir = user_pack_root / "skills" / "home-helper"
+    agent_dir = user_pack_root / "agents"
+    home.mkdir()
+    ws.mkdir()
+    skill_dir.mkdir(parents=True)
+    agent_dir.mkdir(parents=True)
+
+    (skill_dir / "SKILL.md").write_text(
+        """
+---
+name: home-helper
+description: home metadata-only skill
+version: 1.0.0
+allowed-tools: home_tool
+execution:
+  entrypoints:
+    - name: generate_notes
+      command: python3 {skill_root}/scripts/generate_notes.py
+      parameters:
+        type: object
+        properties: {}
+tools:
+  definitions:
+    - name: home_tool
+      capability: utility_home
+      description: Home helper.
+      command: python3 scripts/home_tool.py
+      parameters:
+        type: object
+        properties: {}
+---
+Home helper.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skill_dir / "tools.py").write_text("raise RuntimeError('should never import')\n", encoding="utf-8")
+    (skill_dir / "hooks.py").write_text("raise RuntimeError('should never import')\n", encoding="utf-8")
+    (skill_dir / "scripts").mkdir()
+    (skill_dir / "scripts" / "generate_notes.py").write_text("print('nope')\n", encoding="utf-8")
+    (skill_dir / "scripts" / "home_tool.py").write_text("print('nope')\n", encoding="utf-8")
+    (agent_dir / "researcher.md").write_text(
+        """
+---
+name: researcher
+description: Research helper
+---
+Do work.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(bundled),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    skill = runtime.get_skill("home-helper")
+    assert skill is not None
+    assert skill.source_tier == "user/local"
+    assert skill.trust_level == "untrusted"
+    assert skill.execution_allowed is False
+    assert skill.available is False
+    assert "untrusted_root" in skill.blocked_features
+    assert "tools.py" in skill.blocked_features
+    assert "hooks.py" in skill.blocked_features
+    assert "scripts" in skill.blocked_features
+    assert "entrypoints" in skill.blocked_features
+    assert "command_tools" in skill.blocked_features
+    assert runtime.get_agent("researcher") is None
+
+    contract = runtime.load_skill_contract("home-helper")
+    assert contract.scripts == []
+    assert contract.blocked_scripts == []
+    assert contract.commands == []
+    assert contract.entrypoints == []
+    assert contract.agents == []
+
+    report = runtime.skill_health_report()
+    skill_report = next(item for item in report if item["id"] == "home-helper")
+    assert skill_report["source_tier"] == "user/local"
+    assert skill_report["trust_level"] == "untrusted"
+    assert skill_report["execution_allowed"] is False
+    assert skill_report["tools"] == []
+    assert skill_report["scripts"] == []
+    assert skill_report["entrypoints"] == []
+    assert skill_report["agents"] == []
+
+
+def test_workspace_skill_shadows_bundled_duplicate(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    bundled = tmp_path / "bundled"
+    bundled_skill = bundled / "dup-skill"
+    workspace_skill = ws / ".claude" / "skills" / "dup-skill"
+    home.mkdir()
+    ws.mkdir()
+    bundled_skill.mkdir(parents=True)
+    workspace_skill.mkdir(parents=True)
+
+    (bundled_skill / "SKILL.md").write_text(
+        """
+---
+name: dup-skill
+description: bundled
+version: 1.0.0
+---
+Bundled version.
+""".strip(),
+        encoding="utf-8",
+    )
+    (workspace_skill / "SKILL.md").write_text(
+        """
+---
+name: dup-skill
+description: workspace
+version: 2.0.0
+---
+Workspace version.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(bundled),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    active = runtime.get_skill("dup-skill")
+    assert active is not None
+    assert active.description == "workspace"
+    assert active.source_tier == "workspace/local"
+    assert active.shadowing == ["dup-skill"]
+
+    listed = runtime.list_skills()
+    assert len([skill for skill in listed if skill.id == "dup-skill"]) == 2
+    shadowed = next(skill for skill in listed if skill.id == "dup-skill" and skill.shadowed_by)
+    assert shadowed.source_tier == "bundled"
+    assert shadowed.shadowed_by == "dup-skill"
+    assert shadowed.availability_code == "shadowed"
 
 
 def test_runtime_discovers_pack_agents_and_rebases_agent_paths(tmp_path: Path):

@@ -2558,24 +2558,37 @@ class AlphanusTUI(App):
                 source_bits += f" · {source}"
             self._write(f"    [#71717a]{esc(source_bits)}[/#71717a]")
             flags = [
+                f"trust={getattr(skill, 'trust_level', 'trusted')}",
+                f"execution={'yes' if getattr(skill, 'execution_allowed', True) else 'no'}",
+                f"adapter={getattr(skill, 'adapter', 'agentskills')}",
                 f"user={'yes' if skill.user_invocable else 'no'}",
                 f"model={'no' if skill.disable_model_invocation else 'yes'}",
             ]
-            if skill.allowed_tools:
-                flags.append(f"tools={len(skill.allowed_tools)}")
-            scripts = self.agent.skill_runtime._skill_runnable_scripts(skill)
+            tools = self.agent.skill_runtime._reported_skill_tools(skill)
+            if tools:
+                flags.append(f"tools={len(tools)}")
+            scripts = self.agent.skill_runtime._reported_skill_scripts(skill)
             if scripts:
                 flags.append(f"scripts={len(scripts)}")
-            entrypoints = self.agent.skill_runtime._skill_entrypoints(skill)
+            entrypoints = self.agent.skill_runtime._reported_skill_entrypoints(skill)
             if entrypoints:
                 flags.append(f"entrypoints={len(entrypoints)}")
-            agents = self.agent.skill_runtime._agents_for_skill(skill)
+            agents = self.agent.skill_runtime._reported_skill_agents(skill)
             if agents:
                 flags.append(f"agents={len(agents)}")
             self._write(f"    [#71717a]{esc(' · '.join(flags))}[/#71717a]")
             if not skill.available and skill.availability_reason:
                 code = esc(skill.availability_code or "blocked")
                 self._write(f"    [bold {ACCENT_COLOR}]blocked ({code}):[/bold {ACCENT_COLOR}] [#a1a1aa]{esc(skill.availability_reason)}[/#a1a1aa]")
+            blocked = ", ".join(getattr(skill, "blocked_features", []) or [])
+            if blocked:
+                self._write(f"    [#71717a]blocked_features: {esc(blocked)}[/#71717a]")
+            validation_errors = list(getattr(skill, "validation_errors", []) or [])
+            if validation_errors:
+                self._write(f"    [#f59e0b]validation:[/#f59e0b] [#a1a1aa]{esc(validation_errors[0])}[/#a1a1aa]")
+            shadowed_by = str(getattr(skill, "shadowed_by", "") or "").strip()
+            if shadowed_by:
+                self._write(f"    [#71717a]shadowed_by: {esc(shadowed_by)}[/#71717a]")
         self._write("")
 
     def _cmd_skill(self, arg: str) -> bool:
@@ -2609,29 +2622,36 @@ class AlphanusTUI(App):
             self._write(f"  [#a1a1aa]{esc(skill.description)}[/#a1a1aa]")
             keywords = ", ".join(skill.triggers.get("keywords", [])) or "none"
             file_ext = ", ".join(skill.triggers.get("file_ext", [])) or "none"
-            tools = ", ".join(skill.allowed_tools) or "all"
             enabled, color = self.agent.skill_runtime.skill_status_label(skill)
             self._write_detail_line("id", skill.id)
             self._write_detail_line("version", skill.version)
             self._write_detail_line("status", f"[{color}]{enabled}[/{color}]", value_markup=True)
             self._write_detail_line("provenance", self.agent.skill_runtime.skill_provenance_label(skill))
             self._write_detail_line("source", self.agent.skill_runtime.skill_source_label(skill) or "unknown")
+            self._write_detail_line("trust_level", getattr(skill, "trust_level", "trusted"))
+            self._write_detail_line("execution_allowed", str(bool(getattr(skill, "execution_allowed", True))).lower())
+            self._write_detail_line("adapter", getattr(skill, "adapter", "agentskills"))
             self._write_detail_line("compatibility", skill.compatibility or "none")
             self._write_detail_line("availability_code", skill.availability_code or "ready")
             self._write_detail_line("availability", skill.availability_reason or "ready")
             self._write_detail_line("pack_id", str(skill.metadata.get("_pack_id", "") or "standalone"))
             self._write_detail_line("keywords", keywords)
             self._write_detail_line("file_ext", file_ext)
-            self._write_detail_line("tools", tools)
+            self._write_detail_line("tools", ", ".join(self.agent.skill_runtime._reported_skill_tools(skill)) or "none")
             self._write_detail_line("user_invocable", str(skill.user_invocable).lower())
             self._write_detail_line("model_invocable", str((not skill.disable_model_invocation)).lower())
             self._write_detail_line("argument_hint", skill.argument_hint or "none")
-            scripts = ", ".join(self.agent.skill_runtime._skill_runnable_scripts(skill)) or "none"
-            entrypoints = ", ".join(entry.name for entry in self.agent.skill_runtime._skill_entrypoints(skill)) or "none"
-            agents = ", ".join(self.agent.skill_runtime._agents_for_skill(skill)) or "none"
+            scripts = ", ".join(self.agent.skill_runtime._reported_skill_scripts(skill)) or "none"
+            entrypoints = ", ".join(entry.name for entry in self.agent.skill_runtime._reported_skill_entrypoints(skill)) or "none"
+            agents = ", ".join(self.agent.skill_runtime._reported_skill_agents(skill)) or "none"
             self._write_detail_line("scripts", scripts)
             self._write_detail_line("entrypoints", entrypoints)
             self._write_detail_line("agents", agents)
+            self._write_detail_line("blocked_features", ", ".join(getattr(skill, "blocked_features", []) or []) or "none")
+            self._write_detail_line("validation_errors", "; ".join(getattr(skill, "validation_errors", []) or []) or "none")
+            self._write_detail_line("validation_warnings", "; ".join(getattr(skill, "validation_warnings", []) or []) or "none")
+            self._write_detail_line("shadowed_by", getattr(skill, "shadowed_by", "") or "none")
+            self._write_detail_line("shadowing", ", ".join(getattr(skill, "shadowing", []) or []) or "none")
             self._write("")
             return True
 
@@ -2713,6 +2733,9 @@ class AlphanusTUI(App):
             if reason and reason != "ready":
                 self._write(f"    [#a1a1aa]{esc(reason)}[/#a1a1aa]")
             capabilities: List[str] = []
+            capabilities.append(f"trust={skill.get('trust_level', 'trusted')}")
+            capabilities.append(f"execution={'yes' if skill.get('execution_allowed', True) else 'no'}")
+            capabilities.append(f"adapter={skill.get('adapter', 'agentskills')}")
             if skill.get("tools"):
                 capabilities.append(f"tools={len(skill.get('tools', []))}")
             if skill.get("scripts"):
@@ -2724,6 +2747,15 @@ class AlphanusTUI(App):
             capabilities.append(f"user={'yes' if skill.get('user_invocable', True) else 'no'}")
             capabilities.append(f"model={'yes' if skill.get('model_invocable', True) else 'no'}")
             self._write(f"    [#71717a]{esc(' · '.join(capabilities))}[/#71717a]")
+            blocked = ", ".join(str(item) for item in skill.get("blocked_features", []) if str(item).strip())
+            if blocked:
+                self._write(f"    [#71717a]blocked_features: {esc(blocked)}[/#71717a]")
+            validation_errors = [str(item) for item in skill.get("validation_errors", []) if str(item).strip()]
+            if validation_errors:
+                self._write(f"    [#f59e0b]validation:[/#f59e0b] [#a1a1aa]{esc(validation_errors[0])}[/#a1a1aa]")
+            shadowed_by = str(skill.get("shadowed_by", "") or "").strip()
+            if shadowed_by:
+                self._write(f"    [#71717a]shadowed_by: {esc(shadowed_by)}[/#71717a]")
         agents = self.agent.skill_runtime.list_agents()
         if agents:
             self._write_section_heading("Agents")

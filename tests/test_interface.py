@@ -784,3 +784,111 @@ def test_session_picker_name_submit_creates_new_session() -> None:
     modal._new_name_submitted(SimpleNamespace(value="Backend Work"))
 
     assert dismissed == [{"action": "new", "title": "Backend Work"}]
+
+
+def test_cmd_skills_shows_trust_validation_and_shadowing() -> None:
+    skill = SimpleNamespace(
+        id="home-helper",
+        version="1.0.0",
+        description="Home helper",
+        metadata={"_pack_id": "pack-1"},
+        user_invocable=True,
+        disable_model_invocation=False,
+        trust_level="untrusted",
+        execution_allowed=False,
+        adapter="claude",
+        blocked_features=["untrusted_root", "scripts"],
+        validation_errors=["untrusted skill roots are metadata-only; executable surfaces are blocked"],
+        shadowed_by="",
+        available=False,
+        availability_code="untrusted",
+        availability_reason="untrusted skill roots are metadata-only",
+    )
+    runtime = SimpleNamespace(
+        list_skills=lambda: [skill],
+        skill_status_label=lambda _skill: ("blocked", "yellow"),
+        skill_source_label=lambda _skill: "home/.claude/skills/home-helper",
+        skill_provenance_label=lambda _skill: "user/local",
+        _reported_skill_tools=lambda _skill: [],
+        _reported_skill_scripts=lambda _skill: [],
+        _reported_skill_entrypoints=lambda _skill: [],
+        _reported_skill_agents=lambda _skill: [],
+    )
+
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    lines: list[str] = []
+    tui.agent = SimpleNamespace(skill_runtime=runtime)
+    tui._write = lines.append
+    tui._write_section_heading = lambda text: lines.append(f"SECTION:{text}")
+
+    tui._cmd_skills()
+
+    joined = "\n".join(lines)
+    assert "SECTION:Skills" in joined
+    assert "trust=untrusted" in joined
+    assert "execution=no" in joined
+    assert "adapter=claude" in joined
+    assert "blocked_features: untrusted_root, scripts" in joined
+    assert "validation:" in joined
+
+
+def test_cmd_doctor_shows_skill_policy_details() -> None:
+    report = {
+        "agent": {"ready": True, "endpoint_policy_error": ""},
+        "workspace": {"path": "/tmp/ws", "writable": True},
+        "memory": {
+            "mode": "hash",
+            "backend": "hash",
+            "configured_backend": "hash",
+            "allow_model_download": False,
+            "encoder_status": "ready",
+            "encoder_source": "builtin",
+            "encoder_detail": "",
+            "model_name": "hash",
+            "recommended_model_name": "hash",
+        },
+        "search": {"provider": "tavily", "ready": False, "reason": "missing env: TAVILY_API_KEY"},
+        "skills": [
+            {
+                "id": "dup-skill",
+                "source_tier": "bundled",
+                "pack_id": "standalone",
+                "availability_code": "shadowed",
+                "availability_reason": "shadowed by dup-skill (workspace/.claude/skills/dup-skill)",
+                "status": "shadowed",
+                "trust_level": "trusted",
+                "execution_allowed": False,
+                "adapter": "agentskills",
+                "tools": [],
+                "scripts": [],
+                "entrypoints": [],
+                "agents": [],
+                "user_invocable": True,
+                "model_invocable": True,
+                "blocked_features": ["command_tools"],
+                "validation_errors": ["command_tools are disabled_pending_safe_runner"],
+                "shadowed_by": "dup-skill",
+            }
+        ],
+    }
+
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    lines: list[str] = []
+    tui.agent = SimpleNamespace(
+        doctor_report=lambda: report,
+        skill_runtime=SimpleNamespace(list_agents=lambda: []),
+    )
+    tui._write = lines.append
+    tui._write_section_heading = lambda text: lines.append(f"SECTION:{text}")
+    tui._write_detail_line = lambda label, value, value_markup=False: lines.append(f"DETAIL:{label}:{value}:{value_markup}")
+
+    tui._cmd_doctor()
+
+    joined = "\n".join(lines)
+    assert "SECTION:Doctor" in joined
+    assert "SECTION:Skills" in joined
+    assert "trust=trusted" in joined
+    assert "execution=no" in joined
+    assert "adapter=agentskills" in joined
+    assert "blocked_features: command_tools" in joined
+    assert "shadowed_by: dup-skill" in joined

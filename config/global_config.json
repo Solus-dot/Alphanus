@@ -32,7 +32,7 @@
   },
   "skills": {
     "selection_mode": "hybrid_lazy",
-    "max_active_skills": 2,
+    "max_active_skills": 5,
     "strict_capability_policy": false,
     "shortlist_size": 6,
     "load": {

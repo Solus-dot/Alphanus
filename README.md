@@ -12,7 +12,7 @@ Status:
 Current behavior and architecture:
 - streaming agent loop with separate reasoning/content rendering
 - OpenAI-style `tool_calls` execution
-- model-routed skill selection by default (`skills.selection_mode = "model"`)
+- hybrid lazy skill selection by default (`skills.selection_mode = "hybrid_lazy"`)
 - bundled workspace, shell, memory, search, and utility skills
 - workspace-safe file operations and constrained verification runners
 - persistent vector memory with transformer embeddings and deterministic hash fallback

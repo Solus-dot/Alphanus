@@ -136,6 +136,14 @@ class SkillManifest:
     available: bool = True
     availability_code: str = "ready"
     availability_reason: str = ""
+    trust_level: str = "trusted"
+    execution_allowed: bool = True
+    adapter: str = "agentskills"
+    validation_errors: List[str] = field(default_factory=list)
+    validation_warnings: List[str] = field(default_factory=list)
+    shadowed_by: str = ""
+    shadowing: List[str] = field(default_factory=list)
+    blocked_features: List[str] = field(default_factory=list)
     frontmatter: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
     bundled_files: List[str] = field(default_factory=list)
@@ -400,6 +408,7 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         user_invocable=user_invocable,
         argument_hint=argument_hint,
         format=vendor_flavor,
+        adapter=vendor_flavor,
         frontmatter=dict(frontmatter),
         metadata=dict(metadata_raw),
         vendor_flavor=vendor_flavor,
