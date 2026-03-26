@@ -1,11 +1,28 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from core.memory import VectorMemory
 from core.workspace import WorkspaceManager
+
+
+@pytest.fixture(autouse=True)
+def _disable_model_classification():
+    """Disable model-based classification in all tests by default.
+
+    Tests exercise orchestrator and tool-loop behavior, not classification.
+    Classification should be tested in dedicated classifier tests.
+    Tests that explicitly need model classification can override this by
+    patching _should_model_classify back to its real implementation.
+    """
+    with patch(
+        "agent.classifier.TurnClassifier._should_model_classify",
+        return_value=False,
+    ):
+        yield
 
 
 @pytest.fixture

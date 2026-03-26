@@ -48,13 +48,7 @@ class ToolExecutionRecord:
 class TurnClassification:
     time_sensitive: bool = False
     requires_workspace_action: bool = False
-    batch_workspace_action: bool = False
     prefer_local_workspace_tools: bool = False
-    workspace_scaffold_action: bool = False
-    workspace_materialization_target: int = 0
-    workspace_readback_required: bool = False
-    strict_output_requested: bool = False
-    requires_post_tool_reasoning: bool = False
     explicit_external_path: str = ""
     followup_kind: str = "new_request"
     candidate_skill_ids: List[str] = field(default_factory=list)
@@ -78,12 +72,6 @@ class TurnPolicySnapshot:
     forced_search_retry: bool = False
     requires_workspace_action: bool = False
     forced_action_retry: bool = False
-    workspace_scaffold_action: bool = False
-    workspace_materialization_target: int = 0
-    forced_workspace_retry: bool = False
-    workspace_readback_required: bool = False
-    forced_readback_retry: bool = False
-    strict_output_requested: bool = False
     explicit_external_path: str = ""
     prefer_local_workspace_tools: bool = False
     selected_shell_workflow_skills: List[str] = field(default_factory=list)
@@ -149,8 +137,6 @@ class TurnState:
     action_depth: int = 0
     forced_search_retry: bool = False
     forced_action_retry: bool = False
-    forced_workspace_retry: bool = False
-    forced_readback_retry: bool = False
     tool_budgets: Dict[str, int] = field(default_factory=dict)
     _search_mode_override: Optional[bool] = None
 
@@ -177,36 +163,12 @@ class TurnState:
         return self.classification.requires_workspace_action
 
     @property
-    def batch_workspace_action(self) -> bool:
-        return self.classification.batch_workspace_action
-
-    @property
     def prefer_local_workspace_tools(self) -> bool:
         return self.classification.prefer_local_workspace_tools
 
     @property
     def explicit_external_path(self) -> str:
         return self.classification.explicit_external_path
-
-    @property
-    def workspace_scaffold_action(self) -> bool:
-        return self.classification.workspace_scaffold_action
-
-    @property
-    def workspace_materialization_target(self) -> int:
-        return self.classification.workspace_materialization_target
-
-    @property
-    def workspace_readback_required(self) -> bool:
-        return self.classification.workspace_readback_required
-
-    @property
-    def strict_output_requested(self) -> bool:
-        return self.classification.strict_output_requested
-
-    @property
-    def requires_post_tool_reasoning(self) -> bool:
-        return self.classification.requires_post_tool_reasoning
 
     @property
     def tool_counts(self) -> Dict[str, int]:

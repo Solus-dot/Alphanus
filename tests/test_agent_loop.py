@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from agent.core import Agent
+from agent.types import TurnClassification
 from core.memory import VectorMemory
 from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
@@ -514,6 +515,7 @@ def test_confirmation_turn_reuses_immediate_prior_skill_context(mocker, runtime:
 def test_contextual_followup_reuses_immediate_prior_skill_context(mocker, runtime: SkillRuntime):
     runtime.config = {"skills": {"selection_mode": "model", "max_active_skills": 2}}
     agent = Agent({"agent": {}}, runtime)
+    mocker.patch("agent.classifier.TurnClassifier._should_model_classify", return_value=True)
 
     calls = []
 
@@ -561,6 +563,7 @@ def test_contextual_followup_reuses_immediate_prior_skill_context(mocker, runtim
 def test_confirmation_workspace_action_retries_instead_of_accepting_manual_terminal_advice(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
+    mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation"))
 
     calls = []
 
@@ -608,6 +611,7 @@ def test_confirmation_workspace_action_retries_instead_of_accepting_manual_termi
 def test_confirmation_workspace_action_rejects_manual_terminal_advice_after_retry(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
+    mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation"))
 
     calls = []
 
@@ -654,6 +658,7 @@ def test_confirmation_workspace_action_rejects_manual_terminal_advice_after_retr
 def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_use(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
+    mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation"))
 
     calls = []
 
@@ -700,6 +705,7 @@ def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_u
 def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_success_claim(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
+    mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation"))
 
     calls = []
 
@@ -760,76 +766,8 @@ def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_s
     assert "pass_3" in calls
 
 
-def test_confirmation_workspace_action_rechecks_repair_pass_before_returning(mocker, runtime: SkillRuntime):
-    agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
-    mocker.patch.object(agent, "ensure_ready", return_value=True)
-
-    calls = []
-
-    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
-        calls.append(pass_id)
-        if pass_id == "skill_route":
-            return type("R", (), {"finish_reason": "stop", "content": '{"skills":["workspace-ops"]}'})()
-        if pass_id == "pass_1":
-            return type(
-                "R",
-                (),
-                {
-                    "finish_reason": "tool_calls",
-                    "content": "",
-                    "reasoning": "",
-                    "tool_calls": [type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "read_file", "arguments": {"filepath": "foo.txt"}})()],
-                },
-            )()
-        if pass_id in {"pass_2", "pass_3", "pass_3_final"}:
-            return type(
-                "R",
-                (),
-                {
-                    "finish_reason": "stop",
-                    "content": "I renamed foo.txt to bar.txt.",
-                    "reasoning": "",
-                    "tool_calls": [],
-                },
-            )()
-        raise AssertionError(f"Unexpected pass id: {pass_id}")
-
-    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
-        assert tool_name == "read_file"
-        return {"ok": True, "data": {"filepath": "foo.txt", "content": "alpha"}, "error": None, "meta": {}}
-
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
-    mocker.patch.object(runtime, "execute_tool_call", side_effect=fake_execute_tool_call)
-
-    result = agent.run_turn(
-        history_messages=[{"role": "user", "content": "rename foo.txt to bar.txt"}],
-        user_input="yes",
-        thinking=True,
-    )
-
-    assert result.status == "done"
-    assert result.content == "I couldn't complete that workspace action because no workspace tool actually ran."
-    assert "pass_3_final" in calls
 
 
-def test_non_search_tool_success_does_not_mark_search_evidence(runtime: SkillRuntime):
-    agent = Agent({"agent": {}}, runtime)
-    state = agent._build_turn_state(
-        SkillContext(user_input="weather", branch_labels=[], attachments=[], workspace_root="", memory_hits=[]),
-        [type("Skill", (), {"id": "search-ops"})()],
-        [],
-        "weather",
-    )
-
-    agent._record_tool_effects(
-        state,
-        type("Call", (), {"name": "get_weather", "arguments": {"city": "London"}})(),
-        {"ok": True, "data": {"city": "London", "temp_c": 14}, "error": None, "meta": {}},
-    )
-
-    assert state.tool_counts["get_weather"] == 1
-    assert state.search_has_success is False
-    assert state.search_has_fetch_content is False
 
 
 def test_run_turn_allows_same_host_endpoints_with_different_ports(mocker, runtime: SkillRuntime):
@@ -1323,148 +1261,16 @@ def test_workspace_readback_request_does_not_stop_after_create_file(mocker, runt
     assert calls == ["pass_1", "pass_2", "pass_3"]
 
 
-def test_workspace_readback_forces_retry_when_model_stops_early(mocker, runtime: SkillRuntime):
-    agent = Agent({"agent": {}}, runtime)
-    mocker.patch.object(agent, "ensure_ready", return_value=True)
-    selected = [runtime.get_skill("workspace-ops")]
-    mocker.patch.object(agent, "_select_skills", return_value=selected)
-
-    calls = []
-
-    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
-        calls.append(pass_id)
-        if pass_id == "pass_1":
-            return type(
-                "R",
-                (),
-                {
-                    "finish_reason": "tool_calls",
-                    "content": "",
-                    "reasoning": "",
-                    "tool_calls": [
-                        type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "create_file", "arguments": {"filepath": "notes.txt", "content": "alpha"}})(),
-                    ],
-                },
-            )()
-        if pass_id == "pass_2":
-            return type("R", (), {"finish_reason": "stop", "content": "I created notes.txt.", "reasoning": "", "tool_calls": []})()
-        if pass_id == "pass_3":
-            return type(
-                "R",
-                (),
-                {
-                    "finish_reason": "tool_calls",
-                    "content": "",
-                    "reasoning": "",
-                    "tool_calls": [
-                        type("Call", (), {"stream_id": "2", "index": 0, "id": "call_2", "name": "read_file", "arguments": {"filepath": "notes.txt"}})(),
-                    ],
-                },
-            )()
-        if pass_id == "pass_4":
-            return type("R", (), {"finish_reason": "stop", "content": "notes.txt=alpha", "reasoning": "", "tool_calls": []})()
-        raise AssertionError(f"Unexpected pass id: {pass_id}")
-
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
-    executed = []
-
-    def fake_execute(tool_name, args, selected, ctx, **_kwargs):
-        executed.append(tool_name)
-        if tool_name == "create_file":
-            return {"ok": True, "data": {"filepath": "notes.txt", "basename": "notes.txt"}, "error": None, "meta": {}}
-        if tool_name == "read_file":
-            return {"ok": True, "data": {"filepath": "notes.txt", "content": "alpha"}, "error": None, "meta": {}}
-        raise AssertionError(f"Unexpected tool: {tool_name}")
-
-    mocker.patch.object(runtime, "execute_tool_call", side_effect=fake_execute)
-    mocker.patch.object(
-        runtime,
-        "tools_for_turn",
-        return_value=[
-            {"type": "function", "function": {"name": "create_file"}},
-            {"type": "function", "function": {"name": "read_file"}},
-        ],
-    )
-
-    result = agent.run_turn(
-        history_messages=[],
-        user_input='Create notes.txt containing exactly the word alpha, then read it back and reply with exactly: "notes.txt=alpha".',
-        thinking=True,
-    )
-
-    assert result.status == "done"
-    assert result.content == "notes.txt=alpha"
-    assert executed == ["create_file", "read_file"]
-    assert calls == ["pass_1", "pass_2", "pass_3", "pass_4"]
 
 
-def test_multifile_scaffold_prompt_prefers_create_file_over_batched_create_files(mocker, runtime: SkillRuntime):
-    agent = Agent({"agent": {}}, runtime)
-    mocker.patch.object(agent, "ensure_ready", return_value=True)
-    selected = [runtime.get_skill("workspace-ops")]
-    mocker.patch.object(agent, "_select_skills", return_value=selected)
-    mocker.patch.object(
-        runtime,
-        "tools_for_turn",
-        return_value=[
-            {"type": "function", "function": {"name": "create_directory"}},
-            {"type": "function", "function": {"name": "create_file"}},
-            {"type": "function", "function": {"name": "create_files"}},
-        ],
-    )
-
-    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
-        system_text = payload["messages"][0]["content"]
-        assert "For multi-file scaffolds or programs, prefer separate create_file calls" in system_text
-        assert "Avoid batching the whole scaffold into one create_files call" in system_text
-        return type("R", (), {"finish_reason": "stop", "content": "Done.", "reasoning": "", "tool_calls": []})()
-
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
-
-    result = agent.run_turn(
-        history_messages=[],
-        user_input="Make a university login page using html js and css and save it in a folder called x",
-        thinking=True,
-    )
-
-    assert result.status == "done"
 
 
-def test_multifile_python_program_prompt_prefers_create_file_over_create_files(mocker, runtime: SkillRuntime):
-    agent = Agent({"agent": {}}, runtime)
-    mocker.patch.object(agent, "ensure_ready", return_value=True)
-    selected = [runtime.get_skill("workspace-ops")]
-    mocker.patch.object(agent, "_select_skills", return_value=selected)
-    mocker.patch.object(
-        runtime,
-        "tools_for_turn",
-        return_value=[
-            {"type": "function", "function": {"name": "create_directory"}},
-            {"type": "function", "function": {"name": "create_file"}},
-            {"type": "function", "function": {"name": "create_files"}},
-        ],
-    )
-
-    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
-        system_text = payload["messages"][0]["content"]
-        assert "For multi-file scaffolds or programs, prefer separate create_file calls" in system_text
-        assert "Use create_files only when batching is acceptable" in system_text
-        return type("R", (), {"finish_reason": "stop", "content": "Done.", "reasoning": "", "tool_calls": []})()
-
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
-
-    result = agent.run_turn(
-        history_messages=[],
-        user_input="Create a Python package with main.py, parser.py, and models.py in a folder called toolkit",
-        thinking=True,
-    )
-
-    assert result.status == "done"
 
 
 def test_local_workspace_tasks_reject_shell_and_fetch_tools(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
+    mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(prefer_local_workspace_tools=True))
     selected = [runtime.get_skill("workspace-ops")]
     mocker.patch.object(agent, "_select_skills", return_value=selected)
 
@@ -1835,114 +1641,6 @@ def test_main_pass_tool_markup_forces_clean_finalization(mocker, runtime: SkillR
     )
 
 
-def test_finalization_repairs_without_search_contamination(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-        }
-    }
-    agent = Agent(cfg, runtime)
-
-    history = [
-        {
-            "role": "tool",
-            "name": "get_weather",
-            "content": json.dumps(
-                {
-                    "ok": True,
-                    "data": {
-                        "city": "London",
-                        "temperature_c": 14,
-                        "condition": "Cloudy",
-                    },
-                    "error": None,
-                    "meta": {},
-                }
-            ),
-        }
-    ]
-
-    calls = []
-
-    def fake_urlopen(req, timeout=None, context=None):
-        if req.full_url.endswith("/v1/models"):
-            return FakeResponse([])
-        calls.append(req)
-        if len(calls) == 1:
-            return FakeResponse(
-                [
-                    'data: {"choices":[{"delta":{"content":"<tool_call>\\n<function=get_weather>\\n<parameter=city>London</parameter>\\n</function>\\n</tool_call>"}}]}',
-                    'data: {"choices":[{"finish_reason":"stop"}]}',
-                    "data: [DONE]",
-                ]
-            )
-        return FakeResponse(
-            [
-                'data: {"choices":[{"delta":{"content":"The weather tool reported London at 14 C and cloudy."}}]}',
-                'data: {"choices":[{"finish_reason":"stop"}]}',
-                "data: [DONE]",
-            ]
-        )
-
-    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
-
-    state = agent._build_turn_state(
-        SkillContext(user_input="weather", branch_labels=[], attachments=[], workspace_root="", memory_hits=[]),
-        [],
-        history,
-        "weather",
-    )
-    result = agent._run_finalization_pass(
-        "system",
-        state,
-        threading.Event(),
-        None,
-        "pass",
-    )
-
-    assert result.status == "done"
-    assert result.content == "The weather tool reported London at 14 C and cloudy."
-    assert "verify" not in result.content.lower()
-
-
-def test_needs_fetch_evidence_requires_search_mode_and_time_sensitive_query(runtime: SkillRuntime):
-    agent = Agent(
-        {
-            "agent": {
-                "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-                "models_endpoint": "http://127.0.0.1:8080/v1/models",
-            }
-        },
-        runtime,
-    )
-
-    empty = agent._build_turn_state(
-        SkillContext(user_input="x", branch_labels=[], attachments=[], workspace_root="", memory_hits=[]),
-        [],
-        [],
-        "x",
-    )
-    assert agent._needs_fetch_evidence(empty) is False
-    active = agent._build_turn_state(
-        SkillContext(user_input="x", branch_labels=[], attachments=[], workspace_root="", memory_hits=[]),
-        [],
-        [],
-        "x",
-    )
-    active.search_mode = True
-    active.time_sensitive_query = True
-    assert agent._needs_fetch_evidence(active) is True
-    active.search_has_fetch_content = True
-    assert agent._needs_fetch_evidence(active) is False
-
-
 def test_search_failures_return_safe_non_speculative_answer(mocker, runtime: SkillRuntime):
     search_skill = runtime.skills_dir / "search-ops"
     search_skill.mkdir(parents=True)
@@ -2179,6 +1877,11 @@ def execute(tool_name, args, env):
         }
     }
     agent = Agent(cfg, runtime)
+    mocker.patch.object(
+        agent,
+        "_classify_turn",
+        return_value=TurnClassification(time_sensitive=True, candidate_skill_ids=["search-ops"]),
+    )
 
     chat_reqs = []
 
@@ -3132,7 +2835,7 @@ Use scripts/convert.py when needed.
             "enable_thinking": True,
             "tls_verify": True,
         },
-        "skills": {"selection_mode": "hybrid_lazy", "max_active_skills": 2, "shortlist_size": 4},
+        "skills": {"selection_mode": "model", "max_active_skills": 2, "shortlist_size": 4},
     }
     agent = Agent(cfg, runtime)
     chat_reqs: list[urllib.request.Request] = []

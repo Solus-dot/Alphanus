@@ -80,7 +80,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "dangerously_skip_permissions": False,
     },
     "skills": {
-        "selection_mode": "hybrid_lazy",
+        "selection_mode": "model",
         "max_active_skills": 2,
         "strict_capability_policy": False,
         "shortlist_size": 6,

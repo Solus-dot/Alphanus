@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import urllib.parse
 import uuid
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.classifier import TurnClassifier
+from agent.constants import CORE_SKILL_IDS, LOCAL_WORKSPACE_BLOCKED_TOOLS, MUTATING_TOOL_NAMES
 from agent.llm_client import LLMClient
 from agent.policies import OutputSanitizer, PromptPolicyRenderer, search_rule
 from agent.telemetry import TelemetryEmitter
@@ -56,7 +58,8 @@ class TurnOrchestrator:
             for key, value in budgets.items():
                 try:
                     self.default_tool_budgets[str(key)] = max(1, int(value))
-                except Exception:
+                except Exception as exc:
+                    logging.debug("Invalid tool budget for %s: %s", key, exc)
                     continue
         self.sanitizer = OutputSanitizer(self.max_reasoning_chars)
 
@@ -66,7 +69,8 @@ class TurnOrchestrator:
             return
         try:
             on_event(event)
-        except Exception:
+        except Exception as exc:
+            logging.debug("Event emission failed: %s", exc)
             return
 
     @staticmethod
@@ -134,12 +138,12 @@ class TurnOrchestrator:
         explicit = self.skill_runtime.resolve_skill_reference(ctx.explicit_skill_id) if ctx.explicit_skill_id else None
         if explicit is not None:
             auto_load_ids.append(explicit.id)
-        elif selection_mode == "hybrid_lazy":
+        elif selection_mode in {"model", "hybrid_lazy"}:
             non_core_selected = [
                 getattr(skill, "id", "")
                 for skill in selected
                 if getattr(skill, "id", "")
-                and getattr(skill, "id", "") not in {"workspace-ops", "search-ops", "shell-ops", "memory-rag", "utilities"}
+                and getattr(skill, "id", "") not in CORE_SKILL_IDS
                 and not bool(getattr(skill, "disable_model_invocation", False))
             ]
             if len(non_core_selected) == 1:
@@ -174,21 +178,10 @@ class TurnOrchestrator:
 
     @staticmethod
     def workspace_mutation_count(state: TurnState) -> int:
-        mutating_tools = {
-            "create_directory",
-            "create_file",
-            "create_files",
-            "edit_file",
-            "delete_path",
-            "move_path",
-            "run_skill_command",
-            "run_skill_entrypoint",
-            "run_skill_script",
-        }
         return sum(
             1
             for record in state.evidence
-            if record.name in mutating_tools and not record.policy_blocked and bool(record.result.get("ok"))
+            if record.name in MUTATING_TOOL_NAMES and not record.policy_blocked and bool(record.result.get("ok"))
         )
 
     @staticmethod
@@ -340,9 +333,7 @@ class TurnOrchestrator:
                 "followup_kind": state.classification.followup_kind,
                 "time_sensitive": state.classification.time_sensitive,
                 "requires_workspace_action": state.classification.requires_workspace_action,
-                "workspace_materialization_target": state.classification.workspace_materialization_target,
-                "workspace_readback_required": state.classification.workspace_readback_required,
-                "strict_output_requested": state.classification.strict_output_requested,
+                "prefer_local_workspace_tools": state.classification.prefer_local_workspace_tools,
                 "candidate_skill_ids": list(state.classification.candidate_skill_ids),
             },
             "search_mode": state.search_mode,
@@ -377,12 +368,6 @@ class TurnOrchestrator:
             forced_search_retry=state.forced_search_retry and state.completion.tool_counts.get("web_search", 0) == 0,
             requires_workspace_action=state.requires_workspace_action,
             forced_action_retry=state.forced_action_retry and not state.completion.tool_counts,
-            workspace_scaffold_action=state.workspace_scaffold_action,
-            workspace_materialization_target=state.workspace_materialization_target,
-            forced_workspace_retry=state.forced_workspace_retry,
-            workspace_readback_required=state.workspace_readback_required,
-            forced_readback_retry=state.forced_readback_retry,
-            strict_output_requested=state.strict_output_requested,
             explicit_external_path=state.explicit_external_path,
             prefer_local_workspace_tools=state.prefer_local_workspace_tools,
             selected_shell_workflow_skills=self.skill_runtime.selected_shell_workflow_skills(state.selected, state.ctx),
@@ -627,7 +612,7 @@ class TurnOrchestrator:
                             return finish(AgentTurnResult(status="error", content="", reasoning=state.full_reasoning, skill_exchanges=state.skill_exchanges, error=force_finalize_reason))
                         break
 
-                    if state.prefer_local_workspace_tools and call.name in {"shell_command", "web_search", "fetch_url", "open_url", "play_youtube"}:
+                    if state.prefer_local_workspace_tools and call.name in LOCAL_WORKSPACE_BLOCKED_TOOLS:
                         if call.name != "shell_command" or not allow_shell_workflow:
                             result = {
                                 "ok": False,
@@ -745,34 +730,6 @@ class TurnOrchestrator:
                     return finish(finalized)
                 state.full_reasoning = finalized.reasoning
                 final = finalized.content
-
-            if state.workspace_materialization_target > 0 and self.workspace_materialization_count(state) < state.workspace_materialization_target:
-                if not state.forced_workspace_retry:
-                    state.forced_workspace_retry = True
-                    continue
-                finalized = self.finalize_turn(
-                    system_content,
-                    state,
-                    stop_event,
-                    on_event,
-                    pass_id,
-                    "Workspace completion rule:\n- The requested workspace content was only partially materialized.\n- Explain plainly what remains incomplete.\n- Do not claim completion.",
-                )
-                return finish_finalized(finalized)
-
-            if state.workspace_readback_required and self.workspace_readback_count(state) <= 0:
-                if not state.forced_readback_retry:
-                    state.forced_readback_retry = True
-                    continue
-                finalized = self.finalize_turn(
-                    system_content,
-                    state,
-                    stop_event,
-                    on_event,
-                    pass_id,
-                    "Workspace readback failure rule:\n- The requested workspace content was created, but it was not read back before finishing.\n- Say that plainly.\n- Do not claim the file contents were verified.",
-                )
-                return finish_finalized(finalized)
 
             if state.search_mode and state.time_sensitive_query and state.completion.tool_counts.get("web_search", 0) == 0:
                 if not state.forced_search_retry:

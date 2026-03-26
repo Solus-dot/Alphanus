@@ -133,56 +133,6 @@ class PromptPolicyRenderer:
                 "- Do not replace an available workspace tool action with manual terminal instructions.\n"
                 "- Only decline if the required workspace tool is unavailable or policy blocks the action."
             )
-        if snapshot.workspace_scaffold_action:
-            blocks.append(
-                "Workspace scaffold rule:\n"
-                "- This request requires creating a local scaffold, not just a directory.\n"
-                "- Do not stop after create_directory alone.\n"
-                "- Materialize the requested files with workspace file tools.\n"
-                "- For multi-file scaffolds or programs, prefer separate create_file calls, one file at a time.\n"
-                "- Avoid batching the whole scaffold into one create_files call unless the user explicitly asks for batching."
-            )
-        elif snapshot.workspace_materialization_target > 0:
-            blocks.append(
-                "Workspace materialization rule:\n"
-                "- This request requires creating local file content, not just a directory.\n"
-                "- Do not stop after create_directory alone.\n"
-                "- Materialize the requested file content with workspace file-creation tools before finishing."
-            )
-        if snapshot.workspace_readback_required:
-            blocks.append(
-                "Workspace readback rule:\n"
-                "- The user explicitly asked you to read back or verify the created file content.\n"
-                "- Do not finish after create or edit tools alone.\n"
-                "- Use read_file or read_files to inspect the result before answering."
-            )
-        if snapshot.workspace_scaffold_action and snapshot.forced_workspace_retry:
-            blocks.append(
-                "Mandatory scaffold completion rule:\n"
-                "- The previous pass stopped before creating the requested files.\n"
-                "- Continue the scaffold now with workspace file-creation tools.\n"
-                "- Do not claim completion until the requested files exist."
-            )
-        elif snapshot.workspace_materialization_target > 0 and snapshot.forced_workspace_retry:
-            blocks.append(
-                "Mandatory workspace completion rule:\n"
-                "- The previous pass stopped before creating the requested file content.\n"
-                "- Continue with workspace file-creation tools now.\n"
-                "- Do not claim completion until the requested file content exists."
-            )
-        if snapshot.workspace_readback_required and snapshot.forced_readback_retry:
-            blocks.append(
-                "Mandatory workspace readback rule:\n"
-                "- The previous pass stopped before reading back the created file content.\n"
-                "- Use read_file or read_files now before answering.\n"
-                "- Do not claim completion until you have inspected the file content."
-            )
-        if snapshot.strict_output_requested:
-            blocks.append(
-                "Exact output rule:\n"
-                "- The user requested a strict response format.\n"
-                "- Follow the requested final answer format exactly."
-            )
         if snapshot.explicit_external_path:
             blocks.append(
                 "Explicit path rule:\n"
@@ -197,9 +147,6 @@ class PromptPolicyRenderer:
                 "Local workspace tool rule:\n"
                 "- This request is about local workspace files or folders.\n"
                 "- Use native workspace tools for local file creation, reading, editing, and folder creation.\n"
-                "- Prefer create_directory for folder creation.\n"
-                "- For multi-file scaffolds or programs, prefer create_file one file at a time so progress stays visible in the UI.\n"
-                "- Use create_files only when batching is acceptable and per-file progress is not important.\n"
                 "- Do not use web_search, fetch_url, open_url, or play_youtube for local workspace file tasks."
             )
             if snapshot.selected_shell_workflow_skills:

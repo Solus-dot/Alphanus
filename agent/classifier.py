@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -112,7 +113,8 @@ class TurnClassifier:
                     seen_skills.add(reg.skill_id)
                 try:
                     payload = json.loads(self.message_text(msg.get("content", "")) or "{}")
-                except Exception:
+                except Exception as exc:
+                    logging.debug("Failed to parse tool result content as JSON: %s", exc)
                     payload = {}
                 data = payload.get("data") if isinstance(payload, dict) else {}
                 loaded_skill_id = str(data.get("skill_id", "")).strip() if isinstance(data, dict) else ""
@@ -197,216 +199,28 @@ class TurnClassifier:
         return ""
 
     def _deterministic_classification(self, ctx: SkillContext) -> TurnClassification:
-        recent_hint_active = self.is_confirmation_like(ctx.user_input) and bool(ctx.recent_routing_hint or ctx.sticky_skill_ids)
-        merged_text = " ".join(part for part in (ctx.user_input, ctx.recent_routing_hint if recent_hint_active else "") if part).lower()
-        if not merged_text:
-            merged_text = str(ctx.user_input or "").lower()
-        request_text = self._combined_request_text(ctx)
+        """Minimal seed classification for structural facts only."""
         explicit_external_path = self._explicit_path_outside_workspace(ctx.user_input)
         followup_kind = "confirmation" if self.is_confirmation_like(ctx.user_input) else "new_request"
 
-        time_sensitive = any(
-            phrase in merged_text
-            for phrase in (
-                "latest",
-                "recent",
-                "current",
-                "today",
-                "right now",
-                "up to date",
-                "current situation",
-                "news",
-                "this week",
-                "this month",
-                "as of",
-            )
-        )
-        requires_workspace_action = self.is_confirmation_like(ctx.user_input) and recent_hint_active and any(
-            marker in merged_text
-            for marker in (
-                "delete ",
-                "remove ",
-                "edit ",
-                "write ",
-                "create ",
-                "rename ",
-                "workspace",
-                "file",
-                "folder",
-                "directory",
-            )
-        )
-        batch_workspace_action = any(term in merged_text for term in ("delete", "remove", "wipe", "clear")) and (
-            "all files" in merged_text
-            or "all the files" in merged_text
-            or "everything" in merged_text
-            or "all contents" in merged_text
-            or "entire workspace" in merged_text
-            or "whole workspace" in merged_text
-            or ("workspace" in merged_text and any(term in merged_text for term in ("all", "everything", "files", "contents")))
-        )
-        prefer_local_workspace_tools = (
-            not explicit_external_path
-            and not any(term in merged_text for term in ("shell", "terminal", "bash", "zsh", "cmd ", "powershell", "run this command"))
-            and not any(term in merged_text for term in ("http://", "https://", "website", "web ", "search ", "google ", "fetch "))
-            and any(
-                marker in merged_text
-                for marker in (
-                    "workspace",
-                    "folder",
-                    "directory",
-                    "file",
-                    "files",
-                    ".py",
-                    "python",
-                    "program",
-                    "package",
-                    "module",
-                    "html",
-                    "css",
-                    "js",
-                    "javascript",
-                    "script",
-                    "style",
-                    "landing page",
-                    "scaffold",
-                    "component",
-                )
-            )
-        )
-        workspace_readback_required = any(
-            marker in request_text
-            for marker in (
-                "read it back",
-                "read back",
-                "read the file back",
-                "confirm the contents",
-                "summarize what was written",
-                "summarise what was written",
-                "tell me how many",
-                "count the",
-                "verify the contents",
-            )
-        )
-        strict_output_requested = any(
-            marker in request_text
-            for marker in (
-                "reply with exactly",
-                "respond with exactly",
-                "answer with exactly",
-                "reply with one line",
-                "exactly one line",
-                "reply with just",
-                "respond with just",
-                'exactly: "',
-                "exactly: '",
-            )
-        )
-        requires_post_tool_reasoning = strict_output_requested or any(
-            marker in request_text
-            for marker in (
-                " then ",
-                " after ",
-                "read it back",
-                "read back",
-                "reply with",
-                "respond with",
-                "answer with",
-                "summarize",
-                "summarise",
-                "confirm the contents",
-                "tell me how many",
-                "count the",
-                "verify",
-                "should i",
-                "should we",
-                "recommend",
-                "umbrella",
-                "do i need",
-                "need to bring",
-                "worth bringing",
-            )
-        )
-        workspace_scaffold_action = any(term in request_text for term in ("make ", "create ", "build ", "generate ", "save it in", "save them in")) and any(
-            term in request_text
-            for term in (
-                "landing page",
-                "html",
-                "css",
-                "javascript",
-                "js",
-                "python",
-                ".py",
-                "program",
-                "package",
-                "module",
-                "website",
-                "web page",
-                "page",
-                "scaffold",
-            )
-        ) and any(
-            term in request_text
-            for term in (
-                "folder",
-                "directory",
-                "files",
-                " file",
-                ".py",
-                "main.py",
-                "html css",
-                "html, css",
-                "css and javascript",
-                "html css and javascript",
-            )
-        )
-        workspace_materialization_target = 0
-        if any(term in request_text for term in ("make ", "create ", "build ", "generate ", "write ", "save it in", "save them in")):
-            requested_files = 0
-            requested_exts = self.skill_runtime.requested_artifact_extensions(ctx)
-            if "html" in request_text:
-                requested_files += 1
-            if "css" in request_text:
-                requested_files += 1
-            if "javascript" in request_text or " js " in f" {request_text} " or "script.js" in request_text:
-                requested_files += 1
-            if requested_exts:
-                requested_files = max(requested_files, len(requested_exts))
-            if requested_files == 0 and any(term in request_text for term in ("landing page", "website", "web page")):
-                requested_files = 1
-            if requested_files == 0 and any(term in request_text for term in (" file", "files", ".py", ".js", ".html", ".css", "python", "html", "css", "javascript", "js", "script", "code", "program")):
-                requested_files = 1
-            if "files" in request_text and requested_files < 2:
-                requested_files = 2
-            workspace_materialization_target = requested_files
-
         candidate_skill_ids: List[str] = []
+        recent_hint_active = self.is_confirmation_like(ctx.user_input) and bool(ctx.recent_routing_hint or ctx.sticky_skill_ids)
         if recent_hint_active:
             candidate_skill_ids.extend(ctx.sticky_skill_ids[:3])
+
         return TurnClassification(
-            time_sensitive=time_sensitive,
-            requires_workspace_action=requires_workspace_action,
-            batch_workspace_action=batch_workspace_action,
-            prefer_local_workspace_tools=prefer_local_workspace_tools,
-            workspace_scaffold_action=workspace_scaffold_action,
-            workspace_materialization_target=workspace_materialization_target,
-            workspace_readback_required=workspace_readback_required,
-            strict_output_requested=strict_output_requested,
-            requires_post_tool_reasoning=requires_post_tool_reasoning,
             explicit_external_path=explicit_external_path,
             followup_kind=followup_kind,
             candidate_skill_ids=candidate_skill_ids,
         )
 
     def _should_model_classify(self, ctx: SkillContext, seed: TurnClassification) -> bool:
-        if not self.llm_client.enable_structured_classification:
-            return False
-        has_execution_context = bool(
-            ctx.sticky_skill_ids
-            or "assistant just said:" in (ctx.recent_routing_hint or "")
-            or "tools just used:" in (ctx.recent_routing_hint or "")
-        )
-        return bool(has_execution_context or seed.requires_workspace_action or seed.explicit_external_path)
+        """Model classification is the default path.
+
+        Only skipped when structured classification is explicitly disabled
+        in the LLM client configuration.
+        """
+        return bool(self.llm_client.enable_structured_classification)
 
     @staticmethod
     def _parse_json_object(content: str) -> Dict[str, Any]:
@@ -435,10 +249,8 @@ class TurnClassifier:
         prompt = (
             "Classify the next local assistant turn.\n"
             "Return strict JSON only with these fields:\n"
-            '{"time_sensitive":false,"requires_workspace_action":false,"batch_workspace_action":false,'
-            '"prefer_local_workspace_tools":false,"workspace_scaffold_action":false,"workspace_materialization_target":0,'
-            '"workspace_readback_required":false,"strict_output_requested":false,"requires_post_tool_reasoning":false,'
-            '"followup_kind":"new_request","candidate_skill_ids":[]}\n'
+            '{"time_sensitive":false,"requires_workspace_action":false,'
+            '"prefer_local_workspace_tools":false,"followup_kind":"new_request","candidate_skill_ids":[]}\n'
             "Allowed followup_kind values: new_request, confirmation, contextual_followup.\n"
             "Use candidate_skill_ids only from the supplied shortlist.\n"
             "Do not explain."
@@ -474,13 +286,7 @@ class TurnClassifier:
         merged = TurnClassification(
             time_sensitive=bool(parsed.get("time_sensitive", seed.time_sensitive)),
             requires_workspace_action=bool(parsed.get("requires_workspace_action", seed.requires_workspace_action)),
-            batch_workspace_action=bool(parsed.get("batch_workspace_action", seed.batch_workspace_action)),
             prefer_local_workspace_tools=bool(parsed.get("prefer_local_workspace_tools", seed.prefer_local_workspace_tools)),
-            workspace_scaffold_action=bool(parsed.get("workspace_scaffold_action", seed.workspace_scaffold_action)),
-            workspace_materialization_target=max(0, int(parsed.get("workspace_materialization_target", seed.workspace_materialization_target) or 0)),
-            workspace_readback_required=bool(parsed.get("workspace_readback_required", seed.workspace_readback_required)),
-            strict_output_requested=bool(parsed.get("strict_output_requested", seed.strict_output_requested)),
-            requires_post_tool_reasoning=bool(parsed.get("requires_post_tool_reasoning", seed.requires_post_tool_reasoning)),
             explicit_external_path=seed.explicit_external_path,
             followup_kind=followup_kind,
             candidate_skill_ids=candidate_skill_ids or seed.candidate_skill_ids,
@@ -544,12 +350,6 @@ class TurnClassifier:
                 break
         return out or None
 
-    def _prefer_deterministic_skill_selection(self, ctx: SkillContext) -> bool:
-        if ctx.explicit_skill_id:
-            return True
-        ranked = [(score, skill) for score, skill in self.skill_runtime.score_skills(ctx) if score > 0]
-        return self.skill_runtime.should_use_deterministic_selection(ranked)
-
     def _contextual_skill_fallback(self, ctx: SkillContext) -> List[Any]:
         if not (self.is_confirmation_like(ctx.user_input) and (ctx.recent_routing_hint or ctx.sticky_skill_ids)):
             return []
@@ -595,13 +395,24 @@ class TurnClassifier:
 
         candidate_items = self.skill_runtime.propose_skill_candidates(ctx, top_n=max(limit * 3, 6))
         heuristic_fallback = self.skill_runtime.rerank_skill_candidates(ctx, candidate_items, limit)
-        if mode == "hybrid_lazy" and self._prefer_deterministic_skill_selection(ctx):
+        if mode == "heuristic":
             return SkillRouteDecision(
                 selected_skill_ids=[skill.id for skill in heuristic_fallback],
                 shortlisted_skill_ids=[item.skill.id for item in candidate_items],
                 candidate_skill_ids=list(classification.candidate_skill_ids),
                 used_model=False,
-                source="deterministic",
+                source="heuristic",
+            )
+
+        classified_selection = self.skill_runtime.skills_by_ids(classification.candidate_skill_ids[:limit])
+        if classified_selection:
+            shortlisted_ids = [item.skill.id for item in candidate_items]
+            return SkillRouteDecision(
+                selected_skill_ids=[skill.id for skill in classified_selection],
+                shortlisted_skill_ids=shortlisted_ids,
+                candidate_skill_ids=[skill.id for skill in classified_selection],
+                used_model=classification.used_model,
+                source="classification" if classification.used_model else "contextual",
             )
 
         snapshot = self.get_skill_snapshot()

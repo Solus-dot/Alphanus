@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import ast
 import hashlib
 import importlib.util
@@ -426,7 +428,7 @@ class SkillRuntime:
         self.tools_cfg = self.config.get("tools", {})
         self.selection_mode = str(self.skills_cfg.get("selection_mode", "all_enabled")).strip().lower()
         if self.selection_mode == "hybrid_lazy":
-            self.selection_mode = "hybrid_lazy"
+            self.selection_mode = "model"
         self.max_active_skills = int(self.skills_cfg.get("max_active_skills", 6))
         self.shortlist_size = max(1, int(self.skills_cfg.get("shortlist_size", 6)))
         load_cfg = self.skills_cfg.get("load", {}) if isinstance(self.skills_cfg.get("load"), dict) else {}
@@ -487,7 +489,8 @@ class SkillRuntime:
                     text=True,
                     timeout=5,
                 )
-            except Exception:
+            except Exception as exc:
+                logging.debug("npm root probe failed: %s", exc)
                 proc = None
             node_root = (proc.stdout or "").strip() if proc and proc.returncode == 0 else ""
             if node_root:
@@ -543,7 +546,8 @@ class SkillRuntime:
         if root.is_dir():
             try:
                 docs.extend(sorted(root.rglob(SKILL_DOC)))
-            except Exception:
+            except Exception as exc:
+                logging.debug("rglob for SKILL.md failed in %s: %s", root, exc)
                 docs = docs or []
         for skill_doc in docs:
             skill_dir = skill_doc.parent.resolve()
@@ -599,7 +603,8 @@ class SkillRuntime:
                     continue
                 try:
                     record = self._load_agent_record(path.resolve(), pack_id, source_tier)
-                except Exception:
+                except Exception as exc:
+                    logging.debug("Failed to load agent record %s: %s", path, exc)
                     continue
                 if record.name not in self.agents:
                     records.append(record)
@@ -653,7 +658,8 @@ class SkillRuntime:
     def _read_tool_specs(path: Path) -> Optional[Dict[str, Any]]:
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        except Exception:
+        except Exception as exc:
+            logging.debug("Failed to parse tools.py at %s: %s", path, exc)
             return None
 
         has_execute = False
@@ -671,7 +677,8 @@ class SkillRuntime:
                 if isinstance(target, ast.Name) and target.id == "TOOL_SPECS":
                     try:
                         value = ast.literal_eval(node.value)
-                    except Exception:
+                    except Exception as exc:
+                        logging.debug("Failed to evaluate TOOL_SPECS literal at %s: %s", path, exc)
                         return None
                     return value if isinstance(value, dict) else None
         return None
@@ -1934,18 +1941,6 @@ class SkillRuntime:
             bonus += 6
         return bonus
 
-    @staticmethod
-    def should_use_deterministic_selection(scored: List[Tuple[int, SkillManifest]]) -> bool:
-        if len(scored) <= 1:
-            return True
-        top_score = scored[0][0]
-        second_score = scored[1][0]
-        if top_score >= 60 and top_score - second_score >= 18:
-            return True
-        if top_score >= 90 and second_score <= 24:
-            return True
-        return False
-
     def score_skills(self, ctx: SkillContext) -> List[Tuple[int, SkillManifest]]:
         text = ctx.user_input.lower()
         attachments = " ".join(ctx.attachments).lower()
@@ -2196,8 +2191,8 @@ class SkillRuntime:
                     hook_out = hooks.pre_prompt(ctx)  # type: ignore[attr-defined]
                     if hook_out:
                         extra = str(hook_out).strip()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logging.warning("pre_prompt hook failed for skill %s: %s", skill.id, exc)
             body = self._ensure_skill_prompt(skill).strip()
             if extra:
                 body += "\n\n" + extra
@@ -2261,8 +2256,6 @@ class SkillRuntime:
                 continue
             for prefix in ("~/.codex/skills", "~/.claude/skills", "~/.config/opencode/skills", "~/.agents/skills"):
                 replacements[f"{prefix}/{candidate.id}"] = str(candidate.path)
-            for prefix in ("/home/weizhena/.codex/skills", "/home/weizhena/.claude/skills"):
-                replacements[f"{prefix}/{candidate.id}"] = str(candidate.path)
         pack_id = self._skill_pack_id(skill)
         pack = self.skill_packs.get(pack_id)
         if pack:
@@ -2273,8 +2266,6 @@ class SkillRuntime:
                 agent_root = str(agent.path.parent)
                 for prefix in ("~/.codex/agents", "~/.claude/agents", "~/.config/opencode/agents", "~/.agents/agents"):
                     replacements[f"{prefix}/{agent_name}"] = str(agent.path)
-                    replacements[f"{prefix}/web-search-modules"] = str(Path(agent_root) / "web-search-modules")
-                for prefix in ("/home/weizhena/.codex/agents", "/home/weizhena/.claude/agents"):
                     replacements[f"{prefix}/web-search-modules"] = str(Path(agent_root) / "web-search-modules")
         for source, target in sorted(replacements.items(), key=lambda item: -len(item[0])):
             out = out.replace(source, target)
@@ -2741,7 +2732,8 @@ class SkillRuntime:
                 continue
             try:
                 allowed, reason = hooks.pre_action(ctx, action_name, args)  # type: ignore[attr-defined]
-            except Exception:
+            except Exception as exc:
+                logging.warning("pre_action hook failed for skill %s action %s: %s", skill.id, action_name, exc)
                 continue
             if not allowed:
                 return False, str(reason or "Denied by skill policy")
@@ -2755,7 +2747,8 @@ class SkillRuntime:
             if hooks and hasattr(hooks, "post_response"):
                 try:
                     hooks.post_response(ctx, text)  # type: ignore[attr-defined]
-                except Exception:
+                except Exception as exc:
+                    logging.warning("post_response hook failed for skill %s: %s", skill.id, exc)
                     continue
 
     @staticmethod
