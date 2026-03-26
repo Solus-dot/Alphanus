@@ -32,13 +32,33 @@
   },
   "skills": {
     "selection_mode": "model",
-    "max_active_skills": 2,
-    "strict_capability_policy": false
+    "max_active_skills": 5,
+    "strict_capability_policy": false,
+    "shortlist_size": 6,
+    "load": {
+      "extra_dirs": [],
+      "watch": true,
+      "upward_scan": true
+    },
+    "compat": {
+      "vendor_extensions": "major"
+    }
+  },
+  "agents": {
+    "enable_skill_agents": true
+  },
+  "runtime": {
+    "ask_user_tool": true
   },
   "tools": {
     "core_exposure_policy": "coding_core"
   },
   "search": {
     "provider": "tavily"
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "json",
+    "path": "./logs/runtime.jsonl"
   }
 }

@@ -23,9 +23,6 @@ class LivePreviewState:
     closed: bool = False
     printed_len: int = 0
     line_buf: str = ""
-    rendered_chars: int = 0
-    rendered_lines: int = 0
-    truncated: bool = False
     preview_lines: List[str] = field(default_factory=list)
     flushed_item_count: int = 0
     rendered_filepaths: Set[str] = field(default_factory=set)
@@ -35,15 +32,11 @@ class LiveToolPreviewManager:
     def __init__(
         self,
         streamed_file_tools: Optional[Set[str]] = None,
-        max_live_preview_chars: int = 12000,
-        max_live_preview_lines: int = 180,
         max_static_preview_chars: int = 8000,
         max_static_preview_lines: int = 140,
     ) -> None:
         self.streamed_file_tools = set(streamed_file_tools or {"create_file", "edit_file", "create_files"})
         self.draft_preview_tools = {name for name in self.streamed_file_tools if name != "edit_file"}
-        self.max_live_preview_chars = int(max_live_preview_chars)
-        self.max_live_preview_lines = int(max_live_preview_lines)
         self.max_static_preview_chars = int(max_static_preview_chars)
         self.max_static_preview_lines = int(max_static_preview_lines)
         self._streams: Dict[str, LivePreviewState] = {}
@@ -137,9 +130,6 @@ class LiveToolPreviewManager:
                 state.printed_len = 0
                 state.line_buf = ""
                 state.preview_lines = []
-                state.rendered_chars = 0
-                state.rendered_lines = 0
-                state.truncated = False
                 state.opened = False
             state.filepath = filepath
             state.item_index = current_index
@@ -156,38 +146,18 @@ class LiveToolPreviewManager:
             state.printed_len = 0
             state.line_buf = ""
             state.preview_lines = []
-            state.rendered_chars = 0
-            state.rendered_lines = 0
-            state.truncated = False
 
         delta = content[state.printed_len :]
         state.printed_len = len(content)
 
-        if delta and not state.truncated:
+        if delta:
             state.line_buf += delta
             while "\n" in state.line_buf:
                 line, state.line_buf = state.line_buf.split("\n", 1)
-                if (
-                    state.rendered_lines >= self.max_live_preview_lines
-                    or state.rendered_chars >= self.max_live_preview_chars
-                ):
-                    state.truncated = True
-                    state.line_buf = ""
-                    break
-
-                remaining_chars = self.max_live_preview_chars - state.rendered_chars
-                out_line = line[:remaining_chars]
-                state.preview_lines.append(out_line)
-                state.rendered_chars += len(out_line) + 1
-                state.rendered_lines += 1
-
-                if len(line) > remaining_chars:
-                    state.truncated = True
-                    state.line_buf = ""
-                    break
+                state.preview_lines.append(line)
 
         preview_lines = list(state.preview_lines)
-        if state.line_buf and not state.truncated:
+        if state.line_buf:
             preview_lines.append(state.line_buf)
         if preview_lines:
             update_preview(preview_lines, self._guess_language(state.filepath))
@@ -322,20 +292,13 @@ class LiveToolPreviewManager:
         clear_preview: ClearPreviewFn,
     ) -> None:
         tail = state.line_buf
-        if tail and not state.truncated:
-            remaining_chars = self.max_live_preview_chars - state.rendered_chars
-            if remaining_chars > 0:
-                state.preview_lines.append(tail[:remaining_chars])
-                state.rendered_chars += min(len(tail), remaining_chars)
-            if len(tail) > remaining_chars:
-                state.truncated = True
+        if tail:
+            state.preview_lines.append(tail)
             state.line_buf = ""
         if state.preview_lines:
             write_code(state.preview_lines, self._guess_language(state.filepath), 2)
             if state.filepath:
                 state.rendered_filepaths.add(state.filepath)
-        if state.truncated:
-            write_indented("[dim]... (live preview truncated) ...[/dim]", 2)
         clear_preview()
 
     @staticmethod

@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import json
-import os
-import tempfile
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 SCHEMA_VERSION = "1.0.0"
 _COMPACTED_MARKER = "\n...[compacted]"
@@ -166,14 +162,11 @@ class ConvTree:
         self._active_path_cache: List[Turn] = []
         self._history_messages_cache_key: tuple[str, int] | None = None
         self._history_messages_cache: List[dict] = []
-        self._render_tree_cache: Dict[tuple[int, str, int], List[Tuple[str, str, bool]]] = {}
-
     def _invalidate_caches(self) -> None:
         self._active_path_cache_id = ""
         self._active_path_cache = []
         self._history_messages_cache_key = None
         self._history_messages_cache = []
-        self._render_tree_cache = {}
 
     def _mark_changed(self) -> None:
         self._version += 1
@@ -313,53 +306,6 @@ class ConvTree:
         self._invalidate_caches()
         return self.current
 
-    def _status_marker(self, node: Turn) -> str:
-        state = str(getattr(node, "assistant_state", "pending") or "pending")
-        if state == "pending":
-            return "…"
-        if state == "cancelled":
-            return "✖"
-        if state == "error":
-            return "!"
-        return "✓"
-
-    def render_tree(self, width: int = 80) -> List[Tuple[str, str, bool]]:
-        cache_key = (width, self.current_id, self._version)
-        cached = self._render_tree_cache.get(cache_key)
-        if cached is not None:
-            return list(cached)
-        active_ids = {t.id for t in self.active_path}
-        rows: List[Tuple[str, str, bool]] = []
-
-        def dot(node_id: str) -> str:
-            if node_id == self.current_id:
-                return "●"
-            if node_id in active_ids:
-                return "○"
-            return "·"
-
-        def node_line(node_id: str, depth: int) -> str:
-            node = self.nodes[node_id]
-            label = f" [{node.label}]" if node.label else (" [branch]" if node.branch_root else "")
-            branch = " ⎇" if node.branch_root else ""
-            indent = "  " * max(0, depth)
-            text = node.short(max_len=max(8, width - len(indent) - 10))
-            return f"{indent}{dot(node_id)}{label}{branch} {self._status_marker(node)}  {text}"
-
-        def walk(node_id: str, depth: int) -> None:
-            for child_id in self.nodes[node_id].children:
-                child = self.nodes[child_id]
-                child_depth = depth + (1 if child.branch_root else 0)
-                rows.append((node_line(child_id, child_depth), child_id, child_id in active_ids))
-                walk(child_id, child_depth)
-
-        rows.append(("● [root]", "root", True))
-        walk("root", 0)
-        if len(rows) == 1:
-            rows.append(("(empty)", "sub", False))
-        self._render_tree_cache[cache_key] = list(rows)
-        return rows
-
     def to_dict(self) -> dict:
         return {
             "schema_version": SCHEMA_VERSION,
@@ -391,7 +337,6 @@ class ConvTree:
         tree._active_path_cache = []
         tree._history_messages_cache_key = None
         tree._history_messages_cache = []
-        tree._render_tree_cache = {}
         tree.compact_inactive_branches()
         return tree
 
@@ -456,22 +401,3 @@ class ConvTree:
                 )
             if node.skill_exchanges:
                 node.skill_exchanges = [self._compact_skill_message(msg) for msg in node.skill_exchanges]
-
-    def save(self, path: str) -> None:
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
-        fd, tmp_path = tempfile.mkstemp(prefix=target.name + ".", dir=str(target.parent))
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(payload)
-            os.replace(tmp_path, target)
-        finally:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-
-    @staticmethod
-    def load(path: str) -> "ConvTree":
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        return ConvTree.from_dict(data)

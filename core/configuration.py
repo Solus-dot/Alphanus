@@ -30,7 +30,7 @@ _SECRET_KEYS = {
     "secret",
 }
 _SECRET_SUFFIXES = ("_api_key", "_apikey", "_token", "_secret", "_password")
-_ALLOWED_SKILL_SELECTION_MODES = {"model", "heuristic", "all_enabled"}
+_ALLOWED_SKILL_SELECTION_MODES = {"model", "heuristic", "all_enabled", "hybrid_lazy"}
 _ALLOWED_SEARCH_PROVIDERS = {"tavily", "brave"}
 _ALLOWED_EMBEDDING_BACKENDS = {"transformer", "hash"}
 _ALLOWED_CORE_EXPOSURE_POLICIES = {"coding_core"}
@@ -55,6 +55,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_reasoning_chars": 20000,
         "compact_tool_results_in_history": False,
         "compact_tool_result_tools": [],
+        "classifier_model": "",
+        "classifier_use_primary_model": True,
+        "enable_structured_classification": True,
+        "max_classifier_tokens": 256,
     },
     "workspace": {
         "path": "~/Desktop/Alphanus-Workspace",
@@ -79,12 +83,32 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "selection_mode": "model",
         "max_active_skills": 2,
         "strict_capability_policy": False,
+        "shortlist_size": 6,
+        "load": {
+            "extra_dirs": [],
+            "watch": True,
+            "upward_scan": True,
+        },
+        "compat": {
+            "vendor_extensions": "major",
+        },
+    },
+    "agents": {
+        "enable_skill_agents": True,
+    },
+    "runtime": {
+        "ask_user_tool": True,
     },
     "tools": {
         "core_exposure_policy": "coding_core",
     },
     "search": {
         "provider": "tavily",
+    },
+    "logging": {
+        "level": "INFO",
+        "format": "json",
+        "path": "./logs/runtime.jsonl",
     },
     "tui": {
         "chat_log_max_lines": 5000,
@@ -433,6 +457,32 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         path="agent.compact_tool_result_tools",
         warnings=warnings,
     )
+    agent_cfg["classifier_model"] = _coerce_string(
+        agent_cfg.get("classifier_model"),
+        str(default_agent.get("classifier_model", "")),
+        path="agent.classifier_model",
+        warnings=warnings,
+    )
+    agent_cfg["classifier_use_primary_model"] = _coerce_bool(
+        agent_cfg.get("classifier_use_primary_model"),
+        bool(default_agent.get("classifier_use_primary_model", True)),
+        path="agent.classifier_use_primary_model",
+        warnings=warnings,
+    )
+    agent_cfg["enable_structured_classification"] = _coerce_bool(
+        agent_cfg.get("enable_structured_classification"),
+        bool(default_agent.get("enable_structured_classification", True)),
+        path="agent.enable_structured_classification",
+        warnings=warnings,
+    )
+    agent_cfg["max_classifier_tokens"] = _coerce_int(
+        agent_cfg.get("max_classifier_tokens"),
+        int(default_agent.get("max_classifier_tokens", 256)),
+        path="agent.max_classifier_tokens",
+        warnings=warnings,
+        minimum=32,
+        maximum=4096,
+    )
     raw_budgets = agent_cfg.get("tool_budgets")
     if isinstance(raw_budgets, dict):
         clean_budgets: Dict[str, int] = {}
@@ -576,7 +626,67 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         path="skills.strict_capability_policy",
         warnings=warnings,
     )
+    skills_cfg["shortlist_size"] = _coerce_int(
+        skills_cfg.get("shortlist_size"),
+        int(DEFAULT_CONFIG["skills"]["shortlist_size"]),
+        path="skills.shortlist_size",
+        warnings=warnings,
+        minimum=1,
+        maximum=20,
+    )
+    load_cfg = skills_cfg.get("load", {}) if isinstance(skills_cfg.get("load"), dict) else {}
+    extra_dirs = load_cfg.get("extra_dirs", [])
+    if isinstance(extra_dirs, str):
+        extra_dirs = [extra_dirs]
+    if not isinstance(extra_dirs, list):
+        extra_dirs = []
+        _warn(warnings, "skills.load.extra_dirs: expected list, using default")
+    load_cfg["extra_dirs"] = [str(item).strip() for item in extra_dirs if str(item).strip()]
+    load_cfg["watch"] = _coerce_bool(
+        load_cfg.get("watch"),
+        bool(DEFAULT_CONFIG["skills"]["load"]["watch"]),
+        path="skills.load.watch",
+        warnings=warnings,
+    )
+    load_cfg["upward_scan"] = _coerce_bool(
+        load_cfg.get("upward_scan"),
+        bool(DEFAULT_CONFIG["skills"]["load"]["upward_scan"]),
+        path="skills.load.upward_scan",
+        warnings=warnings,
+    )
+    skills_cfg["load"] = load_cfg
+    compat_cfg = skills_cfg.get("compat", {}) if isinstance(skills_cfg.get("compat"), dict) else {}
+    compat_mode = _coerce_string(
+        compat_cfg.get("vendor_extensions"),
+        str(DEFAULT_CONFIG["skills"]["compat"]["vendor_extensions"]),
+        path="skills.compat.vendor_extensions",
+        warnings=warnings,
+        allow_empty=False,
+    ).lower()
+    if compat_mode not in {"none", "major", "all"}:
+        _warn(warnings, f"skills.compat.vendor_extensions: unsupported {compat_mode!r}, using default")
+        compat_mode = str(DEFAULT_CONFIG["skills"]["compat"]["vendor_extensions"])
+    compat_cfg["vendor_extensions"] = compat_mode
+    skills_cfg["compat"] = compat_cfg
     merged["skills"] = skills_cfg
+
+    agents_cfg = merged.get("agents", {}) if isinstance(merged.get("agents"), dict) else {}
+    agents_cfg["enable_skill_agents"] = _coerce_bool(
+        agents_cfg.get("enable_skill_agents"),
+        bool(DEFAULT_CONFIG["agents"]["enable_skill_agents"]),
+        path="agents.enable_skill_agents",
+        warnings=warnings,
+    )
+    merged["agents"] = agents_cfg
+
+    runtime_cfg = merged.get("runtime", {}) if isinstance(merged.get("runtime"), dict) else {}
+    runtime_cfg["ask_user_tool"] = _coerce_bool(
+        runtime_cfg.get("ask_user_tool"),
+        bool(DEFAULT_CONFIG["runtime"]["ask_user_tool"]),
+        path="runtime.ask_user_tool",
+        warnings=warnings,
+    )
+    merged["runtime"] = runtime_cfg
 
     tools_cfg = merged.get("tools", {}) if isinstance(merged.get("tools"), dict) else {}
     core_policy = _coerce_string(
@@ -605,6 +715,37 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         provider = str(DEFAULT_CONFIG["search"]["provider"])
     search_cfg["provider"] = provider
     merged["search"] = search_cfg
+
+    logging_cfg = merged.get("logging", {}) if isinstance(merged.get("logging"), dict) else {}
+    level = _coerce_string(
+        logging_cfg.get("level"),
+        str(DEFAULT_CONFIG["logging"]["level"]),
+        path="logging.level",
+        warnings=warnings,
+        allow_empty=False,
+    ).upper()
+    if level not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}:
+        _warn(warnings, f"logging.level: unsupported {level!r}, using default")
+        level = str(DEFAULT_CONFIG["logging"]["level"])
+    logging_cfg["level"] = level
+    fmt = _coerce_string(
+        logging_cfg.get("format"),
+        str(DEFAULT_CONFIG["logging"]["format"]),
+        path="logging.format",
+        warnings=warnings,
+        allow_empty=False,
+    ).lower()
+    if fmt not in {"plain", "json"}:
+        _warn(warnings, f"logging.format: unsupported {fmt!r}, using default")
+        fmt = str(DEFAULT_CONFIG["logging"]["format"])
+    logging_cfg["format"] = fmt
+    logging_cfg["path"] = _coerce_string(
+        logging_cfg.get("path"),
+        str(DEFAULT_CONFIG["logging"]["path"]),
+        path="logging.path",
+        warnings=warnings,
+    )
+    merged["logging"] = logging_cfg
 
     tui_cfg = merged.get("tui", {}) if isinstance(merged.get("tui"), dict) else {}
     tui_cfg["chat_log_max_lines"] = _coerce_int(

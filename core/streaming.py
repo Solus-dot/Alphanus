@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import json
 import select
 import ssl
@@ -59,7 +61,8 @@ def _extract_stream_socket(resp):
             try:
                 fileno()
                 return candidate
-            except Exception:
+            except Exception as exc:
+                logging.debug("Socket fileno() check failed for %s: %s", type(candidate).__name__, exc)
                 continue
     return None
 

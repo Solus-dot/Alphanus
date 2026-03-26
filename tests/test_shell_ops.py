@@ -204,8 +204,18 @@ def test_memory_skill_still_selected_for_personal_fact_queries(tmp_path: Path):
 def test_shell_confirmation_reuses_recent_assistant_action_context(mocker, tmp_path: Path):
     runtime = _runtime(tmp_path, {"skills": {"selection_mode": "model", "max_active_skills": 2}})
     agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
+    mocker.patch("agent.classifier.TurnClassifier._should_model_classify", return_value=True)
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        if pass_id == "turn_classify":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "stop",
+                    "content": '{"followup_kind":"confirmation","candidate_skill_ids":["shell-ops"]}',
+                },
+            )()
         assert pass_id == "skill_route"
         return type("R", (), {"finish_reason": "stop", "content": '{"skills": []}'})()
 

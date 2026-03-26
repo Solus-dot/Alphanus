@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from agent.core import Agent
+from agent.types import TurnClassification
 from core.memory import VectorMemory
 from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
@@ -232,6 +233,9 @@ def test_agent_requests_final_answer_if_post_tool_content_empty(mocker, runtime:
         }
     }
     agent = Agent(cfg, runtime)
+    shortlist = [type("C", (), {"skill": runtime.get_skill("workspace-ops")})()]
+    mocker.patch.object(runtime, "propose_skill_candidates", return_value=shortlist)
+    mocker.patch.object(runtime, "rerank_skill_candidates", return_value=[])
 
     chat_reqs = []
     events = []
@@ -291,6 +295,61 @@ def test_agent_requests_final_answer_if_post_tool_content_empty(mocker, runtime:
         and not evt.get("has_tool_calls")
         for evt in events
     )
+
+
+def test_agent_does_not_finish_after_helper_file_for_opaque_artifact_request(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+    chat_reqs = []
+
+    mocker.patch.object(agent, "_select_skills", return_value=runtime.enabled_skills())
+    mocker.patch.object(runtime, "requested_opaque_artifact_extensions", return_value=[".docx"])
+    mocker.patch.object(runtime, "selected_artifact_materializers", return_value=["docx:shell_command"])
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\\"northstar-proposal.js\\\", \\\"content\\\": \\\"console.log(1)\\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        if len(chat_reqs) == 2:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"Continuing with the DOCX workflow."}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        raise AssertionError("Unexpected extra completion call")
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "create northstar-proposal.docx"}],
+        user_input="create northstar-proposal.docx",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert result.content == "Continuing with the DOCX workflow."
+    assert len(chat_reqs) == 2
 
 
 def test_skill_snapshot_refreshes_only_after_runtime_generation_changes(tmp_path: Path):
@@ -456,8 +515,23 @@ def test_confirmation_turn_reuses_immediate_prior_skill_context(mocker, runtime:
 def test_contextual_followup_reuses_immediate_prior_skill_context(mocker, runtime: SkillRuntime):
     runtime.config = {"skills": {"selection_mode": "model", "max_active_skills": 2}}
     agent = Agent({"agent": {}}, runtime)
+    mocker.patch("agent.classifier.TurnClassifier._should_model_classify", return_value=True)
+
+    calls = []
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        calls.append(pass_id)
+        if pass_id == "turn_classify":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "stop",
+                    "content": '{"followup_kind":"contextual_followup","candidate_skill_ids":["workspace-ops"]}',
+                },
+            )()
+        if pass_id == "skill_route":
+            return type("R", (), {"finish_reason": "stop", "content": '{"skills":["workspace-ops"]}'})()
         return type("R", (), {"finish_reason": "stop", "content": '{"skills":["workspace-ops"]}'})()
 
     mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
@@ -479,7 +553,34 @@ def test_contextual_followup_reuses_immediate_prior_skill_context(mocker, runtim
     ]
 
     ctx = agent._build_skill_context("Where is JS?", [], [], history_messages)
-    assert agent._should_use_recent_routing_hint(ctx) is True
+
+    selected = agent._select_skills(ctx, threading.Event())
+    assert [skill.id for skill in selected] == ["workspace-ops"]
+    assert "turn_classify" in calls
+    assert "skill_route" not in calls
+
+
+def test_contextual_followup_seed_reuses_immediate_prior_skill_context(runtime: SkillRuntime):
+    runtime.config = {"skills": {"selection_mode": "model", "max_active_skills": 2}}
+    agent = Agent({"agent": {}}, runtime)
+
+    history_messages = [
+        {"role": "user", "content": "create a bakery landing page in a folder called 1738 with html css js"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "create_file",
+                        "arguments": '{"filepath":"1738/index.html","content":"<html></html>"}',
+                    }
+                }
+            ],
+        },
+        {"role": "tool", "name": "create_file", "content": '{"ok": true, "data": {"filepath": "1738/index.html"}}'},
+    ]
+
+    ctx = agent._build_skill_context("Where is JS?", [], [], history_messages)
 
     selected = agent._select_skills(ctx, threading.Event())
     assert [skill.id for skill in selected] == ["workspace-ops"]
@@ -488,6 +589,7 @@ def test_contextual_followup_reuses_immediate_prior_skill_context(mocker, runtim
 def test_confirmation_workspace_action_retries_instead_of_accepting_manual_terminal_advice(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
+    mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation"))
 
     calls = []
 
@@ -529,12 +631,13 @@ def test_confirmation_workspace_action_retries_instead_of_accepting_manual_termi
 
     assert result.status == "done"
     assert result.content == "Done with workspace tools."
-    assert calls == ["skill_route", "pass_1", "pass_2"]
+    assert calls[-2:] == ["pass_1", "pass_2"]
 
 
 def test_confirmation_workspace_action_rejects_manual_terminal_advice_after_retry(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
+    mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation"))
 
     calls = []
 
@@ -542,6 +645,17 @@ def test_confirmation_workspace_action_rejects_manual_terminal_advice_after_retr
         calls.append(pass_id)
         if pass_id == "skill_route":
             return type("R", (), {"finish_reason": "stop", "content": '{"skills":["workspace-ops"]}'})()
+        if pass_id == "pass_2_final":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "stop",
+                    "content": "I couldn't complete that workspace action because no workspace tool actually ran.",
+                    "reasoning": "",
+                    "tool_calls": [],
+                },
+            )()
         return type(
             "R",
             (),
@@ -562,14 +676,15 @@ def test_confirmation_workspace_action_rejects_manual_terminal_advice_after_retr
     )
 
     assert result.status == "done"
-    assert "failed to use the available workspace tools" in result.content
+    assert "couldn't complete that workspace action" in result.content.lower()
     assert "rm -rf" not in result.content
-    assert calls == ["skill_route", "pass_1", "pass_2"]
+    assert "pass_2_final" in calls
 
 
 def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_use(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
+    mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation"))
 
     calls = []
 
@@ -577,6 +692,17 @@ def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_u
         calls.append(pass_id)
         if pass_id == "skill_route":
             return type("R", (), {"finish_reason": "stop", "content": '{"skills":["workspace-ops"]}'})()
+        if pass_id == "pass_2_final":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "stop",
+                    "content": "I couldn't complete that workspace action because no workspace tool actually ran.",
+                    "reasoning": "",
+                    "tool_calls": [],
+                },
+            )()
         return type(
             "R",
             (),
@@ -597,29 +723,77 @@ def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_u
     )
 
     assert result.status == "done"
-    assert "failed to use the available workspace tools" in result.content
+    assert "couldn't complete that workspace action" in result.content.lower()
     assert "workspace is now empty" not in result.content.lower()
-    assert calls == ["skill_route", "pass_1", "pass_2"]
+    assert "pass_2_final" in calls
 
 
-def test_non_search_tool_success_does_not_mark_search_evidence(runtime: SkillRuntime):
-    agent = Agent({"agent": {}}, runtime)
-    state = agent._build_turn_state(
-        SkillContext(user_input="weather", branch_labels=[], attachments=[], workspace_root="", memory_hits=[]),
-        [type("Skill", (), {"id": "search-ops"})()],
-        [],
-        "weather",
+def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_success_claim(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}, "skills": {"selection_mode": "model", "max_active_skills": 2}}, runtime)
+    mocker.patch.object(agent, "ensure_ready", return_value=True)
+    mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation"))
+
+    calls = []
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        calls.append(pass_id)
+        if pass_id == "skill_route":
+            return type("R", (), {"finish_reason": "stop", "content": '{"skills":["workspace-ops"]}'})()
+        if pass_id == "pass_1":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "tool_calls",
+                    "content": "",
+                    "reasoning": "",
+                    "tool_calls": [type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "read_file", "arguments": {"filepath": "foo.txt"}})()],
+                },
+            )()
+        if pass_id == "pass_2":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "stop",
+                    "content": "I renamed foo.txt to bar.txt.",
+                    "reasoning": "",
+                    "tool_calls": [],
+                },
+            )()
+        if pass_id == "pass_3":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "stop",
+                    "content": "I couldn't complete that workspace action because no workspace tool actually ran.",
+                    "reasoning": "",
+                    "tool_calls": [],
+                },
+            )()
+        raise AssertionError(f"Unexpected pass id: {pass_id}")
+
+    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
+        assert tool_name == "read_file"
+        return {"ok": True, "data": {"filepath": "foo.txt", "content": "alpha"}, "error": None, "meta": {}}
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(runtime, "execute_tool_call", side_effect=fake_execute_tool_call)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "rename foo.txt to bar.txt"}],
+        user_input="yes",
+        thinking=True,
     )
 
-    agent._record_tool_effects(
-        state,
-        type("Call", (), {"name": "get_weather", "arguments": {"city": "London"}})(),
-        {"ok": True, "data": {"city": "London", "temp_c": 14}, "error": None, "meta": {}},
-    )
+    assert result.status == "done"
+    assert "couldn't complete that workspace action" in result.content.lower()
+    assert "pass_3" in calls
 
-    assert state.tool_counts["get_weather"] == 1
-    assert state.search_has_success is False
-    assert state.search_has_fetch_content is False
+
+
+
 
 
 def test_run_turn_allows_same_host_endpoints_with_different_ports(mocker, runtime: SkillRuntime):
@@ -660,7 +834,7 @@ def test_run_turn_allows_same_host_endpoints_with_different_ports(mocker, runtim
     assert result.content == "ok"
 
 
-def test_single_non_search_tool_can_use_direct_answer_even_if_search_skill_is_selected(mocker, runtime: SkillRuntime):
+def test_single_non_search_tool_runs_second_pass_even_if_search_skill_is_selected(mocker, runtime: SkillRuntime):
     utilities = runtime.skills_dir / "utilities"
     utilities.mkdir(parents=True)
     (utilities / "SKILL.md").write_text(
@@ -715,53 +889,132 @@ search
     selected = [runtime.get_skill("search-ops"), runtime.get_skill("utilities")]
     mocker.patch.object(agent, "_select_skills", return_value=selected)
 
+    calls = []
+
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
-        return type(
-            "R",
-            (),
-            {
-                "finish_reason": "tool_calls",
-                "content": "",
-                "reasoning": "",
-                "tool_calls": [
-                    type(
-                        "Call",
-                        (),
-                        {"stream_id": "1", "index": 0, "id": "call_1", "name": "get_weather", "arguments": {"city": "London"}},
-                    )()
-                ],
-            },
-        )()
+        calls.append(pass_id)
+        if pass_id == "pass_1":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "tool_calls",
+                    "content": "",
+                    "reasoning": "",
+                    "tool_calls": [
+                        type(
+                            "Call",
+                            (),
+                            {"stream_id": "1", "index": 0, "id": "call_1", "name": "get_weather", "arguments": {"city": "London"}},
+                        )()
+                    ],
+                },
+            )()
+        if pass_id == "pass_2":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "stop",
+                    "content": "The current weather in London is 14 C with Cloudy.",
+                    "reasoning": "",
+                    "tool_calls": [],
+                },
+            )()
+        raise AssertionError(f"Unexpected pass id: {pass_id}")
 
     mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
 
     result = agent.run_turn(
-        history_messages=[{"role": "user", "content": "what is the weather in London right now?"}],
-        user_input="what is the weather in London right now?",
+        history_messages=[{"role": "user", "content": "what is the weather in London?"}],
+        user_input="what is the weather in London?",
         thinking=True,
     )
 
     assert result.status == "done"
     assert result.content == "The current weather in London is 14 C with Cloudy."
+    assert calls == ["pass_1", "pass_2"]
 
 
-def test_direct_answer_formats_recent_memories(runtime: SkillRuntime):
+def test_compound_weather_question_does_not_stop_after_first_tool_result(mocker, runtime: SkillRuntime):
+    utilities = runtime.skills_dir / "utilities"
+    utilities.mkdir(parents=True)
+    (utilities / "SKILL.md").write_text(
+        """
+---
+name: utilities
+description: utility tools
+version: 1.0.0
+tools:
+  allowed-tools:
+    - get_weather
+---
+utilities
+""".strip(),
+        encoding="utf-8",
+    )
+    runtime.load_skills()
     agent = Agent({"agent": {}}, runtime)
+    mocker.patch.object(agent, "ensure_ready", return_value=True)
+    selected = [runtime.get_skill("utilities")]
+    mocker.patch.object(agent, "_select_skills", return_value=selected)
 
-    answer = agent._direct_tool_answer(
-        "list_memories",
-        {
-            "data": {
-                "memories": [
-                    {"id": 2, "type": "user_preference", "text": "User's favorite editor is Neovim."},
-                    {"id": 1, "type": "conversation", "text": "Earlier conversation note."},
-                ]
-            }
+    calls = []
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        calls.append(pass_id)
+        if pass_id == "pass_1":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "tool_calls",
+                    "content": "",
+                    "reasoning": "",
+                    "tool_calls": [
+                        type(
+                            "Call",
+                            (),
+                            {"stream_id": "1", "index": 0, "id": "call_1", "name": "get_weather", "arguments": {"city": "Bengaluru"}},
+                        )()
+                    ],
+                },
+            )()
+        if pass_id == "pass_2":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "stop",
+                    "content": "It is currently 21 C and clear in Bengaluru. You likely do not need an umbrella this evening unless the forecast changes later.",
+                    "reasoning": "",
+                    "tool_calls": [],
+                },
+            )()
+        raise AssertionError(f"Unexpected pass id: {pass_id}")
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(
+        runtime,
+        "execute_tool_call",
+        return_value={
+            "ok": True,
+            "data": {"city": "Bengaluru", "temp_c": 21, "desc": "Clear", "humidity": 73},
+            "error": None,
+            "meta": {},
         },
     )
+    mocker.patch.object(runtime, "tools_for_turn", return_value=[{"type": "function", "function": {"name": "get_weather"}}])
 
-    assert "Recent memories:" in answer
-    assert "#2 [user_preference] User's favorite editor is Neovim." in answer
+    result = agent.run_turn(
+        history_messages=[],
+        user_input="What's the weather in Bengaluru right now, and should I carry an umbrella this evening?",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert "umbrella" in result.content.lower()
+    assert calls == ["pass_1", "pass_2"]
 
 
 def test_batch_workspace_delete_does_not_stop_after_first_successful_tool(mocker, runtime: SkillRuntime):
@@ -867,7 +1120,7 @@ def test_workspace_scaffold_does_not_stop_after_create_directory(mocker, runtime
     executed = []
     real_execute = runtime.execute_tool_call
 
-    def wrapped_execute(tool_name, args, selected, ctx, confirm_shell=None):
+    def wrapped_execute(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
         executed.append(tool_name)
         return real_execute(tool_name, args, selected=selected, ctx=ctx, confirm_shell=confirm_shell)
 
@@ -936,7 +1189,7 @@ def test_workspace_folder_and_single_file_does_not_stop_after_create_directory(m
     executed = []
     real_execute = runtime.execute_tool_call
 
-    def wrapped_execute(tool_name, args, selected, ctx, confirm_shell=None):
+    def wrapped_execute(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
         executed.append(tool_name)
         return real_execute(tool_name, args, selected=selected, ctx=ctx, confirm_shell=confirm_shell)
 
@@ -961,73 +1214,89 @@ def test_workspace_folder_and_single_file_does_not_stop_after_create_directory(m
     assert calls == ["pass_1", "pass_2", "pass_3"]
 
 
-def test_multifile_scaffold_prompt_prefers_create_file_over_batched_create_files(mocker, runtime: SkillRuntime):
+def test_workspace_readback_request_does_not_stop_after_create_file(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     selected = [runtime.get_skill("workspace-ops")]
     mocker.patch.object(agent, "_select_skills", return_value=selected)
+
+    calls = []
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        calls.append(pass_id)
+        if pass_id == "pass_1":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "tool_calls",
+                    "content": "",
+                    "reasoning": "",
+                    "tool_calls": [
+                        type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "create_file", "arguments": {"filepath": "notes.txt", "content": "alpha"}})(),
+                    ],
+                },
+            )()
+        if pass_id == "pass_2":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "tool_calls",
+                    "content": "",
+                    "reasoning": "",
+                    "tool_calls": [
+                        type("Call", (), {"stream_id": "2", "index": 0, "id": "call_2", "name": "read_file", "arguments": {"filepath": "notes.txt"}})(),
+                    ],
+                },
+            )()
+        if pass_id == "pass_3":
+            return type("R", (), {"finish_reason": "stop", "content": "notes.txt=alpha", "reasoning": "", "tool_calls": []})()
+        raise AssertionError(f"Unexpected pass id: {pass_id}")
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    executed = []
+
+    def fake_execute(tool_name, args, selected, ctx, **_kwargs):
+        executed.append(tool_name)
+        if tool_name == "create_file":
+            return {"ok": True, "data": {"filepath": "notes.txt", "basename": "notes.txt"}, "error": None, "meta": {}}
+        if tool_name == "read_file":
+            return {"ok": True, "data": {"filepath": "notes.txt", "content": "alpha"}, "error": None, "meta": {}}
+        raise AssertionError(f"Unexpected tool: {tool_name}")
+
+    mocker.patch.object(runtime, "execute_tool_call", side_effect=fake_execute)
     mocker.patch.object(
         runtime,
         "tools_for_turn",
         return_value=[
-            {"type": "function", "function": {"name": "create_directory"}},
             {"type": "function", "function": {"name": "create_file"}},
-            {"type": "function", "function": {"name": "create_files"}},
+            {"type": "function", "function": {"name": "read_file"}},
         ],
     )
 
-    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
-        system_text = payload["messages"][0]["content"]
-        assert "For multi-file scaffolds or programs, prefer separate create_file calls" in system_text
-        assert "Avoid batching the whole scaffold into one create_files call" in system_text
-        return type("R", (), {"finish_reason": "stop", "content": "Done.", "reasoning": "", "tool_calls": []})()
-
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
-
     result = agent.run_turn(
         history_messages=[],
-        user_input="Make a university login page using html js and css and save it in a folder called x",
+        user_input='Create notes.txt containing exactly the word alpha, then read it back and reply with exactly: "notes.txt=alpha".',
         thinking=True,
     )
 
     assert result.status == "done"
+    assert result.content == "notes.txt=alpha"
+    assert executed == ["create_file", "read_file"]
+    assert calls == ["pass_1", "pass_2", "pass_3"]
 
 
-def test_multifile_python_program_prompt_prefers_create_file_over_create_files(mocker, runtime: SkillRuntime):
-    agent = Agent({"agent": {}}, runtime)
-    mocker.patch.object(agent, "ensure_ready", return_value=True)
-    selected = [runtime.get_skill("workspace-ops")]
-    mocker.patch.object(agent, "_select_skills", return_value=selected)
-    mocker.patch.object(
-        runtime,
-        "tools_for_turn",
-        return_value=[
-            {"type": "function", "function": {"name": "create_directory"}},
-            {"type": "function", "function": {"name": "create_file"}},
-            {"type": "function", "function": {"name": "create_files"}},
-        ],
-    )
 
-    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
-        system_text = payload["messages"][0]["content"]
-        assert "For multi-file scaffolds or programs, prefer separate create_file calls" in system_text
-        assert "Use create_files only when batching is acceptable" in system_text
-        return type("R", (), {"finish_reason": "stop", "content": "Done.", "reasoning": "", "tool_calls": []})()
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
 
-    result = agent.run_turn(
-        history_messages=[],
-        user_input="Create a Python package with main.py, parser.py, and models.py in a folder called toolkit",
-        thinking=True,
-    )
 
-    assert result.status == "done"
 
 
 def test_local_workspace_tasks_reject_shell_and_fetch_tools(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
+    mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(prefer_local_workspace_tools=True))
     selected = [runtime.get_skill("workspace-ops")]
     mocker.patch.object(agent, "_select_skills", return_value=selected)
 
@@ -1071,7 +1340,7 @@ def test_local_workspace_tasks_reject_shell_and_fetch_tools(mocker, runtime: Ski
     executed = []
     real_execute = runtime.execute_tool_call
 
-    def wrapped_execute(tool_name, args, selected, ctx, confirm_shell=None):
+    def wrapped_execute(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
         executed.append(tool_name)
         return real_execute(tool_name, args, selected=selected, ctx=ctx, confirm_shell=confirm_shell)
 
@@ -1163,7 +1432,7 @@ def test_explicit_external_path_supports_quoted_paths_with_spaces(runtime: Skill
     assert agent._prefers_local_workspace_tools(ctx, selected) is False
 
 
-def test_finalization_falls_back_immediately_when_model_leaks_tool_markup(mocker, runtime: SkillRuntime):
+def test_finalization_retries_when_model_leaks_tool_markup(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
             "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
@@ -1177,6 +1446,9 @@ def test_finalization_falls_back_immediately_when_model_leaks_tool_markup(mocker
         }
     }
     agent = Agent(cfg, runtime)
+    shortlist = [type("C", (), {"skill": runtime.get_skill("workspace-ops")})()]
+    mocker.patch.object(runtime, "propose_skill_candidates", return_value=shortlist)
+    mocker.patch.object(runtime, "rerank_skill_candidates", return_value=[])
 
     chat_reqs = []
 
@@ -1200,6 +1472,14 @@ def test_finalization_falls_back_immediately_when_model_leaks_tool_markup(mocker
                     "data: [DONE]",
                 ]
             )
+        if len(chat_reqs) == 3:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"I could not verify a clean answer from the available evidence."}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
         raise AssertionError("Unexpected extra completion call")
 
     mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
@@ -1212,11 +1492,11 @@ def test_finalization_falls_back_immediately_when_model_leaks_tool_markup(mocker
 
     assert result.status == "done"
     assert "<tool_call>" not in result.content
-    assert "I couldn't turn the available tool and model output into a clean user-facing answer" in result.content
-    assert len(chat_reqs) == 2
+    assert result.content == "I could not verify a clean answer from the available evidence."
+    assert len(chat_reqs) == 3
 
 
-def test_finalization_falls_back_to_sources_when_markup_repeats(mocker, runtime: SkillRuntime):
+def test_finalization_returns_error_when_markup_repeats(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
             "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
@@ -1285,10 +1565,49 @@ def test_finalization_falls_back_to_sources_when_markup_repeats(mocker, runtime:
         thinking=True,
     )
 
+    assert result.status == "error"
+    assert "Finalization failed to produce a clean user-facing answer" in (result.error or "")
+    assert len(chat_reqs) == 3
+
+
+def test_finalization_strips_think_tags_from_model_output(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"<think>internal</think>\\n\\nVisible answer"}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "say visible answer"}],
+        user_input="say visible answer",
+        thinking=True,
+    )
+
     assert result.status == "done"
-    assert "Relevant sources to check:" in result.content
-    assert "https://about.fb.com/news/" in result.content
-    assert len(chat_reqs) == 2
+    assert "<think>" not in result.content
+    assert "</think>" not in result.content
+    assert "Visible answer" in result.content
 
 
 def test_main_pass_tool_markup_forces_clean_finalization(mocker, runtime: SkillRuntime):
@@ -1346,101 +1665,6 @@ def test_main_pass_tool_markup_forces_clean_finalization(mocker, runtime: SkillR
         evt.get("type") == "content_token" and "<tool_call>" in str(evt.get("text", ""))
         for evt in events
     )
-
-
-def test_finalization_falls_back_to_generic_tool_summary_without_search_contamination(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-        }
-    }
-    agent = Agent(cfg, runtime)
-
-    history = [
-        {
-            "role": "tool",
-            "name": "get_weather",
-            "content": json.dumps(
-                {
-                    "ok": True,
-                    "data": {
-                        "city": "London",
-                        "temperature_c": 14,
-                        "condition": "Cloudy",
-                    },
-                    "error": None,
-                    "meta": {},
-                }
-            ),
-        }
-    ]
-
-    def fake_urlopen(req, timeout=None, context=None):
-        if req.full_url.endswith("/v1/models"):
-            return FakeResponse([])
-        return FakeResponse(
-            [
-                'data: {"choices":[{"delta":{"content":"<tool_call>\\n<function=get_weather>\\n<parameter=city>London</parameter>\\n</function>\\n</tool_call>"}}]}',
-                'data: {"choices":[{"finish_reason":"stop"}]}',
-                "data: [DONE]",
-            ]
-        )
-
-    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
-
-    state = agent._build_turn_state(
-        SkillContext(user_input="weather", branch_labels=[], attachments=[], workspace_root="", memory_hits=[]),
-        [],
-        history,
-        "weather",
-    )
-    result = agent._run_finalization_pass(
-        "system",
-        state,
-        threading.Event(),
-        None,
-        "pass",
-    )
-
-    assert result.status == "done"
-    assert "get_weather" in result.content
-    assert "temperature_c" in result.content
-    assert "I couldn't verify the answer from reliable web results" not in result.content
-
-
-def test_search_fallback_requires_actual_search_activity(runtime: SkillRuntime):
-    agent = Agent(
-        {
-            "agent": {
-                "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-                "models_endpoint": "http://127.0.0.1:8080/v1/models",
-            }
-        },
-        runtime,
-    )
-
-    empty = agent._build_turn_state(
-        SkillContext(user_input="x", branch_labels=[], attachments=[], workspace_root="", memory_hits=[]),
-        [],
-        [],
-        "x",
-    )
-    assert agent._search_fallback_allowed(empty) is False
-    active = agent._build_turn_state(
-        SkillContext(user_input="x", branch_labels=[], attachments=[], workspace_root="", memory_hits=[]),
-        [],
-        [],
-        "x",
-    )
-    active.tool_counts["web_search"] = 1
-    assert agent._search_fallback_allowed(active) is True
 
 
 def test_search_failures_return_safe_non_speculative_answer(mocker, runtime: SkillRuntime):
@@ -1503,10 +1727,18 @@ def execute(tool_name, args, env):
         if req.full_url.endswith("/v1/models"):
             return FakeResponse([])
         chat_reqs.append(req)
+        if len(chat_reqs) <= 2:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"meta latest acquisitions\\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            )
         return FakeResponse(
             [
-                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"meta latest acquisitions\\\"}"}}]}}]}',
-                'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                'data: {"choices":[{"delta":{"content":"I could not verify the latest acquisitions from reliable web results in this turn."}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
                 "data: [DONE]",
             ]
         )
@@ -1520,7 +1752,7 @@ def execute(tool_name, args, env):
     )
 
     assert result.status == "done"
-    assert "I couldn't verify" in result.content
+    assert "could not verify" in result.content.lower()
 
 
 def test_search_tool_call_cap_forces_finalization_after_two_searches(mocker, runtime: SkillRuntime):
@@ -1671,6 +1903,11 @@ def execute(tool_name, args, env):
         }
     }
     agent = Agent(cfg, runtime)
+    mocker.patch.object(
+        agent,
+        "_classify_turn",
+        return_value=TurnClassification(time_sensitive=True, candidate_skill_ids=["search-ops"]),
+    )
 
     chat_reqs = []
 
@@ -1696,7 +1933,7 @@ def execute(tool_name, args, env):
             )
         return FakeResponse(
             [
-                'data: {"choices":[{"delta":{"content":"I checked current web results before answering."}}]}',
+                'data: {"choices":[{"delta":{"content":"I could not verify the latest open source models from reliable current web results in this turn."}}]}',
                 'data: {"choices":[{"finish_reason":"stop"}]}',
                 "data: [DONE]",
             ]
@@ -1711,8 +1948,102 @@ def execute(tool_name, args, env):
     )
 
     assert result.status == "done"
-    assert "couldn't verify" in result.content.lower()
-    assert len(chat_reqs) == 3
+    assert "could not verify" in result.content.lower()
+    assert len(chat_reqs) == 4
+
+
+def test_time_sensitive_query_seed_forces_search_before_accepting_answer(mocker, runtime: SkillRuntime):
+    search_skill = runtime.skills_dir / "search-ops"
+    search_skill.mkdir(parents=True)
+    (search_skill / "SKILL.md").write_text(
+        """
+---
+name: search-ops
+description: Search the web for recent information.
+allowed-tools: web_search
+metadata:
+  tags: [web, latest, recent, current, news]
+---
+Search the internet.
+""".strip(),
+        encoding="utf-8",
+    )
+    (search_skill / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "web_search": {
+    "capability": "web_search",
+    "description": "Search web",
+    "parameters": {
+      "type": "object",
+      "properties": {"query": {"type": "string"}},
+      "required": ["query"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    return {"ok": True, "data": {"results": [{"title": "Example", "url": "https://example.com", "domain": "example.com", "snippet": "Verified"}]}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+    runtime.load_skills()
+
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    chat_reqs = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"As of my knowledge, Meta has not announced major new acquisitions."}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        if len(chat_reqs) == 2:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"meta latest acquisitions\\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"I could not verify the latest open source models from reliable current web results in this turn."}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "tell me about the latest open source models"}],
+        user_input="tell me about the latest open source models",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert "could not verify" in result.content.lower()
+    assert len(chat_reqs) == 4
 
 
 def test_model_skill_router_selects_skill_before_tool_turn(mocker, runtime: SkillRuntime):
@@ -1787,7 +2118,7 @@ def execute(tool_name, args, env):
         if len(chat_reqs) == 2:
             payload = json.loads(req.data.decode("utf-8"))
             tool_names = [tool["function"]["name"] for tool in payload.get("tools", [])]
-            assert tool_names == ["create_directory", "create_file", "create_files", "web_search"]
+            assert tool_names == ["create_directory", "create_file", "create_files", "load_skill", "web_search"]
             return FakeResponse(
                 [
                     'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"meta latest acquisitions\\\"}"}}]}}]}',
@@ -1814,6 +2145,76 @@ def execute(tool_name, args, env):
     assert result.status == "done"
 
 
+def test_model_skill_router_prompt_keeps_full_catalog_available(mocker, runtime: SkillRuntime):
+    hidden_skill = runtime.skills_dir / "hidden-tool"
+    hidden_skill.mkdir(parents=True)
+    (hidden_skill / "SKILL.md").write_text(
+        """
+---
+name: hidden-tool
+description: General build helper.
+allowed-tools: artifact_forge
+---
+Use artifact_forge when needed.
+""".strip(),
+        encoding="utf-8",
+    )
+    (hidden_skill / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "artifact_forge": {
+    "capability": "workspace_write",
+    "description": "Forge an artifact",
+    "parameters": {
+      "type": "object",
+      "properties": {"filepath": {"type": "string"}, "content": {"type": "string"}},
+      "required": ["filepath", "content"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    path = env.workspace.create_file(args["filepath"], args["content"])
+    return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+    runtime.load_skills()
+    runtime.config = {"skills": {"selection_mode": "model", "max_active_skills": 2}}
+
+    agent = Agent({"agent": {}}, runtime)
+    ctx = SkillContext(
+        user_input="make an artifact for me",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(runtime.workspace.workspace_root),
+        memory_hits=[],
+    )
+    snapshot = agent._get_skill_snapshot()
+
+    shortlist = [type("C", (), {"skill": type("S", (), {"id": "workspace-ops"})()})()]
+    mocker.patch.object(runtime, "propose_skill_candidates", return_value=shortlist)
+    mocker.patch.object(runtime, "rerank_skill_candidates", return_value=[])
+
+    captured = {}
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        captured["payload"] = payload
+        return type("R", (), {"finish_reason": "stop", "content": '{"skills":[]}'})()
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+
+    selected = agent._route_skills_with_model(ctx, snapshot, threading.Event())
+
+    assert selected == []
+    user_content = captured["payload"]["messages"][1]["content"]
+    assert "Skill shortlist:" in user_content
+    assert "- workspace-ops" in user_content
+    assert "Available skills:" not in user_content
+    assert "hidden-tool" not in user_content
+    assert "artifact_forge" not in user_content
+
+
 def test_model_skill_router_respects_explicit_empty_selection(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
@@ -1832,6 +2233,11 @@ def test_model_skill_router_respects_explicit_empty_selection(mocker, runtime: S
         },
     }
     agent = Agent(cfg, runtime)
+    workspace_skill = runtime.get_skill("workspace-ops")
+    assert workspace_skill is not None
+    shortlist = [type("C", (), {"skill": workspace_skill})()]
+    mocker.patch.object(runtime, "propose_skill_candidates", return_value=shortlist)
+    mocker.patch.object(runtime, "rerank_skill_candidates", return_value=[])
 
     chat_reqs = []
 
@@ -2046,7 +2452,7 @@ def test_tool_result_history_not_compacted_by_default(mocker, runtime: SkillRunt
 
     chat_reqs = []
 
-    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None):
+    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
         return {"ok": True, "data": {"blob": huge_text}, "error": None, "meta": {}}
 
     def fake_urlopen(req, timeout=None, context=None):
@@ -2108,7 +2514,7 @@ def test_tool_result_history_compaction_can_be_gated_by_tool_name(mocker, runtim
 
     chat_reqs = []
 
-    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None):
+    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
         return {"ok": True, "data": {"blob": huge_text}, "error": None, "meta": {}}
 
     def fake_urlopen(req, timeout=None, context=None):
@@ -2283,6 +2689,29 @@ def test_fetch_model_metadata_reads_model_id_and_context_window(mocker, runtime:
     mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
 
     assert agent.fetch_model_metadata() == ("llama-3.2-3b-instruct", 40960)
+
+
+def test_model_skill_router_skips_full_catalog_fallback_when_shortlist_empty(mocker, runtime: SkillRuntime):
+    runtime.config = {"skills": {"selection_mode": "model", "max_active_skills": 2}}
+    agent = Agent({"agent": {}}, runtime)
+    ctx = SkillContext(
+        user_input="write a file",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(runtime.workspace.workspace_root),
+        memory_hits=[],
+    )
+    snapshot = agent._get_skill_snapshot()
+
+    mocker.patch.object(runtime, "propose_skill_candidates", return_value=[])
+    fallback_skill = runtime.get_skill("workspace-ops")
+    assert fallback_skill is not None
+    mocker.patch.object(runtime, "rerank_skill_candidates", return_value=[fallback_skill])
+    mocker.patch.object(agent, "_call_with_retry", side_effect=AssertionError("model router should not be called"))
+
+    selected = agent._route_skills_with_model(ctx, snapshot, threading.Event())
+
+    assert [skill.id for skill in selected] == ["workspace-ops"]
 
 
 def test_fetch_model_metadata_falls_back_to_props_for_context_window(mocker, runtime: SkillRuntime):
@@ -2470,7 +2899,7 @@ def execute(tool_name, args, env):
             )
         return FakeResponse(
             [
-                'data: {"choices":[{"delta":{"content":"Here is the current situation in Iran."}}]}',
+                'data: {"choices":[{"delta":{"content":"I could not verify the current situation in Iran from reliable fetched sources in this turn."}}]}',
                 'data: {"choices":[{"finish_reason":"stop"}]}',
                 "data: [DONE]",
             ]
@@ -2483,4 +2912,251 @@ def execute(tool_name, args, env):
         thinking=True,
     )
     assert result.status == "done"
-    assert "couldn't verify" in result.content.lower()
+    assert "could not verify" in result.content.lower()
+
+
+def test_explicit_skill_is_auto_loaded_without_load_skill_tool(mocker, tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "docx").mkdir(parents=True)
+    (skills / "docx" / "scripts").mkdir(parents=True)
+    (skills / "docx" / "scripts" / "convert.py").write_text("print('ok')\n", encoding="utf-8")
+    (skills / "docx" / "SKILL.md").write_text(
+        """
+---
+name: docx
+description: convert documents to docx
+version: 1.0.0
+triggers:
+  keywords:
+    - docx
+---
+Detailed internal prompt for DOCX workflows.
+Use scripts/convert.py when needed.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+        },
+        "skills": {"selection_mode": "model", "max_active_skills": 2, "shortlist_size": 4},
+    }
+    agent = Agent(cfg, runtime)
+    chat_reqs: list[urllib.request.Request] = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"Loaded and ready."}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "use skill docx"}],
+        user_input="use skill docx",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert len(chat_reqs) == 1
+    first_payload = json.loads(chat_reqs[0].data.decode("utf-8"))
+    first_system = first_payload["messages"][0]["content"]
+    tool_names = [tool["function"]["name"] for tool in first_payload.get("tools", [])]
+    assert "Detailed internal prompt for DOCX workflows." in first_system
+    assert "Active skill guidance:" in first_system
+    assert "load_skill" not in tool_names
+
+
+def test_reasoning_tokens_strip_think_markers_in_journal_and_output(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"reasoning_content":"<think>internal chain</think>"}}]}',
+                'data: {"choices":[{"delta":{"content":"Visible answer"}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "say visible answer"}],
+        user_input="say visible answer",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert "<think>" not in result.reasoning
+    assert "</think>" not in result.reasoning
+    assert "internal chain" in result.reasoning
+
+
+def test_request_user_input_tool_returns_direct_follow_up_to_user(mocker, tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "asker").mkdir(parents=True)
+    (skills / "asker" / "SKILL.md").write_text(
+        """
+---
+name: asker
+description: ask for clarification
+version: 1.0.0
+---
+Ask a follow-up before continuing.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+        }
+    }
+    agent = Agent(cfg, runtime)
+    chat_reqs: list[urllib.request.Request] = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        chat_reqs.append(req)
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"request_user_input","arguments":"{\\"question\\": \\\"Pick a format\\\", \\\"options\\\": [\\\"pdf\\\", \\\"docx\\\"]}"}}]}}]}',
+                'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "use skill asker"}],
+        user_input="use skill asker",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert result.content == "Pick a format\nOptions: pdf | docx"
+    assert len(chat_reqs) == 1
+
+
+def test_request_user_input_halts_turn_before_later_tool_calls(mocker, tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "asker").mkdir(parents=True)
+    (skills / "asker" / "SKILL.md").write_text(
+        """
+---
+name: asker
+description: ask for clarification
+version: 1.0.0
+---
+Ask a follow-up before continuing.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+        }
+    }
+    agent = Agent(cfg, runtime)
+    calls_seen: list[str] = []
+    real_execute = runtime.execute_tool_call
+
+    def wrapped_execute(tool_name, args, selected, ctx, **kwargs):
+        calls_seen.append(tool_name)
+        return real_execute(tool_name, args, selected, ctx, **kwargs)
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"request_user_input","arguments":"{\\"question\\": \\\"Pick a format\\\", \\\"options\\\": [\\\"pdf\\\", \\\"docx\\\"]}"}},{"index":1,"id":"call_2","type":"function","function":{"name":"read_skill_resource","arguments":"{\\"skill_id\\": \\\"asker\\\", \\\"path\\": \\\"LICENSE.txt\\"}"}}]}}]}',
+                'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(runtime, "execute_tool_call", side_effect=wrapped_execute)
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "use skill asker"}],
+        user_input="use skill asker",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert result.content == "Pick a format\nOptions: pdf | docx"
+    assert calls_seen == ["request_user_input"]

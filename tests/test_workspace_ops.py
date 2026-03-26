@@ -232,6 +232,35 @@ def test_workspace_ops_list_delete_and_tree(tmp_path: Path):
     assert deleted["data"]["kind"] == "file"
 
 
+def test_workspace_ops_move_path_renames_file(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("workspace-ops")
+    assert skill is not None
+
+    ctx = _ctx(str(runtime.workspace.workspace_root))
+    created = runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "index.html", "content": "<h1>hello</h1>\n"},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert created["ok"] is True
+
+    moved = runtime.execute_tool_call(
+        "move_path",
+        {"source_path": "index.html", "destination_path": "site/index.html"},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    assert moved["ok"] is True
+    assert moved["data"]["moved"] is True
+    assert moved["data"]["kind"] == "file"
+    assert moved["data"]["destination_path"].endswith("/site/index.html")
+    assert not (runtime.workspace.workspace_root / "index.html").exists()
+    assert (runtime.workspace.workspace_root / "site" / "index.html").exists()
+
+
 def test_workspace_ops_delete_path_supports_binary_files(tmp_path: Path):
     runtime = _runtime(tmp_path)
     skill = runtime.get_skill("workspace-ops")

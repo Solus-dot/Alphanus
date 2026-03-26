@@ -79,3 +79,31 @@ def test_live_preview_create_files_flushes_previous_file_when_switching():
     assert streamed is True
     assert code_blocks[-1] == (["body { color: red;"], "css", 2)
 
+
+def test_live_preview_does_not_emit_truncation_marker_for_long_stream():
+    manager = LiveToolPreviewManager()
+    writes = []
+    indented = []
+    previews = []
+    code_blocks = []
+    long_line = "a" * 20000
+
+    manager.update(
+        "s3",
+        "create_file",
+        '{"filepath":"demo.js","content":"' + long_line + '"}',
+        writes.append,
+        lambda lines, language: previews.append((list(lines), language)),
+    )
+
+    streamed = manager.close(
+        "s3",
+        lambda text, indent: indented.append((text, indent)),
+        lambda lines, language, indent: code_blocks.append((list(lines), language, indent)),
+        lambda: previews.append((["<cleared>"], None)),
+    )
+
+    assert streamed is True
+    assert indented == []
+    assert previews[0] == ([long_line], "javascript")
+    assert code_blocks[-1] == ([long_line], "javascript", 2)

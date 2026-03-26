@@ -114,6 +114,19 @@ TOOL_SPECS = {
             "required": ["query"],
         },
     },
+    "move_path": {
+        "capability": "workspace_write",
+        "description": "Move or rename a workspace file or directory.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "source_path": {"type": "string"},
+                "destination_path": {"type": "string"},
+                "overwrite": {"type": "boolean"},
+            },
+            "required": ["source_path", "destination_path"],
+        },
+    },
     "delete_path": {
         "capability": "workspace_delete",
         "description": "Delete a workspace file or directory inside the workspace.",
@@ -347,6 +360,27 @@ def _delete_path(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     return data
 
 
+def _move_path(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+    source_path = str(args["source_path"])
+    destination_path = str(args["destination_path"])
+    overwrite = bool(args.get("overwrite", False))
+
+    source = env.workspace._resolve_read_path(source_path)
+    is_dir = source.is_dir()
+    moved_to = env.workspace.move_path(source_path, destination_path, overwrite=overwrite)
+    data = _path_info(moved_to)
+    data.update(
+        {
+            "moved": True,
+            "kind": "directory" if is_dir else "file",
+            "source_path": str(source.resolve()),
+            "destination_path": moved_to,
+            "overwrite": overwrite,
+        }
+    )
+    return data
+
+
 def _workspace_tree(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     max_depth = max(1, int(args.get("max_depth", 3)))
     tree = env.workspace.workspace_tree(max_depth=max_depth)
@@ -379,6 +413,8 @@ def execute(tool_name: str, args: Dict[str, Any], env: ToolExecutionEnv):
         return _list_files(args, env)
     if tool_name == "search_code":
         return _search_code(args, env)
+    if tool_name == "move_path":
+        return _move_path(args, env)
     if tool_name == "delete_path":
         return _delete_path(args, env)
     if tool_name == "workspace_tree":

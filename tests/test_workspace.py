@@ -111,6 +111,60 @@ def test_shell_command_nonzero_exit_is_reported_as_failure(tmp_path: Path):
     assert res["data"]["returncode"] == 7
 
 
+def test_shell_command_allows_semicolon_inside_quoted_python_arg(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("python3 -c \"import sys; print('ok')\"")
+    assert res["ok"] is True
+    assert res["data"]["stdout"].strip() == "ok"
+
+
+def test_shell_wrapper_with_dash_c_is_rejected(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("bash -lc 'echo ok'")
+    assert res["ok"] is False
+    assert res["error"]["code"] == "E_POLICY"
+
+
+def test_shell_command_runs_in_requested_cwd(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    subdir = ws / "nested"
+    home.mkdir()
+    subdir.mkdir(parents=True)
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("python3 -c \"import os; print(os.getcwd())\"", cwd=str(subdir))
+    assert res["ok"] is True
+    assert res["data"]["stdout"].strip() == str(subdir.resolve())
+    assert res["data"]["cwd"] == str(subdir.resolve())
+
+
+def test_move_path_renames_workspace_file(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+    source = ws / "index.html"
+    source.write_text("<h1>hello</h1>\n", encoding="utf-8")
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    moved = mgr.move_path("index.html", "site/index.html")
+
+    assert moved == str((ws / "site" / "index.html").resolve())
+    assert not source.exists()
+    assert (ws / "site" / "index.html").read_text(encoding="utf-8") == "<h1>hello</h1>\n"
+
+
 def test_delete_workspace_root_denied_for_dot_path(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"

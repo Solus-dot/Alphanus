@@ -117,12 +117,7 @@ class TreeExport:
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> "TreeExport":
         if "tree" not in data:
-            # Backward-compatible fallback for old raw tree exports.
-            return TreeExport(
-                title="Imported Tree",
-                created_at=_utc_now_iso(),
-                tree=ConvTree.from_dict(data),
-            )
+            raise ValueError("Invalid export payload: missing 'tree'")
         version = data.get("schema_version", "1.0.0")
         if _major(version) != _major(EXPORT_SCHEMA_VERSION):
             raise ValueError(

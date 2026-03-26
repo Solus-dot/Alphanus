@@ -24,6 +24,7 @@ venv/
 *.log
 logs/
 llamachat_tree.json
+benchmark-fixtures/
 
 # Optional local memory/workspace data
 memories/*.pkl
