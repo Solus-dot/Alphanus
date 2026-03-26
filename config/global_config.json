@@ -55,5 +55,10 @@
   },
   "search": {
     "provider": "tavily"
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "json",
+    "path": "./logs/runtime.jsonl"
   }
 }

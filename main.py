@@ -1,7 +1,9 @@
 import argparse
+import logging
 from pathlib import Path
 
 from agent.core import Agent
+from agent.telemetry import configure_logging
 from core.configuration import (
     load_dotenv,
     load_or_create_global_config,
@@ -42,8 +44,9 @@ def main() -> int:
     config, normalization_warnings = normalize_config(config)
     config_warnings.extend(normalization_warnings)
     validate_endpoint_policy(config)
+    logger = configure_logging(config)
     for warning in config_warnings:
-        print(f"[warning] config: {warning}")
+        logger.warning(f"config: {warning}")
 
     workspace_root = resolve_path(config["workspace"]["path"], project_root)
     memory_path = resolve_path(config["memory"]["path"], project_root)
@@ -67,26 +70,26 @@ def main() -> int:
 
     agent = Agent(config=config, skill_runtime=runtime, debug=args.debug)
     if args.debug:
-        print(f"[info] debug HTTP log: {config['agent']['debug_log_path']}")
+        logger.info(f"debug HTTP log: {config['agent']['debug_log_path']}")
 
     if not config.get("agent", {}).get("tls_verify", True):
-        print("[warning] TLS verification is disabled (agent.tls_verify=false)")
+        logger.warning("TLS verification is disabled (agent.tls_verify=false)")
     memory_stats = memory.stats()
-    print(
+    logger.info(
         f"[info] memory mode: {memory_stats['embedding_backend']}"
         + (f" ({memory.model_name})" if memory_stats["embedding_backend"] == "transformer" else " (hash fallback)")
     )
     if memory_stats.get("encoder_status") == "fallback" and memory_stats.get("encoder_detail"):
-        print(f"[warning] memory encoder fallback: {memory_stats['encoder_detail']}")
-    print("[info] use /doctor inside the TUI for readiness and health diagnostics.")
+        logger.warning(f"memory encoder fallback: {memory_stats['encoder_detail']}")
+    logger.info("use /doctor inside the TUI for readiness and health diagnostics.")
 
     # Readiness is validated before first generation too; this startup check
     # keeps failure visible early while still letting TUI boot.
-    print(f"[info] waiting for endpoint {agent.models_endpoint} handshake...")
+    logger.info(f"waiting for endpoint {agent.models_endpoint} handshake...")
     if not agent.ensure_ready():
-        print(f"[warning] Model endpoint not ready at {agent.models_endpoint}; you can still open the TUI.")
+        logger.warning(f"Model endpoint not ready at {agent.models_endpoint}; you can still open the TUI.")
     else:
-        print(f"[info] endpoint {agent.models_endpoint} handshake complete.")
+        logger.info(f"endpoint {agent.models_endpoint} handshake complete.")
 
     app = AlphanusTUI(agent=agent, debug=args.debug)
     app.run()

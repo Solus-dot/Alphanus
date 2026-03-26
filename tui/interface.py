@@ -53,6 +53,7 @@ from tui.popups import (
 )
 from tui.sidebar import render_sidebar_inspector_markup, render_sidebar_tree_markup
 from tui.status import context_usage_percent, status_left_markup, status_right_markup, topbar_center, topbar_left, topbar_right
+from tui.tree_render import render_tree_rows
 
 MAX_REPLY_ACC_CHARS = 24000
 SHELL_CONFIRM_TIMEOUT_S = 60
@@ -745,7 +746,7 @@ class AlphanusTUI(App):
         self._update_topbar()
 
     def _tree_rows(self) -> List[Tuple[str, str, bool]]:
-        return self.conv_tree.render_tree(width=30)
+        return render_tree_rows(self.conv_tree, width=30)
 
     def _sync_tree_cursor(self) -> None:
         if self._tree_cursor_id in self.conv_tree.nodes:
@@ -2530,7 +2531,7 @@ class AlphanusTUI(App):
 
     def _cmd_tree(self) -> None:
         self._write_section_heading("Tree")
-        for text, tag, active in self.conv_tree.render_tree(width=80):
+        for text, tag, active in render_tree_rows(self.conv_tree, width=80):
             if tag == self.conv_tree.current_id:
                 self._write(f"  [bold {ACCENT_COLOR}]{esc(text)}[/bold {ACCENT_COLOR}]")
             elif active:

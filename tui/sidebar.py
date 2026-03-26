@@ -3,13 +3,14 @@ from __future__ import annotations
 from rich.markup import escape as esc
 
 from core.conv_tree import ConvTree
+from tui.tree_render import render_tree_rows
 
 
 def render_sidebar_tree_markup(tree: ConvTree, width: int = 30, selected_id: str | None = None) -> str:
     lines: list[str] = []
     current = tree.current_id
     selected = selected_id or current
-    for text, tag, active in tree.render_tree(width=width):
+    for text, tag, active in render_tree_rows(tree, width=width):
         line = esc(text)
         if tag == "root":
             style = "#f4f4f5" if tag == selected else "#a1a1aa"

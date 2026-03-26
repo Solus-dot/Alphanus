@@ -55,6 +55,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_reasoning_chars": 20000,
         "compact_tool_results_in_history": False,
         "compact_tool_result_tools": [],
+        "classifier_model": "",
+        "classifier_use_primary_model": True,
+        "enable_structured_classification": True,
+        "max_classifier_tokens": 256,
     },
     "workspace": {
         "path": "~/Desktop/Alphanus-Workspace",
@@ -100,6 +104,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "search": {
         "provider": "tavily",
+    },
+    "logging": {
+        "level": "INFO",
+        "format": "json",
+        "path": "./logs/runtime.jsonl",
     },
     "tui": {
         "chat_log_max_lines": 5000,
@@ -448,6 +457,32 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         path="agent.compact_tool_result_tools",
         warnings=warnings,
     )
+    agent_cfg["classifier_model"] = _coerce_string(
+        agent_cfg.get("classifier_model"),
+        str(default_agent.get("classifier_model", "")),
+        path="agent.classifier_model",
+        warnings=warnings,
+    )
+    agent_cfg["classifier_use_primary_model"] = _coerce_bool(
+        agent_cfg.get("classifier_use_primary_model"),
+        bool(default_agent.get("classifier_use_primary_model", True)),
+        path="agent.classifier_use_primary_model",
+        warnings=warnings,
+    )
+    agent_cfg["enable_structured_classification"] = _coerce_bool(
+        agent_cfg.get("enable_structured_classification"),
+        bool(default_agent.get("enable_structured_classification", True)),
+        path="agent.enable_structured_classification",
+        warnings=warnings,
+    )
+    agent_cfg["max_classifier_tokens"] = _coerce_int(
+        agent_cfg.get("max_classifier_tokens"),
+        int(default_agent.get("max_classifier_tokens", 256)),
+        path="agent.max_classifier_tokens",
+        warnings=warnings,
+        minimum=32,
+        maximum=4096,
+    )
     raw_budgets = agent_cfg.get("tool_budgets")
     if isinstance(raw_budgets, dict):
         clean_budgets: Dict[str, int] = {}
@@ -680,6 +715,37 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         provider = str(DEFAULT_CONFIG["search"]["provider"])
     search_cfg["provider"] = provider
     merged["search"] = search_cfg
+
+    logging_cfg = merged.get("logging", {}) if isinstance(merged.get("logging"), dict) else {}
+    level = _coerce_string(
+        logging_cfg.get("level"),
+        str(DEFAULT_CONFIG["logging"]["level"]),
+        path="logging.level",
+        warnings=warnings,
+        allow_empty=False,
+    ).upper()
+    if level not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}:
+        _warn(warnings, f"logging.level: unsupported {level!r}, using default")
+        level = str(DEFAULT_CONFIG["logging"]["level"])
+    logging_cfg["level"] = level
+    fmt = _coerce_string(
+        logging_cfg.get("format"),
+        str(DEFAULT_CONFIG["logging"]["format"]),
+        path="logging.format",
+        warnings=warnings,
+        allow_empty=False,
+    ).lower()
+    if fmt not in {"plain", "json"}:
+        _warn(warnings, f"logging.format: unsupported {fmt!r}, using default")
+        fmt = str(DEFAULT_CONFIG["logging"]["format"])
+    logging_cfg["format"] = fmt
+    logging_cfg["path"] = _coerce_string(
+        logging_cfg.get("path"),
+        str(DEFAULT_CONFIG["logging"]["path"]),
+        path="logging.path",
+        warnings=warnings,
+    )
+    merged["logging"] = logging_cfg
 
     tui_cfg = merged.get("tui", {}) if isinstance(merged.get("tui"), dict) else {}
     tui_cfg["chat_log_max_lines"] = _coerce_int(

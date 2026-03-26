@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from core.conv_tree import ConvTree
+from tui.tree_render import render_tree_rows
 
 
 def test_add_complete_and_cancel_turn():
@@ -28,7 +29,7 @@ def test_fail_turn_sets_error_state_without_interrupted_marker():
     assert tree.nodes[turn.id].assistant_state == "error"
 
 
-def test_render_tree_only_indents_branch_roots():
+def test_tree_branch_state_only_tracks_branch_roots():
     tree = ConvTree()
     first = tree.add_turn("hi")
     tree.complete_turn(first.id, "hello")
@@ -40,7 +41,26 @@ def test_render_tree_only_indents_branch_roots():
     branch = tree.add_turn("other path")
     tree.complete_turn(branch.id, "alt")
 
-    rows = tree.render_tree(width=40)
+    assert tree.current_id == branch.id
+    assert tree.nodes[first.id].branch_root is False
+    assert tree.nodes[second.id].branch_root is False
+    assert tree.nodes[branch.id].branch_root is True
+    assert tree.nodes[first.id].children == [second.id, branch.id]
+
+
+def test_tree_rows_render_branch_indentation_in_tui_layer():
+    tree = ConvTree()
+    first = tree.add_turn("hi")
+    tree.complete_turn(first.id, "hello")
+    second = tree.add_turn("how are you")
+    tree.complete_turn(second.id, "fine")
+
+    tree.current_id = first.id
+    tree.arm_branch("alt")
+    branch = tree.add_turn("other path")
+    tree.complete_turn(branch.id, "alt")
+
+    rows = render_tree_rows(tree, width=40)
 
     assert rows[0][0] == "● [root]"
     assert rows[1][0].startswith("○ ✓  hi")
