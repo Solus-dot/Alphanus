@@ -142,6 +142,7 @@ class TurnOrchestrator:
                 turn_id=f"turn_{uuid.uuid4().hex[:10]}",
                 classification_source=classification.source,
             ),
+            search_tools_enabled="web_search" in self.skill_runtime.model_exposed_tool_names(),
             evidence=[],
             tool_budgets=dict(self.default_tool_budgets),
         )
@@ -322,6 +323,7 @@ class TurnOrchestrator:
             "status": result.status,
             "error": result.error or "",
             "selected_skills": [getattr(skill, "id", "") for skill in state.selected],
+            "loaded_skill_ids": list(getattr(state.ctx, "loaded_skill_ids", []) or []),
             "tool_counts": dict(state.completion.tool_counts),
             "tool_evidence": [
                 {"name": item.name, "args": item.args, "result": item.result, "policy_blocked": item.policy_blocked}
@@ -358,8 +360,6 @@ class TurnOrchestrator:
         )
 
     def build_policy_snapshot(self, state: TurnState) -> TurnPolicySnapshot:
-        requested_exts = self.skill_runtime.requested_opaque_artifact_extensions(state.ctx)
-        selected_materializers = self.skill_runtime.selected_artifact_materializers(state.selected, state.ctx)
         return TurnPolicySnapshot(
             search_mode=state.search_mode,
             time_sensitive_query=state.time_sensitive_query,
@@ -368,9 +368,9 @@ class TurnOrchestrator:
             forced_action_retry=state.forced_action_retry and not state.completion.tool_counts,
             explicit_external_path=state.explicit_external_path,
             prefer_local_workspace_tools=state.prefer_local_workspace_tools,
-            selected_shell_workflow_skills=self.skill_runtime.selected_shell_workflow_skills(state.selected, state.ctx),
-            requested_opaque_artifact_extensions=requested_exts,
-            has_selected_materializers=bool(selected_materializers),
+            selected_shell_workflow_skills=[],
+            requested_opaque_artifact_extensions=[],
+            has_selected_materializers=False,
         )
 
     def finalize_turn(self, system_content: str, state: TurnState, stop_event, on_event, pass_id: str, extra_rules: str = "") -> AgentTurnResult:
@@ -485,6 +485,7 @@ class TurnOrchestrator:
         *,
         branch_labels: Optional[List[str]] = None,
         attachments: Optional[List[str]] = None,
+        loaded_skill_ids: Optional[List[str]] = None,
         stop_event=None,
         on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
         confirm_shell: Optional[Callable[[str], bool]] = None,
@@ -493,7 +494,7 @@ class TurnOrchestrator:
     ) -> AgentTurnResult:
         branch_labels = branch_labels or []
         attachments = attachments or []
-        ctx = self.build_skill_context(user_input, branch_labels, attachments, history_messages)
+        ctx = self.build_skill_context(user_input, branch_labels, attachments, history_messages, loaded_skill_ids or [])
         classification, selected = self.select_skills(ctx, stop_event)
         state = self.build_turn_state(ctx, selected, history_messages, classification)
 
@@ -675,6 +676,8 @@ class TurnOrchestrator:
                     state.dynamic_history.append(tool_message)
                     state.skill_exchanges.append(tool_message)
                     self.record_tool_effects(state, call, result)
+                    if call.name in {"skill_view", "skill_manage"} and result.get("ok"):
+                        state.selected = self.skill_runtime.select_skills(state.ctx)
 
                     if (
                         call.name == "request_user_input"

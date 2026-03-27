@@ -4,7 +4,7 @@ import json
 import os
 import tempfile
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -44,6 +44,7 @@ class ChatSession:
     created_at: str
     updated_at: str
     tree: ConvTree
+    loaded_skill_ids: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -53,6 +54,7 @@ class ChatSession:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "tree": self.tree.to_dict(),
+            "loaded_skill_ids": list(self.loaded_skill_ids),
         }
 
     @staticmethod
@@ -69,6 +71,11 @@ class ChatSession:
             created_at=str(data.get("created_at") or _utc_now_iso()),
             updated_at=str(data.get("updated_at") or data.get("created_at") or _utc_now_iso()),
             tree=ConvTree.from_dict(data["tree"]),
+            loaded_skill_ids=[
+                str(item).strip()
+                for item in (data.get("loaded_skill_ids") or [])
+                if str(item).strip()
+            ],
         )
 
 
@@ -149,6 +156,7 @@ class SessionStore:
             created_at=now,
             updated_at=now,
             tree=tree or ConvTree(),
+            loaded_skill_ids=[],
         )
         self._write_session(session)
         self._update_manifest_for_session(manifest, session, activate=activate)
@@ -159,6 +167,7 @@ class SessionStore:
         session_id: str,
         title: str,
         tree: ConvTree,
+        loaded_skill_ids: Optional[List[str]] = None,
         *,
         created_at: Optional[str] = None,
         activate: bool = True,
@@ -171,6 +180,11 @@ class SessionStore:
             created_at=str(created_at or raw_meta.get("created_at") or _utc_now_iso()),
             updated_at=_utc_now_iso(),
             tree=tree,
+            loaded_skill_ids=[
+                str(item).strip()
+                for item in (loaded_skill_ids or raw_meta.get("loaded_skill_ids") or [])
+                if str(item).strip()
+            ],
         )
         self._write_session(session)
         self._update_manifest_for_session(manifest, session, activate=activate)
@@ -260,6 +274,7 @@ class SessionStore:
             "updated_at": session.updated_at,
             "turn_count": max(0, len(session.tree.nodes) - 1),
             "branch_count": sum(1 for node in session.tree.nodes.values() if node.branch_root),
+            "loaded_skill_ids": list(session.loaded_skill_ids),
         }
         if activate:
             manifest["active_session_id"] = session.id

@@ -112,6 +112,7 @@ class TurnState:
     classification: TurnClassification
     completion: CompletionEvidence
     telemetry: TurnTelemetry
+    search_tools_enabled: bool = False
     evidence: List[ToolExecutionRecord] = field(default_factory=list)
     full_reasoning: str = ""
     pass_index: int = 0
@@ -125,7 +126,7 @@ class TurnState:
     def search_mode(self) -> bool:
         if self._search_mode_override is not None:
             return self._search_mode_override
-        return self.classification.time_sensitive and any(getattr(skill, "id", "") == "search-ops" for skill in self.selected)
+        return self.classification.time_sensitive and self.search_tools_enabled
 
     @search_mode.setter
     def search_mode(self, value: bool) -> None:

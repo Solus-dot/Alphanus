@@ -109,14 +109,8 @@ class TurnClassifier:
         branch_labels: List[str],
         attachments: List[str],
         history_messages: Optional[List[Dict[str, Any]]] = None,
+        loaded_skill_ids: Optional[List[str]] = None,
     ) -> SkillContext:
-        explicit_skill_id = ""
-        explicit_skill_args = ""
-        lowered = user_input.strip()
-        match = re.match(r"(?is)^\s*use\s+skill\s+([a-z0-9][a-z0-9-]{0,63})(?::|\s+|$)(.*)$", lowered)
-        if match:
-            explicit_skill_id = str(match.group(1) or "").strip()
-            explicit_skill_args = str(match.group(2) or "").strip()
         hits = self.skill_runtime.memory.search(user_input, top_k=3, min_score=0.45)
         recent_hint, sticky_skill_ids = self.recent_routing_context(history_messages or [])
         return SkillContext(
@@ -125,10 +119,13 @@ class TurnClassifier:
             attachments=attachments,
             workspace_root=str(self.skill_runtime.workspace.workspace_root),
             memory_hits=hits,
+            loaded_skill_ids=[
+                str(item).strip()
+                for item in (loaded_skill_ids or [])
+                if str(item).strip()
+            ],
             recent_routing_hint=recent_hint,
             sticky_skill_ids=sticky_skill_ids,
-            explicit_skill_id=explicit_skill_id,
-            explicit_skill_args=explicit_skill_args,
         )
 
     def _explicit_path_outside_workspace(self, text: str) -> str:

@@ -460,6 +460,7 @@ class AlphanusTUI(App):
         self._session_id = ""
         self._session_title = ""
         self._session_created_at = ""
+        self._loaded_skill_ids: List[str] = []
         self.conv_tree = self._new_conv_tree()
         self._activate_session_state(self._session_store.bootstrap())
         self.pending: List[Tuple[str, str]] = []
@@ -581,6 +582,19 @@ class AlphanusTUI(App):
         self._session_id = session.id
         self._session_title = session.title
         self._session_created_at = session.created_at
+        agent = getattr(self, "agent", None)
+        runtime = getattr(agent, "skill_runtime", None)
+        if runtime and hasattr(runtime, "skills_by_ids"):
+            self._loaded_skill_ids = [
+                skill.id
+                for skill in runtime.skills_by_ids(list(getattr(session, "loaded_skill_ids", []) or []))
+            ]
+        else:
+            self._loaded_skill_ids = [
+                str(item).strip()
+                for item in (getattr(session, "loaded_skill_ids", []) or [])
+                if str(item).strip()
+            ]
         tree = self._apply_tree_compaction_policy(session.tree)
         if tree.current_id == "root" and tree.nodes["root"].children and not tree._pending_branch:
             for node_id in reversed(list(tree.nodes.keys())):
@@ -592,13 +606,24 @@ class AlphanusTUI(App):
 
     def _save_active_session(self, rename_to: Optional[str] = None) -> ChatSession:
         title = (rename_to or self._session_title or "").strip() or self._session_title or "Untitled Session"
-        session = self._session_store.save_tree(
-            self._session_id,
-            title,
-            self.conv_tree,
-            created_at=self._session_created_at,
-            activate=True,
-        )
+        loaded_skill_ids = list(getattr(self, "_loaded_skill_ids", []))
+        try:
+            session = self._session_store.save_tree(
+                self._session_id,
+                title,
+                self.conv_tree,
+                loaded_skill_ids=loaded_skill_ids,
+                created_at=self._session_created_at,
+                activate=True,
+            )
+        except TypeError:
+            session = self._session_store.save_tree(
+                self._session_id,
+                title,
+                self.conv_tree,
+                created_at=self._session_created_at,
+                activate=True,
+            )
         self._session_title = session.title
         self._session_created_at = session.created_at
         return session
@@ -1336,6 +1361,8 @@ class AlphanusTUI(App):
 
     def _reload_skills(self) -> bool:
         self.agent.reload_skills()
+        self._loaded_skill_ids = [skill.id for skill in self.agent.skill_runtime.skills_by_ids(self._loaded_skill_ids)]
+        self._save_active_session()
         self._write_info("Reloaded skills")
         return True
 
@@ -1738,7 +1765,6 @@ class AlphanusTUI(App):
         GLOBAL_CONFIG_PATH.write_text(json.dumps(cleaned, indent=2) + "\n", encoding="utf-8")
         merged = self._merge_live_config(self.agent.config, normalized)
         self.agent.reload_config(merged)
-        self.agent.skill_runtime.config = merged
         self.thinking = bool(merged.get("agent", {}).get("enable_thinking", self.thinking))
         self._model_name = None
         self._model_context_window = None
@@ -1876,7 +1902,16 @@ class AlphanusTUI(App):
 
         branch_labels = [t.label for t in self.conv_tree.active_path if t.branch_root and t.label]
         history_messages = self.conv_tree.history_messages()
-        self._stream_worker(turn.id, history_messages, user_input, branch_labels, attachment_paths, self.thinking, self._stop_event)
+        self._stream_worker(
+            turn.id,
+            history_messages,
+            user_input,
+            branch_labels,
+            attachment_paths,
+            list(self._loaded_skill_ids),
+            self.thinking,
+            self._stop_event,
+        )
 
     @work(thread=True, exclusive=True)
     def _stream_worker(
@@ -1886,6 +1921,7 @@ class AlphanusTUI(App):
         user_input: str,
         branch_labels: List[str],
         attachment_paths: List[str],
+        loaded_skill_ids: List[str],
         thinking: bool,
         stop_event: threading.Event,
     ) -> None:
@@ -1898,6 +1934,7 @@ class AlphanusTUI(App):
             thinking=thinking,
             branch_labels=branch_labels,
             attachments=attachment_paths,
+            loaded_skill_ids=loaded_skill_ids,
             stop_event=stop_event,
             on_event=on_event,
             confirm_shell=self._confirm_shell_command,
@@ -2112,6 +2149,14 @@ class AlphanusTUI(App):
         usage = result.journal.get("model_usage", {}) if isinstance(result.journal, dict) else {}
         if isinstance(usage, dict):
             self._update_context_usage_from_payload(usage)
+        loaded_skill_ids = result.journal.get("loaded_skill_ids", []) if isinstance(result.journal, dict) else []
+        if isinstance(loaded_skill_ids, list):
+            self._loaded_skill_ids = [
+                skill.id
+                for skill in self.agent.skill_runtime.skills_by_ids(
+                    [str(item).strip() for item in loaded_skill_ids if str(item).strip()]
+                )
+            ]
 
         if result.status != "done":
             if result.error and result.error != self._last_stream_error_text:
@@ -2417,6 +2462,7 @@ class AlphanusTUI(App):
 
         if cmd == "/clear":
             self.conv_tree = self._new_conv_tree()
+            self._loaded_skill_ids = []
             self._reset_context_usage()
             self.pending.clear()
             self._log().clear()
@@ -2453,17 +2499,32 @@ class AlphanusTUI(App):
             self._cmd_doctor()
             return True
 
-        if cmd == "/skill":
-            return self._cmd_skill(arg)
+        if cmd == "/skill-on":
+            return self._cmd_skill(f"on {arg}".strip())
 
-        if cmd == "/memory":
-            return self._cmd_memory(arg)
+        if cmd == "/skill-off":
+            return self._cmd_skill(f"off {arg}".strip())
+
+        if cmd == "/skill-unload":
+            return self._cmd_skill(f"unload {arg}".strip())
+
+        if cmd == "/skill-unload-all":
+            return self._cmd_skill("unload-all")
+
+        if cmd == "/skill-reload":
+            return self._cmd_skill("reload")
+
+        if cmd == "/skill-info":
+            return self._cmd_skill(f"info {arg}".strip())
+
+        if cmd == "/memory-stats":
+            return self._cmd_memory("stats")
 
         if cmd == "/context":
             return self._cmd_context(arg)
 
-        if cmd == "/workspace":
-            return self._cmd_workspace(arg)
+        if cmd == "/workspace-tree":
+            return self._cmd_workspace("tree")
 
         if cmd == "/config":
             self._open_config_editor()
@@ -2503,6 +2564,7 @@ class AlphanusTUI(App):
 
     def _cmd_skills(self) -> None:
         skills = self.agent.skill_runtime.list_skills()
+        loaded_skill_ids = set(getattr(self, "_loaded_skill_ids", []))
         self._write_section_heading("Skills")
         for skill in skills:
             state, color = self.agent.skill_runtime.skill_status_label(skill)
@@ -2513,6 +2575,7 @@ class AlphanusTUI(App):
                 f"  [bold {ACCENT_COLOR}]{esc(skill.id)}[/bold {ACCENT_COLOR}] "
                 f"[#a1a1aa]({esc(skill.version)})[/#a1a1aa] "
                 f"[{color}]{state}[/{color}]"
+                f"{' [bold #22c55e]loaded[/bold #22c55e]' if skill.id in loaded_skill_ids else ''}"
             )
             self._write(f"    [#a1a1aa]{esc(skill.description)}[/#a1a1aa]")
             source_bits = f"{provenance} · pack {pack_id}"
@@ -2553,10 +2616,31 @@ class AlphanusTUI(App):
                 self._write(f"    [#71717a]shadowed_by: {esc(shadowed_by)}[/#71717a]")
         self._write("")
 
+    def _load_skill_into_session(self, skill_id: str) -> bool:
+        skill = self.agent.skill_runtime.get_skill(skill_id)
+        if not skill or not skill.enabled or not skill.available:
+            self._write_error(f"Skill not found or unavailable: {skill_id}")
+            return False
+        if not hasattr(self, "_loaded_skill_ids"):
+            self._loaded_skill_ids = []
+        if skill_id not in self._loaded_skill_ids:
+            self._loaded_skill_ids.append(skill_id)
+        self._loaded_skill_ids = [skill.id for skill in self.agent.skill_runtime.skills_by_ids(self._loaded_skill_ids)]
+        self._save_active_session()
+        return True
+
+    def _unload_skill_from_session(self, skill_id: str) -> bool:
+        if skill_id not in getattr(self, "_loaded_skill_ids", []):
+            self._write_error(f"Skill not loaded: {skill_id}")
+            return False
+        self._loaded_skill_ids = [item for item in self._loaded_skill_ids if item != skill_id]
+        self._save_active_session()
+        return True
+
     def _cmd_skill(self, arg: str) -> bool:
         parts = arg.split()
         if not parts:
-            return self._write_usage("/skill on|off|reload|info <id>")
+            return self._write_usage("/skill-on <id> | /skill-off <id> | /skill-unload <id> | /skill-unload-all | /skill-reload | /skill-info <id>")
 
         sub = parts[0].lower()
         if sub == "reload":
@@ -2564,18 +2648,34 @@ class AlphanusTUI(App):
 
         if sub in {"on", "off"}:
             if len(parts) < 2:
-                return self._write_usage("/skill on|off <id>")
+                return self._write_usage("/skill-on <id> | /skill-off <id>")
             skill_id = parts[1]
             ok = self.agent.skill_runtime.set_enabled(skill_id, sub == "on")
             if not ok:
                 self._write_error(f"Skill not found: {skill_id}")
             else:
+                if sub == "off":
+                    self._loaded_skill_ids = [item for item in self._loaded_skill_ids if item != skill_id]
+                    self._save_active_session()
                 self._write_info(f"Skill {skill_id} {'enabled' if sub == 'on' else 'disabled'}")
+            return True
+
+        if sub == "unload-all":
+            self._loaded_skill_ids = []
+            self._save_active_session()
+            self._write_info("Unloaded all session skills")
+            return True
+
+        if sub == "unload":
+            if len(parts) < 2:
+                return self._write_usage("/skill-unload <id>")
+            if self._unload_skill_from_session(parts[1]):
+                self._write_info(f"Unloaded skill {parts[1]}")
             return True
 
         if sub == "info":
             if len(parts) < 2:
-                return self._write_usage("/skill info <id>")
+                return self._write_usage("/skill-info <id>")
             skill = self.agent.skill_runtime.get_skill(parts[1])
             if not skill:
                 self._write_error(f"Skill not found: {parts[1]}")
@@ -2617,7 +2717,7 @@ class AlphanusTUI(App):
             self._write("")
             return True
 
-        return self._write_usage("/skill on|off|reload|info <id>")
+        return self._write_usage("/skill-on <id> | /skill-off <id> | /skill-unload <id> | /skill-unload-all | /skill-reload | /skill-info <id>")
 
     def _cmd_memory(self, arg: str) -> bool:
         sub = arg.strip().lower()
@@ -2639,7 +2739,7 @@ class AlphanusTUI(App):
             self._write_detail_line("by_type", json.dumps(stats["by_type"]))
             self._write("")
             return True
-        return self._write_usage("/memory stats")
+        return self._write_usage("/memory-stats")
 
     def _cmd_context(self, arg: str) -> bool:
         if arg.strip():
@@ -2747,7 +2847,7 @@ class AlphanusTUI(App):
             self._write_muted_lines(tree.splitlines())
             self._write("")
             return True
-        return self._write_usage("/workspace tree")
+        return self._write_usage("/workspace-tree")
 
     def _cmd_code(self, arg: str) -> bool:
         target = arg.strip().lower() or "last"

@@ -95,9 +95,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "runtime": {
         "ask_user_tool": True,
     },
-    "tools": {
-        "core_exposure_policy": "coding_core",
-    },
+    "tools": {},
     "search": {
         "provider": "tavily",
     },
@@ -598,10 +596,10 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
 
     skills_cfg = merged.get("skills", {}) if isinstance(merged.get("skills"), dict) else {}
     if "selection_mode" in skills_cfg:
-        _warn(warnings, "skills.selection_mode: ignored; all enabled skills are active every turn")
+        _warn(warnings, "skills.selection_mode: ignored; Hermes-style explicit skill loading is always used")
         skills_cfg.pop("selection_mode", None)
     if "max_active_skills" in skills_cfg:
-        _warn(warnings, "skills.max_active_skills: ignored; all enabled skills are active every turn")
+        _warn(warnings, "skills.max_active_skills: ignored; Hermes-style explicit skill loading is always used")
         skills_cfg.pop("max_active_skills", None)
     skills_cfg["strict_capability_policy"] = _coerce_bool(
         skills_cfg.get("strict_capability_policy"),
@@ -664,17 +662,14 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
     merged["runtime"] = runtime_cfg
 
     tools_cfg = merged.get("tools", {}) if isinstance(merged.get("tools"), dict) else {}
-    core_policy = _coerce_string(
-        tools_cfg.get("core_exposure_policy"),
-        str(DEFAULT_CONFIG["tools"]["core_exposure_policy"]),
-        path="tools.core_exposure_policy",
-        warnings=warnings,
-        allow_empty=False,
-    ).lower()
-    if core_policy not in _ALLOWED_CORE_EXPOSURE_POLICIES:
-        _warn(warnings, f"tools.core_exposure_policy: unsupported {core_policy!r}, using default")
-        core_policy = str(DEFAULT_CONFIG["tools"]["core_exposure_policy"])
-    tools_cfg["core_exposure_policy"] = core_policy
+    legacy_core_policy = str(tools_cfg.pop("core_exposure_policy", "") or "").strip().lower()
+    if legacy_core_policy:
+        if legacy_core_policy in _ALLOWED_CORE_EXPOSURE_POLICIES:
+            _warn(warnings, "tools.core_exposure_policy: deprecated and ignored")
+        else:
+            _warn(warnings, f"tools.core_exposure_policy: unsupported {legacy_core_policy!r}, ignoring")
+    tools_cfg.pop("enabled_toolsets", None)
+    tools_cfg.pop("disabled_toolsets", None)
     merged["tools"] = tools_cfg
 
     search_cfg = merged.get("search", {}) if isinstance(merged.get("search"), dict) else {}

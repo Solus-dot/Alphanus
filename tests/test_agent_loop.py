@@ -490,8 +490,7 @@ def test_confirmation_turn_reuses_immediate_prior_skill_context(mocker, runtime:
     assert "tools just used: create_file" in ctx.recent_routing_hint
     assert ctx.sticky_skill_ids == ["workspace-ops"]
 
-    selected = agent._select_skills(ctx, threading.Event())
-    assert [skill.id for skill in selected] == ["workspace-ops"]
+    assert agent._select_skills(ctx, threading.Event()) == []
 
 
 def test_contextual_followup_reuses_immediate_prior_skill_context(mocker, runtime: SkillRuntime):
@@ -516,8 +515,7 @@ def test_contextual_followup_reuses_immediate_prior_skill_context(mocker, runtim
 
     ctx = agent._build_skill_context("Where is JS?", [], [], history_messages)
 
-    selected = agent._select_skills(ctx, threading.Event())
-    assert "workspace-ops" in {skill.id for skill in selected}
+    assert agent._select_skills(ctx, threading.Event()) == []
 
 
 def test_contextual_followup_seed_reuses_immediate_prior_skill_context(runtime: SkillRuntime):
@@ -542,8 +540,7 @@ def test_contextual_followup_seed_reuses_immediate_prior_skill_context(runtime: 
 
     ctx = agent._build_skill_context("Where is JS?", [], [], history_messages)
 
-    selected = agent._select_skills(ctx, threading.Event())
-    assert [skill.id for skill in selected] == ["workspace-ops"]
+    assert agent._select_skills(ctx, threading.Event()) == []
 
 
 def test_confirmation_workspace_action_retries_instead_of_accepting_manual_terminal_advice(mocker, runtime: SkillRuntime):
@@ -2324,7 +2321,7 @@ def execute(tool_name, args, env):
     assert result.status == "done"
 
 
-def test_all_active_skill_guidance_keeps_full_catalog_available(runtime: SkillRuntime):
+def test_skill_index_keeps_full_catalog_available_until_a_skill_is_loaded(runtime: SkillRuntime):
     hidden_skill = runtime.skills_dir / "hidden-tool"
     hidden_skill.mkdir(parents=True)
     (hidden_skill / "SKILL.md").write_text(
@@ -2371,9 +2368,16 @@ def execute(tool_name, args, env):
     )
     selected = agent.skill_runtime.select_skills(ctx)
     system_content = agent.prompt_renderer.compose_system_content(selected, ctx)
-    assert "workspace-ops" in system_content
     assert "hidden-tool" in system_content
-    assert "artifact_forge" in system_content
+    assert "artifact_forge" not in system_content
+
+    load_result = runtime.skill_view("hidden-tool", "", ctx)
+    assert load_result["skill_id"] == "hidden-tool"
+    assert load_result["loaded"] is True
+    selected = agent.skill_runtime.select_skills(ctx)
+    loaded_system_content = agent.prompt_renderer.compose_system_content(selected, ctx)
+    assert "hidden-tool" in loaded_system_content
+    assert "artifact_forge" in loaded_system_content
 
 
 def test_large_tool_call_args_are_compacted_in_history(runtime: SkillRuntime):
@@ -2790,7 +2794,7 @@ def test_fetch_model_metadata_reads_model_id_and_context_window(mocker, runtime:
     assert agent.fetch_model_metadata() == ("llama-3.2-3b-instruct", 40960)
 
 
-def test_select_skills_returns_all_enabled_skills_without_router(runtime: SkillRuntime):
+def test_select_skills_returns_only_explicitly_loaded_skills(runtime: SkillRuntime):
     runtime.config = {}
     agent = Agent({"agent": {}}, runtime)
     ctx = SkillContext(
@@ -2800,9 +2804,7 @@ def test_select_skills_returns_all_enabled_skills_without_router(runtime: SkillR
         workspace_root=str(runtime.workspace.workspace_root),
         memory_hits=[],
     )
-    selected = agent._select_skills(ctx, threading.Event())
-    assert selected
-    assert "workspace-ops" in {skill.id for skill in selected}
+    assert agent._select_skills(ctx, threading.Event()) == []
 
 
 def test_fetch_model_metadata_falls_back_to_props_for_context_window(mocker, runtime: SkillRuntime):
@@ -3005,7 +3007,7 @@ def execute(tool_name, args, env):
     assert "could not verify" in result.content.lower()
 
 
-def test_explicit_skill_is_auto_loaded_without_load_skill_tool(mocker, tmp_path: Path):
+def test_plain_text_skill_mention_does_not_auto_load_skill_without_skill_view(mocker, tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -3074,9 +3076,10 @@ Use scripts/convert.py when needed.
     first_payload = json.loads(chat_reqs[0].data.decode("utf-8"))
     first_system = first_payload["messages"][0]["content"]
     tool_names = [tool["function"]["name"] for tool in first_payload.get("tools", [])]
-    assert "Detailed internal prompt for DOCX workflows." in first_system
-    assert "Active skill guidance:" in first_system
-    assert "load_skill" not in tool_names
+    assert "Detailed internal prompt for DOCX workflows." not in first_system
+    assert "Loaded skill guidance:" not in first_system
+    assert "docx: convert documents to docx" in first_system
+    assert "skill_view" in tool_names
 
 
 def test_reasoning_tokens_strip_think_markers_in_journal_and_output(mocker, runtime: SkillRuntime):

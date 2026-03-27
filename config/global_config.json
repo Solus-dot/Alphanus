@@ -47,9 +47,7 @@
   "runtime": {
     "ask_user_tool": true
   },
-  "tools": {
-    "core_exposure_policy": "coding_core"
-  },
+  "tools": {},
   "search": {
     "provider": "tavily"
   },

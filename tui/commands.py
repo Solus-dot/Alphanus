@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -46,18 +46,20 @@ HELP_SECTIONS = [
             ("/skills", "List installed skills"),
             ("/reload", "Reload skills from disk"),
             ("/doctor", "Run readiness diagnostics"),
-            ("/skill on <id>", "Enable skill"),
-            ("/skill off <id>", "Disable skill"),
-            ("/skill reload", "Reload skills from disk"),
-            ("/skill info <id>", "Show skill details"),
+            ("/skill-on <id>", "Enable skill"),
+            ("/skill-off <id>", "Disable skill"),
+            ("/skill-unload <id>", "Unload a loaded skill"),
+            ("/skill-unload-all", "Unload all loaded skills"),
+            ("/skill-reload", "Reload skills from disk"),
+            ("/skill-info <id>", "Show skill details"),
         ],
     ),
     (
         "UTILITIES",
         [
-            ("/memory stats", "Show memory stats"),
+            ("/memory-stats", "Show memory stats"),
             ("/context", "Show inference engine context usage"),
-            ("/workspace tree", "Render workspace tree"),
+            ("/workspace-tree", "Render workspace tree"),
             ("/config", "Edit global config in a popup"),
             ("/report [file]", "Save a support bundle JSON"),
             ("/code [n|last]", "Open a copyable code block viewer"),
@@ -91,13 +93,15 @@ COMMAND_ENTRIES = [
     CommandEntry("/skills", "/skills", "List installed skills"),
     CommandEntry("/reload", "/reload", "Reload skills from disk"),
     CommandEntry("/doctor", "/doctor", "Run readiness diagnostics"),
-    CommandEntry("/skill on <id>", "/skill on ", "Enable a skill"),
-    CommandEntry("/skill off <id>", "/skill off ", "Disable a skill"),
-    CommandEntry("/skill reload", "/skill reload", "Reload skills from disk"),
-    CommandEntry("/skill info <id>", "/skill info ", "Show skill details"),
-    CommandEntry("/memory stats", "/memory stats", "Show memory stats"),
+    CommandEntry("/skill-on <id>", "/skill-on ", "Enable a skill"),
+    CommandEntry("/skill-off <id>", "/skill-off ", "Disable a skill"),
+    CommandEntry("/skill-unload <id>", "/skill-unload ", "Unload a loaded skill from the current session"),
+    CommandEntry("/skill-unload-all", "/skill-unload-all", "Unload all loaded skills from the current session"),
+    CommandEntry("/skill-reload", "/skill-reload", "Reload skills from disk"),
+    CommandEntry("/skill-info <id>", "/skill-info ", "Show skill details"),
+    CommandEntry("/memory-stats", "/memory-stats", "Show memory stats"),
     CommandEntry("/context", "/context", "Show inference engine context usage"),
-    CommandEntry("/workspace tree", "/workspace tree", "Render the workspace tree"),
+    CommandEntry("/workspace-tree", "/workspace-tree", "Render workspace tree"),
     CommandEntry("/config", "/config", "Edit the global config in a popup"),
     CommandEntry("/report [file]", "/report ", "Save a support bundle JSON"),
     CommandEntry("/code [n|last]", "/code ", "Open a copyable code block viewer"),
@@ -145,9 +149,10 @@ def command_entries_for_query(value: str) -> List[CommandEntry]:
     query = value.strip().lower()
     if not query.startswith("/"):
         return []
+    entries = COMMAND_ENTRIES
     needle = query[1:]
     if not needle:
-        return COMMAND_ENTRIES
+        return entries
 
     def sort_key(entry: CommandEntry) -> Tuple[int, int, str]:
         aliases = " ".join(entry.aliases)
@@ -161,7 +166,7 @@ def command_entries_for_query(value: str) -> List[CommandEntry]:
 
     matches = [
         entry
-        for entry in COMMAND_ENTRIES
+        for entry in entries
         if (
             needle in entry.prompt.lower()
             or any(needle in alias.lower() for alias in entry.aliases)
@@ -179,7 +184,8 @@ def command_label(entry: CommandEntry) -> str:
 
 
 def exact_command_inputs() -> set[str]:
-    exact = {entry.insert_text.strip().lower() for entry in COMMAND_ENTRIES}
-    for entry in COMMAND_ENTRIES:
+    entries = COMMAND_ENTRIES
+    exact = {entry.insert_text.strip().lower() for entry in entries}
+    for entry in entries:
         exact.update(alias.strip().lower() for alias in entry.aliases)
     return exact

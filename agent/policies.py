@@ -94,6 +94,9 @@ class PromptPolicyRenderer:
 
     def compose_system_content(self, selected: List[Any], ctx: SkillContext) -> str:
         parts = [self.system_prompt]
+        skill_index = self.skill_runtime.compose_skill_index()
+        if skill_index:
+            parts.append(skill_index)
         if selected:
             skill_block = self.skill_runtime.compose_skill_block(
                 selected,
@@ -101,7 +104,7 @@ class PromptPolicyRenderer:
                 context_limit=8192,
             )
             if skill_block:
-                parts.append("Active skill guidance:\n" + skill_block)
+                parts.append("Loaded skill guidance:\n" + skill_block)
         return "\n\n".join(part.strip() for part in parts if part and part.strip())
 
     def render_policy_rules(self, snapshot: TurnPolicySnapshot) -> str:
@@ -139,30 +142,6 @@ class PromptPolicyRenderer:
                 "- shell_command is still available, but use it only when workspace tools cannot directly accomplish the task or when shell output itself is the requested result.\n"
                 "- Do not use web_search, fetch_url, open_url, or play_youtube for local workspace file tasks."
             )
-            if snapshot.selected_shell_workflow_skills:
-                block += (
-                    "\n- Prefer documented selected-skill shell/python workflows when this artifact task genuinely requires shell execution.\n"
-                    f"- Skills requiring shell workflow here: {', '.join(snapshot.selected_shell_workflow_skills[:4])}\n"
-                    "- Use documented shell/python commands from the selected skill to install missing dependencies and create the requested artifact.\n"
-                    "- Each shell_command must be exactly one plain command.\n"
-                    "- Do not use shell control operators, chaining, or redirection fallbacks such as `||`, `&&`, `;`, `|`, or `2>&1`.\n"
-                    "- Do not use run_checks for dependency probing or installation on this task.\n"
-                    "- Do not use python -c import probes before trying the documented install workflow.\n"
-                    "- If a dependency is required or uncertain, run the skill's documented install command first after approval.\n"
-                    "- Do not create helper .py files until required dependencies are installed.\n"
-                    "- Do not use shell_command for generic local file inspection or folder creation when workspace tools already cover it."
-                )
-            else:
-                block += "\n- Do not use shell_command for generic folder creation or local file inspection when workspace tools already cover it."
+            block += "\n- Do not use shell_command for generic folder creation or local file inspection when workspace tools already cover it."
             blocks.append(block)
-        if snapshot.requested_opaque_artifact_extensions and not snapshot.has_selected_materializers:
-            blocks.append(
-                "Opaque artifact capability rule:\n"
-                f"- The request asks for a real opaque artifact: {', '.join(snapshot.requested_opaque_artifact_extensions[:3])}\n"
-                "- None of the selected skills expose an executable creation path for that artifact in this runtime.\n"
-                "- Do not invent script names.\n"
-                "- Do not use shell_command or run_checks to probe or install dependencies for this local workspace file task.\n"
-                "- Do not attempt create_file/create_files as a surrogate for the opaque artifact.\n"
-                "- Say directly that no executable creation path is available."
-            )
         return "\n\n".join(blocks)

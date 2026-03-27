@@ -77,6 +77,9 @@ class Agent:
 
     def reload_config(self, config: Dict[str, Any]) -> None:
         self.config = config
+        self.skill_runtime.reload_config(config)
+        self.skill_runtime._proc_env_base = self.skill_runtime._build_proc_env_base()
+        self.skill_runtime.load_skills()
         context_cfg = config.get("context", {}) if isinstance(config.get("context"), dict) else {}
         self.context_mgr = ContextWindowManager(
             context_limit=int(context_cfg.get("context_limit", 8192)),
@@ -97,11 +100,12 @@ class Agent:
         )
         self.classifier.call_with_retry = lambda payload, stop_event, on_event, pass_id: self._call_with_retry(payload, stop_event, on_event, pass_id)
         self.orchestrator.call_with_retry = lambda payload, stop_event, on_event, pass_id: self._call_with_retry(payload, stop_event, on_event, pass_id)
-        self.orchestrator.build_skill_context = lambda user_input, branch_labels, attachments, history_messages: self._build_skill_context(
+        self.orchestrator.build_skill_context = lambda user_input, branch_labels, attachments, history_messages, loaded_skill_ids: self._build_skill_context(
             user_input,
             branch_labels,
             attachments,
             history_messages,
+            loaded_skill_ids,
         )
         self.orchestrator.classify_context = lambda ctx, stop_event=None: self._classify_turn(ctx, stop_event)
         self.orchestrator.select_skills = lambda ctx, stop_event: self._select_turn(ctx, stop_event)
@@ -204,8 +208,9 @@ class Agent:
         branch_labels: List[str],
         attachments: List[str],
         history_messages: Optional[List[Dict[str, Any]]] = None,
+        loaded_skill_ids: Optional[List[str]] = None,
     ):
-        return self.classifier.build_skill_context(user_input, branch_labels, attachments, history_messages)
+        return self.classifier.build_skill_context(user_input, branch_labels, attachments, history_messages, loaded_skill_ids)
 
     def _classify_turn(self, ctx, stop_event=None):
         return self.classifier.classify(ctx, stop_event=stop_event)
@@ -376,6 +381,7 @@ class Agent:
         thinking: bool,
         branch_labels: Optional[List[str]] = None,
         attachments: Optional[List[str]] = None,
+        loaded_skill_ids: Optional[List[str]] = None,
         stop_event=None,
         on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
         confirm_shell: Optional[Callable[[str], bool]] = None,
@@ -397,6 +403,7 @@ class Agent:
             thinking=thinking,
             branch_labels=branch_labels,
             attachments=attachments,
+            loaded_skill_ids=loaded_skill_ids,
             stop_event=stop_event,
             on_event=on_event,
             confirm_shell=confirm_shell,

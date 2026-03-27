@@ -12,8 +12,9 @@ Status:
 Current behavior and architecture:
 - streaming agent loop with separate reasoning/content rendering
 - OpenAI-style `tool_calls` execution
-- all enabled skills are active from the first turn
+- Hermes-style skill discovery with explicit `skill_view(...)` loading and persistent session preloads
 - bundled workspace, shell, memory, search, and utility skills
+- tool exposure follows enabled skills; `/skill on|off` controls availability
 - workspace-safe file operations and constrained verification runners
 - persistent vector memory with transformer embeddings and deterministic hash fallback
 - branchable conversation tree with named multi-session save/load and inactive-branch compaction
@@ -134,16 +135,16 @@ Branching:
 Skills and diagnostics:
 - `/skills`
 - `/reload`
-- `/skill on <id>`
-- `/skill off <id>`
-- `/skill reload`
-- `/skill info <id>`
+- `/skill-on <id>`
+- `/skill-off <id>`
+- `/skill-reload`
+- `/skill-info <id>`
 - `/doctor`
 
 Memory, workspace, and support:
-- `/memory stats`
+- `/memory-stats`
 - `/context` (inference engine context usage, when reported)
-- `/workspace tree`
+- `/workspace-tree`
 - `/config`
 - `/report [file]`
 
@@ -214,9 +215,7 @@ Built-in defaults:
   "skills": {
     "strict_capability_policy": false
   },
-  "tools": {
-    "core_exposure_policy": "coding_core"
-  },
+  "tools": {},
   "search": {
     "provider": "tavily"
   },
