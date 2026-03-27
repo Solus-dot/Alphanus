@@ -50,7 +50,6 @@ from tui.popups import (
     PickerItem,
     SelectionPickerModal,
     SessionPickerModal,
-    export_picker_items,
     session_picker_items,
 )
 from tui.sidebar import render_sidebar_inspector_markup, render_sidebar_tree_markup
@@ -664,32 +663,6 @@ class AlphanusTUI(App):
             self._write_command_action(f"Loaded session '{loaded.title}'", icon="✓")
         except Exception as exc:
             self._write_error(f"Load failed: {exc}")
-
-    def _open_import_picker(self) -> None:
-        exports = self._session_store.list_exports()
-        self.push_screen(
-            SelectionPickerModal(
-                title="Import Export",
-                subtitle="Choose a stored export to import as a new session.",
-                confirm_label="Import Export",
-                empty_text="No exports found in .alphanus/exports.",
-                items=export_picker_items(exports),
-            ),
-            self._on_import_picker_close,
-        )
-
-    def _on_import_picker_close(self, result: Optional[Dict[str, str]]) -> None:
-        export_id = str((result or {}).get("id") or "").strip()
-        if not export_id:
-            return
-        try:
-            self._save_active_session()
-            path = self._session_store.resolve_export_path(export_id)
-            imported = self._session_store.import_tree(path)
-            self._switch_to_session(imported)
-            self._write_command_action(f"Imported session '{imported.title}'", icon="✓")
-        except Exception as exc:
-            self._write_error(f"Import failed: {exc}")
 
     def _current_session_is_blank(self) -> bool:
         return (
@@ -2354,7 +2327,7 @@ class AlphanusTUI(App):
             self._cmd_sessions()
             return True
 
-        if self.streaming and cmd in {"/new", "/load", "/import", "/clear"}:
+        if self.streaming and cmd in {"/new", "/load", "/clear"}:
             self._write_error("Stop the active response before changing sessions.")
             return True
 
@@ -2440,18 +2413,6 @@ class AlphanusTUI(App):
 
         if cmd == "/load":
             self._open_load_session_picker()
-            return True
-
-        if cmd == "/export":
-            try:
-                path = self._session_store.export_session_tree(self._session_title, self.conv_tree)
-                self._write_command_action(f"Exported session to {path.name}", icon="✓")
-            except Exception as exc:
-                self._write_error(f"Export failed: {exc}")
-            return True
-
-        if cmd == "/import":
-            self._open_import_picker()
             return True
 
         if cmd == "/clear":

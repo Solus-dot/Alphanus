@@ -331,7 +331,7 @@ def test_workspace_action_outcome_falls_back_to_blocked_when_classifier_call_fai
     assert outcome == "declined_or_blocked"
 
 
-def test_workspace_action_outcome_fallback_rejects_manual_terminal_advice_even_with_blocked_evidence(tmp_path: Path) -> None:
+def test_workspace_action_outcome_fallback_rejects_user_delegation_even_with_blocked_evidence(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
     llm_client = LLMClient(cfg)
@@ -340,7 +340,7 @@ def test_workspace_action_outcome_fallback_rejects_manual_terminal_advice_even_w
     outcome = classifier.classify_workspace_action_outcome(
         current_user_input="yes",
         recent_routing_hint="",
-        assistant_reply="shell_command is not allowed here. Please run rm -rf manually in your terminal.",
+        assistant_reply="The tool is blocked here. Please delete the files yourself.",
         evidence={
             "has_successful_mutation": False,
             "policy_blocked_tools": ["shell_command"],

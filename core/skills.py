@@ -1819,15 +1819,12 @@ class SkillRuntime:
         reg = self.tool_registration(tool_name)
         if reg is None:
             return (
-                "shell" in normalized_name
-                or normalized_name.startswith("fetch_")
+                normalized_name.startswith("fetch_")
                 or normalized_name.startswith("open_")
                 or normalized_name.startswith("play_")
                 or normalized_name.endswith("_search")
             )
         capability = str(reg.capability or "").strip().lower()
-        if capability == "run_shell_command":
-            return True
         if capability.startswith("web_"):
             return True
         if capability.startswith("utility_open") or capability.startswith("utility_play"):

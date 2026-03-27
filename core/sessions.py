@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -15,8 +14,6 @@ from core.conv_tree import ConvTree
 MANIFEST_SCHEMA_VERSION = "1.0.0"
 SESSION_SCHEMA_VERSION = "1.0.0"
 DEFAULT_SESSIONS_DIRNAME = ".alphanus/sessions"
-EXPORT_SCHEMA_VERSION = "1.0.0"
-DEFAULT_EXPORTS_DIRNAME = ".alphanus/exports"
 
 
 def _major(version: str) -> int:
@@ -25,11 +22,6 @@ def _major(version: str) -> int:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def _slugify(value: str, default: str = "export") -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
-    return slug or default
 
 
 def _write_json_atomic(path: Path, payload: Dict[str, Any]) -> None:
@@ -91,45 +83,6 @@ class SessionSummary:
     is_active: bool = False
 
 
-@dataclass(frozen=True)
-class ExportSummary:
-    filename: str
-    title: str
-    created_at: str
-    turn_count: int
-    branch_count: int
-
-
-@dataclass
-class TreeExport:
-    title: str
-    created_at: str
-    tree: ConvTree
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "schema_version": EXPORT_SCHEMA_VERSION,
-            "title": self.title,
-            "created_at": self.created_at,
-            "tree": self.tree.to_dict(),
-        }
-
-    @staticmethod
-    def from_dict(data: Dict[str, Any]) -> "TreeExport":
-        if "tree" not in data:
-            raise ValueError("Invalid export payload: missing 'tree'")
-        version = data.get("schema_version", "1.0.0")
-        if _major(version) != _major(EXPORT_SCHEMA_VERSION):
-            raise ValueError(
-                f"Unsupported export schema version {version}; expected major {EXPORT_SCHEMA_VERSION}"
-            )
-        return TreeExport(
-            title=str(data.get("title") or "Imported Tree"),
-            created_at=str(data.get("created_at") or _utc_now_iso()),
-            tree=ConvTree.from_dict(data["tree"]),
-        )
-
-
 class SessionStore:
     def __init__(self, workspace_root: str | Path, storage_dir: str | Path | None = None) -> None:
         self.workspace_root = Path(workspace_root)
@@ -140,8 +93,6 @@ class SessionStore:
         )
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self._manifest_path = self.storage_dir / "manifest.json"
-        self.exports_dir = self.workspace_root / DEFAULT_EXPORTS_DIRNAME
-        self.exports_dir.mkdir(parents=True, exist_ok=True)
 
     def bootstrap(self) -> ChatSession:
         manifest = self._load_manifest()
@@ -246,64 +197,6 @@ class SessionStore:
             }
             self._write_manifest(manifest)
         return session
-
-    def import_tree(self, path: str | Path, title: str = "", *, activate: bool = True) -> ChatSession:
-        path = Path(path)
-        with open(path, "r", encoding="utf-8") as handle:
-            exported = TreeExport.from_dict(json.load(handle))
-        fallback_title = "" if exported.title.strip() == "Imported Tree" else exported.title.strip()
-        default_title = title.strip() or fallback_title or path.stem or ""
-        return self.create_session(default_title, exported.tree, activate=activate)
-
-    def export_session_tree(self, title: str, tree: ConvTree) -> Path:
-        now = _utc_now_iso()
-        filename = f"{now.replace(':', '-').replace('+00:00', 'Z')}--{_slugify(title or 'session-export')}.json"
-        path = self.exports_dir / filename
-        payload = TreeExport(
-            title=title.strip() or "Session Export",
-            created_at=now,
-            tree=tree,
-        )
-        _write_json_atomic(path, payload.to_dict())
-        return path
-
-    def list_exports(self) -> List[ExportSummary]:
-        summaries: List[ExportSummary] = []
-        for path in sorted(self.exports_dir.glob("*.json"), reverse=True):
-            try:
-                with open(path, "r", encoding="utf-8") as handle:
-                    exported = TreeExport.from_dict(json.load(handle))
-            except Exception:
-                continue
-            summaries.append(
-                ExportSummary(
-                    filename=path.name,
-                    title=exported.title,
-                    created_at=exported.created_at,
-                    turn_count=max(0, len(exported.tree.nodes) - 1),
-                    branch_count=sum(1 for node in exported.tree.nodes.values() if node.branch_root),
-                )
-            )
-        return summaries
-
-    def resolve_export_path(self, selector: str) -> Path:
-        value = str(selector or "").strip()
-        if not value:
-            raise ValueError("export selector is required")
-        exports = self.list_exports()
-        if value.isdigit():
-            idx = int(value) - 1
-            if 0 <= idx < len(exports):
-                return self.exports_dir / exports[idx].filename
-        candidate = self.exports_dir / value
-        if candidate.exists():
-            return candidate
-        title_matches = [item.filename for item in exports if item.title.casefold() == value.casefold()]
-        if len(title_matches) == 1:
-            return self.exports_dir / title_matches[0]
-        if len(title_matches) > 1:
-            raise ValueError(f"Multiple exports match '{value}'. Use the numeric index or filename.")
-        raise ValueError(f"No saved export matches '{value}'.")
 
     def resolve_session_id(self, selector: str) -> str:
         value = str(selector or "").strip()

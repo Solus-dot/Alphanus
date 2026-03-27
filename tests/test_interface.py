@@ -672,54 +672,6 @@ def test_load_session_picker_close_switches_sessions() -> None:
     assert events == ["Loaded Session", "Loaded session 'Loaded Session'"]
 
 
-def test_import_picker_close_imports_selected_export() -> None:
-    tui = AlphanusTUI.__new__(AlphanusTUI)
-    current_tree = ConvTree()
-    imported_tree = ConvTree()
-    imported_turn = imported_tree.add_turn("imported")
-    imported_tree.complete_turn(imported_turn.id, "done")
-    events: list[str] = []
-    errors: list[str] = []
-
-    def save_tree(session_id: str, title: str, tree: ConvTree, *, created_at: str, activate: bool = True) -> ChatSession:
-        assert tree is current_tree
-        return ChatSession(
-            id=session_id,
-            title=title,
-            created_at=created_at,
-            updated_at="2026-03-20T10:05:00+00:00",
-            tree=tree,
-        )
-
-    def import_tree(path, title: str = "", activate: bool = True) -> ChatSession:
-        assert str(path).endswith("export.json")
-        return ChatSession(
-            id="sess-3",
-            title="Imported Session",
-            created_at="2026-03-20T10:06:00+00:00",
-            updated_at="2026-03-20T10:07:00+00:00",
-            tree=imported_tree,
-        )
-
-    tui._session_store = SimpleNamespace(
-        save_tree=save_tree,
-        resolve_export_path=lambda selector: selector,
-        import_tree=import_tree,
-    )
-    tui._session_id = "sess-1"
-    tui._session_title = "Session 1"
-    tui._session_created_at = "2026-03-20T10:00:00+00:00"
-    tui.conv_tree = current_tree
-    tui._switch_to_session = lambda session, clear_pending=True: events.append(session.title)
-    tui._write_command_action = lambda text, **_kwargs: events.append(text)
-    tui._write_error = errors.append
-
-    tui._on_import_picker_close({"id": "export.json"})
-
-    assert errors == []
-    assert events == ["Imported Session", "Imported session 'Imported Session'"]
-
-
 def test_session_row_label_highlights_active_session() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     label = tui._session_row_label(

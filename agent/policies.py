@@ -135,12 +135,13 @@ class PromptPolicyRenderer:
             block = (
                 "Local workspace tool rule:\n"
                 "- This request is about local workspace files or folders.\n"
-                "- Use native workspace tools for local file creation, reading, editing, and folder creation.\n"
+                "- Prefer native workspace tools for local file creation, reading, editing, and folder creation whenever they can directly do the job.\n"
+                "- shell_command is still available, but use it only when workspace tools cannot directly accomplish the task or when shell output itself is the requested result.\n"
                 "- Do not use web_search, fetch_url, open_url, or play_youtube for local workspace file tasks."
             )
             if snapshot.selected_shell_workflow_skills:
                 block += (
-                    "\n- shell_command is allowed only for the documented selected-skill workflow required by this artifact task.\n"
+                    "\n- Prefer documented selected-skill shell/python workflows when this artifact task genuinely requires shell execution.\n"
                     f"- Skills requiring shell workflow here: {', '.join(snapshot.selected_shell_workflow_skills[:4])}\n"
                     "- Use documented shell/python commands from the selected skill to install missing dependencies and create the requested artifact.\n"
                     "- Each shell_command must be exactly one plain command.\n"
@@ -149,10 +150,10 @@ class PromptPolicyRenderer:
                     "- Do not use python -c import probes before trying the documented install workflow.\n"
                     "- If a dependency is required or uncertain, run the skill's documented install command first after approval.\n"
                     "- Do not create helper .py files until required dependencies are installed.\n"
-                    "- Do not use shell_command for generic local file inspection or folder creation."
+                    "- Do not use shell_command for generic local file inspection or folder creation when workspace tools already cover it."
                 )
             else:
-                block += "\n- Do not use shell_command to create folders or inspect local files."
+                block += "\n- Do not use shell_command for generic folder creation or local file inspection when workspace tools already cover it."
             blocks.append(block)
         if snapshot.requested_opaque_artifact_extensions and not snapshot.has_selected_materializers:
             blocks.append(

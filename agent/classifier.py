@@ -200,15 +200,18 @@ class TurnClassifier:
         )
 
     @classmethod
-    def _draft_contains_manual_workspace_advice(cls, assistant_reply: str) -> bool:
+    def _draft_defers_workspace_action_to_user(cls, assistant_reply: str) -> bool:
         lowered = cls._normalized_text(assistant_reply)
         if not lowered:
             return False
-        if re.search(r"\b(?:run|execute|use|copy|paste|type)\b[^.\n]{0,80}\b(?:terminal|shell|command)\b", lowered):
+        if "yourself" in lowered or "manually" in lowered:
             return True
-        if re.search(r"\b(?:run|execute)\b[^.\n]{0,80}\bmanually\b", lowered):
-            return True
-        return bool(re.search(r"\bmanually\b[^.\n]{0,40}\b(?:terminal|shell)\b", lowered))
+        return bool(
+            re.search(
+                r"\b(?:you can|please|you should)\b[^.\n]{0,100}\b(?:create|delete|remove|rename|move|edit|update|write|save|copy|paste|type|run|execute|use)\b",
+                lowered,
+            )
+        )
 
     @classmethod
     def _draft_claims_workspace_completion_without_evidence(cls, assistant_reply: str) -> bool:
@@ -303,7 +306,7 @@ class TurnClassifier:
             "- Choose completed_with_evidence only if the evidence shows at least one successful mutating workspace tool.\n"
             "- Choose declined_or_blocked only when the reply transparently reports a real limitation supported by the evidence, such as a policy-blocked tool, unavailable tooling, or an explicit statement that no successful workspace tool actually ran.\n"
             "- Choose needs_clarification when the assistant is explicitly asking the user for information needed before acting.\n"
-            "- Choose not_completed for manual terminal advice, unsupported success claims, or deflections/refusals that are not supported by the evidence.\n"
+            "- Choose not_completed for drafts that hand the requested action back to the user, unsupported success claims, or deflections/refusals that are not supported by the evidence.\n"
             "Do not explain."
         )
         user_lines = [f"Current user input:\n{current_user_input}", f"Assistant draft:\n{assistant_reply}", f"Tool evidence:\n{json.dumps(evidence, ensure_ascii=False, default=str)}"]
@@ -336,7 +339,7 @@ class TurnClassifier:
             return "not_completed"
         if TurnClassifier._draft_requests_clarification(assistant_reply):
             return "needs_clarification"
-        if TurnClassifier._draft_contains_manual_workspace_advice(assistant_reply):
+        if TurnClassifier._draft_defers_workspace_action_to_user(assistant_reply):
             return "not_completed"
         if TurnClassifier._draft_claims_workspace_completion_without_evidence(assistant_reply):
             return "not_completed"

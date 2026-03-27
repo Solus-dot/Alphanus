@@ -61,8 +61,6 @@ HELP_SECTIONS = [
             ("/config", "Edit global config in a popup"),
             ("/report [file]", "Save a support bundle JSON"),
             ("/code [n|last]", "Open a copyable code block viewer"),
-            ("/export", "Export current session into .alphanus/exports"),
-            ("/import", "Open the export picker"),
         ],
     ),
 ]
@@ -103,8 +101,6 @@ COMMAND_ENTRIES = [
     CommandEntry("/config", "/config", "Edit the global config in a popup"),
     CommandEntry("/report [file]", "/report ", "Save a support bundle JSON"),
     CommandEntry("/code [n|last]", "/code ", "Open a copyable code block viewer"),
-    CommandEntry("/export", "/export", "Export current session into .alphanus/exports"),
-    CommandEntry("/import", "/import", "Open the export picker"),
     CommandEntry("/quit", "/quit", "Exit app", aliases=("/exit", "/q")),
 ]
 

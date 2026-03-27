@@ -155,13 +155,22 @@ class TurnOrchestrator:
     def workspace_materialization_count(state: TurnState) -> int:
         return len(state.completion.materialized_paths)
 
+    @staticmethod
+    def _tool_counts_as_workspace_mutation(record: ToolExecutionRecord, skill_runtime) -> bool:
+        if record.policy_blocked or not bool(record.result.get("ok")):
+            return False
+        if skill_runtime.tool_is_mutating(record.name):
+            return True
+        if record.name != "shell_command":
+            return False
+        meta = record.result.get("meta")
+        return bool(isinstance(meta, dict) and meta.get("workspace_changed"))
+
     def workspace_mutation_count(self, state: TurnState) -> int:
         return sum(
             1
             for record in state.evidence
-            if self.skill_runtime.tool_is_mutating(record.name)
-            and not record.policy_blocked
-            and bool(record.result.get("ok"))
+            if self._tool_counts_as_workspace_mutation(record, self.skill_runtime)
         )
 
     @staticmethod
@@ -256,8 +265,8 @@ class TurnOrchestrator:
         recent_tools: List[Dict[str, Any]] = []
         for record in state.evidence[-12:]:
             ok = bool(record.result.get("ok"))
-            mutating = self.skill_runtime.tool_is_mutating(record.name)
-            if ok and mutating and not record.policy_blocked and record.name not in successful_mutating_tools:
+            mutating = self._tool_counts_as_workspace_mutation(record, self.skill_runtime)
+            if mutating and record.name not in successful_mutating_tools:
                 successful_mutating_tools.append(record.name)
             if record.policy_blocked and record.name not in policy_blocked_tools:
                 policy_blocked_tools.append(record.name)
@@ -635,6 +644,10 @@ class TurnOrchestrator:
                                 force_finalize_reason = search_rule("This source domain already blocked a fetch attempt in this turn.", "Do not retry the same blocked domain.", "Answer from the remaining evidence.")
                                 break
 
+                    workspace_fingerprint_before = ""
+                    if state.requires_workspace_action and call.name == "shell_command":
+                        workspace_fingerprint_before = self.skill_runtime.workspace.workspace_state_fingerprint()
+
                     result = self.skill_runtime.execute_tool_call(
                         call.name,
                         call.arguments,
@@ -644,6 +657,14 @@ class TurnOrchestrator:
                         spawn_skill_agent=spawn_skill_agent,
                         request_user_input=request_user_input,
                     )
+                    if workspace_fingerprint_before and bool(result.get("ok")):
+                        meta = result.get("meta")
+                        if not isinstance(meta, dict):
+                            meta = {}
+                            result["meta"] = meta
+                        meta["workspace_changed"] = (
+                            workspace_fingerprint_before != self.skill_runtime.workspace.workspace_state_fingerprint()
+                        )
                     self.emit(on_event, {"type": "tool_result", "name": call.name, "id": call.id, "result": result})
                     tool_message = {
                         "role": "tool",

@@ -201,6 +201,57 @@ def test_delete_alphanus_state_denied(tmp_path: Path):
         mgr.delete_path(".alphanus/sessions", recursive=True)
 
 
+def test_write_alphanus_state_denied(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    with pytest.raises(PermissionError):
+        mgr.create_directory(".alphanus")
+    with pytest.raises(PermissionError):
+        mgr.create_file(".alphanus/state.json", "{}")
+
+
+def test_edit_alphanus_state_denied(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    state_file = ws / ".alphanus" / "state.json"
+    home.mkdir()
+    state_file.parent.mkdir(parents=True)
+    state_file.write_text("{}", encoding="utf-8")
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    with pytest.raises(PermissionError):
+        mgr.edit_file(".alphanus/state.json", '{"changed":true}')
+
+
+def test_shell_command_cannot_touch_alphanus_state(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("cat .alphanus/manifest.json")
+    assert res["ok"] is False
+    assert res["error"]["code"] == "E_POLICY"
+
+
+def test_shell_command_cannot_use_alphanus_as_cwd(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    state_dir = ws / ".alphanus"
+    home.mkdir()
+    state_dir.mkdir(parents=True)
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("pwd", cwd=".alphanus")
+    assert res["ok"] is False
+    assert res["error"]["code"] == "E_POLICY"
+
+
 def test_delete_symlink_to_protected_target_unlinks_link_only(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"

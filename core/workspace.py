@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -62,6 +63,34 @@ class WorkspaceManager:
         self.blocked_patterns = list(blocked_patterns or DEFAULT_BLOCKED_PATTERNS)
         self.workspace_root.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def protected_state_dir(self) -> Path:
+        return self.workspace_root / ".alphanus"
+
+    def workspace_state_fingerprint(self) -> str:
+        digest = hashlib.sha256()
+        for root, dirnames, filenames in os.walk(self.workspace_root, topdown=True, followlinks=False):
+            root_path = Path(root)
+            dirnames[:] = sorted(dirname for dirname in dirnames if dirname != ".alphanus")
+            rel_root = root_path.relative_to(self.workspace_root)
+            for dirname in dirnames:
+                candidate = root_path / dirname
+                try:
+                    stat = candidate.lstat()
+                except OSError:
+                    continue
+                rel_path = (rel_root / dirname).as_posix()
+                digest.update(f"d:{rel_path}:{stat.st_mode}:{stat.st_mtime_ns}\n".encode("utf-8"))
+            for filename in sorted(filenames):
+                candidate = root_path / filename
+                try:
+                    stat = candidate.lstat()
+                except OSError:
+                    continue
+                rel_path = (rel_root / filename).as_posix()
+                digest.update(f"f:{rel_path}:{stat.st_mode}:{stat.st_size}:{stat.st_mtime_ns}\n".encode("utf-8"))
+        return digest.hexdigest()
+
     def _normalize_workspace_relative(self, path: str) -> Path:
         raw = Path(os.path.expanduser(path))
         if raw.is_absolute():
@@ -80,6 +109,8 @@ class WorkspaceManager:
         resolved = candidate.resolve()
         if not self._is_relative_to(resolved, self.workspace_root):
             raise PermissionError("Write path escapes workspace root")
+        if self._is_relative_to(resolved, self.protected_state_dir):
+            raise PermissionError("Writing .alphanus state is not allowed")
         return resolved
 
     def _resolve_read_path(self, path: str, extra_allowed_roots: Optional[Iterable[str]] = None) -> Path:
@@ -182,7 +213,7 @@ class WorkspaceManager:
         if source == self.workspace_root:
             raise PermissionError("Moving the workspace root is not allowed")
 
-        protected_dir = self.workspace_root / ".alphanus"
+        protected_dir = self.protected_state_dir
         if self._is_relative_to(source, protected_dir) or self._is_relative_to(destination, protected_dir):
             raise PermissionError("Moving .alphanus state is not allowed")
         if source == destination:
@@ -209,7 +240,7 @@ class WorkspaceManager:
 
         if candidate == self.workspace_root:
             raise PermissionError("Deleting the workspace root is not allowed")
-        protected_dir = self.workspace_root / ".alphanus"
+        protected_dir = self.protected_state_dir
         if self._is_relative_to(candidate, protected_dir):
             raise PermissionError("Deleting .alphanus state is not allowed")
         if candidate.is_symlink():
@@ -513,6 +544,9 @@ class WorkspaceManager:
             raise PermissionError("Command rejected by shell metacharacter policy")
         if argv[0] in SHELL_WRAPPER_BINARIES and len(argv) >= 3 and argv[1] in {"-c", "-lc"}:
             raise PermissionError("Command rejected by shell metacharacter policy")
+        protected_state_pattern = re.compile(r"(^|[=/])\.alphanus(?:/|$)")
+        if any(protected_state_pattern.search(part) for part in argv):
+            raise PermissionError("Commands touching .alphanus state are not allowed")
         for pattern in DANGEROUS_SHELL_PATTERNS:
             if re.search(pattern, trimmed, flags=re.IGNORECASE):
                 raise PermissionError("Command matches blocked dangerous pattern")
@@ -540,6 +574,8 @@ class WorkspaceManager:
             target_cwd = self._resolve_read_path(cwd, extra_allowed_roots=allowed_cwd_roots) if cwd else self.workspace_root
             if target_cwd.is_file():
                 target_cwd = target_cwd.parent
+            if self._is_relative_to(target_cwd, self.protected_state_dir):
+                raise PermissionError("Commands touching .alphanus state are not allowed")
             run = self._run_argv(argv, timeout_s=timeout_s, cwd=target_cwd)
             if run["returncode"] != 0:
                 detail = (run["stderr"] or run["stdout"] or "").strip()

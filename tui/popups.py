@@ -12,7 +12,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
-from core.sessions import ExportSummary, SessionSummary
+from core.sessions import SessionSummary
 
 
 class CodeViewerModal(ModalScreen[None]):
@@ -591,14 +591,3 @@ def session_picker_items(sessions: list[SessionSummary]) -> list[PickerItem]:
         items.append(PickerItem(id=session.id, prompt=prompt))
     return items
 
-
-def export_picker_items(exports: list[ExportSummary]) -> list[PickerItem]:
-    items: list[PickerItem] = []
-    for index, exported in enumerate(exports, start=1):
-        prompt = (
-            f"[bold #6366f1]{index}.[/bold #6366f1] "
-            f"[#f4f4f5]{esc(exported.title)}[/#f4f4f5] "
-            f"[dim]{exported.turn_count} turns · {exported.branch_count} branches · {esc(exported.filename)}[/dim]"
-        )
-        items.append(PickerItem(id=exported.filename, prompt=prompt))
-    return items
