@@ -119,8 +119,11 @@ def _search_home_files(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str,
 
 def _open_url(args: Dict[str, Any]) -> Dict[str, Any]:
     url = str(args["url"]).strip()
-    if not (url.startswith("http://") or url.startswith("https://")):
-        raise ValueError("URL must start with http:// or https://")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https", "file"}:
+        raise ValueError("URL must start with http://, https://, or file://")
+    if parsed.scheme == "file" and not parsed.path:
+        raise ValueError("file:// URL must include a path")
     try:
         opened = webbrowser.open(url, new=2)
     except Exception as exc:

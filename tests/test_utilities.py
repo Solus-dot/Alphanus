@@ -118,3 +118,33 @@ def test_open_url_preserves_browser_failure_message_in_runtime(mocker, tmp_path:
     assert out["error"]["code"] == "E_IO"
     assert out["error"]["message"] == "Unable to open browser in this environment"
     assert out["data"] == {"url": "https://example.com"}
+
+
+def test_open_url_accepts_file_urls_in_runtime(mocker, tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("utilities")
+    assert skill is not None
+
+    reg = runtime._tool_registry["open_url"]
+    module = runtime._load_module(reg.module_path, reg.module_name or "utilities_tools")  # noqa: SLF001
+    reg.module = module
+    assert module is not None
+    opened_urls: list[str] = []
+
+    def _capture_open(url: str, new: int = 0):
+        opened_urls.append(url)
+        return True
+
+    mocker.patch.object(module.webbrowser, "open", side_effect=_capture_open)
+    file_url = "file:///Users/sohom/Desktop/Alphanus-Workspace/pomodoro-app/index.html"
+
+    out = runtime.execute_tool_call(
+        "open_url",
+        {"url": file_url},
+        selected=[skill],
+        ctx=_ctx(str(runtime.workspace.workspace_root)),
+    )
+
+    assert out["ok"] is True
+    assert out["data"] == {"url": file_url}
+    assert opened_urls == [file_url]
