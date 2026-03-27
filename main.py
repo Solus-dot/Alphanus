@@ -56,7 +56,6 @@ def main() -> int:
     memory = VectorMemory(
         storage_path=memory_path,
         model_name=str(memory_cfg.get("model_name", RECOMMENDED_EMBEDDING_MODEL_NAME)),
-        embedding_backend=str(memory_cfg.get("embedding_backend", "transformer")),
         eager_load_encoder=bool(memory_cfg.get("eager_load_encoder", False)),
         allow_model_download=bool(memory_cfg.get("allow_model_download", True)),
     )
@@ -75,12 +74,9 @@ def main() -> int:
     if not config.get("agent", {}).get("tls_verify", True):
         logger.warning("TLS verification is disabled (agent.tls_verify=false)")
     memory_stats = memory.stats()
-    logger.info(
-        f"[info] memory mode: {memory_stats['embedding_backend']}"
-        + (f" ({memory.model_name})" if memory_stats["embedding_backend"] == "transformer" else " (hash fallback)")
-    )
-    if memory_stats.get("encoder_status") == "fallback" and memory_stats.get("encoder_detail"):
-        logger.warning(f"memory encoder fallback: {memory_stats['encoder_detail']}")
+    logger.info(f"[info] memory mode: {memory_stats['mode_label']} ({memory.model_name})")
+    if memory_stats.get("encoder_status") != "ready" and memory_stats.get("encoder_detail"):
+        logger.warning(f"memory encoder unavailable: {memory_stats['encoder_detail']}")
     logger.info("use /doctor inside the TUI for readiness and health diagnostics.")
 
     # Readiness is validated before first generation too; this startup check

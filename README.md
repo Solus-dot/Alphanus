@@ -16,7 +16,7 @@ Current behavior and architecture:
 - bundled workspace, shell, memory, search, and utility skills
 - tool exposure follows enabled skills; `/skill on|off` controls availability
 - workspace-safe file operations and constrained verification runners
-- persistent vector memory with transformer embeddings and deterministic hash fallback
+- persistent vector memory with transformer embeddings
 - branchable conversation tree with named multi-session save/load and inactive-branch compaction
 - TUI support for config editing, live tool previews, support bundle export, and code-block popups
 
@@ -200,7 +200,6 @@ Built-in defaults:
   },
   "memory": {
     "path": "./memories/memory.pkl",
-    "embedding_backend": "transformer",
     "model_name": "BAAI/bge-small-en-v1.5",
     "eager_load_encoder": false,
     "allow_model_download": true
@@ -236,11 +235,9 @@ The TUI also exposes `/config`, which opens a modal editor for global config. Se
 ## Memory and RAM Tuning
 
 Notes:
-- `memory.embedding_backend: "transformer"` is the default and recommended semantic mode.
-- `memory.embedding_backend: "hash"` is the lowest-RAM fallback.
 - Recommended transformer model: `BAAI/bge-small-en-v1.5`.
 - `memory.allow_model_download` controls whether uncached embedding weights may be downloaded on first use.
-- Existing memories are automatically re-embedded when you switch backend/model, so recall stays consistent.
+- Existing memories are automatically re-embedded when you switch models, so recall stays consistent.
 - `tui.chat_log_max_lines` bounds RichLog memory growth.
 - Tree compaction is lossy for inactive branches; disable it if you need full historical payload fidelity when switching back.
 

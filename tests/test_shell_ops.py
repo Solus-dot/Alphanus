@@ -169,7 +169,7 @@ def test_shell_command_nonzero_exit_bubbles_up_as_tool_failure(tmp_path: Path):
     assert out["data"]["returncode"] == 3
 
 
-def test_runtime_select_skills_returns_all_enabled_skills(tmp_path: Path):
+def test_runtime_select_skills_returns_loaded_shell_and_memory_skills(tmp_path: Path):
     runtime = _runtime(tmp_path, {})
     ctx = SkillContext(
         user_input="check my go version",
@@ -177,6 +177,7 @@ def test_runtime_select_skills_returns_all_enabled_skills(tmp_path: Path):
         attachments=[],
         workspace_root=str(runtime.workspace.workspace_root),
         memory_hits=[],
+        loaded_skill_ids=["shell-ops", "memory-rag"],
     )
 
     selected_ids = {skill.id for skill in runtime.select_skills(ctx)}
@@ -201,6 +202,7 @@ def test_shell_confirmation_reuses_recent_assistant_action_context(mocker, tmp_p
     ]
 
     ctx = agent._build_skill_context("Yeah check my version", [], [], history_messages)
+    ctx.loaded_skill_ids = ["shell-ops"]
 
     assert "assistant just said:" in ctx.recent_routing_hint
     assert "go version" in ctx.recent_routing_hint

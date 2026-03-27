@@ -31,7 +31,6 @@ _SECRET_KEYS = {
 }
 _SECRET_SUFFIXES = ("_api_key", "_apikey", "_token", "_secret", "_password")
 _ALLOWED_SEARCH_PROVIDERS = {"tavily", "brave"}
-_ALLOWED_EMBEDDING_BACKENDS = {"transformer", "hash"}
 _ALLOWED_CORE_EXPOSURE_POLICIES = {"coding_core"}
 _VALID_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -64,7 +63,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "memory": {
         "path": "./memories/memory.pkl",
-        "embedding_backend": "transformer",
         "model_name": RECOMMENDED_EMBEDDING_MODEL_NAME,
         "eager_load_encoder": False,
         "allow_model_download": True,
@@ -294,9 +292,6 @@ def config_for_editor_view(config: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(context_cfg, dict):
         context_cfg.pop("context_limit", None)
         context_cfg.pop("safety_margin", None)
-    memory_cfg = cleaned.get("memory")
-    if isinstance(memory_cfg, dict) and str(memory_cfg.get("embedding_backend", "transformer")).strip().lower() == "hash":
-        memory_cfg.pop("model_name", None)
     return cleaned
 
 
@@ -516,17 +511,9 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         warnings=warnings,
         allow_empty=False,
     )
-    backend = _coerce_string(
-        memory_cfg.get("embedding_backend"),
-        str(DEFAULT_CONFIG["memory"]["embedding_backend"]),
-        path="memory.embedding_backend",
-        warnings=warnings,
-        allow_empty=False,
-    ).lower()
-    if backend not in _ALLOWED_EMBEDDING_BACKENDS:
-        _warn(warnings, f"memory.embedding_backend: unsupported {backend!r}, using default")
-        backend = str(DEFAULT_CONFIG["memory"]["embedding_backend"])
-    memory_cfg["embedding_backend"] = backend
+    legacy_backend = memory_cfg.pop("embedding_backend", None)
+    if legacy_backend is not None:
+        _warn(warnings, "memory.embedding_backend: ignored; memory is embeddings-only now")
     memory_cfg["model_name"] = _coerce_string(
         memory_cfg.get("model_name"),
         str(DEFAULT_CONFIG["memory"]["model_name"]),

@@ -776,7 +776,8 @@ class AlphanusTUI(App):
 
     def _memory_mode_label(self) -> str:
         try:
-            return str(self.agent.skill_runtime.memory.embedding_backend)
+            stats = self.agent.skill_runtime.memory.stats()
+            return str(stats.get("mode_label", stats.get("embedding_backend", "unknown")))
         except Exception:
             return "unknown"
 
@@ -2727,7 +2728,6 @@ class AlphanusTUI(App):
             self._write_detail_line("count", str(stats["count"]))
             self._write_detail_line("mode", str(stats.get("mode_label", stats["embedding_backend"])))
             self._write_detail_line("backend", str(stats["embedding_backend"]))
-            self._write_detail_line("configured_backend", str(stats.get("configured_embedding_backend", "")))
             self._write_detail_line("allow_model_download", str(stats.get("allow_model_download", False)).lower())
             self._write_detail_line("encoder_status", str(stats.get("encoder_status", "")))
             self._write_detail_line("encoder_source", str(stats.get("encoder_source", "")))
@@ -2771,7 +2771,6 @@ class AlphanusTUI(App):
         self._write_detail_line("workspace_writable", str(workspace.get("writable", False)).lower())
         self._write_detail_line("memory_mode", str(memory.get("mode", "")))
         self._write_detail_line("memory_backend", str(memory.get("backend", "")))
-        self._write_detail_line("memory_configured_backend", str(memory.get("configured_backend", "")))
         self._write_detail_line("memory_allow_model_download", str(memory.get("allow_model_download", False)).lower())
         self._write_detail_line("memory_encoder_status", str(memory.get("encoder_status", "")))
         self._write_detail_line("memory_encoder_source", str(memory.get("encoder_source", "")))

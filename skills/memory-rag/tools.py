@@ -102,6 +102,33 @@ def _normalize_fact_key(raw: str) -> str:
     return "_".join(cleaned.strip().split())
 
 
+def _rank_hits(hits: list[Dict[str, Any]], top_k: int) -> list[Dict[str, Any]]:
+    ranked: dict[int, Dict[str, Any]] = {}
+    for hit in hits:
+        try:
+            memory_id = int(hit.get("id", 0))
+        except Exception:
+            continue
+        if memory_id <= 0:
+            continue
+        score = float(hit.get("score", 0.0))
+        timestamp = float(hit.get("timestamp", 0.0))
+        current = ranked.get(memory_id)
+        if current is None:
+            ranked[memory_id] = hit
+            continue
+        current_score = float(current.get("score", 0.0))
+        current_timestamp = float(current.get("timestamp", 0.0))
+        if (score, timestamp) > (current_score, current_timestamp):
+            ranked[memory_id] = hit
+    ordered = sorted(
+        ranked.values(),
+        key=lambda item: (float(item.get("score", 0.0)), float(item.get("timestamp", 0.0))),
+        reverse=True,
+    )
+    return ordered[: max(1, top_k)]
+
+
 def _extract_fact(text: str) -> Optional[Tuple[str, str]]:
     match = _FACT_IS_PATTERN.search(text)
     if match:
@@ -227,8 +254,10 @@ def _query_variants(query: str) -> list[str]:
 
 def _store_memory(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     memory = env.memory
-    text = str(args["text"])
-    memory_type = args.get("memory_type", "conversation")
+    text = " ".join(str(args["text"]).split()).strip()
+    if not text:
+        raise ValueError("Memory text must not be empty")
+    memory_type = str(args.get("memory_type") or "conversation").strip() or "conversation"
     metadata: Dict[str, Any] = dict(args.get("metadata") or {})
     forgotten_ids: list[int] = []
     replace_existing = bool(args.get("replace_existing", True))
@@ -276,37 +305,27 @@ def _recall_memory(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any
     top_k = int(args.get("top_k", 5))
     min_score = args.get("min_score")
     threshold = 0.18 if min_score is None else float(min_score)
-    memory_type = args.get("memory_type")
-    hits = []
-    seen_ids = set()
-    for query in _query_variants(str(args["query"])):
-        direct_hits = env.memory.search(
-            query=query,
-            top_k=top_k,
-            memory_type=memory_type,
-            min_score=threshold,
+    memory_type = str(args.get("memory_type") or "").strip() or None
+    query = " ".join(str(args["query"]).split()).strip()
+    if not query:
+        raise ValueError("Recall query must not be empty")
+
+    semantic_hits = []
+    for variant in _query_variants(query):
+        semantic_hits.extend(
+            env.memory.search(
+                query=variant,
+                top_k=top_k,
+                memory_type=memory_type,
+                min_score=threshold,
+            )
         )
-        for hit in direct_hits:
-            memory_id = int(hit.get("id", 0))
-            if memory_id and memory_id not in seen_ids:
-                hits.append(hit)
-                seen_ids.add(memory_id)
-            if len(hits) >= max(1, top_k):
-                break
-        if len(hits) >= max(1, top_k):
-            break
+    hits = _rank_hits(semantic_hits, top_k)
     if not hits:
-        for query in _query_variants(str(args["query"])):
-            fallback_hits = _lexical_fallback(env.memory, query, top_k=top_k, memory_type=memory_type)
-            for hit in fallback_hits:
-                memory_id = int(hit.get("id", 0))
-                if memory_id and memory_id not in seen_ids:
-                    hits.append(hit)
-                    seen_ids.add(memory_id)
-                if len(hits) >= max(1, top_k):
-                    break
-            if hits:
-                break
+        lexical_hits = []
+        for variant in _query_variants(query):
+            lexical_hits.extend(_lexical_fallback(env.memory, variant, top_k=top_k, memory_type=memory_type))
+        hits = _rank_hits(lexical_hits, top_k)
     return {"hits": hits}
 
 

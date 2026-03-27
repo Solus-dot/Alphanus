@@ -144,7 +144,7 @@ def test_chat_input_binds_new_shortcuts_locally() -> None:
     assert bindings["f3"] == "toggle_thinking"
 
 
-def test_config_editor_view_omits_secrets_and_unused_minilm() -> None:
+def test_config_editor_view_omits_secrets_and_internal_fields() -> None:
     config = {
         "agent": {"auth_header": "Authorization: Bearer secret", "context_budget_max_tokens": 2048},
         "search": {"provider": "tavily", "tavily_api_key": "tvly-secret"},
@@ -157,7 +157,6 @@ def test_config_editor_view_omits_secrets_and_unused_minilm() -> None:
     assert "auth_header" not in cleaned["agent"]
     assert "context_budget_max_tokens" not in cleaned["agent"]
     assert "tavily_api_key" not in cleaned["search"]
-    assert "model_name" not in cleaned["memory"]
     assert "context_limit" not in cleaned["context"]
     assert "safety_margin" not in cleaned["context"]
     assert cleaned["context"]["keep_last_n"] == 10
@@ -890,15 +889,14 @@ def test_cmd_doctor_shows_skill_policy_details() -> None:
         "agent": {"ready": True, "endpoint_policy_error": ""},
         "workspace": {"path": "/tmp/ws", "writable": True},
         "memory": {
-            "mode": "hash",
-            "backend": "hash",
-            "configured_backend": "hash",
+            "mode": "semantic",
+            "backend": "transformer",
             "allow_model_download": False,
             "encoder_status": "ready",
-            "encoder_source": "builtin",
+            "encoder_source": "transformer-local",
             "encoder_detail": "",
-            "model_name": "hash",
-            "recommended_model_name": "hash",
+            "model_name": "BAAI/bge-small-en-v1.5",
+            "recommended_model_name": "BAAI/bge-small-en-v1.5",
         },
         "search": {"provider": "tavily", "ready": False, "reason": "missing env: TAVILY_API_KEY"},
         "skills": [
