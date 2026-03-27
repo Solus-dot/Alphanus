@@ -25,6 +25,5 @@ Rules:
 - Recall before asking repetitive personal-context questions.
 - Keep memory text private and relevant.
 - Use at most one `recall_memory` call per turn unless the first recall fails.
-- When the user corrects/replaces older information, call `store_memory` once and let it replace stale memories:
-  - Automatic replacement works for fact statements like "my <attribute> is <value>" / "user's <attribute> is <value>".
-  - For other correction shapes, pass `replace_query` (and optionally `replace_min_score`) to target memories to replace.
+- Memory retrieval is semantic only. Do not rely on regex or lexical fallback behavior.
+- When the user corrects/replaces older information, call `store_memory` with `replace_query` or `replace_ids` to target stale memories explicitly.

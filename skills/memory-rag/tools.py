@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict
 
 from core.skills import ToolExecutionEnv
 
@@ -78,28 +77,9 @@ TOOL_SPECS = {
     },
 }
 
-_FACT_IS_PATTERN = re.compile(
-    r"\b(?:my|user(?:'s)?)\s+([a-z][a-z0-9 _-]{0,40})\s+is\s+([^.!?\n]{1,120})",
-    re.IGNORECASE,
-)
-_FACT_I_AM_PATTERN = re.compile(r"\bi am\s+([^.!?\n]{1,80})", re.IGNORECASE)
-_QUERY_ALIAS_GROUPS = (
-    ("name", "full name", "called", "identity"),
-    ("birthday", "birthdate", "date of birth", "birth year", "age"),
-    ("favorite", "favourite", "likes", "prefers"),
-    ("editor", "ide"),
-    ("job", "work", "occupation", "role"),
-    ("city", "location", "address", "live"),
-)
-
 
 def _normalize_whitespace(value: str) -> str:
     return " ".join(value.strip().split()).lower()
-
-
-def _normalize_fact_key(raw: str) -> str:
-    cleaned = re.sub(r"[^a-z0-9 _-]", "", raw.lower())
-    return "_".join(cleaned.strip().split())
 
 
 def _rank_hits(hits: list[Dict[str, Any]], top_k: int) -> list[Dict[str, Any]]:
@@ -129,42 +109,17 @@ def _rank_hits(hits: list[Dict[str, Any]], top_k: int) -> list[Dict[str, Any]]:
     return ordered[: max(1, top_k)]
 
 
-def _extract_fact(text: str) -> Optional[Tuple[str, str]]:
-    match = _FACT_IS_PATTERN.search(text)
-    if match:
-        attr = _normalize_fact_key(match.group(1))
-        value = " ".join(match.group(2).strip().split())
-        if attr and value:
-            return (f"user.{attr}", value)
-
-    match = _FACT_I_AM_PATTERN.search(text)
-    if match:
-        value = " ".join(match.group(1).strip().split())
-        if value:
-            return ("user.identity", value)
-    return None
-
-
-def _fact_from_item(item) -> Optional[Tuple[str, str]]:
-    metadata = item.metadata or {}
-    key = metadata.get("fact_key")
-    value = metadata.get("fact_value")
-    if isinstance(key, str) and key.strip() and isinstance(value, str) and value.strip():
-        return (key.strip(), value.strip())
-    return None
-
-
-def _find_conflicting_fact_ids(memory, fact_key: str, fact_value: str) -> list[int]:
-    target = _normalize_whitespace(fact_value)
-    forgotten_ids: list[int] = []
+def _find_exact_text_ids(memory, text: str, memory_type: str | None) -> list[int]:
+    target = _normalize_whitespace(text)
+    if not target:
+        return []
+    out: list[int] = []
     for item in list(memory.memories):
-        fact = _fact_from_item(item)
-        if not fact:
+        if memory_type and item.type != memory_type:
             continue
-        key, value = fact
-        if key == fact_key and _normalize_whitespace(value) != target:
-            forgotten_ids.append(int(item.id))
-    return forgotten_ids
+        if _normalize_whitespace(str(item.text)) == target:
+            out.append(int(item.id))
+    return out
 
 
 def _ids_from_replace_query(memory, args: Dict[str, Any], text: str) -> list[int]:
@@ -189,69 +144,6 @@ def _ids_from_replace_query(memory, args: Dict[str, Any], text: str) -> list[int
     return out
 
 
-def _lexical_fallback(memory, query: str, top_k: int, memory_type):
-    query_tokens = {tok for tok in re.findall(r"[a-z0-9]+", query.lower()) if len(tok) > 1}
-    if not query_tokens:
-        return []
-
-    scored = []
-    for item in list(memory.memories):
-        if memory_type and item.type != memory_type:
-            continue
-        text_tokens = set(re.findall(r"[a-z0-9]+", str(item.text).lower()))
-        overlap = len(query_tokens & text_tokens)
-        if overlap <= 0:
-            continue
-        score = overlap / max(1, len(query_tokens))
-        scored.append((score, item))
-
-    scored.sort(key=lambda pair: (pair[0], pair[1].timestamp), reverse=True)
-    out = []
-    for score, item in scored[: max(1, top_k)]:
-        record = memory._to_public(item)  # noqa: SLF001
-        record["score"] = round(float(score), 4)
-        out.append(record)
-    return out
-
-
-def _query_variants(query: str) -> list[str]:
-    base = " ".join(str(query).split()).strip()
-    if not base:
-        return []
-
-    lowered = base.lower()
-    variants = [base]
-
-    def _add(candidate: str) -> None:
-        candidate = " ".join(candidate.split()).strip()
-        if candidate and candidate not in variants:
-            variants.append(candidate)
-
-    for group in _QUERY_ALIAS_GROUPS:
-        present = [term for term in group if term in lowered]
-        if not present:
-            continue
-        for old in present:
-            for new in group:
-                if new != old:
-                    _add(lowered.replace(old, new))
-
-    if lowered.startswith("my "):
-        _add("user " + lowered[3:])
-    if lowered.startswith("user "):
-        _add("my " + lowered[5:])
-
-    personal_fact_terms = {
-        term
-        for group in _QUERY_ALIAS_GROUPS
-        for term in group
-    }
-    if "personal information" not in lowered and any(term in lowered for term in personal_fact_terms):
-        _add("user personal information")
-
-    return variants
-
-
 def _store_memory(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     memory = env.memory
     text = " ".join(str(args["text"]).split()).strip()
@@ -262,15 +154,9 @@ def _store_memory(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]
     forgotten_ids: list[int] = []
     replace_existing = bool(args.get("replace_existing", True))
 
-    fact = _extract_fact(text)
-    if fact:
-        metadata["fact_key"] = fact[0]
-        metadata["fact_value"] = fact[1]
-
     ids_to_forget = set()
-    if replace_existing and fact:
-        ids_to_forget.update(_find_conflicting_fact_ids(memory, fact[0], fact[1]))
     if replace_existing:
+        ids_to_forget.update(_find_exact_text_ids(memory, text, memory_type))
         ids_to_forget.update(_ids_from_replace_query(memory, args, text))
     for memory_id in args.get("replace_ids") or []:
         try:
@@ -293,10 +179,10 @@ def _store_memory(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]
     meta: Dict[str, Any] = {}
     if forgotten_ids:
         meta["forgotten_ids"] = forgotten_ids
-        if fact:
-            meta["auto_resolution"] = fact[0]
-        elif args.get("replace_query"):
+        if args.get("replace_query"):
             meta["auto_resolution"] = "replace_query"
+        else:
+            meta["auto_resolution"] = "exact_text"
 
     return {"ok": True, "data": item, "error": None, "meta": meta}
 
@@ -310,22 +196,15 @@ def _recall_memory(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any
     if not query:
         raise ValueError("Recall query must not be empty")
 
-    semantic_hits = []
-    for variant in _query_variants(query):
-        semantic_hits.extend(
-            env.memory.search(
-                query=variant,
-                top_k=top_k,
-                memory_type=memory_type,
-                min_score=threshold,
-            )
-        )
-    hits = _rank_hits(semantic_hits, top_k)
-    if not hits:
-        lexical_hits = []
-        for variant in _query_variants(query):
-            lexical_hits.extend(_lexical_fallback(env.memory, variant, top_k=top_k, memory_type=memory_type))
-        hits = _rank_hits(lexical_hits, top_k)
+    hits = _rank_hits(
+        env.memory.search(
+            query=query,
+            top_k=top_k,
+            memory_type=memory_type,
+            min_score=threshold,
+        ),
+        top_k,
+    )
     return {"hits": hits}
 
 

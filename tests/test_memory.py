@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import pickle
 import sys
 import time
@@ -123,16 +122,6 @@ def _memory_runtime(tmp_path: Path) -> tuple[SkillRuntime, str]:
     return runtime, str(ws)
 
 
-def _load_memory_tools_module():
-    repo_root = Path(__file__).resolve().parents[1]
-    path = repo_root / "skills" / "memory-rag" / "tools.py"
-    spec = importlib.util.spec_from_file_location("test_memory_rag_tools", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_add_search_forget(monkeypatch, tmp_path: Path):
     mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"))
     monkeypatch.setattr(VectorMemory, "_encode", _fake_encode, raising=False)
@@ -180,7 +169,7 @@ def test_hash_backend_is_rejected(tmp_path: Path):
         VectorMemory(storage_path=str(tmp_path / "mem.pkl"), embedding_backend="hash")
 
 
-def test_store_memory_auto_replaces_conflicting_user_name(tmp_path: Path):
+def test_store_memory_replace_query_replaces_user_name(tmp_path: Path):
     runtime, ws = _memory_runtime(tmp_path)
     skill = runtime.get_skill("memory-rag")
     assert skill is not None
@@ -190,9 +179,15 @@ def test_store_memory_auto_replaces_conflicting_user_name(tmp_path: Path):
     assert first["ok"] is True
     old_id = int(first["data"]["id"])
 
-    second = runtime.execute_tool_call("store_memory", {"text": "User's name is Solus"}, selected=[skill], ctx=ctx)
+    second = runtime.execute_tool_call(
+        "store_memory",
+        {"text": "User's name is Solus", "replace_query": "User's name is Sohom"},
+        selected=[skill],
+        ctx=ctx,
+    )
     assert second["ok"] is True
     assert old_id in second["meta"].get("forgotten_ids", [])
+    assert second["meta"].get("auto_resolution") == "replace_query"
 
     mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"))
     texts = [m["text"] for m in mem.list_recent(10)]
@@ -200,7 +195,7 @@ def test_store_memory_auto_replaces_conflicting_user_name(tmp_path: Path):
     assert "User's name is Solus" in texts
 
 
-def test_store_memory_auto_replaces_conflicting_attribute(tmp_path: Path):
+def test_store_memory_replace_query_replaces_conflicting_attribute(tmp_path: Path):
     runtime, ws = _memory_runtime(tmp_path)
     skill = runtime.get_skill("memory-rag")
     assert skill is not None
@@ -210,10 +205,15 @@ def test_store_memory_auto_replaces_conflicting_attribute(tmp_path: Path):
     assert first["ok"] is True
     old_id = int(first["data"]["id"])
 
-    second = runtime.execute_tool_call("store_memory", {"text": "My favorite editor is Neovim"}, selected=[skill], ctx=ctx)
+    second = runtime.execute_tool_call(
+        "store_memory",
+        {"text": "My favorite editor is Neovim", "replace_query": "My favorite editor is Vim"},
+        selected=[skill],
+        ctx=ctx,
+    )
     assert second["ok"] is True
     assert old_id in second["meta"].get("forgotten_ids", [])
-    assert second["meta"].get("auto_resolution") == "user.favorite_editor"
+    assert second["meta"].get("auto_resolution") == "replace_query"
 
     mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"))
     texts = [m["text"] for m in mem.list_recent(10)]
@@ -246,7 +246,7 @@ def test_store_memory_replace_query_can_replace_non_fact(tmp_path: Path):
     assert second["meta"].get("auto_resolution") == "replace_query"
 
 
-def test_recall_memory_fallback_finds_name_fact(tmp_path: Path):
+def test_recall_memory_semantic_search_finds_name_fact(tmp_path: Path):
     runtime, ws = _memory_runtime(tmp_path)
     skill = runtime.get_skill("memory-rag")
     assert skill is not None
@@ -257,7 +257,7 @@ def test_recall_memory_fallback_finds_name_fact(tmp_path: Path):
 
     recalled = runtime.execute_tool_call(
         "recall_memory",
-        {"query": "user name", "top_k": 3},
+        {"query": "my name", "top_k": 3},
         selected=[skill],
         ctx=ctx,
     )
@@ -267,17 +267,7 @@ def test_recall_memory_fallback_finds_name_fact(tmp_path: Path):
     assert any("name is meems" in str(hit.get("text", "")).lower() for hit in hits)
 
 
-def test_fact_from_item_uses_metadata_only():
-    tools = _load_memory_tools_module()
-
-    class _Item:
-        metadata = {}
-        text = "My favorite editor is Vim"
-
-    assert tools._fact_from_item(_Item()) is None
-
-
-def test_recall_memory_lexical_fallback_avoids_substring_matches(tmp_path: Path):
+def test_recall_memory_without_lexical_fallback_avoids_substring_matches(tmp_path: Path):
     runtime, ws = _memory_runtime(tmp_path)
     skill = runtime.get_skill("memory-rag")
     assert skill is not None
@@ -296,7 +286,7 @@ def test_recall_memory_lexical_fallback_avoids_substring_matches(tmp_path: Path)
     assert recalled["data"]["hits"] == []
 
 
-def test_recall_memory_birthday_query_finds_birthdate_fact(tmp_path: Path):
+def test_recall_memory_semantic_query_finds_birthdate_fact(tmp_path: Path):
     runtime, ws = _memory_runtime(tmp_path)
     skill = runtime.get_skill("memory-rag")
     assert skill is not None
@@ -312,7 +302,7 @@ def test_recall_memory_birthday_query_finds_birthdate_fact(tmp_path: Path):
 
     recalled = runtime.execute_tool_call(
         "recall_memory",
-        {"query": "birthday", "top_k": 3},
+        {"query": "birthdate", "top_k": 3},
         selected=[skill],
         ctx=ctx,
     )
@@ -343,7 +333,7 @@ def test_export_memories_relative_path_stays_in_workspace(tmp_path: Path):
     assert target.exists()
 
 
-def test_recall_memory_favourite_query_finds_favorite_fact(tmp_path: Path):
+def test_recall_memory_semantic_query_finds_favorite_fact(tmp_path: Path):
     runtime, ws = _memory_runtime(tmp_path)
     skill = runtime.get_skill("memory-rag")
     assert skill is not None
@@ -359,7 +349,7 @@ def test_recall_memory_favourite_query_finds_favorite_fact(tmp_path: Path):
 
     recalled = runtime.execute_tool_call(
         "recall_memory",
-        {"query": "my favourite editor", "top_k": 3},
+        {"query": "favorite editor", "top_k": 3},
         selected=[skill],
         ctx=ctx,
     )
