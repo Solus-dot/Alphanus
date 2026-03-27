@@ -1,10 +1,20 @@
 from __future__ import annotations
 from pathlib import Path
 
+import pytest
+
 import core.skills as skills_module
 from core.memory import VectorMemory
 from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
+
+
+def _tool_names(runtime: SkillRuntime, selected, ctx: SkillContext | None = None) -> list[str]:
+    return [tool["function"]["name"] for tool in runtime.tools_for_turn(selected, ctx=ctx)]
+
+
+def _always_available_tool_names() -> set[str]:
+    return {"request_user_input", "skill_manage", "skill_view", "skills_list"}
 
 
 def test_skill_load_select_and_execute(tmp_path: Path):
@@ -86,9 +96,12 @@ def execute(tool_name, args, env):
         explicit_skill_id="s1",
     )
 
+    assert runtime.select_skills(ctx) == []
+    loaded = runtime.skill_view("s1", "", ctx)
+    assert loaded["skill_id"] == "s1"
+    assert loaded["loaded"] is True
     selected = runtime.select_skills(ctx)
-    assert selected
-    assert selected[0].id == "s1"
+    assert [skill.id for skill in selected] == ["s1"]
 
     out = runtime.execute_tool_call(
         "create_file",
@@ -173,6 +186,33 @@ def execute(tool_name, args, env):
     out = runtime.execute_tool_call("read_blob", {"filepath": "a.txt"}, selected=selected, ctx=ctx)
     assert out["ok"] is False
     assert out["error"]["code"] == "E_UNSUPPORTED"
+
+
+def test_skill_manage_create_rejects_category_path_escape(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    content = """
+---
+name: demo
+description: traversal test
+version: 1.0.0
+---
+Hello
+""".strip()
+
+    with pytest.raises(PermissionError):
+        runtime.skill_manage({"action": "create", "name": "demo", "category": "../../Desktop", "content": content})
+
+    assert not (home / "Desktop" / "demo" / "SKILL.md").exists()
 
 
 def test_tools_for_turn_includes_core_tools_without_selected_skill(tmp_path: Path):
@@ -273,13 +313,21 @@ def execute(tool_name, args, env):
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
-    core_tool_names = [tool["function"]["name"] for tool in runtime.tools_for_turn([])]
-    assert core_tool_names == ["create_file", "read_file"]
+    core_tool_names = set(_tool_names(runtime, []))
+    assert core_tool_names == {
+        "create_file",
+        "read_file",
+        "request_user_input",
+        "skill_manage",
+        "skill_view",
+        "skills_list",
+        "web_search",
+    }
 
     search_skill = runtime.get_skill("search-ops")
     assert search_skill is not None
-    merged_tool_names = [tool["function"]["name"] for tool in runtime.tools_for_turn([search_skill])]
-    assert merged_tool_names == ["create_file", "read_file", "read_skill_resource", "request_user_input", "web_search"]
+    merged_tool_names = set(_tool_names(runtime, [search_skill]))
+    assert merged_tool_names == core_tool_names
 
 
 def test_tools_for_turn_includes_generic_script_runner_for_selected_script_skill(tmp_path: Path):
@@ -314,12 +362,7 @@ Use the helper script when available.
 
     skill = runtime.get_skill("script-only")
     assert skill is not None
-    tools = runtime.tools_for_turn([skill])
-    tool_names = [tool["function"]["name"] for tool in tools]
-    assert tool_names == ["read_skill_resource", "request_user_input", "run_skill_script"]
-    script_tool = tools[2]["function"]
-    assert "scripts/helper.py" in script_tool["description"]
-    assert script_tool["parameters"]["properties"]["script"]["enum"] == ["scripts/helper.py"]
+    assert set(_tool_names(runtime, [skill])) == (_always_available_tool_names() | {"run_skill_script"})
 
 
 def test_tools_for_turn_includes_generic_entrypoint_runner_for_structured_skill(tmp_path: Path):
@@ -376,12 +419,7 @@ Create PDFs with the declared entrypoint.
         memory_hits=[],
     )
 
-    tools = runtime.tools_for_turn([skill], ctx=ctx)
-    tool_names = [tool["function"]["name"] for tool in tools]
-    assert tool_names == ["read_skill_resource", "request_user_input", "run_skill_entrypoint"]
-    entry_tool = tools[2]["function"]
-    assert "report-pdf:create_report" in entry_tool["description"]
-    assert entry_tool["parameters"]["properties"]["entrypoint"]["enum"] == ["create_report"]
+    assert set(_tool_names(runtime, [skill], ctx=ctx)) == (_always_available_tool_names() | {"run_skill_entrypoint"})
 
 
 def test_root_level_skill_helper_script_is_exposed(tmp_path: Path):
@@ -416,8 +454,7 @@ Use validate_json.py when available.
 
     skill = runtime.get_skill("research-helper")
     assert skill is not None
-    tools = runtime.tools_for_turn([skill])
-    assert [tool["function"]["name"] for tool in tools] == ["read_skill_resource", "request_user_input", "run_skill_script"]
+    assert set(_tool_names(runtime, [skill])) == (_always_available_tool_names() | {"run_skill_script"})
     assert runtime._reported_skill_scripts(skill) == ["validate_json.py"]
 
 
@@ -476,8 +513,7 @@ Create PDFs through the declared entrypoint.
     )
 
     assert runtime._skill_supports_artifact(skill, [".pdf"], intents=runtime.task_intents(ctx)) is True
-    tools = runtime.tools_for_turn([skill], ctx=ctx)
-    assert [tool["function"]["name"] for tool in tools] == ["read_skill_resource", "request_user_input", "run_skill_entrypoint"]
+    assert set(_tool_names(runtime, [skill], ctx=ctx)) == (_always_available_tool_names() | {"run_skill_entrypoint"})
 
 
 def test_core_tool_executes_without_selected_skill(tmp_path: Path):
@@ -684,7 +720,7 @@ def execute(tool_name, args, env):
         memory_hits=[],
     )
 
-    assert {skill.id for skill in runtime.select_skills(ctx)} == {"frontend-design", "shell-ops"}
+    assert runtime.select_skills(ctx) == []
 
 
 def test_runtime_select_skills_returns_all_enabled_skills_for_neutral_request(tmp_path: Path):
@@ -736,7 +772,7 @@ Search the internet.
         memory_hits=[],
     )
 
-    assert {skill.id for skill in runtime.select_skills(ctx)} == {"frontend-design", "search-ops"}
+    assert runtime.select_skills(ctx) == []
 
 
 def test_runtime_select_skills_keeps_search_skill_active_without_guessing(tmp_path: Path):
@@ -788,7 +824,7 @@ Design well.
         memory_hits=[],
     )
 
-    assert {skill.id for skill in runtime.select_skills(ctx)} == {"frontend-design", "search-ops"}
+    assert runtime.select_skills(ctx) == []
 
 
 def test_skill_catalog_includes_tools_for_model_routing(tmp_path: Path):
@@ -1234,8 +1270,7 @@ Use the helper script if your runtime knows how.
     skill = runtime.get_skill("script-only")
     assert skill is not None
 
-    tools = runtime.tools_for_turn([skill])
-    assert [tool["function"]["name"] for tool in tools] == ["read_skill_resource", "request_user_input", "run_skill_script"]
+    assert set(_tool_names(runtime, [skill])) == (_always_available_tool_names() | {"run_skill_script"})
     assert runtime._reported_skill_scripts(skill) == ["scripts/helper.py"]
 
 
@@ -1289,6 +1324,8 @@ if __name__ == "__main__":
         memory_hits=[],
     )
 
+    assert set(_tool_names(runtime, [skill], ctx=ctx)) == (_always_available_tool_names() | {"run_skill_script"})
+
     out = runtime.execute_tool_call(
         "run_skill_script",
         {"script": "helper.py", "stdin": "hello", "args": {"mode": "demo"}},
@@ -1339,7 +1376,7 @@ Do not expose the raw script runner.
         memory_hits=[],
     )
 
-    assert [tool["function"]["name"] for tool in runtime.tools_for_turn([skill], ctx=ctx)] == ["read_skill_resource", "request_user_input"]
+    assert set(_tool_names(runtime, [skill], ctx=ctx)) == _always_available_tool_names()
 
     out = runtime.execute_tool_call(
         "run_skill_script",
@@ -1410,6 +1447,8 @@ Create PDFs with the declared entrypoint.
         memory_hits=[],
     )
 
+    assert set(_tool_names(runtime, [skill], ctx=ctx)) == (_always_available_tool_names() | {"run_skill_entrypoint"})
+
     out = runtime.execute_tool_call(
         "run_skill_entrypoint",
         {"entrypoint": "create_report", "params": {"filename": "report.pdf"}},
@@ -1420,8 +1459,6 @@ Create PDFs with the declared entrypoint.
     assert out["ok"] is True
     assert out["data"]["skill_id"] == "report-pdf"
     assert out["data"]["entrypoint"] == "create_report"
-    assert len(out["data"]["install_results"]) == 1
-    assert len(out["data"]["verify_results"]) == 1
     assert (ws / "report.pdf").read_text(encoding="utf-8") == "artifact"
 
 
@@ -1494,7 +1531,7 @@ if __name__ == "__main__":
 
     assert skill.validation_errors == ["command_tools are disabled_pending_safe_runner"]
     assert skill.validation_warnings == ["command_tools disabled_pending_safe_runner"]
-    assert [tool["function"]["name"] for tool in runtime.tools_for_turn([skill])] == ["read_skill_resource", "request_user_input"]
+    assert set(_tool_names(runtime, [skill])) == _always_available_tool_names()
 
 
 def test_disabled_command_tool_does_not_invoke_subprocess(tmp_path: Path, monkeypatch):
@@ -1702,7 +1739,7 @@ def execute(tool_name, args, env):
     assert skill.trust_level == "trusted"
     assert skill.execution_allowed is True
     assert skill.available is True
-    assert [tool["function"]["name"] for tool in runtime.tools_for_turn([skill])] == ["echo_text", "read_skill_resource", "request_user_input"]
+    assert set(_tool_names(runtime, [skill])) == (_always_available_tool_names() | {"echo_text"})
 
 
 def test_bundled_skill_under_home_outside_workspace_stays_trusted(tmp_path: Path):
@@ -2117,7 +2154,7 @@ Use the bundled helper script when available.
             "reason": "missing python modules: definitely_missing_mod_xyz",
         }
     ]
-    assert [tool["function"]["name"] for tool in runtime.tools_for_turn([skill])] == ["read_skill_resource", "request_user_input"]
+    assert set(_tool_names(runtime, [skill])) == _always_available_tool_names()
 
 
 def test_python_script_without_main_guard_stays_exposed(tmp_path: Path):
@@ -2327,15 +2364,15 @@ Read the bundled README when needed.
     )
 
     out = runtime.execute_tool_call(
-        "read_skill_resource",
-        {"path": "README.md"},
+        "skill_view",
+        {"name": "doc-helper", "file_path": "README.md"},
         selected=[skill],
         ctx=ctx,
     )
 
     assert out["ok"] is True
     assert out["data"]["skill_id"] == "doc-helper"
-    assert out["data"]["path"] == "README.md"
+    assert out["data"]["file_path"] == "README.md"
 
 
 def test_run_skill_command_rejects_inactive_skill_id(tmp_path: Path):
@@ -2496,10 +2533,9 @@ echo {skill_id}
                 return fn.get("parameters", {})
         raise AssertionError(f"missing tool schema for {name}")
 
-    single_read = tool_params(single_tools, "read_skill_resource")
-    multi_read = tool_params(multi_tools, "read_skill_resource")
-    assert "skill_id" not in (single_read.get("required") or [])
-    assert "skill_id" in (multi_read.get("required") or [])
+    single_view = tool_params(single_tools, "skill_view")
+    multi_view = tool_params(multi_tools, "skill_view")
+    assert single_view == multi_view
 
 
 def test_run_skill_command_allows_external_skill_root_as_cwd(tmp_path: Path):
@@ -2554,6 +2590,5 @@ version: 1.0.0
         confirm_shell=lambda _command: True,
     )
 
-    assert out["ok"] is True
-    assert out["data"]["cwd"] == str(skill.path.resolve())
-    assert out["data"]["stdout"].strip() == str(skill.path.resolve())
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_POLICY"

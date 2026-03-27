@@ -12,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from dataclasses import dataclass, field
@@ -94,10 +95,6 @@ _CORE_TOOL_NAMES = frozenset(
     }
 )
 
-_CORE_EXPOSURE_POLICIES = {
-    "coding_core": _CORE_TOOL_NAMES,
-}
-
 _TEXT_LIKE_EXTENSIONS = frozenset(
     {
         "",
@@ -150,6 +147,17 @@ _READ_SKILL_RESOURCE_TOOL_NAME = "read_skill_resource"
 _RUN_SKILL_COMMAND_TOOL_NAME = "run_skill_command"
 _SPAWN_SKILL_AGENT_TOOL_NAME = "spawn_skill_agent"
 _REQUEST_USER_INPUT_TOOL_NAME = "request_user_input"
+_SKILLS_LIST_TOOL_NAME = "skills_list"
+_SKILL_VIEW_TOOL_NAME = "skill_view"
+_SKILL_MANAGE_TOOL_NAME = "skill_manage"
+_ALWAYS_AVAILABLE_TOOL_NAMES = frozenset(
+    {
+        _SKILLS_LIST_TOOL_NAME,
+        _SKILL_VIEW_TOOL_NAME,
+        _SKILL_MANAGE_TOOL_NAME,
+        _REQUEST_USER_INPUT_TOOL_NAME,
+    }
+)
 _SCRIPT_INTERPRETER_BY_EXT = {
     ".py": [sys.executable],
     ".sh": ["bash"],
@@ -264,6 +272,7 @@ class SkillContext:
     attachments: List[str]
     workspace_root: str
     memory_hits: List[Dict[str, Any]]
+    loaded_skill_ids: List[str] = field(default_factory=list)
     recent_routing_hint: str = ""
     sticky_skill_ids: List[str] = field(default_factory=list)
     explicit_skill_id: str = ""
@@ -344,23 +353,14 @@ class SkillRuntime:
         self.skills_dir = Path(skills_dir).resolve()
         self.workspace = workspace
         self.memory = memory
-        self.config = config or {}
+        self.config = {}
         self.debug = debug
-        self.skills_cfg = self.config.get("skills", {})
-        self.tools_cfg = self.config.get("tools", {})
-        load_cfg = self.skills_cfg.get("load", {}) if isinstance(self.skills_cfg.get("load"), dict) else {}
-        self.upward_scan = bool(load_cfg.get("upward_scan", True))
-        extra_dirs = load_cfg.get("extra_dirs", [])
-        if isinstance(extra_dirs, str):
-            extra_dirs = [extra_dirs]
-        self.extra_skill_dirs = [Path(os.path.expanduser(str(item))).resolve() for item in extra_dirs if str(item).strip()]
-        configured_python = str(load_cfg.get("python_executable") or self.skills_cfg.get("python_executable") or "").strip()
-        self.python_executable = configured_python or sys.executable
-        raw_core_policy = self.tools_cfg.get(
-            "core_exposure_policy",
-            self.skills_cfg.get("core_exposure_policy", "coding_core"),
-        )
-        self.core_exposure_policy = str(raw_core_policy or "coding_core").strip().lower()
+        self.skills_cfg = {}
+        self.tools_cfg = {}
+        self.upward_scan = True
+        self.extra_skill_dirs: List[Path] = []
+        self.python_executable = sys.executable
+        self.reload_config(config or {})
         self.generation = 0
 
         self.skill_roots = self._discover_skill_roots()
@@ -379,6 +379,19 @@ class SkillRuntime:
         self._python_module_probe_cache: Dict[str, bool] = {}
         self._proc_env_base = self._build_proc_env_base()
         self.load_skills()
+
+    def reload_config(self, config: Optional[dict]) -> None:
+        self.config = config or {}
+        self.skills_cfg = self.config.get("skills", {}) if isinstance(self.config.get("skills"), dict) else {}
+        self.tools_cfg = self.config.get("tools", {}) if isinstance(self.config.get("tools"), dict) else {}
+        load_cfg = self.skills_cfg.get("load", {}) if isinstance(self.skills_cfg.get("load"), dict) else {}
+        self.upward_scan = bool(load_cfg.get("upward_scan", True))
+        extra_dirs = load_cfg.get("extra_dirs", [])
+        if isinstance(extra_dirs, str):
+            extra_dirs = [extra_dirs]
+        self.extra_skill_dirs = [Path(os.path.expanduser(str(item))).resolve() for item in extra_dirs if str(item).strip()]
+        configured_python = str(load_cfg.get("python_executable") or self.skills_cfg.get("python_executable") or "").strip()
+        self.python_executable = configured_python or sys.executable
 
     def _build_proc_env_base(self) -> Dict[str, str]:
         env = os.environ.copy()
@@ -779,14 +792,60 @@ class SkillRuntime:
     def _tool_scope_for_name(tool_name: str) -> str:
         return "core" if tool_name in _CORE_TOOL_NAMES else "skill"
 
-    def _core_policy_names(self) -> frozenset[str]:
-        policy = self.core_exposure_policy or "coding_core"
-        names = _CORE_EXPOSURE_POLICIES.get(policy)
-        if names is None:
-            return _CORE_EXPOSURE_POLICIES["coding_core"]
-        return names
-
     def _register_runtime_tools(self) -> None:
+        self._tool_registry[_SKILLS_LIST_TOOL_NAME] = RegisteredTool(
+            name=_SKILLS_LIST_TOOL_NAME,
+            skill_id="__runtime__",
+            tool_scope="core",
+            capability="skill_catalog_reader",
+            description="List available skills with minimal metadata. Use this to discover a relevant skill before loading it.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string"},
+                },
+            },
+        )
+        self._tool_registry[_SKILL_VIEW_TOOL_NAME] = RegisteredTool(
+            name=_SKILL_VIEW_TOOL_NAME,
+            skill_id="__runtime__",
+            tool_scope="core",
+            capability="skill_loader",
+            description="Load a skill's full SKILL.md content or read one linked file inside the skill.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "file_path": {"type": "string"},
+                },
+                "required": ["name"],
+            },
+        )
+        self._tool_registry[_SKILL_MANAGE_TOOL_NAME] = RegisteredTool(
+            name=_SKILL_MANAGE_TOOL_NAME,
+            skill_id="__runtime__",
+            tool_scope="core",
+            capability="skill_manager",
+            description="Create, patch, edit, delete, or manage files for user-local skills under ~/.alphanus/skills.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "patch", "edit", "delete", "write_file", "remove_file"],
+                    },
+                    "name": {"type": "string"},
+                    "content": {"type": "string"},
+                    "category": {"type": "string"},
+                    "file_path": {"type": "string"},
+                    "file_content": {"type": "string"},
+                    "old_string": {"type": "string"},
+                    "new_string": {"type": "string"},
+                    "replace_all": {"type": "boolean"},
+                },
+                "required": ["action", "name"],
+            },
+        )
         self._tool_registry[_READ_SKILL_RESOURCE_TOOL_NAME] = RegisteredTool(
             name=_READ_SKILL_RESOURCE_TOOL_NAME,
             skill_id="__runtime__",
@@ -1167,6 +1226,38 @@ class SkillRuntime:
         self._skill_catalog_cache[max_tags] = catalog
         return catalog
 
+    def compose_skill_index(self) -> str:
+        skills_by_category: Dict[str, List[SkillManifest]] = {}
+        for skill in self.enabled_skills():
+            categories = list(skill.categories) or ["general"]
+            category = str(categories[0] or "general").strip() or "general"
+            skills_by_category.setdefault(category, []).append(skill)
+        if not skills_by_category:
+            return ""
+
+        lines: List[str] = []
+        for category in sorted(skills_by_category):
+            lines.append(f"  {category}:")
+            for skill in sorted(skills_by_category[category], key=lambda item: item.id):
+                lines.append(f"    - {skill.id}: {skill.description}")
+        return (
+            "## Skills (mandatory)\n"
+            "Before replying, scan the skills below. If one clearly matches the task, "
+            "load it with skill_view(name) and follow its instructions.\n"
+            "If none match, proceed normally without loading a skill.\n\n"
+            "<available_skills>\n"
+            + "\n".join(lines)
+            + "\n</available_skills>"
+        )
+
+    def model_exposed_tool_names(self) -> List[str]:
+        names = set(_ALWAYS_AVAILABLE_TOOL_NAMES)
+        for skill in self.enabled_skills():
+            if skill.disable_model_invocation or not getattr(skill, "execution_allowed", True):
+                continue
+            names.update(self._reported_skill_tools(skill))
+        return sorted(name for name in names if name in self._tool_registry)
+
     def skill_catalog_text_for(self, skills: List[SkillManifest], max_tags: int = 3) -> str:
         lines: List[str] = []
         for skill in skills:
@@ -1517,7 +1608,11 @@ class SkillRuntime:
     def _reported_skill_tools(self, skill: SkillManifest) -> List[str]:
         if not getattr(skill, "execution_allowed", True):
             return []
-        return list(getattr(skill, "allowed_tools", []) or [])
+        return sorted(
+            reg.name
+            for reg in self._tool_registry.values()
+            if reg.skill_id == skill.id
+        )
 
     def _reported_skill_scripts(self, skill: SkillManifest) -> List[str]:
         if not getattr(skill, "execution_allowed", True):
@@ -1538,10 +1633,19 @@ class SkillRuntime:
     def _skill_allows_generic_script_runner(skill: SkillManifest) -> bool:
         return not skill.allowed_tools or _GENERIC_SCRIPT_TOOL_NAME in skill.allowed_tools
 
+    @staticmethod
+    def _skill_allows_generic_entrypoint_runner(skill: SkillManifest) -> bool:
+        return not skill.allowed_tools or _GENERIC_ENTRYPOINT_TOOL_NAME in skill.allowed_tools
+
     def _exposed_relevant_skill_scripts(self, skill: SkillManifest, ctx: Optional[SkillContext]) -> List[str]:
         if not self._skill_allows_generic_script_runner(skill):
             return []
         return self._relevant_skill_scripts(skill, ctx)
+
+    def _exposed_relevant_skill_entrypoints(self, skill: SkillManifest, ctx: Optional[SkillContext]) -> List[SkillEntrypointDef]:
+        if not self._skill_allows_generic_entrypoint_runner(skill):
+            return []
+        return self._relevant_skill_entrypoints(skill, ctx)
 
     def _entrypoint_supports_artifact(
         self,
@@ -1675,7 +1779,7 @@ class SkillRuntime:
     def _skill_supports_shell_workflow(self, skill: SkillManifest, ctx: Optional[SkillContext]) -> bool:
         if ctx is None:
             return False
-        if self._relevant_skill_entrypoints(skill, ctx):
+        if self._exposed_relevant_skill_entrypoints(skill, ctx):
             return False
         intents = self.task_intents(ctx)
         if not (intents & {"create", "edit", "review", "setup"}):
@@ -1783,13 +1887,11 @@ class SkillRuntime:
         return expanded
 
     def select_skills(self, ctx: SkillContext, top_n: int = 3) -> List[SkillManifest]:
-        selected = [
-            skill
-            for skill in self.enabled_skills()
-            if not skill.disable_model_invocation or (ctx.explicit_skill_id and ctx.explicit_skill_id == skill.id)
-        ]
-        selected.sort(key=lambda skill: (0 if ctx.explicit_skill_id and skill.id == ctx.explicit_skill_id else 1, skill.id))
-        return self.expand_selected_skills(ctx, selected)
+        loaded = self.skills_by_ids(list(getattr(ctx, "loaded_skill_ids", []) or []))
+        return sorted(
+            [skill for skill in loaded if not skill.disable_model_invocation],
+            key=lambda skill: skill.id,
+        )
 
     @staticmethod
     def _skill_has_runtime_surface(skill: SkillManifest) -> bool:
@@ -1858,7 +1960,7 @@ class SkillRuntime:
     def _skill_runtime_note(self, skill: SkillManifest, ctx: SkillContext) -> str:
         requested_exts = self.requested_artifact_extensions(ctx)
         intents = self.task_intents(ctx)
-        relevant_entrypoints = self._relevant_skill_entrypoints(skill, ctx)
+        relevant_entrypoints = self._exposed_relevant_skill_entrypoints(skill, ctx)
         relevant_scripts = self._exposed_relevant_skill_scripts(skill, ctx)
         shell_commands = self._runtime_visible_skill_commands(skill, ctx)
         install_commands = self._skill_install_commands(skill)
@@ -2053,6 +2155,212 @@ class SkillRuntime:
             resource_roots=list(agent.resource_roots),
         )
 
+    def user_skill_root(self) -> Path:
+        return (self.workspace.home_root / ".alphanus" / "skills").resolve()
+
+    def _skill_linked_files(self, skill: SkillManifest) -> Dict[str, List[str]]:
+        linked: Dict[str, List[str]] = {}
+        for rel in sorted(skill.bundled_files):
+            parts = Path(rel).parts
+            key = parts[0] if len(parts) > 1 else "root"
+            linked.setdefault(key, []).append(rel)
+        return linked
+
+    def skills_list(self, category: str = "") -> Dict[str, Any]:
+        normalized_category = str(category or "").strip().lower()
+        skills: List[Dict[str, Any]] = []
+        categories: set[str] = set()
+        for skill in self.enabled_skills():
+            skill_categories = [str(item).strip() for item in (skill.categories or ["general"]) if str(item).strip()] or ["general"]
+            primary_category = skill_categories[0]
+            categories.add(primary_category)
+            if normalized_category and primary_category.lower() != normalized_category:
+                continue
+            skills.append(
+                {
+                    "name": skill.id,
+                    "description": skill.description,
+                    "category": primary_category,
+                }
+            )
+        skills.sort(key=lambda item: (item.get("category", ""), item.get("name", "")))
+        return {
+            "skills": skills,
+            "categories": sorted(categories),
+            "count": len(skills),
+            "hint": "Use skill_view(name) to load a skill's full instructions or inspect one linked file.",
+        }
+
+    def _resolve_enabled_skill(self, name: str) -> SkillManifest:
+        key = str(name or "").strip()
+        if not key:
+            raise ValueError("Missing required argument: name")
+        skill = self.get_skill(key)
+        if skill is None or not skill.enabled or not skill.available:
+            raise FileNotFoundError(f"Skill '{key}' not found")
+        return skill
+
+    def skill_view(self, name: str, file_path: str, ctx: SkillContext) -> Dict[str, Any]:
+        skill = self._resolve_enabled_skill(name)
+        relpath = str(file_path or "").strip()
+        if not relpath:
+            if skill.id not in ctx.loaded_skill_ids:
+                ctx.loaded_skill_ids.append(skill.id)
+            return {
+                "skill_id": skill.id,
+                "name": skill.id,
+                "description": skill.description,
+                "content": self._ensure_skill_prompt(skill).strip(),
+                "linked_files": self._skill_linked_files(skill),
+                "loaded": True,
+                "loaded_skill_ids": list(ctx.loaded_skill_ids),
+            }
+        if not skill.path:
+            raise FileNotFoundError(f"Skill root unavailable: {skill.id}")
+        target = (skill.path / relpath).resolve()
+        if not self._is_relative_to(target, skill.path.resolve()):
+            raise PermissionError("Skill file path escapes skill root")
+        if not target.exists() or not target.is_file():
+            raise FileNotFoundError(f"Skill file not found: {relpath}")
+        return {
+            "skill_id": skill.id,
+            "name": skill.id,
+            "file_path": relpath,
+            "content": target.read_text(encoding="utf-8"),
+            "loaded": False,
+            "loaded_skill_ids": list(ctx.loaded_skill_ids),
+        }
+
+    def _validate_skill_doc_text(self, skill_name: str, content: str) -> None:
+        with tempfile.TemporaryDirectory(prefix="alphanus-skill-validate-") as tmpdir:
+            root = Path(tmpdir) / skill_name
+            root.mkdir(parents=True, exist_ok=True)
+            doc = root / SKILL_DOC
+            doc.write_text(content, encoding="utf-8")
+            parse_agentskill_manifest(root, doc, include_prompt=False)
+
+    def _validate_supporting_file_path(self, relpath: str) -> Path:
+        candidate = Path(str(relpath or "").strip())
+        if not str(candidate).strip():
+            raise ValueError("file_path is required")
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise PermissionError("file_path must stay inside the skill directory")
+        if len(candidate.parts) < 2 or candidate.parts[0] not in {"references", "templates", "scripts", "assets"}:
+            raise PermissionError("file_path must be under references/, templates/, scripts/, or assets/")
+        return candidate
+
+    def _resolve_user_skill_create_dir(self, name: str, category: str = "") -> Path:
+        root = self.user_skill_root()
+        base = root
+        raw_category = str(category or "").strip()
+        if raw_category:
+            category_path = Path(raw_category)
+            if category_path.is_absolute():
+                raise PermissionError("category must stay inside the user skill root")
+            base = (root / category_path).resolve()
+        target = (base / name).resolve()
+        if not self._is_relative_to(target, root):
+            raise PermissionError("category must stay inside the user skill root")
+        return target
+
+    def _resolve_user_skill_dir(self, name: str) -> Path:
+        skill = self.get_skill(name)
+        if skill and skill.path and skill.source_tier == "user/local":
+            return skill.path.resolve()
+        return (self.user_skill_root() / name).resolve()
+
+    def skill_manage(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        action = str(args.get("action", "")).strip().lower()
+        name = str(args.get("name", "")).strip()
+        if not name:
+            raise ValueError("Missing required argument: name")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", name):
+            raise ValueError("Skill name must be lowercase letters, numbers, hyphens, or underscores")
+        root = self.user_skill_root()
+        skill_dir = self._resolve_user_skill_dir(name)
+        skill_doc = skill_dir / SKILL_DOC
+
+        if action == "create":
+            content = str(args.get("content", ""))
+            if not content.strip():
+                raise ValueError("content is required for create")
+            category = str(args.get("category", "")).strip()
+            target_dir = self._resolve_user_skill_create_dir(name, category)
+            target_doc = target_dir / SKILL_DOC
+            self._validate_skill_doc_text(name, content)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target_doc.write_text(content, encoding="utf-8")
+            self.load_skills()
+            return {"action": action, "name": name, "path": str(target_doc)}
+
+        if action == "edit":
+            if not skill_doc.exists():
+                raise FileNotFoundError(f"Skill '{name}' not found")
+            content = str(args.get("content", ""))
+            if not content.strip():
+                raise ValueError("content is required for edit")
+            self._validate_skill_doc_text(name, content)
+            skill_doc.write_text(content, encoding="utf-8")
+            self.load_skills()
+            return {"action": action, "name": name, "path": str(skill_doc)}
+
+        if action == "patch":
+            target = skill_doc
+            relpath = str(args.get("file_path", "")).strip()
+            if relpath:
+                target = skill_dir / self._validate_supporting_file_path(relpath)
+            if not target.exists():
+                raise FileNotFoundError(f"Target file not found for patch: {target.name}")
+            old_string = str(args.get("old_string", ""))
+            new_string = str(args.get("new_string", ""))
+            if not old_string:
+                raise ValueError("old_string is required for patch")
+            replace_all = bool(args.get("replace_all", False))
+            existing = target.read_text(encoding="utf-8")
+            count = existing.count(old_string)
+            if count == 0:
+                raise ValueError("old_string not found in target file")
+            if count > 1 and not replace_all:
+                raise ValueError("old_string matches multiple locations; set replace_all=true")
+            updated = existing.replace(old_string, new_string) if replace_all else existing.replace(old_string, new_string, 1)
+            if target.name == SKILL_DOC:
+                self._validate_skill_doc_text(name, updated)
+            target.write_text(updated, encoding="utf-8")
+            self.load_skills()
+            return {"action": action, "name": name, "path": str(target)}
+
+        if action == "delete":
+            if not skill_dir.exists():
+                raise FileNotFoundError(f"Skill '{name}' not found")
+            shutil.rmtree(skill_dir)
+            self.load_skills()
+            return {"action": action, "name": name, "deleted": True}
+
+        if action == "write_file":
+            if not skill_dir.exists():
+                raise FileNotFoundError(f"Skill '{name}' not found")
+            relpath = self._validate_supporting_file_path(str(args.get("file_path", "")))
+            target = skill_dir / relpath
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(str(args.get("file_content", "")), encoding="utf-8")
+            self.load_skills()
+            return {"action": action, "name": name, "path": str(target)}
+
+        if action == "remove_file":
+            if not skill_dir.exists():
+                raise FileNotFoundError(f"Skill '{name}' not found")
+            relpath = self._validate_supporting_file_path(str(args.get("file_path", "")))
+            target = (skill_dir / relpath).resolve()
+            if not self._is_relative_to(target, skill_dir.resolve()):
+                raise PermissionError("file_path escapes skill directory")
+            if not target.exists() or not target.is_file():
+                raise FileNotFoundError(f"Skill file not found: {relpath}")
+            target.unlink()
+            self.load_skills()
+            return {"action": action, "name": name, "path": str(target), "deleted": True}
+
+        raise ValueError(f"Unknown action '{action}'")
+
     def read_skill_resource(self, skill_id: str, relpath: str) -> Dict[str, Any]:
         skill = self.get_skill(skill_id)
         if skill is None or not skill.path:
@@ -2101,14 +2409,7 @@ class SkillRuntime:
         return clipped
 
     def core_tool_names(self) -> List[str]:
-        policy_names = self._core_policy_names()
-        if not policy_names:
-            return []
-        return sorted(
-            reg.name
-            for reg in self._tool_registry.values()
-            if reg.tool_scope == "core" and reg.name in policy_names
-        )
+        return sorted(name for name in self.model_exposed_tool_names() if name in _CORE_TOOL_NAMES)
 
     def selected_shell_workflow_skills(self, selected: List[SkillManifest], ctx: Optional[SkillContext]) -> List[str]:
         if ctx is None:
@@ -2124,13 +2425,13 @@ class SkillRuntime:
         allowed: List[str] = []
         for tool_name, reg in self._tool_registry.items():
             if tool_name == _GENERIC_ENTRYPOINT_TOOL_NAME:
-                if any(self._relevant_skill_entrypoints(skill, ctx) for skill in selected if not skill.disable_model_invocation):
+                if any(self._exposed_relevant_skill_entrypoints(skill, ctx) for skill in selected if not skill.disable_model_invocation):
                     allowed.append(tool_name)
                 continue
             if tool_name == _GENERIC_SCRIPT_TOOL_NAME:
                 if any(
                     self._exposed_relevant_skill_scripts(skill, ctx)
-                    and not self._relevant_skill_entrypoints(skill, ctx)
+                    and not self._exposed_relevant_skill_entrypoints(skill, ctx)
                     for skill in selected
                     if not skill.disable_model_invocation
                 ):
@@ -2148,6 +2449,18 @@ class SkillRuntime:
             allowed.append(tool_name)
         return sorted(allowed)
 
+    def _tool_names_for_turn(
+        self,
+        selected: List[SkillManifest],
+        ctx: Optional[SkillContext] = None,
+    ) -> List[str]:
+        names = set(self.model_exposed_tool_names())
+        names.update(self.optional_tool_names(selected, ctx=ctx))
+        runtime_cfg = self.config.get("runtime", {}) if isinstance(self.config.get("runtime"), dict) else {}
+        if not bool(runtime_cfg.get("ask_user_tool", True)):
+            names.discard(_REQUEST_USER_INPUT_TOOL_NAME)
+        return sorted(name for name in names if name in self._tool_registry)
+
     @staticmethod
     def _active_skill_ids(selected: List[SkillManifest]) -> List[str]:
         return sorted(
@@ -2163,22 +2476,7 @@ class SkillRuntime:
         selected: List[SkillManifest],
         ctx: Optional[SkillContext] = None,
     ) -> List[str]:
-        names = self.core_tool_names()
-        names.extend(self.optional_tool_names(selected, ctx=ctx))
-        active_skill_ids = self._active_skill_ids(selected)
-        if active_skill_ids:
-            if any(skill.bundled_files for skill in selected):
-                names.append(_READ_SKILL_RESOURCE_TOOL_NAME)
-            if any(self._runtime_visible_skill_commands(skill, ctx) for skill in selected):
-                names.append(_RUN_SKILL_COMMAND_TOOL_NAME)
-            if any(self._agents_for_skill(skill) for skill in selected):
-                names.append(_SPAWN_SKILL_AGENT_TOOL_NAME)
-            runtime_cfg = self.config.get("runtime", {}) if isinstance(self.config.get("runtime"), dict) else {}
-            if bool(runtime_cfg.get("ask_user_tool", True)):
-                names.append(_REQUEST_USER_INPUT_TOOL_NAME)
-        if self.selected_shell_workflow_skills(selected, ctx):
-            names = [name for name in names if name != "run_checks"]
-        return sorted(dict.fromkeys(names))
+        return self._tool_names_for_turn(selected, ctx=ctx)
 
     @staticmethod
     def _opaque_extension_token(path: str) -> str:
@@ -2228,7 +2526,7 @@ class SkillRuntime:
         relevant: List[str] = []
         for skill in selected:
             if self._skill_supports_artifact(skill, requested_exts, intents=intents):
-                for entrypoint in self._relevant_skill_entrypoints(skill, ctx):
+                for entrypoint in self._exposed_relevant_skill_entrypoints(skill, ctx):
                     relevant.append(f"{skill.id}:{entrypoint.name}")
                 for rel in self._exposed_relevant_skill_scripts(skill, ctx):
                     relevant.append(f"{skill.id}:{rel}")
@@ -2255,7 +2553,7 @@ class SkillRuntime:
 
     def _dynamic_run_skill_entrypoint_schema(self, selected: List[SkillManifest], ctx: Optional[SkillContext]) -> Dict[str, Any]:
         selected_with_entrypoints = [
-            skill for skill in selected if self._relevant_skill_entrypoints(skill, ctx) and not skill.disable_model_invocation
+            skill for skill in selected if self._exposed_relevant_skill_entrypoints(skill, ctx) and not skill.disable_model_invocation
         ]
         properties: Dict[str, Any] = {
             "entrypoint": {"type": "string"},
@@ -2272,7 +2570,7 @@ class SkillRuntime:
 
         entrypoint_names: List[str] = []
         for skill in selected_with_entrypoints:
-            entrypoint_names.extend(entry.name for entry in self._relevant_skill_entrypoints(skill, ctx))
+            entrypoint_names.extend(entry.name for entry in self._exposed_relevant_skill_entrypoints(skill, ctx))
         entrypoint_names = sorted(dict.fromkeys(entrypoint_names))
         if entrypoint_names:
             properties["entrypoint"] = {"type": "string", "enum": entrypoint_names}
@@ -2377,7 +2675,7 @@ class SkillRuntime:
                 for skill in selected:
                     if skill.disable_model_invocation:
                         continue
-                    for entrypoint in self._relevant_skill_entrypoints(skill, ctx):
+                    for entrypoint in self._exposed_relevant_skill_entrypoints(skill, ctx):
                         available_entrypoints.append(f"{skill.id}:{entrypoint.name}")
                 if available_entrypoints:
                     description = (
@@ -2538,51 +2836,17 @@ class SkillRuntime:
         self,
         tool_name: str,
         selected: List[SkillManifest],
+        ctx: Optional[SkillContext] = None,
     ) -> Tuple[RegisteredTool, Optional[SkillManifest]]:
         reg = self._tool_registry.get(tool_name)
         if not reg:
             raise LookupError(f"No adapter for tool '{tool_name}'")
 
-        if reg.name in {
-            _READ_SKILL_RESOURCE_TOOL_NAME,
-            _RUN_SKILL_COMMAND_TOOL_NAME,
-            _SPAWN_SKILL_AGENT_TOOL_NAME,
-            _REQUEST_USER_INPUT_TOOL_NAME,
-        }:
-            return reg, None
-
-        if reg.name == _GENERIC_ENTRYPOINT_TOOL_NAME:
-            if not any(
-                self._skill_entrypoints(skill)
-                for skill in selected
-                if not skill.disable_model_invocation and skill.execution_allowed
-            ):
-                raise PermissionError(f"Tool '{tool_name}' not allowed by active skills")
-            return reg, None
-
-        if reg.name == _GENERIC_SCRIPT_TOOL_NAME:
-            if not any(
-                self._skill_runnable_scripts(skill) and self._skill_allows_generic_script_runner(skill)
-                for skill in selected
-                if not skill.disable_model_invocation and skill.execution_allowed
-            ):
-                raise PermissionError(f"Tool '{tool_name}' not allowed by active skills")
-            return reg, None
-
-        if reg.tool_scope == "core":
+        if reg.name in self._tool_names_for_turn(selected, ctx=ctx):
+            if reg.name in _ALWAYS_AVAILABLE_TOOL_NAMES:
+                return reg, None
             return reg, self.skills.get(reg.skill_id)
-
-        selected_map = {skill.id: skill for skill in selected}
-        owner = selected_map.get(reg.skill_id)
-        if not owner:
-            raise PermissionError(f"Tool '{tool_name}' not allowed by active skills")
-        if not owner.execution_allowed:
-            raise PermissionError(f"Tool '{tool_name}' is blocked by skill trust policy")
-        if owner.disable_model_invocation:
-            raise PermissionError(f"Tool '{tool_name}' is disabled for model invocation")
-        if owner.allowed_tools and tool_name not in owner.allowed_tools:
-            raise PermissionError(f"Tool '{tool_name}' not allowed by skill policy")
-        return reg, owner
+        raise PermissionError(f"Tool '{tool_name}' is not enabled by the current skill configuration")
 
     def _prepare_tool_args(
         self,
@@ -2760,7 +3024,7 @@ class SkillRuntime:
         selected_with_entrypoints = [
             skill
             for skill in selected
-            if self._relevant_skill_entrypoints(skill, ctx) and not skill.disable_model_invocation and skill.execution_allowed
+            if self._exposed_relevant_skill_entrypoints(skill, ctx) and not skill.disable_model_invocation and skill.execution_allowed
         ]
         if not selected_with_entrypoints:
             raise PermissionError("No selected skills expose runnable entrypoints")
@@ -2779,7 +3043,7 @@ class SkillRuntime:
         requested_entrypoint = str(args.get("entrypoint", "")).strip()
         if not requested_entrypoint:
             raise ValueError("Missing required argument: entrypoint")
-        candidates = self._relevant_skill_entrypoints(skill, ctx)
+        candidates = self._exposed_relevant_skill_entrypoints(skill, ctx)
         entrypoint = next((item for item in candidates if item.name == requested_entrypoint), None)
         if entrypoint is None:
             raise PermissionError(f"Entrypoint '{requested_entrypoint}' is not available for skill '{skill.id}'")
@@ -2851,7 +3115,20 @@ class SkillRuntime:
         reg: RegisteredTool,
         args: Dict[str, Any],
         env: ToolExecutionEnv,
+        ctx: SkillContext,
     ) -> Any:
+        if reg.name == _SKILLS_LIST_TOOL_NAME:
+            return self.skills_list(str(args.get("category", "")).strip())
+        if reg.name == _SKILL_VIEW_TOOL_NAME:
+            return self.skill_view(str(args.get("name", "")).strip(), str(args.get("file_path", "")).strip(), ctx)
+        if reg.name == _SKILL_MANAGE_TOOL_NAME:
+            result = self.skill_manage(args)
+            ctx.loaded_skill_ids = [
+                skill.id for skill in self.skills_by_ids(list(getattr(ctx, "loaded_skill_ids", []) or []))
+            ]
+            if isinstance(result, dict):
+                result.setdefault("loaded_skill_ids", list(ctx.loaded_skill_ids))
+            return result
         if reg.name == _READ_SKILL_RESOURCE_TOOL_NAME:
             return self.read_skill_resource(str(args.get("skill_id", "")).strip(), str(args.get("path", "")).strip())
         if reg.name == _RUN_SKILL_COMMAND_TOOL_NAME:
@@ -2886,7 +3163,7 @@ class SkillRuntime:
     ) -> Dict[str, Any]:
         start = time.perf_counter()
         try:
-            reg, _owner = self._resolve_tool_call(tool_name, selected)
+            reg, _owner = self._resolve_tool_call(tool_name, selected, ctx=ctx)
             normalized_args = self._prepare_tool_args(reg, args, selected, ctx)
             env = ToolExecutionEnv(
                 workspace=self.workspace,
@@ -2897,7 +3174,7 @@ class SkillRuntime:
                 spawn_skill_agent=spawn_skill_agent,
                 request_user_input=request_user_input,
             )
-            result = self._execute_registered_tool(reg, normalized_args, env)
+            result = self._execute_registered_tool(reg, normalized_args, env, ctx)
             duration = int((time.perf_counter() - start) * 1000)
             return self._normalize_result(result, duration)
         except LookupError as exc:
