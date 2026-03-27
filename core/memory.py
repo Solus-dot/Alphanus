@@ -159,14 +159,17 @@ class VectorMemory:
             return None
 
     def _ensure_encoder(self):
-        if self.encoder is not None or self._encoder_attempted:
+        if self.encoder is not None:
             return self.encoder
         self._encoder_attempted = True
-        self.encoder = self._load_transformer_encoder(self.model_name)
-        if self.encoder is not None:
+        encoder = self._load_transformer_encoder(self.model_name)
+        if encoder is not None:
+            self.encoder = encoder
             self.dimension = int(getattr(self.encoder, "dim", 384))
             if self._encoder_status == "uninitialized":
                 self._set_encoder_state("ready", "transformer", "semantic transformer encoder")
+        else:
+            self._encoder_attempted = False
         return self.encoder
 
     def _require_encoder(self):

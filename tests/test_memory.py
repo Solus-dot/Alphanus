@@ -485,7 +485,8 @@ def test_transformer_respects_allow_model_download_false(monkeypatch, tmp_path: 
         mem.add_memory("offline transformer request")
 
     stats = mem.stats()
-    assert calls == [("toy-model", True)]
+    assert calls
+    assert all(call == ("toy-model", True) for call in calls)
     assert stats["encoder_status"] == "unavailable"
     assert stats["encoder_source"] == "transformer-local"
     assert "allow_model_download=false" in stats["encoder_detail"]
@@ -534,6 +535,33 @@ def test_transformer_can_retry_with_download_enabled(monkeypatch, tmp_path: Path
     assert mem.embedding_backend == "transformer"
     assert stats["encoder_status"] == "ready"
     assert stats["encoder_source"] == "transformer-download"
+
+
+def test_encoder_can_retry_after_initial_unavailable_probe(monkeypatch, tmp_path: Path):
+    calls = {"count": 0}
+
+    def _flaky_loader(self, _model_name):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            self._set_encoder_state("unavailable", "test-loader", "temporary failure")  # noqa: SLF001
+            return None
+        self._set_encoder_state("ready", "test-loader", "recovered")  # noqa: SLF001
+        return _ToyTransformerEncoder384()
+
+    monkeypatch.setattr(VectorMemory, "_load_transformer_encoder", _flaky_loader, raising=True)
+    mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"))
+
+    first_stats = mem.stats()
+    assert first_stats["encoder_status"] == "unavailable"
+    assert calls["count"] == 1
+
+    item = mem.add_memory("retry succeeds")
+    assert item["id"] == 1
+    assert calls["count"] == 2
+
+    second_stats = mem.stats()
+    assert second_stats["encoder_status"] == "ready"
+    assert second_stats["encoder_source"] == "test-loader"
 
 
 def test_add_memory_keeps_warm_cache_incremental(monkeypatch, tmp_path: Path):
