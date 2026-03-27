@@ -4,8 +4,6 @@ description: Search the web and fetch page content for research and up-to-date i
 allowed-tools: web_search fetch_url
 metadata:
   version: "1.3.0"
-  categories:
-    - research
   tags:
     - web
     - internet

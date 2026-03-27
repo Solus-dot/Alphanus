@@ -4,8 +4,6 @@ description: Run workspace shell commands. The tool itself prompts for approval 
 allowed-tools: shell_command
 metadata:
   version: "1.0.0"
-  categories:
-    - devops
   tags:
     - run
     - shell

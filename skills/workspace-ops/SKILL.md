@@ -4,8 +4,6 @@ description: Read, write, edit, inspect, move, and delete workspace files and fo
 allowed-tools: create_directory create_file create_files edit_file read_file read_files list_files search_code move_path delete_path workspace_tree run_checks
 metadata:
   version: "1.2.0"
-  categories:
-    - coding
   tags:
     - file
     - write

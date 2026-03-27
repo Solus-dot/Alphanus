@@ -801,9 +801,7 @@ class SkillRuntime:
             description="List available skills with minimal metadata. Use this to discover a relevant skill before loading it.",
             parameters={
                 "type": "object",
-                "properties": {
-                    "category": {"type": "string"},
-                },
+                "properties": {},
             },
         )
         self._tool_registry[_SKILL_VIEW_TOOL_NAME] = RegisteredTool(
@@ -1227,19 +1225,11 @@ class SkillRuntime:
         return catalog
 
     def compose_skill_index(self) -> str:
-        skills_by_category: Dict[str, List[SkillManifest]] = {}
-        for skill in self.enabled_skills():
-            categories = list(skill.categories) or ["general"]
-            category = str(categories[0] or "general").strip() or "general"
-            skills_by_category.setdefault(category, []).append(skill)
-        if not skills_by_category:
+        skills = sorted(self.enabled_skills(), key=lambda item: item.id)
+        if not skills:
             return ""
 
-        lines: List[str] = []
-        for category in sorted(skills_by_category):
-            lines.append(f"  {category}:")
-            for skill in sorted(skills_by_category[category], key=lambda item: item.id):
-                lines.append(f"    - {skill.id}: {skill.description}")
+        lines = [f"  - {skill.id}: {skill.description}" for skill in skills]
         return (
             "## Skills (mandatory)\n"
             "Before replying, scan the skills below. If one clearly matches the task, "
@@ -2166,27 +2156,16 @@ class SkillRuntime:
             linked.setdefault(key, []).append(rel)
         return linked
 
-    def skills_list(self, category: str = "") -> Dict[str, Any]:
-        normalized_category = str(category or "").strip().lower()
-        skills: List[Dict[str, Any]] = []
-        categories: set[str] = set()
-        for skill in self.enabled_skills():
-            skill_categories = [str(item).strip() for item in (skill.categories or ["general"]) if str(item).strip()] or ["general"]
-            primary_category = skill_categories[0]
-            categories.add(primary_category)
-            if normalized_category and primary_category.lower() != normalized_category:
-                continue
-            skills.append(
-                {
-                    "name": skill.id,
-                    "description": skill.description,
-                    "category": primary_category,
-                }
-            )
-        skills.sort(key=lambda item: (item.get("category", ""), item.get("name", "")))
+    def skills_list(self) -> Dict[str, Any]:
+        skills = [
+            {
+                "name": skill.id,
+                "description": skill.description,
+            }
+            for skill in sorted(self.enabled_skills(), key=lambda item: item.id)
+        ]
         return {
             "skills": skills,
-            "categories": sorted(categories),
             "count": len(skills),
             "hint": "Use skill_view(name) to load a skill's full instructions or inspect one linked file.",
         }
@@ -3118,7 +3097,7 @@ class SkillRuntime:
         ctx: SkillContext,
     ) -> Any:
         if reg.name == _SKILLS_LIST_TOOL_NAME:
-            return self.skills_list(str(args.get("category", "")).strip())
+            return self.skills_list()
         if reg.name == _SKILL_VIEW_TOOL_NAME:
             return self.skill_view(str(args.get("name", "")).strip(), str(args.get("file_path", "")).strip(), ctx)
         if reg.name == _SKILL_MANAGE_TOOL_NAME:
