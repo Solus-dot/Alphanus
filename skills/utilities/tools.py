@@ -61,6 +61,14 @@ def _is_under(path: Path, root: Path) -> bool:
     return path.is_relative_to(root)
 
 
+def _ok(data: Dict[str, Any]) -> Dict[str, Any]:
+    return {"ok": True, "data": data, "error": None, "meta": {}}
+
+
+def _err(code: str, message: str, data: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    return {"ok": False, "data": data, "error": {"code": code, "message": message}, "meta": {}}
+
+
 def _get_weather(args: Dict[str, Any]) -> Dict[str, Any]:
     city = str(args["city"]).strip()
     query = urllib.parse.quote(city)
@@ -69,20 +77,22 @@ def _get_weather(args: Dict[str, Any]) -> Dict[str, Any]:
         with urllib.request.urlopen(url, timeout=10) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"Weather service returned HTTP {exc.code}") from exc
+        return _err("E_IO", f"Weather service returned HTTP {exc.code}", {"city": city})
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"Weather service unreachable: {exc.reason}") from exc
+        return _err("E_IO", f"Weather service unreachable: {exc.reason}", {"city": city})
     except json.JSONDecodeError as exc:
-        raise RuntimeError("Weather service returned invalid JSON") from exc
+        return _err("E_IO", "Weather service returned invalid JSON", {"city": city})
 
     current = payload.get("current_condition", [{}])[0]
-    return {
-        "city": city,
-        "temp_c": current.get("temp_C"),
-        "feels_like_c": current.get("FeelsLikeC"),
-        "desc": (current.get("weatherDesc") or [{"value": ""}])[0].get("value", ""),
-        "humidity": current.get("humidity"),
-    }
+    return _ok(
+        {
+            "city": city,
+            "temp_c": current.get("temp_C"),
+            "feels_like_c": current.get("FeelsLikeC"),
+            "desc": (current.get("weatherDesc") or [{"value": ""}])[0].get("value", ""),
+            "humidity": current.get("humidity"),
+        }
+    )
 
 
 def _search_home_files(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
@@ -104,7 +114,7 @@ def _search_home_files(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str,
                     break
         if len(matches) >= 200:
             break
-    return {"matches": matches}
+    return _ok({"matches": matches})
 
 
 def _open_url(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -114,10 +124,10 @@ def _open_url(args: Dict[str, Any]) -> Dict[str, Any]:
     try:
         opened = webbrowser.open(url, new=2)
     except Exception as exc:
-        raise RuntimeError(f"Browser launch failed: {exc}") from exc
+        return _err("E_IO", f"Browser launch failed: {exc}", {"url": url})
     if not opened:
-        raise RuntimeError("Unable to open browser in this environment")
-    return {"url": url}
+        return _err("E_IO", "Unable to open browser in this environment", {"url": url})
+    return _ok({"url": url})
 
 
 def _resolve_first_video_url(search_url: str) -> tuple[str, str, bool]:
@@ -151,16 +161,18 @@ def _play_youtube(args: Dict[str, Any]) -> Dict[str, Any]:
     try:
         opened = webbrowser.open(url, new=2)
     except Exception as exc:
-        raise RuntimeError(f"Browser launch failed: {exc}") from exc
+        return _err("E_IO", f"Browser launch failed: {exc}", {"topic": topic, "url": url, "search_url": search_url})
     if not opened:
-        raise RuntimeError("Unable to open browser in this environment")
-    return {
-        "url": url,
-        "topic": topic,
-        "search_url": search_url,
-        "video_id": video_id,
-        "resolved_first_result": resolved,
-    }
+        return _err("E_IO", "Unable to open browser in this environment", {"topic": topic, "url": url, "search_url": search_url})
+    return _ok(
+        {
+            "url": url,
+            "topic": topic,
+            "search_url": search_url,
+            "video_id": video_id,
+            "resolved_first_result": resolved,
+        }
+    )
 
 
 def execute(tool_name: str, args: Dict[str, Any], env: ToolExecutionEnv):
