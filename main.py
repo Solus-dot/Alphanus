@@ -1,6 +1,12 @@
 import argparse
 import logging
+import sys
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from agent.core import Agent
 from agent.telemetry import configure_logging
@@ -26,7 +32,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    project_root = Path(__file__).resolve().parent
+    project_root = PROJECT_ROOT
     load_dotenv(project_root / ".env")
     config_path = project_root / "config" / "global_config.json"
     config_warnings: list[str] = []
