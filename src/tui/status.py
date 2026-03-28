@@ -52,7 +52,7 @@ def topbar_left(workspace_root: str, *, width: int) -> str:
     )
 
 
-def topbar_center(*, session_name: str, branch_name: str, memory_mode: str, width: int) -> str:
+def topbar_center(*, session_name: str, branch_name: str, width: int) -> str:
     if width < 105:
         return (
             f"[dim]ss:[/dim] [#f4f4f5]{esc(_truncate(session_name, 10))}[/#f4f4f5]   "
@@ -65,8 +65,7 @@ def topbar_center(*, session_name: str, branch_name: str, memory_mode: str, widt
         )
     return (
         f"[dim]session:[/dim] [#f4f4f5]{esc(session_name)}[/#f4f4f5]   "
-        f"[dim]branch:[/dim] [#6366f1]{esc(branch_name)}[/#6366f1]   "
-        f"[dim]memory:[/dim] [#10b981]{esc(memory_mode)}[/#10b981]"
+        f"[dim]branch:[/dim] [#6366f1]{esc(branch_name)}[/#6366f1]"
     )
 
 

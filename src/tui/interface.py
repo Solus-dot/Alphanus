@@ -774,13 +774,6 @@ class AlphanusTUI(App):
             self._last_model_context_tokens = int(prompt_tokens)
         self._update_topbar()
 
-    def _memory_mode_label(self) -> str:
-        try:
-            stats = self.agent.skill_runtime.memory.stats()
-            return str(stats.get("mode_label", stats.get("embedding_backend", "unknown")))
-        except Exception:
-            return "unknown"
-
     def _apply_focus_classes(self) -> None:
         chat = self.query_one("#chat-scroll", ScrollableContainer)
         sidebar = self.query_one("#sidebar", Vertical)
@@ -1440,7 +1433,6 @@ class AlphanusTUI(App):
             topbar_center(
                 session_name=self._session_title or "Session",
                 branch_name=self._current_branch_name(),
-                memory_mode=self._memory_mode_label(),
                 width=width,
             )
         )

@@ -7,7 +7,7 @@ from tui.status import context_usage_percent, status_left_markup, status_right_m
 
 def test_topbar_helpers_include_workspace_branch_and_context() -> None:
     left = topbar_left("/Users/sohom/Desktop/Alphanus-Workspace", width=180)
-    center = topbar_center(session_name="Session 1", branch_name="root", memory_mode="semantic", width=180)
+    center = topbar_center(session_name="Session 1", branch_name="root", width=180)
     right = topbar_right(
         endpoint="http://127.0.0.1:8080/v1/chat/completions",
         context_tokens=1612,
@@ -19,7 +19,7 @@ def test_topbar_helpers_include_workspace_branch_and_context() -> None:
     assert "Alphanus-Workspace" in left
     assert "session:" in center
     assert "branch:" in center
-    assert "memory:" in center
+    assert "memory:" not in center
     assert "ctx:" in right
     assert "4%" in right
     assert "127.0.0.1:8080" in right
@@ -103,7 +103,6 @@ def test_status_helpers_compact_at_small_width() -> None:
     center = topbar_center(
         session_name="Very Long Session Name",
         branch_name="very-long-branch-name",
-        memory_mode="semantic",
         width=90,
     )
     right = topbar_right(
