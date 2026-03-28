@@ -88,6 +88,9 @@ def test_web_search_calls_tavily_and_normalizes_results(mocker, monkeypatch):
     assert out["search_engine"] == "tavily"
     assert out["results"][0]["domain"] == "about.fb.com"
     assert out["results"][1]["snippet"] == "Reporting on Meta acquisitions."
+    assert out["results"][0]["source_type"] == "official"
+    assert out["results"][0]["rank"] == 1
+    assert out["provider_chain"] == [{"provider": "tavily", "status": "ok"}]
 
 
 def test_web_search_requires_api_key(monkeypatch):
@@ -147,6 +150,7 @@ def test_web_search_calls_brave_and_normalizes_results(mocker, monkeypatch):
     assert out["search_engine"] == "brave"
     assert out["results"][0]["domain"] == "nvd.nist.gov"
     assert out["results"][1]["snippet"] == "Additional verified context."
+    assert out["results"][0]["source_type"] == "official"
 
 
 def test_fetch_url_extracts_title_and_text(mocker):
@@ -184,6 +188,145 @@ def test_fetch_url_extracts_title_and_text(mocker):
     assert out["truncated"] is False
     assert out["domain"] == "example.com"
     assert out["trust_score"] > 0
+    assert out["excerpt"]
+    assert out["best_passages"]
+    assert out["usable_text"] is True
+
+
+def test_web_search_falls_back_to_secondary_provider(mocker, monkeypatch):
+    module = _load_search_module()
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-test-key")
+
+    payload = {
+        "web": {
+            "results": [
+                {
+                    "title": "Official status page",
+                    "url": "https://status.example.com/update",
+                    "description": "The current service status update.",
+                }
+            ]
+        }
+    }
+
+    class _Resp:
+        def __init__(self):
+            self._payload = json.dumps(payload).encode("utf-8")
+            self.headers = _Headers()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return self._payload
+
+    mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp())
+    out = module.execute("web_search", {"query": "service status"}, env=_env("tavily"))
+
+    assert out["provider"] == "brave"
+    assert out["provider_chain"][0]["provider"] == "tavily"
+    assert out["provider_chain"][0]["status"] == "error"
+    assert out["provider_chain"][1] == {"provider": "brave", "status": "ok"}
+
+
+def test_fetch_url_extracts_metadata_and_headings(mocker):
+    module = _load_search_module()
+
+    html = """
+    <html>
+      <head>
+        <title>Example Page</title>
+        <meta name="description" content="A useful page for testing." />
+        <meta property="article:published_time" content="2026-03-27T12:00:00Z" />
+        <meta name="author" content="Example Author" />
+      </head>
+      <body>
+        <article>
+          <h1>Hello</h1>
+          <p>Readable content.</p>
+          <p>More evidence here.</p>
+        </article>
+      </body>
+    </html>
+    """
+
+    class _Resp:
+        def __init__(self, payload: str):
+            self._payload = payload.encode("utf-8")
+            self.headers = _Headers("text/html; charset=utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return self._payload
+
+        def geturl(self):
+            return "https://example.com/final?utm_source=test"
+
+    mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp(html))
+    out = module.execute("fetch_url", {"url": "https://example.com/page", "max_chars": 1000}, env=_env())
+
+    assert out["description"] == "A useful page for testing."
+    assert out["author"] == "Example Author"
+    assert out["published_at"].startswith("2026-03-27T12:00:00")
+    assert out["headings"] == ["Hello"]
+    assert out["canonical_url"] == "https://example.com/final"
+
+
+def test_fetch_url_preserves_div_and_section_body_text(mocker):
+    module = _load_search_module()
+
+    html = """
+    <html>
+      <head><title>Mixed Layout</title></head>
+      <body>
+        <article>
+          <h1>Situation Report</h1>
+          <div>The body is rendered inside div tags.</div>
+          <section>Further evidence appears inside a section block.</section>
+        </article>
+      </body>
+    </html>
+    """
+
+    class _Resp:
+        def __init__(self, payload: str):
+            self._payload = payload.encode("utf-8")
+            self.headers = _Headers("text/html; charset=utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return self._payload
+
+        def geturl(self):
+            return "https://example.com/article"
+
+    mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp(html))
+    out = module.execute("fetch_url", {"url": "https://example.com/article", "max_chars": 1000}, env=_env())
+
+    assert "Situation Report" in out["content"]
+    assert "The body is rendered inside div tags." in out["content"]
+    assert "Further evidence appears inside a section block." in out["content"]
+
+
+def test_source_type_does_not_treat_unofficial_or_officials_as_official():
+    module = _load_search_module()
+
+    assert module._source_type("mirror.example.com", "Unofficial mirror", "") == "community"
+    assert module._source_type("news.example.com", "Officials warn about shortages", "") != "official"
 
 
 def test_search_ops_skill_loads_and_executes_from_repo(tmp_path: Path, mocker, monkeypatch):
