@@ -1558,6 +1558,64 @@ def test_workspace_action_accepts_successful_mutating_shell_command(mocker, runt
     assert calls == ["pass_1", "pass_2"]
 
 
+def test_workspace_action_does_not_fingerprint_around_shell_command(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    mocker.patch.object(agent, "ensure_ready", return_value=True)
+    mocker.patch.object(
+        agent,
+        "_classify_turn",
+        return_value=TurnClassification(requires_workspace_action=True, prefer_local_workspace_tools=True),
+    )
+    selected = [runtime.get_skill("workspace-ops")]
+    mocker.patch.object(agent, "_select_skills", return_value=selected)
+    mocker.patch.object(
+        runtime,
+        "tools_for_turn",
+        return_value=[
+            {"type": "function", "function": {"name": "create_directory"}},
+            {"type": "function", "function": {"name": "shell_command"}},
+        ],
+    )
+    mocker.patch.object(runtime.workspace, "workspace_state_fingerprint", side_effect=AssertionError("unexpected fingerprint call"))
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        if pass_id == "pass_1":
+            return type(
+                "R",
+                (),
+                {
+                    "finish_reason": "tool_calls",
+                    "content": "",
+                    "reasoning": "",
+                    "tool_calls": [
+                        type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "shell_command", "arguments": {"command": "mkdir -p 1738"}})(),
+                    ],
+                },
+            )()
+        if pass_id == "pass_2":
+            return type("R", (), {"finish_reason": "stop", "content": "Done.", "reasoning": "", "tool_calls": []})()
+        raise AssertionError(f"Unexpected pass id: {pass_id}")
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(
+        runtime,
+        "execute_tool_call",
+        side_effect=lambda tool_name, args, selected, ctx, confirm_shell=None, **_kwargs: runtime.workspace.run_shell_command(
+            args["command"]
+        ),
+    )
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "create a folder named 1738"}],
+        user_input="yes",
+        thinking=True,
+        confirm_shell=lambda _command: True,
+    )
+
+    assert result.status == "done"
+    assert (runtime.workspace.workspace_root / "1738").is_dir()
+
+
 def test_explicit_external_path_disables_local_workspace_routing(runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     selected = [runtime.get_skill("workspace-ops")]

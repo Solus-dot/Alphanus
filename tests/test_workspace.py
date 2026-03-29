@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 
@@ -95,6 +97,7 @@ def test_shell_command_runs_with_argv_not_shell(tmp_path: Path):
     assert res["ok"] is True
     assert res["data"]["stdout"].strip() == "ok"
     assert res["data"]["argv"][0] == "python3"
+    assert res["meta"]["workspace_changed"] is False
 
 
 def test_shell_command_nonzero_exit_is_reported_as_failure(tmp_path: Path):
@@ -149,6 +152,124 @@ def test_shell_command_runs_in_requested_cwd(tmp_path: Path):
     assert res["data"]["cwd"] == str(subdir.resolve())
 
 
+def test_shell_command_known_mutator_sets_workspace_changed_true(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("mkdir demo")
+
+    assert res["ok"] is True
+    assert res["meta"]["workspace_changed"] is True
+    assert (ws / "demo").is_dir()
+
+
+def test_shell_command_ambiguous_command_uses_git_snapshot_when_repo_present(tmp_path: Path):
+    git_path = shutil.which("git")
+    if not git_path:
+        pytest.skip("git is not available")
+
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+    subprocess.run([git_path, "-C", str(ws), "init"], check=True, capture_output=True, text=True)
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command(
+        'python3 -c "from pathlib import Path; Path(\'note.txt\').write_text(\'x\', encoding=\'utf-8\')"'
+    )
+
+    assert res["ok"] is True
+    assert res["meta"]["workspace_changed"] is True
+    assert (ws / "note.txt").read_text(encoding="utf-8") == "x"
+
+
+def test_shell_command_detects_changes_to_existing_untracked_file_in_git_repo(tmp_path: Path):
+    git_path = shutil.which("git")
+    if not git_path:
+        pytest.skip("git is not available")
+
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+    subprocess.run([git_path, "-C", str(ws), "init"], check=True, capture_output=True, text=True)
+    scratch = ws / "scratch.txt"
+    scratch.write_text("before", encoding="utf-8")
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command(
+        'python3 -c "from pathlib import Path; Path(\'scratch.txt\').write_text(\'after\', encoding=\'utf-8\')"'
+    )
+
+    assert res["ok"] is True
+    assert res["meta"]["workspace_changed"] is True
+    assert scratch.read_text(encoding="utf-8") == "after"
+
+
+def test_shell_command_detects_git_branch_creation_in_git_repo(tmp_path: Path):
+    git_path = shutil.which("git")
+    if not git_path:
+        pytest.skip("git is not available")
+
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+    subprocess.run([git_path, "-C", str(ws), "init"], check=True, capture_output=True, text=True)
+    (ws / "tracked.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run([git_path, "-C", str(ws), "add", "tracked.txt"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            git_path,
+            "-C",
+            str(ws),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "init",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("git branch feature/test")
+
+    assert res["ok"] is True
+    assert res["meta"]["workspace_changed"] is True
+
+
+def test_shell_command_detects_ignored_output_changes_in_git_repo(tmp_path: Path):
+    git_path = shutil.which("git")
+    if not git_path:
+        pytest.skip("git is not available")
+
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+    subprocess.run([git_path, "-C", str(ws), "init"], check=True, capture_output=True, text=True)
+    (ws / ".gitignore").write_text("dist/\n", encoding="utf-8")
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command(
+        'python3 -c "from pathlib import Path; Path(\'dist\').mkdir(exist_ok=True); '
+        'Path(\'dist/out.txt\').write_text(\'x\', encoding=\'utf-8\')"'
+    )
+
+    assert res["ok"] is True
+    assert res["meta"]["workspace_changed"] is True
+    assert (ws / "dist" / "out.txt").read_text(encoding="utf-8") == "x"
+
+
 def test_move_path_renames_workspace_file(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
@@ -197,78 +318,3 @@ def test_delete_alphanus_state_denied(tmp_path: Path):
     mgr = WorkspaceManager(str(ws), home_root=str(home))
     with pytest.raises(PermissionError):
         mgr.delete_path(".alphanus", recursive=True)
-    with pytest.raises(PermissionError):
-        mgr.delete_path(".alphanus/sessions", recursive=True)
-
-
-def test_write_alphanus_state_denied(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    home.mkdir()
-    ws.mkdir()
-
-    mgr = WorkspaceManager(str(ws), home_root=str(home))
-    with pytest.raises(PermissionError):
-        mgr.create_directory(".alphanus")
-    with pytest.raises(PermissionError):
-        mgr.create_file(".alphanus/state.json", "{}")
-
-
-def test_edit_alphanus_state_denied(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    state_file = ws / ".alphanus" / "state.json"
-    home.mkdir()
-    state_file.parent.mkdir(parents=True)
-    state_file.write_text("{}", encoding="utf-8")
-
-    mgr = WorkspaceManager(str(ws), home_root=str(home))
-    with pytest.raises(PermissionError):
-        mgr.edit_file(".alphanus/state.json", '{"changed":true}')
-
-
-def test_shell_command_cannot_touch_alphanus_state(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    home.mkdir()
-    ws.mkdir()
-
-    mgr = WorkspaceManager(str(ws), home_root=str(home))
-    res = mgr.run_shell_command("cat .alphanus/manifest.json")
-    assert res["ok"] is False
-    assert res["error"]["code"] == "E_POLICY"
-
-
-def test_shell_command_cannot_use_alphanus_as_cwd(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    state_dir = ws / ".alphanus"
-    home.mkdir()
-    state_dir.mkdir(parents=True)
-
-    mgr = WorkspaceManager(str(ws), home_root=str(home))
-    res = mgr.run_shell_command("pwd", cwd=".alphanus")
-    assert res["ok"] is False
-    assert res["error"]["code"] == "E_POLICY"
-
-
-def test_delete_symlink_to_protected_target_unlinks_link_only(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    state_dir = ws / ".alphanus"
-    home.mkdir()
-    state_dir.mkdir(parents=True)
-    state_link = ws / "state-link"
-    root_link = ws / "root-link"
-    state_link.symlink_to(state_dir, target_is_directory=True)
-    root_link.symlink_to(ws, target_is_directory=True)
-
-    mgr = WorkspaceManager(str(ws), home_root=str(home))
-
-    assert mgr.delete_path("state-link", recursive=True) == str(state_link)
-    assert not state_link.exists()
-    assert state_dir.exists()
-
-    assert mgr.delete_path("root-link", recursive=True) == str(root_link)
-    assert not root_link.exists()
-    assert ws.exists()

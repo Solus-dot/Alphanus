@@ -49,6 +49,24 @@ SAFE_CHECK_RUNNERS = {
     "tox",
     "nox",
 }
+READ_ONLY_SHELL_COMMANDS = {
+    "ls",
+    "pwd",
+    "cat",
+    "head",
+    "tail",
+    "grep",
+    "rg",
+    "find",
+    "stat",
+    "wc",
+    "sort",
+    "uniq",
+    "cut",
+}
+READ_ONLY_GIT_SUBCOMMANDS = {"status", "diff", "show", "log", "rev-parse", "branch"}
+MUTATING_SHELL_COMMANDS = {"touch", "mkdir", "mv", "cp", "rm", "chmod", "chown", "ln"}
+MUTATING_GIT_SUBCOMMANDS = {"add", "rm", "mv", "restore", "checkout", "switch", "commit", "clean", "apply", "am", "stash"}
 
 
 class WorkspaceManager:
@@ -90,6 +108,95 @@ class WorkspaceManager:
                 rel_path = (rel_root / filename).as_posix()
                 digest.update(f"f:{rel_path}:{stat.st_mode}:{stat.st_size}:{stat.st_mtime_ns}\n".encode("utf-8"))
         return digest.hexdigest()
+
+    @staticmethod
+    def _git_subcommand(argv: List[str]) -> str:
+        if len(argv) < 2:
+            return ""
+        if argv[1] == "-C" and len(argv) >= 4:
+            return argv[3]
+        return argv[1]
+
+    def _classify_shell_command(self, argv: List[str]) -> str:
+        if not argv:
+            return "ambiguous"
+        executable = argv[0]
+        if executable in READ_ONLY_SHELL_COMMANDS:
+            return "readonly"
+        if executable in MUTATING_SHELL_COMMANDS:
+            return "mutating"
+        if executable == "sed":
+            return "readonly" if "-i" not in argv else "mutating"
+        if executable != "git":
+            return "ambiguous"
+
+        subcommand = self._git_subcommand(argv)
+        if subcommand == "branch":
+            if "--show-current" in argv:
+                return "readonly"
+            return "ambiguous"
+        if subcommand in READ_ONLY_GIT_SUBCOMMANDS:
+            return "readonly"
+        if subcommand in MUTATING_GIT_SUBCOMMANDS:
+            return "mutating"
+        return "ambiguous"
+
+    def _git_status_snapshot(self) -> Optional[tuple[str, tuple[tuple[str, str, int, int], ...]]]:
+        git_path = shutil.which("git")
+        if not git_path:
+            return None
+        base_argv = [git_path, "-C", str(self.workspace_root)]
+        repo_probe = subprocess.run(
+            base_argv + ["rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if repo_probe.returncode != 0 or repo_probe.stdout.strip().lower() != "true":
+            return None
+        status = subprocess.run(
+            base_argv + ["status", "--porcelain=v1", "--untracked-files=normal"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if status.returncode != 0:
+            return None
+        untracked = subprocess.run(
+            base_argv + ["ls-files", "--others", "--exclude-standard", "-z"],
+            capture_output=True,
+            text=False,
+            timeout=5,
+        )
+        if untracked.returncode != 0:
+            return None
+        untracked_meta: List[tuple[str, str, int, int]] = []
+        for raw_path in untracked.stdout.decode("utf-8", errors="ignore").split("\x00"):
+            path_text = raw_path.strip()
+            if not path_text:
+                continue
+            candidate = (self.workspace_root / path_text).resolve()
+            if not self._is_relative_to(candidate, self.workspace_root):
+                continue
+            try:
+                stat = candidate.lstat()
+            except OSError:
+                continue
+            if candidate.is_dir():
+                entry_type = "dir"
+            elif candidate.is_symlink():
+                entry_type = "symlink"
+            else:
+                entry_type = "file"
+            untracked_meta.append((path_text, entry_type, int(stat.st_size), int(stat.st_mtime_ns)))
+        untracked_meta.sort()
+        return (status.stdout, tuple(untracked_meta))
+
+    def _workspace_change_snapshot(self) -> tuple[str, Any]:
+        git_snapshot = self._git_status_snapshot()
+        if git_snapshot is not None:
+            return ("git", git_snapshot)
+        return ("fingerprint", self.workspace_state_fingerprint())
 
     def _normalize_workspace_relative(self, path: str) -> Path:
         raw = Path(os.path.expanduser(path))
@@ -571,11 +678,18 @@ class WorkspaceManager:
         try:
             self._validate_shell_command(command)
             argv = self._parse_command_argv(command)
+            command_kind = self._classify_shell_command(argv)
             target_cwd = self._resolve_read_path(cwd, extra_allowed_roots=allowed_cwd_roots) if cwd else self.workspace_root
             if target_cwd.is_file():
                 target_cwd = target_cwd.parent
             if self._is_relative_to(target_cwd, self.protected_state_dir):
                 raise PermissionError("Commands touching .alphanus state are not allowed")
+            snapshot_before: Optional[tuple[str, Any]] = None
+            fingerprint_before: Optional[str] = None
+            if command_kind == "ambiguous":
+                snapshot_before = self._workspace_change_snapshot()
+                if snapshot_before[0] == "git":
+                    fingerprint_before = self.workspace_state_fingerprint()
             run = self._run_argv(argv, timeout_s=timeout_s, cwd=target_cwd)
             if run["returncode"] != 0:
                 detail = (run["stderr"] or run["stdout"] or "").strip()
@@ -595,8 +709,16 @@ class WorkspaceManager:
                         "stderr_truncated": run["stderr_truncated"],
                     },
                     "error": {"code": "E_SHELL", "message": message},
-                    "meta": {"duration_ms": run["duration_ms"]},
+                    "meta": {"duration_ms": run["duration_ms"], "workspace_changed": False},
                 }
+            workspace_changed = False
+            if command_kind == "mutating":
+                workspace_changed = True
+            elif command_kind == "ambiguous" and snapshot_before is not None:
+                snapshot_after = self._workspace_change_snapshot()
+                workspace_changed = snapshot_before != snapshot_after
+                if not workspace_changed and snapshot_before[0] == "git" and fingerprint_before is not None:
+                    workspace_changed = fingerprint_before != self.workspace_state_fingerprint()
             return {
                 "ok": True,
                 "data": {
@@ -610,7 +732,7 @@ class WorkspaceManager:
                     "stderr_truncated": run["stderr_truncated"],
                 },
                 "error": None,
-                "meta": {"duration_ms": run["duration_ms"]},
+                "meta": {"duration_ms": run["duration_ms"], "workspace_changed": workspace_changed},
             }
         except subprocess.TimeoutExpired:
             return {

@@ -645,10 +645,6 @@ class TurnOrchestrator:
                                 force_finalize_reason = search_rule("This source domain already blocked a fetch attempt in this turn.", "Do not retry the same blocked domain.", "Answer from the remaining evidence.")
                                 break
 
-                    workspace_fingerprint_before = ""
-                    if state.requires_workspace_action and call.name == "shell_command":
-                        workspace_fingerprint_before = self.skill_runtime.workspace.workspace_state_fingerprint()
-
                     result = self.skill_runtime.execute_tool_call(
                         call.name,
                         call.arguments,
@@ -658,14 +654,6 @@ class TurnOrchestrator:
                         spawn_skill_agent=spawn_skill_agent,
                         request_user_input=request_user_input,
                     )
-                    if workspace_fingerprint_before and bool(result.get("ok")):
-                        meta = result.get("meta")
-                        if not isinstance(meta, dict):
-                            meta = {}
-                            result["meta"] = meta
-                        meta["workspace_changed"] = (
-                            workspace_fingerprint_before != self.skill_runtime.workspace.workspace_state_fingerprint()
-                        )
                     self.emit(on_event, {"type": "tool_result", "name": call.name, "id": call.id, "result": result})
                     tool_message = {
                         "role": "tool",
