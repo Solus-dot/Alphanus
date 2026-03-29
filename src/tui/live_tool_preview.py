@@ -26,6 +26,14 @@ class LivePreviewState:
     preview_lines: List[str] = field(default_factory=list)
     flushed_item_count: int = 0
     rendered_filepaths: Set[str] = field(default_factory=set)
+    raw_len: int = 0
+    parser_stack: List[Dict[str, Any]] = field(default_factory=list)
+    parser_in_string: bool = False
+    parser_string_is_key: bool = False
+    parser_escape: bool = False
+    parser_current_key: str = ""
+    parser_field_target: str = ""
+    file_counter: int = 0
 
 
 class LiveToolPreviewManager:
@@ -43,6 +51,227 @@ class LiveToolPreviewManager:
 
     def reset(self) -> None:
         self._streams = {}
+
+    @staticmethod
+    def _reset_parser_state(state: LivePreviewState) -> None:
+        state.raw_len = 0
+        state.parser_stack = []
+        state.parser_in_string = False
+        state.parser_string_is_key = False
+        state.parser_escape = False
+        state.parser_current_key = ""
+        state.parser_field_target = ""
+        state.file_counter = 0
+
+    def _begin_new_file_preview(
+        self,
+        state: LivePreviewState,
+        item_index: int,
+        write: WriteFn,
+        write_indented: Optional[WriteIndentedFn],
+        write_code: Optional[WriteCodeFn],
+        clear_preview: Optional[ClearPreviewFn],
+    ) -> None:
+        if item_index == state.item_index and not state.filepath and not state.preview_lines and not state.line_buf:
+            return
+        if state.opened and write_indented and write_code and clear_preview:
+            self._flush_state_preview(state, write_indented, write_code, clear_preview)
+        state.filepath = ""
+        state.item_index = item_index
+        state.opened = False
+        state.closed = False
+        state.line_buf = ""
+        state.preview_lines = []
+
+    def _append_field_delta(
+        self,
+        state: LivePreviewState,
+        target: str,
+        chunk: str,
+        write: WriteFn,
+        update_preview: UpdatePreviewFn,
+        write_indented: Optional[WriteIndentedFn],
+        write_code: Optional[WriteCodeFn],
+        clear_preview: Optional[ClearPreviewFn],
+    ) -> None:
+        if not chunk:
+            return
+        if target == "filepath":
+            state.filepath += chunk
+            return
+        if target != "content":
+            return
+
+        if not state.opened:
+            state.opened = True
+            path_label = state.filepath or "(pending filepath)"
+            write(f"[dim]  · file draft: {esc(path_label)}[/dim]")
+
+        state.line_buf += chunk
+        while "\n" in state.line_buf:
+            line, state.line_buf = state.line_buf.split("\n", 1)
+            state.preview_lines.append(line)
+
+        preview_lines = list(state.preview_lines[-self.max_static_preview_lines :])
+        if state.line_buf:
+            preview_lines.append(state.line_buf)
+        if preview_lines:
+            update_preview(preview_lines, self._guess_language(state.filepath))
+
+    def _ingest_raw_arguments_incrementally(
+        self,
+        state: LivePreviewState,
+        raw_arguments: str,
+        write: WriteFn,
+        update_preview: UpdatePreviewFn,
+        write_indented: Optional[WriteIndentedFn],
+        write_code: Optional[WriteCodeFn],
+        clear_preview: Optional[ClearPreviewFn],
+    ) -> None:
+        if len(raw_arguments) < state.raw_len:
+            self._reset_parser_state(state)
+            state.filepath = ""
+            state.item_index = 0
+            state.opened = False
+            state.closed = False
+            state.line_buf = ""
+            state.preview_lines = []
+
+        delta = raw_arguments[state.raw_len :]
+        state.raw_len = len(raw_arguments)
+        if not delta:
+            return
+
+        pending_target = ""
+        pending_chars: List[str] = []
+
+        def flush_pending() -> None:
+            nonlocal pending_target, pending_chars
+            if not pending_target or not pending_chars:
+                pending_target = ""
+                pending_chars = []
+                return
+            self._append_field_delta(
+                state,
+                pending_target,
+                "".join(pending_chars),
+                write,
+                update_preview,
+                write_indented,
+                write_code,
+                clear_preview,
+            )
+            pending_target = ""
+            pending_chars = []
+
+        def queue_field_char(target: str, value: str) -> None:
+            nonlocal pending_target, pending_chars
+            if not target:
+                return
+            if pending_target and pending_target != target:
+                flush_pending()
+            pending_target = target
+            pending_chars.append(value)
+
+        def finalize_string() -> None:
+            flush_pending()
+            text = state.parser_current_key
+            if state.parser_string_is_key:
+                top = state.parser_stack[-1] if state.parser_stack else None
+                if top and top.get("type") == "object":
+                    top["current_key"] = text
+                    top["expect"] = "colon"
+            else:
+                top = state.parser_stack[-1] if state.parser_stack else None
+                if top and top.get("type") == "object":
+                    top["current_key"] = ""
+                    top["expect"] = "comma_or_end"
+            state.parser_current_key = ""
+            state.parser_field_target = ""
+
+        for ch in delta:
+            if state.parser_in_string:
+                if state.parser_escape:
+                    mapped = {
+                        "n": "\n",
+                        "r": "\r",
+                        "t": "\t",
+                        "b": "\b",
+                        "f": "\f",
+                        '"': '"',
+                        "\\": "\\",
+                        "/": "/",
+                    }.get(ch, ch)
+                    state.parser_current_key += mapped
+                    if not state.parser_string_is_key and state.parser_field_target in {"filepath", "content"}:
+                        queue_field_char(state.parser_field_target, mapped)
+                    state.parser_escape = False
+                    continue
+                if ch == "\\":
+                    state.parser_escape = True
+                    continue
+                if ch == '"':
+                    state.parser_in_string = False
+                    finalize_string()
+                    continue
+                state.parser_current_key += ch
+                if not state.parser_string_is_key and state.parser_field_target in {"filepath", "content"}:
+                    queue_field_char(state.parser_field_target, ch)
+                continue
+
+            if ch.isspace():
+                continue
+            if ch == "{":
+                state.parser_stack.append({"type": "object", "expect": "key_or_end", "current_key": ""})
+                continue
+            if ch == "[":
+                state.parser_stack.append({"type": "array", "expect": "value_or_end"})
+                continue
+            if ch == "}":
+                if state.parser_stack:
+                    state.parser_stack.pop()
+                if state.parser_stack:
+                    top = state.parser_stack[-1]
+                    top["expect"] = "comma_or_end"
+                continue
+            if ch == "]":
+                if state.parser_stack:
+                    state.parser_stack.pop()
+                if state.parser_stack:
+                    top = state.parser_stack[-1]
+                    top["expect"] = "comma_or_end"
+                continue
+            if ch == ",":
+                if not state.parser_stack:
+                    continue
+                top = state.parser_stack[-1]
+                if top.get("type") == "object":
+                    top["expect"] = "key_or_end"
+                else:
+                    top["expect"] = "value_or_end"
+                continue
+            if ch == ":":
+                if state.parser_stack and state.parser_stack[-1].get("type") == "object":
+                    state.parser_stack[-1]["expect"] = "value"
+                continue
+            if ch != '"':
+                continue
+
+            top = state.parser_stack[-1] if state.parser_stack else None
+            state.parser_in_string = True
+            state.parser_escape = False
+            state.parser_current_key = ""
+            state.parser_string_is_key = bool(top and top.get("type") == "object" and top.get("expect") == "key_or_end")
+            state.parser_field_target = ""
+            if not state.parser_string_is_key and top and top.get("type") == "object":
+                target = str(top.get("current_key") or "")
+                state.parser_field_target = target
+                if target == "filepath":
+                    next_index = 0 if state.name != "create_files" else state.file_counter
+                    if state.name == "create_files":
+                        state.file_counter += 1
+                    self._begin_new_file_preview(state, next_index, write, write_indented, write_code, clear_preview)
+        flush_pending()
 
     def compact_tool_args(self, tool_name: str, args: Any) -> str:
         if not isinstance(args, dict):
@@ -101,66 +330,18 @@ class LiveToolPreviewManager:
         if state is None:
             state = LivePreviewState(name=name)
             self._streams[stream_id] = state
+            self._reset_parser_state(state)
         else:
             state.name = name
-
-        if name == "create_files":
-            entries = self._extract_partial_file_entries(raw_arguments)
-            if not entries:
-                return
-
-            completed_count = max(0, len(entries) - 1)
-            if write_indented and write_code:
-                for idx in range(state.flushed_item_count, completed_count):
-                    filepath_i, content_i, _complete_i = entries[idx]
-                    self._write_file_preview(filepath_i, content_i, write, write_indented, write_code)
-                    state.rendered_filepaths.add(filepath_i)
-                state.flushed_item_count = max(state.flushed_item_count, completed_count)
-
-            current_index = len(entries) - 1
-            filepath, content, _content_complete = entries[current_index]
-        else:
-            current_index = 0
-            filepath, _ = self._extract_partial_json_string_field(raw_arguments, "filepath")
-            content, _ = self._extract_partial_json_string_field(raw_arguments, "content")
-
-        if filepath and (filepath != state.filepath or current_index != state.item_index):
-            if state.opened and write_indented and write_code and clear_preview:
-                self._flush_state_preview(state, write_indented, write_code, clear_preview)
-                state.printed_len = 0
-                state.line_buf = ""
-                state.preview_lines = []
-                state.opened = False
-            state.filepath = filepath
-            state.item_index = current_index
-
-        if content is None:
-            return
-
-        if not state.opened:
-            state.opened = True
-            path_label = state.filepath or "(pending filepath)"
-            write(f"[dim]  · file draft: {esc(path_label)}[/dim]")
-
-        if len(content) < state.printed_len:
-            state.printed_len = 0
-            state.line_buf = ""
-            state.preview_lines = []
-
-        delta = content[state.printed_len :]
-        state.printed_len = len(content)
-
-        if delta:
-            state.line_buf += delta
-            while "\n" in state.line_buf:
-                line, state.line_buf = state.line_buf.split("\n", 1)
-                state.preview_lines.append(line)
-
-        preview_lines = list(state.preview_lines)
-        if state.line_buf:
-            preview_lines.append(state.line_buf)
-        if preview_lines:
-            update_preview(preview_lines, self._guess_language(state.filepath))
+        self._ingest_raw_arguments_incrementally(
+            state,
+            raw_arguments,
+            write,
+            update_preview,
+            write_indented,
+            write_code,
+            clear_preview,
+        )
 
     def close(
         self,

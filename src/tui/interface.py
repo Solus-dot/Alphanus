@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import threading
 import time
@@ -60,6 +61,7 @@ from tui.tree_render import render_tree_rows
 MAX_REPLY_ACC_CHARS = 24000
 SHELL_CONFIRM_TIMEOUT_S = 60
 ACCENT_COLOR = "#6366f1"
+STREAM_DRAIN_INTERVAL_S = 0.016
 
 
 def _global_config_path() -> Path:
@@ -480,6 +482,10 @@ class AlphanusTUI(App):
         self._in_fence = False
         self._fence_lang: Optional[str] = None
         self._fence_lines: List[str] = []
+        self._stream_event_queue: queue.SimpleQueue[Dict[str, Any]] = queue.SimpleQueue()
+        self._stream_drain_active = False
+        self._stream_partial_dirty = False
+        self._deferred_live_preview: Optional[Tuple[List[str], Optional[str]]] = None
 
         self._last_scroll = 0.0
         self._scroll_interval = 0.05
@@ -557,6 +563,7 @@ class AlphanusTUI(App):
     def on_mount(self) -> None:
         self.thinking = bool(self.agent.config.get("agent", {}).get("enable_thinking", True))
         self.set_interval(0.1, self._tick)
+        self.set_interval(STREAM_DRAIN_INTERVAL_S, self._drain_stream_event_queue)
         self._sync_tree_cursor()
         self._apply_focus_classes()
         self._update_topbar()
@@ -772,9 +779,11 @@ class AlphanusTUI(App):
         self._last_model_context_tokens = None
 
     def _update_context_usage_from_payload(self, usage: Dict[str, Any]) -> None:
-        prompt_tokens = usage.get("prompt_tokens")
-        if isinstance(prompt_tokens, (int, float)):
-            self._last_model_context_tokens = int(prompt_tokens)
+        for key in ("prompt_tokens", "input_tokens", "prompt_eval_count"):
+            value = usage.get(key)
+            if isinstance(value, (int, float)):
+                self._last_model_context_tokens = int(value)
+                break
         self._update_topbar()
 
     def _apply_focus_classes(self) -> None:
@@ -1287,7 +1296,13 @@ class AlphanusTUI(App):
         partial.display = True
         partial.update(Padding(self._code_panel_renderable("\n".join(lines), language), (0, 0, 0, 2)))
 
+    def _defer_live_preview_partial(self, lines: List[str], language: Optional[str]) -> None:
+        self._deferred_live_preview = (list(lines), language)
+        self._stream_partial_dirty = False
+
     def _clear_partial_preview(self) -> None:
+        self._deferred_live_preview = None
+        self._stream_partial_dirty = False
         partial = self._partial()
         partial.update("")
         if not self.streaming:
@@ -1890,6 +1905,9 @@ class AlphanusTUI(App):
         self._buf_r = ""
         self._buf_c = ""
         self._reset_fence_state()
+        self._stream_event_queue = queue.SimpleQueue()
+        self._stream_partial_dirty = False
+        self._deferred_live_preview = None
         self._stop_event = threading.Event()
         self._partial().display = True
 
@@ -1922,7 +1940,9 @@ class AlphanusTUI(App):
         stop_event: threading.Event,
     ) -> None:
         def on_event(event: Dict[str, Any]) -> None:
-            self.call_from_thread(self._on_agent_event, event)
+            self._stream_event_queue.put(event)
+            if event.get("type") in {"tool_phase_started", "tool_call", "tool_result", "error", "info", "pass_end", "usage"}:
+                self.call_from_thread(self._drain_stream_event_queue)
 
         result = self.agent.run_turn(
             history_messages=history_messages,
@@ -1935,6 +1955,7 @@ class AlphanusTUI(App):
             on_event=on_event,
             confirm_shell=self._confirm_shell_command,
         )
+        self.call_from_thread(self._drain_stream_event_queue)
         self.call_from_thread(self._on_stream_end, turn_id, result)
 
     def _visible_reasoning_text(self, text: str) -> str:
@@ -1966,7 +1987,26 @@ class AlphanusTUI(App):
         self._reasoning_open = False
         return True
 
-    def _flush_content_buffer(self, include_partial: bool = False) -> None:
+    def _refresh_deferred_partial(self) -> None:
+        if self._deferred_live_preview is not None:
+            lines, language = self._deferred_live_preview
+            self._deferred_live_preview = None
+            self._update_live_preview_partial(lines, language)
+            return
+        if not self._stream_partial_dirty:
+            return
+        self._stream_partial_dirty = False
+        if self._reasoning_open and not self._content_open:
+            display = self._visible_reasoning_text(self._buf_r)
+            partial = self._partial()
+            if display:
+                partial.update(Padding(self._reasoning_panel_renderable(display), (0, 0, 0, 2)))
+            else:
+                partial.update("")
+            return
+        self._update_partial_content()
+
+    def _flush_content_buffer(self, include_partial: bool = False, *, update_partial: bool = True) -> None:
         while "\n" in self._buf_c:
             line, self._buf_c = self._buf_c.split("\n", 1)
             if self._is_tool_trace_line(line):
@@ -1988,40 +2028,75 @@ class AlphanusTUI(App):
             self._partial().update("")
             return
 
-        self._update_partial_content()
+        if update_partial:
+            self._update_partial_content()
+        else:
+            self._stream_partial_dirty = True
 
-    def _handle_content_token(self, token: str) -> None:
+    def _handle_content_token(self, token: str, *, update_partial: bool = True) -> None:
         if not self._content_open:
             self._content_open = True
             if self._close_reasoning_section():
                 self._write("")
         self._buf_c += token
         self._append_reply_token(token)
-        self._flush_content_buffer(include_partial=False)
+        self._flush_content_buffer(include_partial=False, update_partial=update_partial)
+
+    def _drain_stream_event_queue(self) -> None:
+        if self._stream_drain_active:
+            return
+
+        queued: List[Dict[str, Any]] = []
+        while True:
+            try:
+                queued.append(self._stream_event_queue.get_nowait())
+            except queue.Empty:
+                break
+
+        if not queued:
+            return
+
+        self._stream_drain_active = True
+        try:
+            for event in queued:
+                if event.get("type") in {"tool_phase_started", "tool_call", "tool_result", "error", "info", "pass_end", "usage"}:
+                    self._refresh_deferred_partial()
+                self._on_agent_event(event)
+            self._refresh_deferred_partial()
+            now = time.monotonic()
+            if now - self._last_scroll >= self._scroll_interval:
+                self._maybe_scroll_end()
+                self._last_scroll = now
+        finally:
+            self._stream_drain_active = False
 
     def _on_agent_event(self, event: Dict[str, Any]) -> None:
         partial = self._partial()
         etype = event.get("type")
+        stream_drain_active = bool(getattr(self, "_stream_drain_active", False))
 
         if etype == "reasoning_token":
             token = event.get("text", "")
             if not self._reasoning_open:
                 self._reasoning_open = True
             self._buf_r += token
-            display = self._visible_reasoning_text(self._buf_r)
-            if display:
-                partial.update(Padding(self._reasoning_panel_renderable(display), (0, 0, 0, 2)))
+            if stream_drain_active:
+                self._stream_partial_dirty = True
             else:
-                partial.update("")
+                display = self._visible_reasoning_text(self._buf_r)
+                if display:
+                    partial.update(Padding(self._reasoning_panel_renderable(display), (0, 0, 0, 2)))
+                else:
+                    partial.update("")
 
         elif etype == "content_token":
             token = event.get("text", "")
-            self._handle_content_token(token)
+            self._handle_content_token(token, update_partial=not stream_drain_active)
 
         elif etype == "tool_phase_started":
             # Preserve in-progress text before tool call deltas start.
             self._close_reasoning_section()
-            self._flush_content_buffer(include_partial=True)
+            self._flush_content_buffer(include_partial=True, update_partial=True)
             self._content_open = False
 
         elif etype == "tool_call_delta":
@@ -2036,7 +2111,7 @@ class AlphanusTUI(App):
                     name,
                     raw_arguments,
                     self._write,
-                    self._update_live_preview_partial,
+                    self._defer_live_preview_partial if stream_drain_active else self._update_live_preview_partial,
                     self._write_indented,
                     self._write_code_block,
                     self._clear_partial_preview,
@@ -2109,12 +2184,16 @@ class AlphanusTUI(App):
             if isinstance(usage, dict):
                 self._update_context_usage_from_payload(usage)
 
+        if stream_drain_active:
+            return
+
         now = time.monotonic()
         if now - self._last_scroll >= self._scroll_interval:
             self._maybe_scroll_end()
             self._last_scroll = now
 
     def _on_stream_end(self, turn_id: str, result: AgentTurnResult) -> None:
+        self._drain_stream_event_queue()
         partial = self._partial()
         partial.update("")
         partial.display = False

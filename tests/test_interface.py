@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -337,6 +338,37 @@ def test_visible_reasoning_text_strips_think_markers() -> None:
     assert "internal reasoning" in visible
 
 
+def test_drain_stream_event_queue_renders_reasoning_once_per_tick() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    partial_updates: list[object] = []
+    scrolls: list[str] = []
+
+    tui._stream_event_queue = queue.SimpleQueue()
+    tui._stream_drain_active = False
+    tui._stream_partial_dirty = False
+    tui._deferred_live_preview = None
+    tui._reasoning_open = False
+    tui._content_open = False
+    tui._buf_r = ""
+    tui._buf_c = ""
+    tui._last_scroll = 0.0
+    tui._scroll_interval = 0.0
+    tui._partial = lambda: SimpleNamespace(update=partial_updates.append, display=False)
+    tui._reasoning_panel_renderable = lambda text: text
+    tui._visible_reasoning_text = lambda text: text
+    tui._update_partial_content = lambda: partial_updates.append("content")
+    tui._maybe_scroll_end = lambda *args, **kwargs: scrolls.append("scroll")
+
+    tui._stream_event_queue.put({"type": "reasoning_token", "text": "hel"})
+    tui._stream_event_queue.put({"type": "reasoning_token", "text": "lo"})
+
+    tui._drain_stream_event_queue()
+
+    assert tui._buf_r == "hello"
+    assert len(partial_updates) == 1
+    assert scrolls == ["scroll"]
+
+
 def test_file_tool_success_lines_use_standard_tool_blocks() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._show_tool_details = True
@@ -406,6 +438,18 @@ def test_update_context_usage_ignores_total_tokens_without_prompt_tokens() -> No
     tui._update_context_usage_from_payload({"total_tokens": 999})
 
     assert tui._last_model_context_tokens == 321
+    assert updates == ["topbar"]
+
+
+def test_update_context_usage_accepts_llamacpp_prompt_eval_count() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._last_model_context_tokens = None
+    updates: list[str] = []
+    tui._update_topbar = lambda: updates.append("topbar")
+
+    tui._update_context_usage_from_payload({"prompt_eval_count": 512, "eval_count": 32})
+
+    assert tui._last_model_context_tokens == 512
     assert updates == ["topbar"]
 
 
