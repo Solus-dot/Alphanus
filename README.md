@@ -1,6 +1,6 @@
 # Alphanus
 
-Alphanus is a local-first coding assistant with a Textual TUI, an OpenAI-compatible streaming chat-completions loop, explicit session-loaded skills, semantic memory, and a branchable conversation tree.
+Alphanus is a local-first coding assistant with a Textual TUI, a `llama.cpp`-targeted streaming chat-completions loop, explicit session-loaded skills, semantic memory, and a branchable conversation tree.
 
 Status:
 - alpha / power-user tooling
@@ -11,7 +11,7 @@ Status:
 
 Current behavior and architecture:
 - streaming agent loop with separate reasoning/content handling
-- OpenAI-style `tool_calls` execution
+- `llama.cpp` `/v1` API integration with OpenAI-style `tool_calls` execution
 - Textual UI with live tool previews, code-block popups, config editing, and support-bundle export
 - named autosaved sessions with a branchable `ConvTree`
 - semantic transformer memory with persistent storage and automatic re-embedding on model change
@@ -39,9 +39,13 @@ Bundled skills:
 uv sync --extra dev
 ```
 
-2. Start a model server that exposes:
+2. Start a `llama.cpp` server that exposes:
 - `http://127.0.0.1:8080/v1/chat/completions`
 - `http://127.0.0.1:8080/v1/models`
+
+Current backend scope:
+- supported/tested: `llama.cpp`
+- other inference backends are not yet supported or documented
 
 3. Set environment variables as needed:
 - `TAVILY_API_KEY` when `search.provider = "tavily"`
