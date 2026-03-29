@@ -8,18 +8,24 @@ class ContextWindowManager:
         self.safety_margin = int(safety_margin)
 
     @staticmethod
-    def estimate_tokens(messages: List[Dict]) -> int:
-        chars = 0
-        for msg in messages:
-            chars += len(msg.get("role", "")) + 4
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                chars += len(content)
-            else:
-                chars += len(str(content))
-            if msg.get("tool_calls"):
-                chars += len(str(msg["tool_calls"]))
+    def _estimate_message_chars(message: Dict) -> int:
+        chars = len(message.get("role", "")) + 4
+        content = message.get("content", "")
+        if isinstance(content, str):
+            chars += len(content)
+        else:
+            chars += len(str(content))
+        if message.get("tool_calls"):
+            chars += len(str(message["tool_calls"]))
+        return chars
+
+    @staticmethod
+    def _chars_to_tokens(chars: int) -> int:
         return max(1, chars // 4)
+
+    @classmethod
+    def estimate_tokens(cls, messages: List[Dict]) -> int:
+        return cls._chars_to_tokens(sum(cls._estimate_message_chars(message) for message in messages))
 
     @staticmethod
     def _last_role_index(messages: List[Dict], role: str) -> Optional[int]:
@@ -136,8 +142,11 @@ class ContextWindowManager:
                     copied_calls.append(call_copy)
                 copied["tool_calls"] = copied_calls
             out.append(copied)
+        estimates = [cls._estimate_message_chars(message) for message in out]
+        total_estimated = sum(estimates)
 
         def shrink_once() -> bool:
+            nonlocal total_estimated
             best_kind = None
             best_msg_idx = -1
             best_call_idx = -1
@@ -173,6 +182,9 @@ class ContextWindowManager:
             if best_kind == "content":
                 current = str(out[best_msg_idx].get("content", ""))
                 out[best_msg_idx]["content"] = cls._truncate_text(current, next_len)
+                previous = estimates[best_msg_idx]
+                estimates[best_msg_idx] = cls._estimate_message_chars(out[best_msg_idx])
+                total_estimated += estimates[best_msg_idx] - previous
                 return True
 
             raw_calls = out[best_msg_idx].get("tool_calls")
@@ -186,9 +198,12 @@ class ContextWindowManager:
                 return False
             current_args = str(fn.get("arguments", ""))
             fn["arguments"] = cls._truncate_text(current_args, next_len)
+            previous = estimates[best_msg_idx]
+            estimates[best_msg_idx] = cls._estimate_message_chars(out[best_msg_idx])
+            total_estimated += estimates[best_msg_idx] - previous
             return True
 
-        while cls.estimate_tokens(out) > max_prompt_tokens:
+        while cls._chars_to_tokens(total_estimated) > max_prompt_tokens:
             if not shrink_once():
                 break
 
@@ -209,7 +224,7 @@ class ContextWindowManager:
                     required.add(msg_idx)
             return required
 
-        while cls.estimate_tokens(out) > max_prompt_tokens and len(out) > 1:
+        while cls._chars_to_tokens(total_estimated) > max_prompt_tokens and len(out) > 1:
             required = required_indexes()
             last_user = cls._last_role_index(out, "user")
             if last_user is not None:
@@ -221,6 +236,7 @@ class ContextWindowManager:
                     drop_idx = msg_idx
                     break
             if drop_idx is not None:
+                total_estimated -= estimates.pop(drop_idx)
                 out.pop(drop_idx)
                 continue
 
@@ -232,6 +248,7 @@ class ContextWindowManager:
                     tool_idx = msg_idx
                     break
             if tool_idx is None:
+                total_estimated -= estimates.pop(1)
                 out.pop(1)
                 continue
 
@@ -246,17 +263,23 @@ class ContextWindowManager:
                         assistant_idx = msg_idx
                         break
 
+            total_estimated -= estimates.pop(tool_idx)
             out.pop(tool_idx)
             if assistant_idx is not None:
+                if assistant_idx > tool_idx:
+                    assistant_idx -= 1
+                total_estimated -= estimates.pop(assistant_idx)
                 out.pop(assistant_idx)
 
-        if cls.estimate_tokens(out) > max_prompt_tokens and out:
+        if cls._chars_to_tokens(total_estimated) > max_prompt_tokens and out:
             sys_content = out[0].get("content")
             if isinstance(sys_content, str) and sys_content:
                 keep_chars = max(32, max_prompt_tokens * 2)
                 out[0]["content"] = cls._truncate_text(sys_content, keep_chars)
+                estimates[0] = cls._estimate_message_chars(out[0])
+                total_estimated = sum(estimates)
 
-        if cls.estimate_tokens(out) > max_prompt_tokens:
+        if cls._chars_to_tokens(total_estimated) > max_prompt_tokens:
             last_user = cls._last_role_index(out, "user")
             if last_user is None:
                 return out[:1]
@@ -279,7 +302,8 @@ class ContextWindowManager:
             return messages
 
         budget = self.context_limit - self.safety_margin
-        estimated = self.estimate_tokens(messages)
+        message_estimates = [self._estimate_message_chars(message) for message in messages]
+        estimated = self._chars_to_tokens(sum(message_estimates))
         if estimated + max_tokens <= budget:
             return messages
 
@@ -289,6 +313,8 @@ class ContextWindowManager:
 
         head = messages[:1]
         body = messages[1:]
+        head_estimate = message_estimates[0]
+        body_estimates = message_estimates[1:]
 
         start_idx = max(0, len(body) - keep_tail)
         kept_indices: Set[int] = set(range(start_idx, len(body)))
@@ -298,11 +324,12 @@ class ContextWindowManager:
             kept_indices.add(last_user_idx)
 
         selected = [body[idx] for idx in sorted(kept_indices)]
+        selected_total = head_estimate + sum(body_estimates[idx] for idx in kept_indices)
 
         # Keep a single system message at index 0 to avoid server-side template
         # failures on backends that require exactly one leading system role.
         pruned = head + selected
-        if self.estimate_tokens(pruned) + max_tokens <= budget:
+        if self._chars_to_tokens(selected_total) + max_tokens <= budget:
             return pruned
 
         # If still over budget, trim oldest non-dependent messages first.
@@ -328,17 +355,20 @@ class ContextWindowManager:
 
         mutable = [idx for idx in sorted(kept_indices)]
         drop_cursor = 0
+        current_total = selected_total
         while drop_cursor < len(mutable):
-            if self.estimate_tokens(head + [body[idx] for idx in mutable]) + max_tokens <= budget:
+            if self._chars_to_tokens(current_total) + max_tokens <= budget:
                 break
             idx = mutable[drop_cursor]
             if idx in required_idxs:
                 drop_cursor += 1
                 continue
+            current_total -= body_estimates[idx]
             del mutable[drop_cursor]
 
         candidate = head if not mutable else head + [body[idx] for idx in mutable]
         max_prompt_tokens = max(1, budget - max_tokens)
-        if self.estimate_tokens(candidate) <= max_prompt_tokens:
+        candidate_total = head_estimate + sum(body_estimates[idx] for idx in mutable) if mutable else head_estimate
+        if self._chars_to_tokens(candidate_total) <= max_prompt_tokens and self.estimate_tokens(candidate) <= max_prompt_tokens:
             return candidate
         return self._compress_messages_to_budget(candidate, max_prompt_tokens)

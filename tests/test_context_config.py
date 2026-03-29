@@ -19,6 +19,21 @@ def test_prune_keeps_single_leading_system_message():
     assert sum(1 for msg in pruned if msg.get("role") == "system") == 1
 
 
+def test_estimate_tokens_floors_after_aggregating_whole_prompt():
+    mgr = ContextWindowManager()
+    messages = [
+        {"role": "user", "content": "ab"},
+        {"role": "assistant", "content": "cd"},
+        {"role": "user", "content": "ef"},
+    ]
+
+    manual_chars = 0
+    for message in messages:
+        manual_chars += len(message["role"]) + 4 + len(message["content"])
+
+    assert mgr.estimate_tokens(messages) == max(1, manual_chars // 4)
+
+
 def test_deep_merge_does_not_mutate_default_config():
     original = DEFAULT_CONFIG["agent"]["model_endpoint"]
     merged = deep_merge(DEFAULT_CONFIG, {"agent": {"model_endpoint": "http://example.local/v1/chat/completions"}})
@@ -127,3 +142,39 @@ def test_prune_keeps_at_least_one_user_message_when_tool_bundle_is_large():
 
     pruned = mgr.prune(messages, max_tokens=200)
     assert any(msg.get("role") == "user" for msg in pruned)
+
+
+def test_prune_limits_full_estimate_rescans(mocker):
+    mgr = ContextWindowManager(context_limit=900, keep_last_n=10, safety_margin=0)
+    messages = [{"role": "system", "content": "base prompt"}]
+    for idx in range(8):
+        call_id = f"call_{idx}"
+        messages.append({"role": "user", "content": f"request {idx} " + ("u" * 200)})
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": "edit_file", "arguments": '{"content":"' + ("x" * 1500) + '"}'},
+                    }
+                ],
+            }
+        )
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "name": "edit_file",
+                "content": "y" * 3000,
+            }
+        )
+
+    spy = mocker.spy(mgr, "estimate_tokens")
+
+    pruned = mgr.prune(messages, max_tokens=200)
+
+    assert pruned
+    assert spy.call_count <= 6
