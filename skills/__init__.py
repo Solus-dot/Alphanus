@@ -1,0 +1,1 @@
+"""Bundled Alphanus skill assets."""

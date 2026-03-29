@@ -23,6 +23,7 @@ from textual.widgets import Button, Input, OptionList, RichLog, Static
 from textual.widgets.option_list import Option
 
 from agent.core import Agent, AgentTurnResult
+from alphanus_paths import get_app_paths
 from core.attachments import build_content, classify_attachment
 from core.configuration import (
     config_for_editor_view,
@@ -58,9 +59,11 @@ from tui.tree_render import render_tree_rows
 
 MAX_REPLY_ACC_CHARS = 24000
 SHELL_CONFIRM_TIMEOUT_S = 60
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-GLOBAL_CONFIG_PATH = PROJECT_ROOT / "config" / "global_config.json"
 ACCENT_COLOR = "#6366f1"
+
+
+def _global_config_path() -> Path:
+    return get_app_paths().config_path
 
 
 class ChatInput(Input):
@@ -1702,13 +1705,13 @@ class AlphanusTUI(App):
     def _open_config_editor(self) -> None:
         warnings: List[str] = []
         try:
-            raw = load_or_create_global_config(GLOBAL_CONFIG_PATH, warnings=warnings)
+            raw = load_or_create_global_config(_global_config_path(), warnings=warnings)
         except Exception as exc:  # noqa: BLE001
             self._write_error(f"Config load failed: {exc}")
             return
         safe = self._config_for_editor(raw if isinstance(raw, dict) else {})
         text = json.dumps(safe, indent=2) + "\n"
-        self.push_screen(ConfigEditorModal(GLOBAL_CONFIG_PATH, text), self._on_config_editor_close)
+        self.push_screen(ConfigEditorModal(_global_config_path(), text), self._on_config_editor_close)
         for warning in warnings:
             self._write_info(f"Config warning: {warning}")
 
@@ -1755,7 +1758,7 @@ class AlphanusTUI(App):
             return
 
         cleaned = self._config_for_editor(normalized)
-        GLOBAL_CONFIG_PATH.write_text(json.dumps(cleaned, indent=2) + "\n", encoding="utf-8")
+        _global_config_path().write_text(json.dumps(cleaned, indent=2) + "\n", encoding="utf-8")
         merged = self._merge_live_config(self.agent.config, normalized)
         self.agent.reload_config(merged)
         self.thinking = bool(merged.get("agent", {}).get("enable_thinking", self.thinking))

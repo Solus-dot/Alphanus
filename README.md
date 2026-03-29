@@ -52,7 +52,7 @@ uv sync --extra dev
 4. Run Alphanus:
 
 ```bash
-uv run main.py
+uv run alphanus
 ```
 
 Useful flags:
@@ -62,10 +62,11 @@ Useful flags:
 Notes:
 - `.env` at the repo root is auto-loaded on startup without overriding already-set environment variables.
 - Startup performs a `/v1/models` readiness handshake before the first turn.
+- `uv run main.py` still works from a repo checkout, but `uv run alphanus` is now the primary entrypoint.
 
 ## Configuration
 
-Global config lives at `config/global_config.json`. At load/save time Alphanus:
+Global config lives at `config/global_config.json` in a repo checkout, or `~/.alphanus/config/global_config.json` for an installed package. At load/save time Alphanus:
 - merges missing keys from built-in defaults
 - normalizes types and clamps invalid values
 - strips secret-like fields from disk and from the `/config` editor
