@@ -163,7 +163,6 @@ class Agent:
                 "writable": os.access(workspace_root, os.W_OK),
             },
             "memory": {
-                "backend": memory_stats.get("embedding_backend"),
                 "allow_model_download": memory_stats.get("allow_model_download"),
                 "encoder_status": memory_stats.get("encoder_status"),
                 "encoder_source": memory_stats.get("encoder_source"),

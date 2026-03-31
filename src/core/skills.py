@@ -395,7 +395,6 @@ class SkillRuntime:
         env["ALPHANUS_HOME_ROOT"] = str(self.workspace.home_root)
         env["ALPHANUS_MEMORY_PATH"] = str(self.memory.storage_path)
         env["ALPHANUS_MEMORY_MODEL"] = str(self.memory.model_name)
-        env["ALPHANUS_MEMORY_BACKEND"] = str(self.memory.embedding_backend)
         env["ALPHANUS_MEMORY_EAGER_LOAD"] = "1" if bool(getattr(self.memory, "eager_load_encoder", False)) else "0"
         env["ALPHANUS_SKILL_PYTHON"] = str(self.python_executable)
         env["ALPHANUS_CONFIG_JSON"] = json.dumps(self.config, ensure_ascii=False)

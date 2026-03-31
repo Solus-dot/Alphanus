@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 RECOMMENDED_EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
-_LEGACY_EMBEDDING_BACKENDS = {"hash", "transformer", "auto"}
 
 
 class MemoryEncoderUnavailableError(ValueError):
@@ -33,7 +32,6 @@ class VectorMemory:
         self,
         storage_path: str,
         model_name: str = RECOMMENDED_EMBEDDING_MODEL_NAME,
-        embedding_backend: str = "transformer",
         min_score: float = 0.3,
         persist_access_updates: bool = False,
         autosave_interval_s: float = 2.0,
@@ -44,13 +42,6 @@ class VectorMemory:
         self.storage_path = Path(os.path.expanduser(storage_path)).resolve()
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.model_name = model_name
-
-        backend = self._normalize_backend(embedding_backend, default="transformer")
-        if backend == "hash":
-            raise ValueError("The hash memory backend has been removed; use transformer embeddings.")
-        if backend not in {"transformer", "auto"}:
-            raise ValueError(f"Unsupported memory embedding backend: {backend}")
-        self.embedding_backend = "transformer"
 
         self.min_score = float(min_score)
         self.persist_access_updates = bool(persist_access_updates)
@@ -69,7 +60,6 @@ class VectorMemory:
         self._type_index_cache: Dict[str, np.ndarray] = {}
         self._all_index_cache: Optional[np.ndarray] = None
         self._embedding_space_ready = False
-        self._stored_embedding_backend: Optional[str] = None
         self._stored_model_name: Optional[str] = None
         self._encoder_status = "uninitialized"
         self._encoder_source = ""
@@ -81,13 +71,6 @@ class VectorMemory:
         self._load()
         if self.eager_load_encoder:
             self._ensure_encoder()
-
-    @staticmethod
-    def _normalize_backend(value: Any, default: str) -> str:
-        backend = str(value or default).strip().lower()
-        if backend not in _LEGACY_EMBEDDING_BACKENDS:
-            return default
-        return backend
 
     def _invalidate_index_cache(self) -> None:
         self._matrix_cache = None
@@ -228,7 +211,6 @@ class VectorMemory:
             return
         self._require_encoder()
         if not self.memories:
-            self._stored_embedding_backend = "transformer"
             self._stored_model_name = self.model_name
             self._embedding_space_ready = True
             return
@@ -240,14 +222,13 @@ class VectorMemory:
             self._mark_dirty(force=False)
         else:
             self.dimension = int(self.memories[0].vector.shape[0])
-        self._stored_embedding_backend = "transformer"
         self._stored_model_name = self.model_name
         self._embedding_space_ready = True
 
-    def _storage_metadata(self) -> tuple[str, str]:
+    def _storage_model_name(self) -> str:
         if self._embedding_space_ready:
-            return ("transformer", self.model_name)
-        return ("transformer", self._stored_model_name or self.model_name)
+            return self.model_name
+        return self._stored_model_name or self.model_name
 
     def _append_to_index_cache(self, item: MemoryItem) -> bool:
         if self._matrix_cache is None or self._norm_cache is None or self._all_index_cache is None:
@@ -308,11 +289,8 @@ class VectorMemory:
             return
 
         if isinstance(payload, dict):
-            self._stored_embedding_backend = self._normalize_backend(payload.get("embedding_backend", ""), default="")
             raw_model_name = str(payload.get("model_name", "")).strip()
             self._stored_model_name = raw_model_name or None
-            if self._stored_embedding_backend == "hash":
-                raise ValueError("Legacy hash-backed memory stores are no longer supported.")
         raw_memories = payload.get("memories", []) if isinstance(payload, dict) else []
         loaded: List[MemoryItem] = []
         for item in raw_memories:
@@ -340,11 +318,9 @@ class VectorMemory:
         self._invalidate_index_cache()
 
     def _save(self) -> None:
-        storage_backend, storage_model_name = self._storage_metadata()
         payload = {
             "schema_version": "1.0.0",
-            "model_name": storage_model_name,
-            "embedding_backend": storage_backend,
+            "model_name": self._storage_model_name(),
             "memories": [
                 {
                     "id": m.id,
@@ -423,7 +399,6 @@ class VectorMemory:
         )
         self._next_id += 1
         self.memories.append(item)
-        self._stored_embedding_backend = "transformer"
         self._stored_model_name = self.model_name
         self._embedding_space_ready = True
         if not self._append_to_index_cache(item):
@@ -512,12 +487,10 @@ class VectorMemory:
             self._invalidate_index_cache()
 
         if not self.memories:
-            self._stored_embedding_backend = "transformer"
             self._stored_model_name = self.model_name
             self._embedding_space_ready = True
         elif self._embedding_space_ready:
             self.dimension = int(self.memories[0].vector.shape[0])
-            self._stored_embedding_backend = "transformer"
             self._stored_model_name = self.model_name
         elif self.encoder is not None:
             self._ensure_embedding_space()
@@ -540,7 +513,6 @@ class VectorMemory:
             "latest_timestamp": latest,
             "dimension": self.dimension,
             "model_name": self.model_name,
-            "embedding_backend": self.embedding_backend,
             "allow_model_download": self.allow_model_download,
             "encoder_status": self._encoder_status,
             "encoder_source": self._encoder_source,

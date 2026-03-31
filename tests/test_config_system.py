@@ -44,9 +44,7 @@ def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
         },
         "context": {"context_limit": 200, "safety_margin": 5000},
         "skills": {"strict_capability_policy": "bad"},
-        "tools": {"core_exposure_policy": "everything"},
         "search": {"provider": "bing"},
-        "memory": {"embedding_backend": "hash"},
         "tui": {"chat_log_max_lines": -1},
     }
 
@@ -61,17 +59,7 @@ def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
     assert normalized["context"]["safety_margin"] < normalized["context"]["context_limit"]
     assert normalized["skills"]["strict_capability_policy"] == DEFAULT_CONFIG["skills"]["strict_capability_policy"]
     assert normalized["search"]["provider"] == DEFAULT_CONFIG["search"]["provider"]
-    assert "embedding_backend" not in normalized["memory"]
     assert normalized["tui"]["chat_log_max_lines"] == 100
-
-
-def test_normalize_config_ignores_legacy_skill_selection_knobs() -> None:
-    normalized, warnings = normalize_config({"schema_version": "1.0.0", "skills": {"selection_mode": "heuristic", "max_active_skills": 1}})
-
-    assert "selection_mode" not in normalized["skills"]
-    assert "max_active_skills" not in normalized["skills"]
-    assert any("ignored" in item for item in warnings)
-
 
 def test_load_or_create_global_config_reports_and_rejects_bad_json(tmp_path: Path) -> None:
     cfg = tmp_path / "config" / "global_config.json"

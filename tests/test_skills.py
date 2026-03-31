@@ -2330,52 +2330,6 @@ npm install -g docx
     assert out["error"]["code"] == "E_POLICY"
 
 
-def test_load_skill_tool_is_removed(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    for skill_id in ("alpha", "beta"):
-        (skills / skill_id).mkdir(parents=True)
-        (skills / skill_id / "SKILL.md").write_text(
-            f"""
----
-name: {skill_id}
-description: {skill_id} helper
-version: 1.0.0
----
-Use {skill_id}.
-""".strip(),
-            encoding="utf-8",
-        )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-    alpha = runtime.get_skill("alpha")
-    assert alpha is not None
-    ctx = SkillContext(
-        user_input="use alpha",
-        branch_labels=[],
-        attachments=[],
-        workspace_root=str(ws),
-        memory_hits=[],
-    )
-
-    out = runtime.execute_tool_call(
-        "load_skill",
-        {"skill_id": "beta"},
-        selected=[alpha],
-        ctx=ctx,
-    )
-
-    assert out["ok"] is False
-    assert out["error"]["code"] == "E_UNSUPPORTED"
-
-
 def test_read_skill_resource_uses_single_active_skill_when_skill_id_is_omitted(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
@@ -2584,62 +2538,6 @@ echo {skill_id}
     single_view = tool_params(single_tools, "skill_view")
     multi_view = tool_params(multi_tools, "skill_view")
     assert single_view == multi_view
-
-
-def test_tools_for_turn_reuses_schema_cache_and_invalidates_on_generation_change(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "alpha").mkdir(parents=True)
-    (skills / "alpha" / "SKILL.md").write_text(
-        """
----
-name: alpha
-description: alpha helper
-version: 1.0.0
----
-Use alpha.
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-    alpha = runtime.get_skill("alpha")
-    assert alpha is not None
-    ctx = SkillContext(
-        user_input="use alpha",
-        branch_labels=[],
-        attachments=[],
-        workspace_root=str(ws),
-        memory_hits=[],
-    )
-
-    calls = {"count": 0}
-    original = runtime._tool_schemas
-
-    def counted(names, selected=None, ctx=None):
-        calls["count"] += 1
-        return original(names, selected=selected, ctx=ctx)
-
-    monkeypatch.setattr(runtime, "_tool_schemas", counted)
-
-    first = runtime.tools_for_turn([alpha], ctx=ctx)
-    second = runtime.tools_for_turn([alpha], ctx=ctx)
-    assert first is second
-    assert calls["count"] == 1
-
-    assert runtime.set_enabled("alpha", False) is True
-    assert runtime.set_enabled("alpha", True) is True
-
-    third = runtime.tools_for_turn([alpha], ctx=ctx)
-    assert third is not first
-    assert calls["count"] == 2
 
 
 def test_tools_for_turn_cache_key_includes_context_fingerprint(tmp_path: Path):

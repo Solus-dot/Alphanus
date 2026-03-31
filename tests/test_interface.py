@@ -150,7 +150,7 @@ def test_config_editor_view_omits_secrets_and_internal_fields() -> None:
     config = {
         "agent": {"auth_header": "Authorization: Bearer secret", "context_budget_max_tokens": 2048},
         "search": {"provider": "tavily", "tavily_api_key": "tvly-secret"},
-        "memory": {"embedding_backend": "hash", "model_name": "BAAI/bge-small-en-v1.5"},
+        "memory": {"model_name": "BAAI/bge-small-en-v1.5"},
         "context": {"context_limit": 8192, "safety_margin": 500, "keep_last_n": 10},
     }
 
