@@ -219,6 +219,64 @@ def test_agent_records_model_usage_from_stream(mocker, runtime: SkillRuntime):
     assert result.journal["model_usage"]["completion_tokens"] == 12
 
 
+def test_agent_run_turn_exercises_structured_classification_path(mocker, runtime: SkillRuntime, monkeypatch: pytest.MonkeyPatch):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+            "enable_structured_classification": True,
+        }
+    }
+    agent = Agent(cfg, runtime)
+    requests = []
+
+    monkeypatch.setattr(agent.classifier, "_should_model_classify", lambda ctx, seed: True)
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+
+        body = json.loads(req.data.decode("utf-8"))
+        requests.append(body)
+        system_prompt = body["messages"][0]["content"]
+        if "Classify the next local assistant turn." in system_prompt:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"{\\"time_sensitive\\":false,\\"requires_workspace_action\\":false,\\"prefer_local_workspace_tools\\":false,\\"followup_kind\\":\\"new_request\\"}"}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"Done"}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "say done"}],
+        user_input="say done",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert result.content == "Done"
+    assert len(requests) == 2
+    assert requests[0]["chat_template_kwargs"]["enable_thinking"] is False
+    assert "tools" not in requests[0]
+    assert requests[1]["chat_template_kwargs"]["enable_thinking"] is True
+
+
 def test_agent_requests_final_answer_if_post_tool_content_empty(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
