@@ -157,20 +157,30 @@ class ConvTree:
         self._inactive_assistant_char_limit = max(0, int(inactive_assistant_char_limit))
         self._inactive_tool_argument_char_limit = max(0, int(inactive_tool_argument_char_limit))
         self._inactive_tool_content_char_limit = max(0, int(inactive_tool_content_char_limit))
-        self._version = 0
+        self._history_version = 0
         self._active_path_cache_id = ""
         self._active_path_cache: List[Turn] = []
         self._history_messages_cache_key: tuple[str, int] | None = None
         self._history_messages_cache: List[dict] = []
-    def _invalidate_caches(self) -> None:
+
+    def _invalidate_active_path_cache(self) -> None:
         self._active_path_cache_id = ""
         self._active_path_cache = []
+
+    def _invalidate_history_cache(self) -> None:
         self._history_messages_cache_key = None
         self._history_messages_cache = []
 
-    def _mark_changed(self) -> None:
-        self._version += 1
-        self._invalidate_caches()
+    def _mark_history_changed(self) -> None:
+        self._history_version += 1
+        self._invalidate_history_cache()
+
+    def _mark_path_changed(self) -> None:
+        self._invalidate_active_path_cache()
+
+    def _mark_structure_changed(self) -> None:
+        self._mark_path_changed()
+        self._mark_history_changed()
 
     def set_compaction_policy(
         self,
@@ -185,7 +195,8 @@ class ConvTree:
         self._inactive_tool_argument_char_limit = max(0, int(inactive_tool_argument_char_limit))
         self._inactive_tool_content_char_limit = max(0, int(inactive_tool_content_char_limit))
         self.compact_inactive_branches()
-        self._invalidate_caches()
+        self._invalidate_active_path_cache()
+        self._invalidate_history_cache()
 
     @property
     def current(self) -> Turn:
@@ -238,7 +249,7 @@ class ConvTree:
         self.nodes[turn_id] = turn
         self.current.children.append(turn_id)
         self.current_id = turn_id
-        self._mark_changed()
+        self._mark_structure_changed()
         return turn
 
     def complete_turn(self, turn_id: str, reply: str) -> None:
@@ -246,7 +257,7 @@ class ConvTree:
             self.nodes[turn_id].assistant_content = reply
             self.nodes[turn_id].assistant_state = "done"
             self.compact_inactive_branches()
-            self._mark_changed()
+            self._mark_history_changed()
 
     def cancel_turn(self, turn_id: str, partial: str) -> None:
         if turn_id not in self.nodes:
@@ -255,7 +266,7 @@ class ConvTree:
         self.nodes[turn_id].assistant_content = f"{partial}\n[interrupted]" if partial else "[interrupted]"
         self.nodes[turn_id].assistant_state = "cancelled"
         self.compact_inactive_branches()
-        self._mark_changed()
+        self._mark_history_changed()
 
     def fail_turn(self, turn_id: str, partial: str) -> None:
         if turn_id not in self.nodes:
@@ -263,15 +274,15 @@ class ConvTree:
         self.nodes[turn_id].assistant_content = (partial or "").rstrip()
         self.nodes[turn_id].assistant_state = "error"
         self.compact_inactive_branches()
-        self._mark_changed()
+        self._mark_history_changed()
 
     def append_skill_exchange(self, turn_id: str, message: dict) -> None:
         if turn_id in self.nodes:
             self.nodes[turn_id].skill_exchanges.append(message)
-            self._mark_changed()
+            self._mark_history_changed()
 
     def history_messages(self) -> List[dict]:
-        cache_key = (self.current_id, self._version)
+        cache_key = (self.current_id, self._history_version)
         if self._history_messages_cache_key == cache_key:
             return list(self._history_messages_cache)
         messages: List[dict] = []
@@ -292,7 +303,7 @@ class ConvTree:
             if node.branch_root:
                 self.current_id = node.parent
                 self.compact_inactive_branches()
-                self._invalidate_caches()
+                self._mark_structure_changed()
                 return self.current_id
             node = self.nodes[node.parent]
         return None
@@ -303,7 +314,7 @@ class ConvTree:
             return None
         self.current_id = children[idx]
         self.compact_inactive_branches()
-        self._invalidate_caches()
+        self._mark_structure_changed()
         return self.current
 
     def to_dict(self) -> dict:
@@ -332,7 +343,7 @@ class ConvTree:
         tree._inactive_assistant_char_limit = 12000
         tree._inactive_tool_argument_char_limit = 5000
         tree._inactive_tool_content_char_limit = 8000
-        tree._version = 0
+        tree._history_version = 0
         tree._active_path_cache_id = ""
         tree._active_path_cache = []
         tree._history_messages_cache_key = None

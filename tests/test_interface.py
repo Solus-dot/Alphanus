@@ -9,6 +9,7 @@ import pytest
 from core.conv_tree import ConvTree
 from core.sessions import ChatSession
 from core.workspace import WorkspaceManager
+from agent.policies import OutputSanitizer
 from tui.live_tool_preview import LiveToolPreviewManager
 from tui.commands import active_command_query, active_command_span, command_entries_for_query, popup_command_query
 from tui.interface import AlphanusTUI, ChatInput
@@ -273,6 +274,29 @@ def test_live_tool_preview_shows_edit_file_diff() -> None:
     assert code_blocks
     assert code_blocks[0][1] == "diff"
     assert "-beta" in "\n".join(code_blocks[0][0])
+
+
+def test_reply_accumulator_preserves_content_and_caps_length() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._reply_acc = ""
+
+    tui._append_reply_token("hello")
+    tui._append_reply_token(" world")
+
+    assert tui._reply_acc == "hello world"
+
+    tui._reply_acc = ""
+    tui._append_reply_token("x" * 30000)
+    assert len(tui._reply_acc) == 24000
+
+
+def test_output_sanitizer_removes_tool_markup() -> None:
+    text = "<think>secret</think>\n<tool_call>ignore</tool_call>\nVisible\n<function=run>\n</function>"
+
+    cleaned = OutputSanitizer(max_reasoning_chars=100).sanitize_final_content(text)
+
+    assert cleaned == "Visible"
+    assert OutputSanitizer(max_reasoning_chars=100).contains_tool_markup("<tool_call>run</tool_call>") is True
 
 
 def test_live_tool_preview_skips_static_edit_file_request_preview() -> None:

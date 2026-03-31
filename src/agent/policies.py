@@ -12,6 +12,24 @@ def search_rule(*lines: str) -> str:
     return "Search completion rule:\n" + "\n".join(f"- {line}" for line in lines)
 
 
+_THINK_TAG_RE = re.compile(r"</?think>", flags=re.IGNORECASE)
+_TOOL_CALL_TAG_RE = re.compile(r"</?tool_call>", flags=re.IGNORECASE)
+_FUNCTION_TAG_RE = re.compile(r"</?function(?:=[^>]+)?>", flags=re.IGNORECASE)
+_PARAMETER_TAG_RE = re.compile(r"</?parameter(?:=[^>]+)?>", flags=re.IGNORECASE)
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", flags=re.IGNORECASE | re.DOTALL)
+_TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>.*?</tool_call>", flags=re.IGNORECASE | re.DOTALL)
+_THINK_LINE_RE = re.compile(r"</?think>", flags=re.IGNORECASE)
+_TOOL_CALL_LINE_RE = re.compile(r"</?tool_call>", flags=re.IGNORECASE)
+_FUNCTION_OPEN_RE = re.compile(r"<function=[^>]+>", flags=re.IGNORECASE)
+_FUNCTION_CLOSE_RE = re.compile(r"</function>", flags=re.IGNORECASE)
+_PARAMETER_OPEN_RE = re.compile(r"<parameter=[^>]+>", flags=re.IGNORECASE)
+_PARAMETER_CLOSE_RE = re.compile(r"</parameter>", flags=re.IGNORECASE)
+_TOOL_MARKUP_RE = re.compile(
+    r"<tool_call\b|</tool_call>|<function=[^>]+>|</function>|<parameter=[^>]+>|</parameter>",
+    flags=re.IGNORECASE,
+)
+
+
 class OutputSanitizer:
     def __init__(self, max_reasoning_chars: int) -> None:
         self.max_reasoning_chars = max_reasoning_chars
@@ -35,33 +53,33 @@ class OutputSanitizer:
     def sanitize_reasoning_markup(text: str) -> str:
         if not text:
             return ""
-        text = re.sub(r"</?think>", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"</?tool_call>", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"</?function(?:=[^>]+)?>", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"</?parameter(?:=[^>]+)?>", "", text, flags=re.IGNORECASE)
+        text = _THINK_TAG_RE.sub("", text)
+        text = _TOOL_CALL_TAG_RE.sub("", text)
+        text = _FUNCTION_TAG_RE.sub("", text)
+        text = _PARAMETER_TAG_RE.sub("", text)
         return text
 
     @staticmethod
     def sanitize_final_content(text: str) -> str:
         if not text:
             return ""
-        text = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
-        text = re.sub(r"<tool_call>.*?</tool_call>", "", text, flags=re.IGNORECASE | re.DOTALL)
-        text = re.sub(r"</?think>", "", text, flags=re.IGNORECASE)
+        text = _THINK_BLOCK_RE.sub("", text)
+        text = _TOOL_CALL_BLOCK_RE.sub("", text)
+        text = _THINK_TAG_RE.sub("", text)
         kept: List[str] = []
         for line in text.splitlines():
             stripped = line.strip()
-            if re.fullmatch(r"</?think>", stripped, flags=re.IGNORECASE):
+            if _THINK_LINE_RE.fullmatch(stripped):
                 continue
-            if re.fullmatch(r"</?tool_call>", stripped, flags=re.IGNORECASE):
+            if _TOOL_CALL_LINE_RE.fullmatch(stripped):
                 continue
-            if re.fullmatch(r"<function=[^>]+>", stripped, flags=re.IGNORECASE):
+            if _FUNCTION_OPEN_RE.fullmatch(stripped):
                 continue
-            if re.fullmatch(r"</function>", stripped, flags=re.IGNORECASE):
+            if _FUNCTION_CLOSE_RE.fullmatch(stripped):
                 continue
-            if re.fullmatch(r"<parameter=[^>]+>", stripped, flags=re.IGNORECASE):
+            if _PARAMETER_OPEN_RE.fullmatch(stripped):
                 continue
-            if re.fullmatch(r"</parameter>", stripped, flags=re.IGNORECASE):
+            if _PARAMETER_CLOSE_RE.fullmatch(stripped):
                 continue
             kept.append(line)
         deduped: List[str] = []
@@ -78,13 +96,7 @@ class OutputSanitizer:
     def contains_tool_markup(text: str) -> bool:
         if not text:
             return False
-        return bool(
-            re.search(
-                r"<tool_call\b|</tool_call>|<function=[^>]+>|</function>|<parameter=[^>]+>|</parameter>",
-                text,
-                flags=re.IGNORECASE,
-            )
-        )
+        return bool(_TOOL_MARKUP_RE.search(text))
 
 
 class PromptPolicyRenderer:

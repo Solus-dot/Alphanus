@@ -128,6 +128,26 @@ def test_history_messages_refresh_when_switching_current_branch():
     assert right_msgs[-1]["content"] == "right-done"
 
 
+def test_append_skill_exchange_invalidates_history_without_resetting_active_path_cache():
+    tree = ConvTree()
+    turn = tree.add_turn("user")
+    active_path = tree.active_path
+    assert tree._active_path_cache_id == turn.id
+
+    first = tree.history_messages()
+    cached_key = tree._history_messages_cache_key
+    assert cached_key == (turn.id, tree._history_version)
+
+    tree.append_skill_exchange(turn.id, {"role": "assistant", "content": "tool draft"})
+
+    assert tree._active_path_cache_id == turn.id
+    second = tree.history_messages()
+    assert second != first
+    assert tree._history_messages_cache_key == (turn.id, tree._history_version)
+    assert tree._history_messages_cache_key != cached_key
+    assert active_path[-1].id == turn.id
+
+
 def test_dict_roundtrip_preserves_cancelled_turn_state():
     tree = ConvTree()
     turn = tree.add_turn("hello")

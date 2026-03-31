@@ -1378,13 +1378,28 @@ class AlphanusTUI(App):
         self._write_info("Reloaded skills")
         return True
 
+    @property
+    def _reply_acc(self) -> str:
+        parts = getattr(self, "_reply_acc_parts", [])
+        return "".join(parts)
+
+    @_reply_acc.setter
+    def _reply_acc(self, value: str) -> None:
+        text = str(value or "")
+        self._reply_acc_parts = [text] if text else []
+        self._reply_acc_len = len(text)
+
     def _append_reply_token(self, token: str) -> None:
         if not token:
             return
-        if len(self._reply_acc) >= MAX_REPLY_ACC_CHARS:
+        if getattr(self, "_reply_acc_len", 0) >= MAX_REPLY_ACC_CHARS:
             return
-        remaining = MAX_REPLY_ACC_CHARS - len(self._reply_acc)
-        self._reply_acc += token[:remaining]
+        remaining = MAX_REPLY_ACC_CHARS - self._reply_acc_len
+        chunk = token[:remaining]
+        if not chunk:
+            return
+        self._reply_acc_parts.append(chunk)
+        self._reply_acc_len += len(chunk)
 
     def _is_tool_trace_line(self, line: str) -> bool:
         s = line.strip().lower()
