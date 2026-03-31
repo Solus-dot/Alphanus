@@ -2192,6 +2192,54 @@ Use the bundled helper script when available.
     assert runtime._reported_skill_scripts(skill) == ["scripts/helper.py"]
 
 
+def test_runnable_scripts_cache_reuses_scan_and_invalidates_on_reload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "script-check" / "scripts").mkdir(parents=True)
+    (skills / "script-check" / "SKILL.md").write_text(
+        """
+---
+name: script-check
+description: helper with optional scripts
+version: 1.0.0
+---
+Use the bundled helper script when available.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "script-check" / "scripts" / "helper.py").write_text("print('ok')\n", encoding="utf-8")
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    skill = runtime.get_skill("script-check")
+    assert skill is not None
+    calls = {"count": 0}
+    original = runtime._python_script_missing_modules
+
+    def counted(skill_obj, rel_script):
+        calls["count"] += 1
+        return original(skill_obj, rel_script)
+
+    monkeypatch.setattr(runtime, "_python_script_missing_modules", counted)
+
+    assert runtime._skill_runnable_scripts(skill) == ["scripts/helper.py"]
+    assert runtime._skill_runnable_scripts(skill) == ["scripts/helper.py"]
+    assert calls["count"] == 0
+
+    runtime.load_skills()
+    skill = runtime.get_skill("script-check")
+    assert skill is not None
+    assert runtime._skill_runnable_scripts(skill) == ["scripts/helper.py"]
+    assert calls["count"] == 1
+
+
 def test_configured_python_executable_controls_script_availability(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
@@ -2536,6 +2584,121 @@ echo {skill_id}
     single_view = tool_params(single_tools, "skill_view")
     multi_view = tool_params(multi_tools, "skill_view")
     assert single_view == multi_view
+
+
+def test_tools_for_turn_reuses_schema_cache_and_invalidates_on_generation_change(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "alpha").mkdir(parents=True)
+    (skills / "alpha" / "SKILL.md").write_text(
+        """
+---
+name: alpha
+description: alpha helper
+version: 1.0.0
+---
+Use alpha.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    alpha = runtime.get_skill("alpha")
+    assert alpha is not None
+    ctx = SkillContext(
+        user_input="use alpha",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    calls = {"count": 0}
+    original = runtime._tool_schemas
+
+    def counted(names, selected=None, ctx=None):
+        calls["count"] += 1
+        return original(names, selected=selected, ctx=ctx)
+
+    monkeypatch.setattr(runtime, "_tool_schemas", counted)
+
+    first = runtime.tools_for_turn([alpha], ctx=ctx)
+    second = runtime.tools_for_turn([alpha], ctx=ctx)
+    assert first is second
+    assert calls["count"] == 1
+
+    assert runtime.set_enabled("alpha", False) is True
+    assert runtime.set_enabled("alpha", True) is True
+
+    third = runtime.tools_for_turn([alpha], ctx=ctx)
+    assert third is not first
+    assert calls["count"] == 2
+
+
+def test_tools_for_turn_cache_key_includes_context_fingerprint(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "script-skill").mkdir(parents=True)
+    (skills / "script-skill" / "SKILL.md").write_text(
+        """
+---
+name: script-skill
+description: artifact-specific helper
+version: 1.0.0
+---
+Use the bundled helper script when available.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("script-skill")
+    assert skill is not None
+
+    docx_ctx = SkillContext(
+        user_input="set up report.docx",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+    png_ctx = SkillContext(
+        user_input="create image.png",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    calls = {"count": 0}
+
+    def fake_tool_schemas(names, selected=None, ctx=None):
+        calls["count"] += 1
+        return [{"ctx": getattr(ctx, "user_input", ""), "names": list(names)}]
+
+    runtime._tool_schemas = fake_tool_schemas  # type: ignore[method-assign]
+
+    docx_tools = runtime.tools_for_turn([skill], ctx=docx_ctx)
+    png_tools = runtime.tools_for_turn([skill], ctx=png_ctx)
+
+    assert calls["count"] == 2
+    assert docx_tools != png_tools
+    assert docx_tools[0]["ctx"] == "set up report.docx"
+    assert png_tools[0]["ctx"] == "create image.png"
 
 
 def test_run_skill_command_allows_external_skill_root_as_cwd(tmp_path: Path):

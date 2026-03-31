@@ -370,6 +370,8 @@ class SkillRuntime:
         self._enabled_skills_cache: Optional[Tuple[SkillManifest, ...]] = None
         self._skill_catalog_cache: Dict[int, str] = {}
         self._skill_cards_cache: Dict[Tuple[Tuple[str, ...], bool], str] = {}
+        self._runnable_scripts_cache: Dict[Tuple[str, str], Tuple[str, ...]] = {}
+        self._tools_schema_cache: Dict[Tuple[Any, ...], List[Dict[str, Any]]] = {}
         self._python_module_probe_cache: Dict[str, bool] = {}
         self._proc_env_base = self._build_proc_env_base()
         self.load_skills()
@@ -659,6 +661,8 @@ class SkillRuntime:
         self._enabled_skills_cache = None
         self._skill_catalog_cache = {}
         self._skill_cards_cache = {}
+        self._runnable_scripts_cache = {}
+        self._tools_schema_cache = {}
 
     @staticmethod
     def _append_unique(items: List[str], value: str) -> None:
@@ -1439,6 +1443,11 @@ class SkillRuntime:
         return "/" not in normalized and Path(normalized).suffix.lower() in _SCRIPT_INTERPRETER_BY_EXT
 
     def _skill_runnable_scripts(self, skill: SkillManifest) -> List[str]:
+        cache_key = (skill.id, str(skill.path or ""))
+        cached = self._runnable_scripts_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
+
         runnable: List[str] = []
         for rel in skill.bundled_files:
             if not self._is_skill_script_candidate(rel):
@@ -1454,7 +1463,9 @@ class SkillRuntime:
             if self._python_script_missing_modules(skill, rel):
                 continue
             runnable.append(rel)
-        return sorted(dict.fromkeys(runnable))
+        deduped = tuple(sorted(dict.fromkeys(runnable)))
+        self._runnable_scripts_cache[cache_key] = deduped
+        return list(deduped)
 
     def _script_block_reason(self, skill: SkillManifest, rel_script: str) -> str:
         if not skill.path:
@@ -2434,6 +2445,34 @@ class SkillRuntime:
     ) -> List[str]:
         return self._tool_names_for_turn(selected, ctx=ctx)
 
+    def _tool_schema_context_fingerprint(self, ctx: Optional[SkillContext]) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+        if ctx is None:
+            return ((), ())
+        return (
+            tuple(sorted(self.task_intents(ctx))),
+            tuple(self.requested_artifact_extensions(ctx)),
+        )
+
+    def _tool_schema_cache_key(
+        self,
+        names: List[str],
+        selected: List[SkillManifest],
+        ctx: Optional[SkillContext],
+    ) -> Tuple[Any, ...]:
+        selected_ids = tuple(
+            str(getattr(skill, "id", "")).strip()
+            for skill in selected
+            if str(getattr(skill, "id", "")).strip()
+        )
+        active_skill_ids = tuple(self._active_skill_ids(selected))
+        return (
+            self.generation,
+            selected_ids,
+            tuple(names),
+            active_skill_ids,
+            self._tool_schema_context_fingerprint(ctx),
+        )
+
     @staticmethod
     def _opaque_extension_token(path: str) -> str:
         return Path(str(path).strip()).suffix.lower().lstrip(".")
@@ -2633,11 +2672,14 @@ class SkillRuntime:
         selected: List[SkillManifest],
         ctx: Optional[SkillContext] = None,
     ) -> List[Dict[str, Any]]:
-        return self._tool_schemas(
-            self.allowed_tool_names(selected, ctx=ctx),
-            selected=selected,
-            ctx=ctx,
-        )
+        names = self.allowed_tool_names(selected, ctx=ctx)
+        cache_key = self._tool_schema_cache_key(names, selected, ctx)
+        cached = self._tools_schema_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        tools = self._tool_schemas(names, selected=selected, ctx=ctx)
+        self._tools_schema_cache[cache_key] = tools
+        return tools
 
     def _run_pre_action_hooks(
         self,
