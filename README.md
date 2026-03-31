@@ -124,9 +124,6 @@ The checked-in config file is intentionally smaller than the full runtime defaul
       "extra_dirs": [],
       "watch": true,
       "upward_scan": true
-    },
-    "compat": {
-      "vendor_extensions": "major"
     }
   },
   "agents": {
@@ -223,7 +220,7 @@ Memory:
 - Recommended embedding model: `BAAI/bge-small-en-v1.5`.
 - `memory.allow_model_download` controls whether uncached embedding weights may be downloaded on first use.
 - Existing memories are automatically re-embedded when you switch models.
-- Retrieval is semantic-only. The legacy hash backend, lexical fallback behavior, and regex fact lookup path are gone.
+- Retrieval is semantic-only. Lexical fallback behavior and the regex fact lookup path are gone.
 - For corrections, prefer `replace_query` or `replace_ids` when calling memory tools.
 
 Search:

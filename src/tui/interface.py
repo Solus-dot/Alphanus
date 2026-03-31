@@ -2783,7 +2783,6 @@ class AlphanusTUI(App):
             self._write_detail_line("trust_level", getattr(skill, "trust_level", "trusted"))
             self._write_detail_line("execution_allowed", str(bool(getattr(skill, "execution_allowed", True))).lower())
             self._write_detail_line("adapter", getattr(skill, "adapter", "agentskills"))
-            self._write_detail_line("compatibility", skill.compatibility or "none")
             self._write_detail_line("availability_code", skill.availability_code or "ready")
             self._write_detail_line("availability", skill.availability_reason or "ready")
             self._write_detail_line("pack_id", str(skill.metadata.get("_pack_id", "") or "standalone"))

@@ -109,7 +109,6 @@ class SkillManifest:
     version: str
     description: str
     enabled: bool
-    compatibility: str = ""
     requirements: Dict[str, List[str]] = field(default_factory=dict)
     triggers: Dict[str, List[str]] = field(default_factory=dict)
     prompt: Optional[str] = None
@@ -181,7 +180,6 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
             or metadata_raw.get("artifacts")
         )
     )
-    compatibility = str(frontmatter.get("compatibility") or metadata_raw.get("compatibility") or "").strip()
 
     requirements_raw = frontmatter.get("requirements") or metadata_raw.get("requirements") or {}
     if requirements_raw is None:
@@ -382,7 +380,6 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         version=version,
         description=description,
         enabled=enabled,
-        compatibility=compatibility,
         requirements=requirements,
         triggers={"keywords": keywords, "file_ext": file_ext},
         prompt=prompt,

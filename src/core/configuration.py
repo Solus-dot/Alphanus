@@ -31,7 +31,6 @@ _SECRET_KEYS = {
 }
 _SECRET_SUFFIXES = ("_api_key", "_apikey", "_token", "_secret", "_password")
 _ALLOWED_SEARCH_PROVIDERS = {"tavily", "brave"}
-_ALLOWED_CORE_EXPOSURE_POLICIES = {"coding_core"}
 _VALID_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -82,9 +81,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "extra_dirs": [],
             "watch": True,
             "upward_scan": True,
-        },
-        "compat": {
-            "vendor_extensions": "major",
         },
     },
     "agents": {
@@ -606,19 +602,6 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         warnings=warnings,
     )
     skills_cfg["load"] = load_cfg
-    compat_cfg = skills_cfg.get("compat", {}) if isinstance(skills_cfg.get("compat"), dict) else {}
-    compat_mode = _coerce_string(
-        compat_cfg.get("vendor_extensions"),
-        str(DEFAULT_CONFIG["skills"]["compat"]["vendor_extensions"]),
-        path="skills.compat.vendor_extensions",
-        warnings=warnings,
-        allow_empty=False,
-    ).lower()
-    if compat_mode not in {"none", "major", "all"}:
-        _warn(warnings, f"skills.compat.vendor_extensions: unsupported {compat_mode!r}, using default")
-        compat_mode = str(DEFAULT_CONFIG["skills"]["compat"]["vendor_extensions"])
-    compat_cfg["vendor_extensions"] = compat_mode
-    skills_cfg["compat"] = compat_cfg
     merged["skills"] = skills_cfg
 
     agents_cfg = merged.get("agents", {}) if isinstance(merged.get("agents"), dict) else {}
