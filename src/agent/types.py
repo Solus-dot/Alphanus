@@ -64,9 +64,6 @@ class TurnPolicySnapshot:
     forced_action_retry: bool = False
     explicit_external_path: str = ""
     prefer_local_workspace_tools: bool = False
-    selected_shell_workflow_skills: List[str] = field(default_factory=list)
-    requested_opaque_artifact_extensions: List[str] = field(default_factory=list)
-    has_selected_materializers: bool = False
 
 
 @dataclass(slots=True)
@@ -120,17 +117,10 @@ class TurnState:
     forced_search_retry: bool = False
     forced_action_retry: bool = False
     tool_budgets: Dict[str, int] = field(default_factory=dict)
-    _search_mode_override: Optional[bool] = None
 
     @property
     def search_mode(self) -> bool:
-        if self._search_mode_override is not None:
-            return self._search_mode_override
         return self.classification.time_sensitive and self.search_tools_enabled
-
-    @search_mode.setter
-    def search_mode(self, value: bool) -> None:
-        self._search_mode_override = bool(value)
 
     @property
     def time_sensitive_query(self) -> bool:

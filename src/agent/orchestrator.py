@@ -368,9 +368,6 @@ class TurnOrchestrator:
             forced_action_retry=state.forced_action_retry and not state.completion.tool_counts,
             explicit_external_path=state.explicit_external_path,
             prefer_local_workspace_tools=state.prefer_local_workspace_tools,
-            selected_shell_workflow_skills=[],
-            requested_opaque_artifact_extensions=[],
-            has_selected_materializers=False,
         )
 
     def finalize_turn(self, system_content: str, state: TurnState, stop_event, on_event, pass_id: str, extra_rules: str = "") -> AgentTurnResult:

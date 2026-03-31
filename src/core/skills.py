@@ -301,9 +301,6 @@ class RegisteredTool:
     module: Optional[object] = None
     module_path: Optional[Path] = None
     module_name: str = ""
-    command: str = ""
-    timeout_s: int = 30
-    confirm_arg: str = ""
     cwd: str = ""
 
 
@@ -327,9 +324,6 @@ class AgentRecord:
     source_tier: str
     model: str = ""
     reasoning_effort: str = ""
-    sandbox_mode: str = ""
-    web_search_mode: str = ""
-    tool_policy: Dict[str, Any] = field(default_factory=dict)
     resource_roots: List[str] = field(default_factory=list)
 
 
@@ -547,7 +541,6 @@ class SkillRuntime:
         if path.suffix.lower() == ".toml":
             data = tomllib.loads(path.read_text(encoding="utf-8"))
             prompt = str(data.get("developer_instructions") or "").strip()
-            tool_policy = {key: value for key, value in data.items() if key not in {"developer_instructions", "description"}}
             return AgentRecord(
                 name=path.stem.replace("_", "-"),
                 description=str(data.get("description") or path.stem).strip(),
@@ -557,9 +550,6 @@ class SkillRuntime:
                 source_tier=source_tier,
                 model=str(data.get("model") or "").strip(),
                 reasoning_effort=str(data.get("model_reasoning_effort") or "").strip(),
-                sandbox_mode=str(data.get("sandbox_mode") or "").strip(),
-                web_search_mode=str(data.get("web_search") or "").strip(),
-                tool_policy=tool_policy,
                 resource_roots=[str(path.parent)],
             )
         frontmatter, prompt = extract_skill_doc(path, include_prompt=True)
@@ -572,9 +562,6 @@ class SkillRuntime:
             source_tier=source_tier,
             model=str(frontmatter.get("model") or "").strip(),
             reasoning_effort=str(frontmatter.get("effort") or "").strip(),
-            sandbox_mode=str(frontmatter.get("sandbox") or frontmatter.get("mode") or "").strip(),
-            web_search_mode=str(frontmatter.get("web_search") or "").strip(),
-            tool_policy={"tools": frontmatter.get("tools")},
             resource_roots=[str(path.parent)],
         )
 
@@ -1869,18 +1856,6 @@ class SkillRuntime:
                 return True
         return False
 
-    def expand_selected_skills(self, ctx: SkillContext, selected: List[SkillManifest]) -> List[SkillManifest]:
-        expanded = list(selected)
-        seen = {skill.id for skill in expanded}
-        if any(
-            skill.id != "shell-ops" and self._skill_supports_shell_workflow(skill, ctx)
-            for skill in expanded
-        ):
-            shell_skill = self.skills.get("shell-ops")
-            if shell_skill and shell_skill.enabled and shell_skill.available and shell_skill.id not in seen:
-                expanded.append(shell_skill)
-        return expanded
-
     def select_skills(self, ctx: SkillContext, top_n: int = 3) -> List[SkillManifest]:
         loaded = self.skills_by_ids(list(getattr(ctx, "loaded_skill_ids", []) or []))
         return sorted(
@@ -1948,9 +1923,6 @@ class SkillRuntime:
         rendered = "\n".join(lines)
         self._skill_cards_cache[key] = rendered
         return rendered
-
-    def requested_opaque_artifact_extensions(self, ctx: SkillContext) -> List[str]:
-        return [ext for ext in self.requested_artifact_extensions(ctx) if ext not in _TEXT_LIKE_EXTENSIONS]
 
     def _skill_runtime_note(self, skill: SkillManifest, ctx: SkillContext) -> str:
         requested_exts = self.requested_artifact_extensions(ctx)
@@ -2500,39 +2472,6 @@ class SkillRuntime:
                     continue
                 if any(self._tool_supports_extension(reg, skill, extension) for extension in extensions):
                     relevant.append(f"{skill.id}:{reg.name}")
-        return sorted(dict.fromkeys(relevant))
-
-    def selected_artifact_materializers(self, selected: List[SkillManifest], ctx: SkillContext) -> List[str]:
-        requested_exts = self.requested_artifact_extensions(ctx)
-        intents = self.task_intents(ctx)
-        if not requested_exts:
-            return []
-        relevant: List[str] = []
-        for skill in selected:
-            if self._skill_supports_artifact(skill, requested_exts, intents=intents):
-                for entrypoint in self._exposed_relevant_skill_entrypoints(skill, ctx):
-                    relevant.append(f"{skill.id}:{entrypoint.name}")
-                for rel in self._exposed_relevant_skill_scripts(skill, ctx):
-                    relevant.append(f"{skill.id}:{rel}")
-                for spec in skill.command_tools:
-                    if any(
-                        self._tool_supports_extension(
-                            RegisteredTool(
-                                name=spec.name,
-                                skill_id=skill.id,
-                                tool_scope="skill",
-                                capability=spec.capability,
-                                description=spec.description,
-                                parameters=spec.parameters,
-                            ),
-                            skill,
-                            ext.lstrip("."),
-                        )
-                        for ext in requested_exts
-                    ):
-                        relevant.append(f"{skill.id}:{spec.name}")
-                if "shell-ops" in {item.id for item in selected} and self._skill_supports_shell_workflow(skill, ctx):
-                    relevant.append(f"{skill.id}:shell_command")
         return sorted(dict.fromkeys(relevant))
 
     def _dynamic_run_skill_entrypoint_schema(self, selected: List[SkillManifest], ctx: Optional[SkillContext]) -> Dict[str, Any]:

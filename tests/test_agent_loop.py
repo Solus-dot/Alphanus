@@ -311,8 +311,6 @@ def test_agent_does_not_finish_after_helper_file_for_opaque_artifact_request(moc
     chat_reqs = []
 
     mocker.patch.object(agent, "_select_skills", return_value=runtime.enabled_skills())
-    mocker.patch.object(runtime, "requested_opaque_artifact_extensions", return_value=[".docx"])
-    mocker.patch.object(runtime, "selected_artifact_materializers", return_value=["docx:shell_command"])
 
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):

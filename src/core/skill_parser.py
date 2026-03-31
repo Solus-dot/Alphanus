@@ -86,15 +86,12 @@ class ToolCommandDef:
     description: str
     parameters: Dict[str, Any]
     command: str
-    timeout_s: int = 30
-    confirm_arg: str = ""
 
 
 @dataclass(slots=True)
 class SkillEntrypointDef:
     name: str
     description: str
-    tool: str
     command: str
     parameters: Dict[str, Any]
     intents: List[str] = field(default_factory=list)
@@ -282,7 +279,6 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
             SkillEntrypointDef(
                 name=name,
                 description=description,
-                tool=tool,
                 command=command,
                 parameters=parameters,
                 intents=intents,
@@ -331,7 +327,6 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         command = str(raw.get("command", "")).strip()
         parameters = raw.get("parameters")
         timeout_s = int(raw.get("timeout-s", 30))
-        confirm_arg = str(raw.get("confirm-arg", "")).strip()
 
         if not name:
             raise ValueError(f"SKILL.md tools.definitions[{idx}] missing name")
@@ -353,8 +348,6 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
                 description=description,
                 parameters=parameters,
                 command=command,
-                timeout_s=timeout_s,
-                confirm_arg=confirm_arg,
             )
         )
     disable_model_invocation = _coerce_bool(
