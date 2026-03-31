@@ -8,6 +8,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Iterable, List, Optional
@@ -37,6 +38,7 @@ DANGEROUS_SHELL_PATTERNS = [
 METACHAR_BLOCKLIST = ["&&", "||", "\n", "\r"]
 SHELL_WRAPPER_BINARIES = {"bash", "sh", "zsh", "fish"}
 MAX_TOOL_TEXT_BYTES = 20000
+PROTECTED_STATE_TOKEN_RE = re.compile(r"(^|[^A-Za-z0-9._-])\.alphanus(?=$|[/\\\\]|[^A-Za-z0-9._-])", re.IGNORECASE)
 SAFE_CHECK_RUNNERS = {
     "pytest",
     "ruff",
@@ -80,10 +82,101 @@ class WorkspaceManager:
         self.home_root = Path(os.path.expanduser(home_root or str(Path.home()))).resolve()
         self.blocked_patterns = list(blocked_patterns or DEFAULT_BLOCKED_PATTERNS)
         self.workspace_root.mkdir(parents=True, exist_ok=True)
+        self._filesystem_case_insensitive = self._detect_case_insensitive_filesystem()
 
     @property
     def protected_state_dir(self) -> Path:
         return self.workspace_root / ".alphanus"
+
+    def _detect_case_insensitive_filesystem(self) -> bool:
+        root = self.workspace_root
+        alt_root_name = root.name.swapcase()
+        if alt_root_name and alt_root_name != root.name:
+            alt_root = root.parent / alt_root_name
+            try:
+                if alt_root.exists():
+                    return alt_root.samefile(root)
+            except OSError:
+                pass
+
+        fd, probe_text = tempfile.mkstemp(prefix=".alphanusCaseProbe", dir=str(root))
+        os.close(fd)
+        probe = Path(probe_text)
+        try:
+            alt_probe = probe.with_name(probe.name.swapcase())
+            if alt_probe.name == probe.name:
+                return False
+            try:
+                return alt_probe.exists() and alt_probe.samefile(probe)
+            except OSError:
+                return False
+        finally:
+            try:
+                probe.unlink()
+            except OSError:
+                pass
+
+    def _path_compare_parts(self, path: Path) -> tuple[str, ...]:
+        parts = tuple(path.parts)
+        if not self._filesystem_case_insensitive:
+            return parts
+        return tuple(part.casefold() for part in parts)
+
+    def _is_path_equal_or_descendant(self, path: Path, root: Path) -> bool:
+        path_parts = self._path_compare_parts(path)
+        root_parts = self._path_compare_parts(root)
+        return len(path_parts) >= len(root_parts) and path_parts[: len(root_parts)] == root_parts
+
+    def _is_protected_state_path(self, path: Path) -> bool:
+        try:
+            candidate = path.resolve(strict=False)
+        except OSError:
+            candidate = Path(os.path.abspath(str(path)))
+        try:
+            protected = self.protected_state_dir.resolve(strict=False)
+        except OSError:
+            protected = Path(os.path.abspath(str(self.protected_state_dir)))
+        return self._is_path_equal_or_descendant(candidate, protected)
+
+    def _resolve_command_token_path(self, token: str, cwd: Path) -> Optional[Path]:
+        value = str(token or "").strip()
+        if not value or value == "-":
+            return None
+        pathish = (
+            value.startswith((".", "/", "~"))
+            or "/" in value
+            or "\\" in value
+        )
+        if not pathish:
+            candidate = cwd / value
+            try:
+                if not candidate.exists() and not candidate.is_symlink():
+                    return None
+            except OSError:
+                return None
+            pathish = True
+        raw = Path(os.path.expanduser(value))
+        candidate = raw if raw.is_absolute() else cwd / raw
+        try:
+            return candidate.resolve(strict=False)
+        except OSError:
+            return Path(os.path.abspath(str(candidate)))
+
+    @staticmethod
+    def _text_mentions_protected_state(text: str) -> bool:
+        return bool(PROTECTED_STATE_TOKEN_RE.search(str(text)))
+
+    def _command_touches_protected_state(self, argv: List[str], cwd: Path) -> bool:
+        git_subcommand_index = self._git_subcommand_index(argv) if argv and argv[0] == "git" else -1
+        for idx, part in enumerate(argv[1:], start=1):
+            if self._text_mentions_protected_state(part):
+                return True
+            if idx == git_subcommand_index:
+                continue
+            resolved = self._resolve_command_token_path(part, cwd)
+            if resolved is not None and self._is_protected_state_path(resolved):
+                return True
+        return False
 
     def workspace_state_fingerprint(self) -> str:
         digest = hashlib.sha256()
@@ -116,6 +209,14 @@ class WorkspaceManager:
         if argv[1] == "-C" and len(argv) >= 4:
             return argv[3]
         return argv[1]
+
+    @staticmethod
+    def _git_subcommand_index(argv: List[str]) -> int:
+        if len(argv) < 2:
+            return -1
+        if argv[1] == "-C" and len(argv) >= 4:
+            return 3
+        return 1
 
     def _classify_shell_command(self, argv: List[str]) -> str:
         if not argv:
@@ -216,8 +317,8 @@ class WorkspaceManager:
         resolved = candidate.resolve()
         if not self._is_relative_to(resolved, self.workspace_root):
             raise PermissionError("Write path escapes workspace root")
-        if self._is_relative_to(resolved, self.protected_state_dir):
-            raise PermissionError("Writing .alphanus state is not allowed")
+        if self._is_protected_state_path(resolved):
+            raise PermissionError("Writing protected internal state is not allowed")
         return resolved
 
     def _resolve_read_path(self, path: str, extra_allowed_roots: Optional[Iterable[str]] = None) -> Path:
@@ -233,6 +334,8 @@ class WorkspaceManager:
         # Workspace reads must remain valid even when the workspace itself is
         # configured outside the user's home directory.
         if self._is_relative_to(resolved, self.workspace_root):
+            if self._is_protected_state_path(resolved):
+                raise PermissionError("Read path targets protected internal state")
             return resolved
         for root_text in extra_allowed_roots or []:
             try:
@@ -321,8 +424,8 @@ class WorkspaceManager:
             raise PermissionError("Moving the workspace root is not allowed")
 
         protected_dir = self.protected_state_dir
-        if self._is_relative_to(source, protected_dir) or self._is_relative_to(destination, protected_dir):
-            raise PermissionError("Moving .alphanus state is not allowed")
+        if self._is_protected_state_path(source) or self._is_protected_state_path(destination):
+            raise PermissionError("Moving protected internal state is not allowed")
         if source == destination:
             raise ValueError("Source and destination must be different")
 
@@ -347,9 +450,8 @@ class WorkspaceManager:
 
         if candidate == self.workspace_root:
             raise PermissionError("Deleting the workspace root is not allowed")
-        protected_dir = self.protected_state_dir
-        if self._is_relative_to(candidate, protected_dir):
-            raise PermissionError("Deleting .alphanus state is not allowed")
+        if self._is_protected_state_path(candidate):
+            raise PermissionError("Deleting protected internal state is not allowed")
         if candidate.is_symlink():
             candidate.unlink()
             return str(candidate)
@@ -377,6 +479,8 @@ class WorkspaceManager:
             raise FileNotFoundError(str(target))
         results = []
         for child in sorted(target.iterdir(), key=lambda p: p.name.lower()):
+            if self._is_protected_state_path(child):
+                continue
             suffix = "/" if child.is_dir() else ""
             results.append(child.name + suffix)
         return results
@@ -387,7 +491,10 @@ class WorkspaceManager:
         def walk(path: Path, prefix: str, depth: int) -> None:
             if depth > max_depth:
                 return
-            entries = sorted(path.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+            entries = sorted(
+                (entry for entry in path.iterdir() if not self._is_protected_state_path(entry)),
+                key=lambda p: (p.is_file(), p.name.lower()),
+            )
             for idx, entry in enumerate(entries):
                 last = idx == len(entries) - 1
                 conn = "└── " if last else "├── "
@@ -484,6 +591,8 @@ class WorkspaceManager:
         needle = str(query)
         if not needle.strip():
             raise ValueError("search_code query must be non-empty")
+        if self._text_mentions_protected_state(needle):
+            raise PermissionError("Queries mentioning protected internal state are not allowed")
 
         target = self._resolve_workspace_subpath(path)
         limit = max(1, int(max_results))
@@ -620,6 +729,8 @@ class WorkspaceManager:
             if "\n" in value or "\r" in value:
                 raise ValueError("run_checks args must not contain newlines")
             argv.append(value)
+        if any(self._text_mentions_protected_state(part) for part in argv):
+            raise PermissionError("Commands touching protected internal state are not allowed")
 
         if executable == "uv":
             if len(argv) < 3 or argv[1] != "run" or argv[2] not in SAFE_CHECK_RUNNERS:
@@ -651,9 +762,6 @@ class WorkspaceManager:
             raise PermissionError("Command rejected by shell metacharacter policy")
         if argv[0] in SHELL_WRAPPER_BINARIES and len(argv) >= 3 and argv[1] in {"-c", "-lc"}:
             raise PermissionError("Command rejected by shell metacharacter policy")
-        protected_state_pattern = re.compile(r"(^|[=/])\.alphanus(?:/|$)")
-        if any(protected_state_pattern.search(part) for part in argv):
-            raise PermissionError("Commands touching .alphanus state are not allowed")
         for pattern in DANGEROUS_SHELL_PATTERNS:
             if re.search(pattern, trimmed, flags=re.IGNORECASE):
                 raise PermissionError("Command matches blocked dangerous pattern")
@@ -682,8 +790,10 @@ class WorkspaceManager:
             target_cwd = self._resolve_read_path(cwd, extra_allowed_roots=allowed_cwd_roots) if cwd else self.workspace_root
             if target_cwd.is_file():
                 target_cwd = target_cwd.parent
-            if self._is_relative_to(target_cwd, self.protected_state_dir):
-                raise PermissionError("Commands touching .alphanus state are not allowed")
+            if self._is_protected_state_path(target_cwd):
+                raise PermissionError("Commands touching protected internal state are not allowed")
+            if self._command_touches_protected_state(argv, target_cwd):
+                raise PermissionError("Commands touching protected internal state are not allowed")
             snapshot_before: Optional[tuple[str, Any]] = None
             fingerprint_before: Optional[str] = None
             if command_kind == "ambiguous":

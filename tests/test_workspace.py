@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 import shutil
 import subprocess
@@ -7,6 +9,24 @@ import subprocess
 import pytest
 
 from core.workspace import WorkspaceManager
+
+
+def _filesystem_is_case_insensitive(root: Path) -> bool:
+    fd, probe_text = tempfile.mkstemp(prefix=".alphanusCaseProbe", dir=str(root))
+    os.close(fd)
+    probe = Path(probe_text)
+    try:
+        alt_probe = probe.with_name(probe.name.swapcase())
+        if alt_probe.name == probe.name:
+            return False
+        return alt_probe.exists() and alt_probe.samefile(probe)
+    except OSError:
+        return False
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
 
 
 def test_write_path_traversal_denied(tmp_path: Path):
@@ -84,6 +104,69 @@ def test_workspace_reads_allowed_outside_home_root(tmp_path: Path):
     mgr = WorkspaceManager(str(ws), home_root=str(home))
     assert mgr.read_file(str(target)) == "alpha"
     assert mgr.list_files(str(ws)) == ["notes.txt"]
+
+
+def test_protected_internal_state_is_hidden_from_workspace_views(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+    (ws / ".alphanus" / "sessions").mkdir(parents=True)
+    (ws / "notes.txt").write_text("alpha", encoding="utf-8")
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+
+    assert mgr.list_files(".") == ["notes.txt"]
+    assert ".alphanus" not in mgr.workspace_tree()
+
+
+def test_symlink_alias_to_protected_state_is_hidden_from_workspace_views(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+    (ws / ".alphanus" / "sessions").mkdir(parents=True)
+    (ws / "alias").symlink_to(ws / ".alphanus", target_is_directory=True)
+    (ws / "notes.txt").write_text("alpha", encoding="utf-8")
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+
+    assert mgr.list_files(".") == ["notes.txt"]
+    assert "alias" not in mgr.workspace_tree()
+
+
+def test_read_protected_internal_state_denied(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    target = ws / ".alphanus" / "sessions" / "manifest.json"
+    home.mkdir()
+    target.parent.mkdir(parents=True)
+    target.write_text("{}", encoding="utf-8")
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+
+    with pytest.raises(PermissionError, match="protected internal state"):
+        mgr.read_file(".alphanus/sessions/manifest.json")
+
+
+def test_case_insensitive_protected_state_paths_are_denied(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    target = ws / ".alphanus" / "secret.txt"
+    home.mkdir()
+    target.parent.mkdir(parents=True)
+    target.write_text("secret", encoding="utf-8")
+    if not _filesystem_is_case_insensitive(ws):
+        pytest.skip("filesystem is case-sensitive")
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+
+    with pytest.raises(PermissionError, match="protected internal state"):
+        mgr.read_file(".ALPHANUS/secret.txt")
+    with pytest.raises(PermissionError, match="protected internal state"):
+        mgr.create_file(".ALPHANUS/pwned.txt", "x")
+    with pytest.raises(PermissionError, match="protected internal state"):
+        mgr.delete_path(".ALPHANUS/secret.txt")
 
 
 def test_shell_command_runs_with_argv_not_shell(tmp_path: Path):
@@ -316,5 +399,85 @@ def test_delete_alphanus_state_denied(tmp_path: Path):
     state_dir.mkdir(parents=True)
 
     mgr = WorkspaceManager(str(ws), home_root=str(home))
-    with pytest.raises(PermissionError):
+    with pytest.raises(PermissionError, match="protected internal state"):
         mgr.delete_path(".alphanus", recursive=True)
+
+
+def test_shell_command_hides_protected_state_name(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("ls .alphanus")
+
+    assert res["ok"] is False
+    assert res["error"]["code"] == "E_POLICY"
+    assert "protected internal state" in res["error"]["message"]
+    assert ".alphanus" not in res["error"]["message"]
+
+
+def test_shell_command_blocks_unknown_command_with_standalone_protected_dir_operand(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+    (ws / ".alphanus").mkdir()
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("tar -C .alphanus -cf /tmp/out.tar secret.txt")
+
+    assert res["ok"] is False
+    assert res["error"]["code"] == "E_POLICY"
+
+
+def test_shell_command_blocks_symlink_alias_to_protected_state(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+    (ws / ".alphanus" / "sessions").mkdir(parents=True)
+    (ws / "alias").symlink_to(ws / ".alphanus", target_is_directory=True)
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("ls alias")
+
+    assert res["ok"] is False
+    assert res["error"]["code"] == "E_POLICY"
+    assert "protected internal state" in res["error"]["message"]
+
+
+def test_shell_command_does_not_treat_git_subcommand_as_path_operand(tmp_path: Path):
+    git_path = shutil.which("git")
+    if not git_path:
+        pytest.skip("git is not available")
+
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+    (ws / ".alphanus").mkdir()
+    (ws / "status").symlink_to(ws / ".alphanus", target_is_directory=True)
+    subprocess.run([git_path, "-C", str(ws), "init"], check=True, capture_output=True, text=True)
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("git status")
+
+    assert res["ok"] is True
+
+
+def test_shell_command_blocks_case_insensitive_protected_state_path(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+    (ws / ".alphanus").mkdir()
+    if not _filesystem_is_case_insensitive(ws):
+        pytest.skip("filesystem is case-sensitive")
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("ls .ALPHANUS")
+
+    assert res["ok"] is False
+    assert res["error"]["code"] == "E_POLICY"
