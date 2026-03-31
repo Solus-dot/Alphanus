@@ -63,7 +63,7 @@ class VectorMemory:
         self._next_id = 1
         self._dirty = False
         self._pending_writes = 0
-        self._last_save_ts = 0.0
+        self._last_save_ts = time.time()
         self._matrix_cache: Optional[np.ndarray] = None
         self._norm_cache: Optional[np.ndarray] = None
         self._type_index_cache: Dict[str, np.ndarray] = {}
@@ -198,19 +198,19 @@ class VectorMemory:
     def _memories_have_consistent_dimensions(self) -> bool:
         if not self.memories:
             return True
-        dims = {
-            int(item.vector.shape[0])
-            for item in self.memories
-            if isinstance(item.vector, np.ndarray) and item.vector.ndim == 1
-        }
-        if len(dims) != len(self.memories):
-            return False
-        return len(dims) == 1
+        expected_dim: Optional[int] = None
+        for item in self.memories:
+            if not isinstance(item.vector, np.ndarray) or item.vector.ndim != 1:
+                return False
+            dim = int(item.vector.shape[0])
+            if expected_dim is None:
+                expected_dim = dim
+                continue
+            if dim != expected_dim:
+                return False
+        return True
 
     def _stored_backend_matches_current_space(self) -> bool:
-        stored_backend = self._normalize_backend(self._stored_embedding_backend or "", default="")
-        if stored_backend != "transformer":
-            return False
         return self._stored_model_name == self.model_name
 
     def _needs_reembed(self) -> bool:
@@ -247,12 +247,7 @@ class VectorMemory:
     def _storage_metadata(self) -> tuple[str, str]:
         if self._embedding_space_ready:
             return ("transformer", self.model_name)
-        stored_backend = self._normalize_backend(self._stored_embedding_backend or "", default="")
-        if stored_backend == "hash":
-            return ("hash", self._stored_model_name or "")
-        if stored_backend == "transformer":
-            return ("transformer", self._stored_model_name or self.model_name)
-        return ("transformer", self.model_name)
+        return ("transformer", self._stored_model_name or self.model_name)
 
     def _append_to_index_cache(self, item: MemoryItem) -> bool:
         if self._matrix_cache is None or self._norm_cache is None or self._all_index_cache is None:
@@ -276,6 +271,29 @@ class VectorMemory:
             self._type_index_cache[item.type] = np.concatenate((existing, new_index))
         return True
 
+    def _remove_from_index_cache(self, memory_idx: int) -> bool:
+        if self._matrix_cache is None or self._norm_cache is None or self._all_index_cache is None:
+            return False
+        if self._matrix_cache.ndim != 2 or memory_idx < 0 or memory_idx >= self._matrix_cache.shape[0]:
+            return False
+
+        self._matrix_cache = np.delete(self._matrix_cache, memory_idx, axis=0)
+        self._norm_cache = np.delete(self._norm_cache, memory_idx)
+        new_len = self._matrix_cache.shape[0]
+        self._all_index_cache = np.arange(new_len, dtype=np.int32)
+
+        updated_types: Dict[str, np.ndarray] = {}
+        for memory_type, indexes in self._type_index_cache.items():
+            if not isinstance(indexes, np.ndarray) or indexes.size == 0:
+                continue
+            kept = indexes[indexes != memory_idx]
+            if kept.size == 0:
+                continue
+            adjusted = kept - (kept > memory_idx).astype(np.int32, copy=False)
+            updated_types[memory_type] = adjusted.astype(np.int32, copy=False)
+        self._type_index_cache = updated_types
+        return True
+
     def _load(self) -> None:
         if not self.storage_path.exists():
             return
@@ -293,6 +311,8 @@ class VectorMemory:
             self._stored_embedding_backend = self._normalize_backend(payload.get("embedding_backend", ""), default="")
             raw_model_name = str(payload.get("model_name", "")).strip()
             self._stored_model_name = raw_model_name or None
+            if self._stored_embedding_backend == "hash":
+                raise ValueError("Legacy hash-backed memory stores are no longer supported.")
         raw_memories = payload.get("memories", []) if isinstance(payload, dict) else []
         loaded: List[MemoryItem] = []
         for item in raw_memories:
@@ -482,16 +502,28 @@ class VectorMemory:
         return [self._to_public(item) for item in ordered[: max(1, count)]]
 
     def forget(self, memory_id: int) -> bool:
-        before = len(self.memories)
-        self.memories = [m for m in self.memories if m.id != int(memory_id)]
-        changed = len(self.memories) != before
-        if changed:
-            self._embedding_space_ready = False
+        target_id = int(memory_id)
+        memory_idx = next((idx for idx, item in enumerate(self.memories) if item.id == target_id), -1)
+        if memory_idx < 0:
+            return False
+
+        self.memories.pop(memory_idx)
+        if not self._remove_from_index_cache(memory_idx):
             self._invalidate_index_cache()
-            if self.memories and self.encoder is not None:
-                self._ensure_embedding_space()
-            self._mark_dirty(force=False)
-        return changed
+
+        if not self.memories:
+            self._stored_embedding_backend = "transformer"
+            self._stored_model_name = self.model_name
+            self._embedding_space_ready = True
+        elif self._embedding_space_ready:
+            self.dimension = int(self.memories[0].vector.shape[0])
+            self._stored_embedding_backend = "transformer"
+            self._stored_model_name = self.model_name
+        elif self.encoder is not None:
+            self._ensure_embedding_space()
+
+        self._mark_dirty(force=False)
+        return True
 
     def stats(self) -> Dict[str, Any]:
         self._ensure_encoder()

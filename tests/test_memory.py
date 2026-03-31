@@ -136,6 +136,44 @@ def test_add_search_forget(monkeypatch, tmp_path: Path):
     assert mem.forget(a["id"]) is True
 
 
+def test_forget_updates_index_cache_without_full_rebuild(monkeypatch, tmp_path: Path):
+    mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"))
+    monkeypatch.setattr(VectorMemory, "_encode", _fake_encode, raising=False)
+
+    coffee = mem.add_memory("I like coffee", memory_type="preference")
+    tea = mem.add_memory("I like tea", memory_type="preference")
+    guitar = mem.add_memory("I play guitar", memory_type="hobby")
+
+    mem.search("tea", top_k=3, min_score=0.0)
+    assert mem._matrix_cache is not None  # noqa: SLF001
+    assert mem._type_index_cache["preference"].tolist() == [0, 1]  # noqa: SLF001
+
+    monkeypatch.setattr(mem, "_encode_many", lambda _texts: (_ for _ in ()).throw(AssertionError("unexpected re-embed")))
+
+    assert mem.forget(coffee["id"]) is True
+    assert mem._matrix_cache is not None  # noqa: SLF001
+    assert mem._matrix_cache.shape[0] == 2  # noqa: SLF001
+    assert mem._all_index_cache.tolist() == [0, 1]  # noqa: SLF001
+    assert mem._type_index_cache["preference"].tolist() == [0]  # noqa: SLF001
+    assert mem._type_index_cache["hobby"].tolist() == [1]  # noqa: SLF001
+
+    hits = mem.search("tea", top_k=3, min_score=0.0)
+    assert hits
+    assert hits[0]["id"] == tea["id"]
+    assert all(hit["id"] != guitar["id"] or hit["type"] == "hobby" for hit in hits)
+
+
+def test_first_add_does_not_immediately_autosave(monkeypatch, tmp_path: Path):
+    path = tmp_path / "mem.pkl"
+    mem = VectorMemory(storage_path=str(path))
+    monkeypatch.setattr(VectorMemory, "_encode", _fake_encode, raising=False)
+
+    mem.add_memory("first item")
+
+    assert mem._dirty is True  # noqa: SLF001
+    assert not path.exists()
+
+
 def test_corrupt_file_recovery(tmp_path: Path):
     path = tmp_path / "bad.pkl"
     path.write_bytes(b"not-a-pickle")
@@ -397,30 +435,12 @@ def test_transformer_backend_is_lazy(monkeypatch, tmp_path: Path):
     assert called["count"] == 1
 
 
-def test_transformer_runtime_reembeds_legacy_hash_payload(monkeypatch, tmp_path: Path):
+def test_legacy_hash_payload_is_rejected(tmp_path: Path):
     path = tmp_path / "mem.pkl"
     _write_legacy_hash_payload(path, [("favorite editor is neovim", "preference")])
 
-    monkeypatch.setattr(
-        VectorMemory,
-        "_load_transformer_encoder",
-        lambda self, _model_name: _ToyTransformerEncoder(),
-        raising=True,
-    )
-    migrated = VectorMemory(storage_path=str(path), model_name="toy-transformer")
-
-    hits = migrated.search("favorite editor", top_k=1, min_score=0.0)
-
-    assert hits
-    assert migrated.embedding_backend == "transformer"
-    assert migrated.dimension == _ToyTransformerEncoder.dim
-    assert all(item.vector.shape == (_ToyTransformerEncoder.dim,) for item in migrated.memories)
-
-    migrated.flush()
-    with path.open("rb") as handle:
-        payload = pickle.load(handle)
-    assert payload["embedding_backend"] == "transformer"
-    assert payload["model_name"] == "toy-transformer"
+    with pytest.raises(ValueError, match="Legacy hash-backed memory stores are no longer supported"):
+        VectorMemory(storage_path=str(path), model_name="toy-transformer")
 
 
 def test_memory_operations_raise_when_embeddings_unavailable(monkeypatch, tmp_path: Path):
@@ -579,28 +599,3 @@ def test_add_memory_keeps_warm_cache_incremental(monkeypatch, tmp_path: Path):
     assert mem._all_index_cache.tolist() == [0, 1]  # noqa: SLF001
     assert mem._type_index_cache["note"].tolist() == [0, 1]  # noqa: SLF001
 
-
-def test_forget_reembeds_remaining_legacy_hash_memories_before_save(monkeypatch, tmp_path: Path):
-    path = tmp_path / "mem.pkl"
-    _write_legacy_hash_payload(path, [("legacy alpha", "note"), ("legacy beta", "note")])
-
-    monkeypatch.setattr(
-        VectorMemory,
-        "_load_transformer_encoder",
-        lambda self, _model_name: _ToyTransformerEncoder384(),
-        raising=True,
-    )
-    migrated = VectorMemory(storage_path=str(path), model_name="toy-384")
-
-    first_id = migrated.list_recent(10)[1]["id"]
-    second_id = migrated.list_recent(10)[0]["id"]
-    assert migrated.forget(int(first_id)) is True
-    migrated.flush()
-
-    with path.open("rb") as handle:
-        payload = pickle.load(handle)
-    assert payload["embedding_backend"] == "transformer"
-    expected = _ToyTransformerEncoder384().encode(["legacy beta"], normalize_embeddings=True)[0]
-    persisted = np.asarray(payload["memories"][0]["vector"], dtype=np.float32)
-    assert payload["memories"][0]["id"] == int(second_id)
-    assert np.allclose(persisted, expected)
