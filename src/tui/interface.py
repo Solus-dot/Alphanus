@@ -10,9 +10,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from rich import box
+from rich.console import Console, ConsoleOptions, RenderResult, RenderableType
 from rich.markup import escape as esc
 from rich.padding import Padding
 from rich.panel import Panel
+from rich.segment import Segment
+from rich.style import Style
 from rich.syntax import Syntax
 from rich.text import Text
 from textual import events, on, work
@@ -61,7 +64,44 @@ from tui.tree_render import render_tree_rows
 MAX_REPLY_ACC_CHARS = 24000
 SHELL_CONFIRM_TIMEOUT_S = 60
 ACCENT_COLOR = "#6366f1"
+USER_MESSAGE_BAR_COLOR = "#10b981"
+ASSISTANT_MESSAGE_BAR_COLOR = ACCENT_COLOR
 STREAM_DRAIN_INTERVAL_S = 0.016
+
+
+class EdgeBar:
+    def __init__(
+        self,
+        renderable: RenderableType,
+        color: str,
+        first_indent: int = 0,
+        continuation_indent: Optional[int] = None,
+    ) -> None:
+        self.renderable = renderable
+        self.color = color
+        self.first_indent = max(0, int(first_indent))
+        self.continuation_indent = (
+            self.first_indent if continuation_indent is None else max(0, int(continuation_indent))
+        )
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        inner_width = max(1, options.max_width - 2)
+        wrap_indent = max(self.first_indent, self.continuation_indent)
+        style = Style.parse(f"bold {self.color}")
+        if isinstance(self.renderable, Text):
+            wrap_width = max(1, inner_width - wrap_indent)
+            lines = [text.render(console) for text in self.renderable.wrap(console, wrap_width)] or [[]]
+        else:
+            inner_options = options.update(width=max(1, inner_width - wrap_indent))
+            lines = console.render_lines(self.renderable, inner_options, pad=False, new_lines=False)
+        for index, line in enumerate(lines or [[]]):
+            indent = self.first_indent if index == 0 else self.continuation_indent
+            yield Segment("┃", style)
+            yield Segment(" ")
+            if indent:
+                yield Segment(" " * indent)
+            yield from line
+            yield Segment.line()
 
 
 def _global_config_path() -> Path:
@@ -510,7 +550,6 @@ class AlphanusTUI(App):
         self._command_matches: List[CommandEntry] = []
         self._code_blocks: List[Tuple[str, Optional[str]]] = []
         self._show_tool_details = True
-        self._show_historical_tool_details = False
         self._pending_tool_details: List[Tuple[str, str]] = []
         self._focused_panel = "input"
         self._tree_cursor_id = "root"
@@ -1076,10 +1115,67 @@ class AlphanusTUI(App):
         self._last_log_was_blank = markup == ""
         self._maybe_scroll_end()
 
-    def _write_indented(self, markup: str, indent: int = 2) -> None:
-        self._log().write(Padding(Text.from_markup(markup), pad=(0, 0, 0, indent)))
-        self._last_log_was_blank = False
-        self._maybe_scroll_end()
+    @staticmethod
+    def _bar_renderable(
+        renderable: RenderableType,
+        color: str,
+        *,
+        content_indent: int = 0,
+        continuation_indent: Optional[int] = None,
+    ) -> EdgeBar:
+        return EdgeBar(
+            renderable,
+            color,
+            first_indent=content_indent,
+            continuation_indent=continuation_indent,
+        )
+
+    @staticmethod
+    def _line_indents(line: str, *, base_indent: int = 2) -> tuple[int, int]:
+        lead = len(line) - len(line.lstrip(" "))
+        return max(base_indent, lead), max(base_indent, hanging_indent(line))
+
+    def _write_user_bar_line(self, markup: str = "", *, content_indent: int = 0) -> None:
+        self._write_renderable(
+            self._bar_renderable(Text.from_markup(markup), USER_MESSAGE_BAR_COLOR, content_indent=content_indent),
+            indent=0,
+        )
+
+    def _write_assistant_bar_line(self, markup: str = "", *, content_indent: int = 0) -> None:
+        self._write_renderable(
+            self._bar_renderable(Text.from_markup(markup), ASSISTANT_MESSAGE_BAR_COLOR, content_indent=content_indent),
+            indent=0,
+        )
+
+    def _write_assistant_bar_renderable(self, renderable: RenderableType, *, content_indent: int = 0) -> None:
+        self._write_renderable(
+            self._bar_renderable(renderable, ASSISTANT_MESSAGE_BAR_COLOR, content_indent=content_indent),
+            indent=0,
+        )
+
+    def _write_user_bar_wrapped_line(self, line: str) -> None:
+        first_indent, continuation_indent = self._line_indents(line)
+        self._write_renderable(
+            self._bar_renderable(
+                Text.from_markup(esc(line.lstrip(" "))),
+                USER_MESSAGE_BAR_COLOR,
+                content_indent=first_indent,
+                continuation_indent=continuation_indent,
+            ),
+            indent=0,
+        )
+
+    def _write_assistant_bar_wrapped_line(self, line: str, markup: str) -> None:
+        first_indent, continuation_indent = self._line_indents(line)
+        self._write_renderable(
+            self._bar_renderable(
+                Text.from_markup(markup.lstrip(" ")),
+                ASSISTANT_MESSAGE_BAR_COLOR,
+                content_indent=first_indent,
+                continuation_indent=continuation_indent,
+            ),
+            indent=0,
+        )
 
     def _write_renderable(self, renderable, indent: int = 2) -> None:
         self._log().write(Padding(renderable, pad=(0, 0, 0, indent)))
@@ -1157,13 +1253,15 @@ class AlphanusTUI(App):
             detail,
         )
 
-    def _update_tool_call_partial(self, name: str, detail: str = "", *, indent: int = 2) -> None:
+    def _update_tool_call_partial(self, name: str, detail: str = "") -> None:
         partial = self._partial()
         partial.display = True
-        partial.update(Padding(self._tool_event_panel("tool", ACCENT_COLOR, ACCENT_COLOR, name, detail), (0, 0, 0, indent)))
+        partial.update(self._bar_renderable(self._tool_event_panel("tool", ACCENT_COLOR, ACCENT_COLOR, name, detail), ASSISTANT_MESSAGE_BAR_COLOR))
 
-    def _write_tool_lifecycle_block(self, name: str, ok: bool, detail: str = "", *, indent: int = 2) -> None:
-        self._write_renderable(self._tool_lifecycle_panel(name, detail or ("completed" if ok else "failed"), ok=ok), indent=indent)
+    def _write_tool_lifecycle_block(self, name: str, ok: bool, detail: str = "") -> None:
+        self._write_assistant_bar_renderable(
+            self._tool_lifecycle_panel(name, detail or ("completed" if ok else "failed"), ok=ok),
+        )
 
     def _show_tool_result_line(self, name: str, ok: bool) -> bool:
         if not ok:
@@ -1187,7 +1285,7 @@ class AlphanusTUI(App):
                 continue
             if filepath in rendered:
                 continue
-            self._write(f"[dim]  · file draft: {esc(filepath)}[/dim]")
+            self._write_assistant_bar_line(f"[dim]· file draft: {esc(filepath)}[/dim]", content_indent=2)
             self._write_code_block(content.splitlines(), self._live_preview._guess_language(filepath), 2)
             rendered.add(filepath)
             newly_rendered.add(filepath)
@@ -1210,10 +1308,10 @@ class AlphanusTUI(App):
     def _write_code_block(self, lines: List[str], language: Optional[str], indent: int = 2) -> None:
         code = "\n".join(lines)
         block_index = self._remember_code_block(code, language)
-        self._write_renderable(self._code_panel_renderable(code, language), indent=indent)
-        self._write_indented(
+        self._write_assistant_bar_renderable(self._code_panel_renderable(code, language))
+        self._write_assistant_bar_line(
             f"[dim]code block {block_index} · /code {block_index} to open copyable view[/dim]",
-            indent=indent + 2,
+            content_indent=2,
         )
 
     def _render_static_markdown(self, text: str) -> None:
@@ -1237,7 +1335,7 @@ class AlphanusTUI(App):
                 fence_lines.append(line)
                 continue
             rendered, _ = render_md(line, False)
-            self._write_indented(rendered, indent=max(2, hanging_indent(line)))
+            self._write_assistant_bar_wrapped_line(line, rendered)
 
         if in_fence and fence_lines:
             self._write_code_block(fence_lines, fence_lang, indent=2)
@@ -1272,7 +1370,7 @@ class AlphanusTUI(App):
             return
 
         rendered, _ = render_md(line, False)
-        self._write_indented(rendered, indent=max(2, hanging_indent(line)))
+        self._write_assistant_bar_wrapped_line(line, rendered)
 
     def _update_partial_content(self) -> None:
         partial = self._partial()
@@ -1281,7 +1379,7 @@ class AlphanusTUI(App):
             if self._buf_c and not self._is_fence_line(self._buf_c):
                 lines.append(self._buf_c)
             if lines:
-                partial.update(Padding(self._code_panel_renderable("\n".join(lines), self._fence_lang), (0, 0, 0, 2)))
+                partial.update(self._bar_renderable(self._code_panel_renderable("\n".join(lines), self._fence_lang), ASSISTANT_MESSAGE_BAR_COLOR))
             else:
                 partial.update("")
             return
@@ -1289,12 +1387,20 @@ class AlphanusTUI(App):
             partial.update("")
             return
         rendered, _ = render_md(self._buf_c, False)
-        partial.update(Padding(Text.from_markup(rendered), pad=(0, 0, 0, max(2, hanging_indent(self._buf_c)))))
+        first_indent, continuation_indent = self._line_indents(self._buf_c)
+        partial.update(
+            self._bar_renderable(
+                Text.from_markup(rendered.lstrip(" ")),
+                ASSISTANT_MESSAGE_BAR_COLOR,
+                content_indent=first_indent,
+                continuation_indent=continuation_indent,
+            )
+        )
 
     def _update_live_preview_partial(self, lines: List[str], language: Optional[str]) -> None:
         partial = self._partial()
         partial.display = True
-        partial.update(Padding(self._code_panel_renderable("\n".join(lines), language), (0, 0, 0, 2)))
+        partial.update(self._bar_renderable(self._code_panel_renderable("\n".join(lines), language), ASSISTANT_MESSAGE_BAR_COLOR))
 
     def _defer_live_preview_partial(self, lines: List[str], language: Optional[str]) -> None:
         self._deferred_live_preview = (list(lines), language)
@@ -1830,20 +1936,22 @@ class AlphanusTUI(App):
         if turn.branch_root:
             label = f" ⎇  {esc(turn.label)}" if turn.label else " ⎇  branch"
             self._write(f"[dim #6366f1]{label}[/dim #6366f1]")
-        self._write(f"[bold {ACCENT_COLOR}]You[/bold {ACCENT_COLOR}]")
         attachment_summary = turn.attachment_summary()
         if attachment_summary:
-            self._write_indented(f"[dim]attachments:[/dim] [#a1a1aa]{esc(attachment_summary)}[/#a1a1aa]", indent=2)
+            self._write_user_bar_line(
+                f"[dim]attachments:[/dim] [#a1a1aa]{esc(attachment_summary)}[/#a1a1aa]",
+                content_indent=2,
+            )
         body = turn.user_text()
         for line in body.splitlines() or [""]:
-            self._write_indented(esc(line), indent=2)
+            self._write_user_bar_wrapped_line(line)
 
     def _write_skill_exchanges(self, turn: Turn) -> None:
-        if not self._show_historical_tool_details:
-            return
         pending_details: List[Tuple[str, str]] = []
         for msg in turn.skill_exchanges:
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                if not self._show_tool_details:
+                    continue
                 for call in msg["tool_calls"]:
                     name = call.get("function", {}).get("name", "unknown")
                     raw_args = call.get("function", {}).get("arguments", "{}")
@@ -1853,7 +1961,7 @@ class AlphanusTUI(App):
                         args = raw_args
                     pending_details.append((name, self._live_preview.compact_tool_args(name, args)))
                     self._live_preview.write_static_preview(
-                        name, args, self._write, self._write_indented, self._write_code_block
+                        name, args, self._write_assistant_bar_line, lambda markup, _indent=0: self._write_assistant_bar_line(markup), self._write_code_block
                     )
             elif msg.get("role") == "tool":
                 name = msg.get("name", "tool")
@@ -1861,9 +1969,9 @@ class AlphanusTUI(App):
                     payload = json.loads(msg.get("content", "{}"))
                 except Exception:
                     payload = {"ok": False, "error": {"message": "invalid tool response"}}
-                if payload.get("ok"):
+                if payload.get("ok") and self._show_tool_details:
                     self._live_preview.write_result_preview(
-                        name, payload, self._write, self._write_indented, self._write_code_block
+                        name, payload, self._write_assistant_bar_line, lambda markup, _indent=0: self._write_assistant_bar_line(markup), self._write_code_block
                     )
                 if not self._show_tool_result_line(name, bool(payload.get("ok"))):
                     continue
@@ -1874,14 +1982,13 @@ class AlphanusTUI(App):
                         pending_details.pop(idx)
                         break
                 if payload.get("ok"):
-                    self._write_tool_lifecycle_block(name, True, detail or "completed", indent=2)
+                    self._write_tool_lifecycle_block(name, True, detail or "completed")
                 else:
                     em = payload.get("error", {}).get("message", "failed")
-                    self._write_tool_lifecycle_block(name, False, f"{detail}   {em}".strip(), indent=2)
+                    self._write_tool_lifecycle_block(name, False, f"{detail}   {em}".strip())
 
     def _write_completed_turn_asst(self, turn: Turn) -> None:
         self._write("")
-        self._write("[bold #6366f1]Assistant[/bold #6366f1]")
         self._write_skill_exchanges(turn)
 
         content = turn.assistant_content or ""
@@ -1927,7 +2034,6 @@ class AlphanusTUI(App):
         self._partial().display = True
 
         self._write("")
-        self._write("[bold #6366f1]Assistant[/bold #6366f1]")
 
         branch_labels = [t.label for t in self.conv_tree.active_path if t.branch_root and t.label]
         history_messages = self.conv_tree.history_messages()
@@ -1993,7 +2099,7 @@ class AlphanusTUI(App):
         visible = self._visible_reasoning_text(text)
         self._partial().update("")
         if visible:
-            self._write_renderable(self._reasoning_panel_renderable(visible), indent=2)
+            self._write_assistant_bar_renderable(self._reasoning_panel_renderable(visible))
 
     def _close_reasoning_section(self) -> bool:
         if not self._reasoning_open:
@@ -2015,7 +2121,7 @@ class AlphanusTUI(App):
             display = self._visible_reasoning_text(self._buf_r)
             partial = self._partial()
             if display:
-                partial.update(Padding(self._reasoning_panel_renderable(display), (0, 0, 0, 2)))
+                partial.update(self._bar_renderable(self._reasoning_panel_renderable(display), ASSISTANT_MESSAGE_BAR_COLOR))
             else:
                 partial.update("")
             return
@@ -2038,7 +2144,7 @@ class AlphanusTUI(App):
                         self._flush_fence_block()
                 else:
                     rendered, _ = render_md(self._buf_c, False)
-                    self._write_indented(rendered, indent=max(2, hanging_indent(self._buf_c)))
+                    self._write_assistant_bar_wrapped_line(self._buf_c, rendered)
             self._buf_c = ""
             self._partial().update("")
             return
@@ -2052,7 +2158,7 @@ class AlphanusTUI(App):
         if not self._content_open:
             self._content_open = True
             if self._close_reasoning_section():
-                self._write("")
+                self._write_assistant_bar_line()
         self._buf_c += token
         self._append_reply_token(token)
         self._flush_content_buffer(include_partial=False, update_partial=update_partial)
@@ -2100,7 +2206,7 @@ class AlphanusTUI(App):
             else:
                 display = self._visible_reasoning_text(self._buf_r)
                 if display:
-                    partial.update(Padding(self._reasoning_panel_renderable(display), (0, 0, 0, 2)))
+                    partial.update(self._bar_renderable(self._reasoning_panel_renderable(display), ASSISTANT_MESSAGE_BAR_COLOR))
                 else:
                     partial.update("")
 
@@ -2121,16 +2227,18 @@ class AlphanusTUI(App):
             name = str(event.get("name") or "")
             raw_arguments = str(event.get("raw_arguments") or "")
             if stream_id and name:
-                self._live_preview.update(
+                rendered_preview = self._live_preview.update(
                     stream_id,
                     name,
                     raw_arguments,
-                    self._write,
+                    self._write_assistant_bar_line,
                     self._defer_live_preview_partial if stream_drain_active else self._update_live_preview_partial,
-                    self._write_indented,
+                    lambda markup, _indent=0: self._write_assistant_bar_line(markup),
                     self._write_code_block,
                     self._clear_partial_preview,
                 )
+                if not rendered_preview:
+                    self._update_tool_call_partial(name, "streaming…")
 
         elif etype == "tool_call":
             self._close_reasoning_section()
@@ -2140,23 +2248,29 @@ class AlphanusTUI(App):
             detail = self._live_preview.compact_tool_args(name, args)
             if self._show_tool_details:
                 self._pending_tool_details.append((name, detail))
-                self._update_tool_call_partial(name, detail, indent=2)
+                self._update_tool_call_partial(name, detail)
                 if name == "create_files":
                     self._write_create_files_preview_from_args(stream_id, args)
                 streamed = (
                     self._live_preview.close(
-                        stream_id, self._write_indented, self._write_code_block, self._clear_partial_preview
+                        stream_id,
+                        lambda markup, _indent=0: self._write_assistant_bar_line(markup),
+                        self._write_code_block,
+                        self._clear_partial_preview,
                     )
                     if stream_id
                     else False
                 )
                 if not streamed:
                     self._live_preview.write_static_preview(
-                        name, args, self._write, self._write_indented, self._write_code_block
+                        name, args, self._write_assistant_bar_line, lambda markup, _indent=0: self._write_assistant_bar_line(markup), self._write_code_block
                     )
             elif stream_id:
                 self._live_preview.close(
-                    stream_id, self._write_indented, self._write_code_block, self._clear_partial_preview
+                    stream_id,
+                    lambda markup, _indent=0: self._write_assistant_bar_line(markup),
+                    self._write_code_block,
+                    self._clear_partial_preview,
                 )
 
         elif etype == "tool_result":
@@ -2165,17 +2279,17 @@ class AlphanusTUI(App):
             result = event.get("result", {})
             if result.get("ok"):
                 self._live_preview.write_result_preview(
-                    name, result, self._write, self._write_indented, self._write_code_block
+                    name, result, self._write_assistant_bar_line, lambda markup, _indent=0: self._write_assistant_bar_line(markup), self._write_code_block
                 )
             self._clear_partial_preview()
             if not self._show_tool_result_line(name, bool(result.get("ok"))):
                 return
             detail = self._take_pending_tool_detail(name)
             if result.get("ok"):
-                self._write_tool_lifecycle_block(name, True, detail or "completed", indent=2)
+                self._write_tool_lifecycle_block(name, True, detail or "completed")
             else:
                 msg = result.get("error", {}).get("message", "failed")
-                self._write_tool_lifecycle_block(name, False, f"{detail}   {msg}".strip(), indent=2)
+                self._write_tool_lifecycle_block(name, False, f"{detail}   {msg}".strip())
 
         elif etype == "error":
             self._last_stream_error_text = str(event.get("text", "Unknown error"))
@@ -2213,7 +2327,11 @@ class AlphanusTUI(App):
         partial.update("")
         partial.display = False
 
-        self._live_preview.close_all(self._write_indented, self._write_code_block, self._clear_partial_preview)
+        self._live_preview.close_all(
+            lambda markup, _indent=0: self._write_assistant_bar_line(markup),
+            self._write_code_block,
+            self._clear_partial_preview,
+        )
 
         if self._buf_r and not self._content_open:
             self._close_reasoning_section()

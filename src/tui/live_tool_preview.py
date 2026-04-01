@@ -83,9 +83,9 @@ class LiveToolPreviewManager:
         content: str,
         write: WriteFn,
         update_preview: UpdatePreviewFn,
-    ) -> None:
+    ) -> bool:
         if not content:
-            return
+            return False
 
         if not state.opened:
             state.opened = True
@@ -105,6 +105,8 @@ class LiveToolPreviewManager:
             preview_lines.append(state.line_buf)
         if preview_lines:
             update_preview(preview_lines, self._guess_language(state.filepath))
+            return True
+        return False
 
     def _preview_single_file(
         self,
@@ -113,9 +115,9 @@ class LiveToolPreviewManager:
         content: str,
         write: WriteFn,
         update_preview: UpdatePreviewFn,
-    ) -> None:
+    ) -> bool:
         state.filepath = filepath or state.filepath
-        self._set_preview_content(state, content, write, update_preview)
+        return self._set_preview_content(state, content, write, update_preview)
 
     def _preview_file_entries(
         self,
@@ -126,19 +128,21 @@ class LiveToolPreviewManager:
         write_indented: Optional[WriteIndentedFn],
         write_code: Optional[WriteCodeFn],
         clear_preview: Optional[ClearPreviewFn],
-    ) -> None:
+    ) -> bool:
         if not entries:
-            return
+            return False
         start_index = state.flushed_item_count
         if state.opened:
             start_index = max(start_index, state.item_index)
+        rendered_any = False
         for item_index, (filepath, content, content_complete) in enumerate(entries[start_index:], start=start_index):
             self._begin_new_file_preview(state, item_index, filepath, write, write_indented, write_code, clear_preview)
             state.filepath = filepath
-            self._set_preview_content(state, content, write, update_preview)
+            rendered_any = self._set_preview_content(state, content, write, update_preview) or rendered_any
             is_last = item_index == len(entries) - 1
             if not is_last and content_complete and write_indented and write_code and clear_preview:
                 self._flush_state_preview(state, write_indented, write_code, clear_preview)
+        return rendered_any
 
     def compact_tool_args(self, tool_name: str, args: Any) -> str:
         if not isinstance(args, dict):
@@ -187,11 +191,11 @@ class LiveToolPreviewManager:
         write_indented: Optional[WriteIndentedFn] = None,
         write_code: Optional[WriteCodeFn] = None,
         clear_preview: Optional[ClearPreviewFn] = None,
-    ) -> None:
+    ) -> bool:
         if name not in self.draft_preview_tools:
-            return
+            return False
         if not raw_arguments:
-            return
+            return False
 
         state = self._streams.get(stream_id)
         if state is None:
@@ -216,25 +220,26 @@ class LiveToolPreviewManager:
                     for item in files
                     if isinstance(item, dict) and isinstance(item.get("content"), str)
                 ] if isinstance(files, list) else []
-                self._preview_file_entries(state, entries, write, update_preview, write_indented, write_code, clear_preview)
-                return
+                return self._preview_file_entries(
+                    state, entries, write, update_preview, write_indented, write_code, clear_preview
+                )
 
             filepath = str(parsed_args.get("filepath", ""))
             content = parsed_args.get("content")
             if isinstance(content, str):
-                self._preview_single_file(state, filepath, content, write, update_preview)
-                return
+                return self._preview_single_file(state, filepath, content, write, update_preview)
 
         if name == "create_files":
             entries = self._extract_partial_file_entries(raw_arguments)
-            self._preview_file_entries(state, entries, write, update_preview, write_indented, write_code, clear_preview)
-            return
+            return self._preview_file_entries(
+                state, entries, write, update_preview, write_indented, write_code, clear_preview
+            )
 
         filepath, _ = self._extract_partial_json_string_field(raw_arguments, "filepath")
         content, _ = self._extract_partial_json_string_field(raw_arguments, "content")
         if content is None:
-            return
-        self._preview_single_file(state, filepath or "", content, write, update_preview)
+            return False
+        return self._preview_single_file(state, filepath or "", content, write, update_preview)
 
     def close(
         self,

@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from rich.console import Console
+from rich.text import Text
 
 from core.conv_tree import ConvTree
 from core.sessions import ChatSession
@@ -14,6 +16,18 @@ from tui.live_tool_preview import LiveToolPreviewManager
 from tui.commands import active_command_query, active_command_span, command_entries_for_query, popup_command_query
 from tui.interface import AlphanusTUI, ChatInput
 from tui.popups import SessionPickerModal
+
+
+def _render_lines(renderable, *, width: int = 40) -> list[str]:
+    console = Console(width=width, record=True)
+    console.print(renderable, end="")
+    return [line for line in console.export_text().splitlines() if line]
+
+
+def _assert_barred(renderable, *, width: int = 40) -> None:
+    lines = _render_lines(renderable, width=width)
+    assert lines
+    assert all(line.startswith("┃ ") for line in lines)
 
 
 def _tui_agent_stub(tmp_path: Path) -> SimpleNamespace:
@@ -173,14 +187,14 @@ def test_tool_result_lines_hidden_when_details_off() -> None:
     assert tui._show_tool_result_line("web_search", True) is False
 
 
-def test_historical_tool_details_default_off() -> None:
+def test_write_skill_exchanges_skips_historical_previews_when_details_off() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
-    tui._show_tool_details = True
-    tui._show_historical_tool_details = False
-    tui._write = lambda *_args, **_kwargs: None
-    tui._write_indented = lambda *_args, **_kwargs: None
-    tui._write_code_block = lambda *_args, **_kwargs: None
-    tui._live_preview = SimpleNamespace(streamed_file_tools={"create_file", "edit_file"}, compact_tool_args=lambda *_args, **_kwargs: "")
+    tui._show_tool_details = False
+    tui._live_preview = SimpleNamespace(
+        compact_tool_args=lambda *_args, **_kwargs: "",
+        write_static_preview=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not render")),
+        write_result_preview=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not render")),
+    )
 
     turn = SimpleNamespace(
         skill_exchanges=[
@@ -194,12 +208,172 @@ def test_historical_tool_details_default_off() -> None:
                         }
                     }
                 ],
+            },
+            {
+                "role": "tool",
+                "name": "create_file",
+                "content": "{\"ok\": true, \"data\": {}}",
+            },
+        ]
+    )
+
+    assert tui._write_skill_exchanges(turn) is None
+
+
+def test_write_skill_exchanges_keeps_failed_results_visible_when_details_off() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    writes: list[tuple[str, bool, str]] = []
+    tui._show_tool_details = False
+    tui._live_preview = SimpleNamespace(
+        compact_tool_args=lambda *_args, **_kwargs: "",
+        write_static_preview=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not render preview")),
+        write_result_preview=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not render preview")),
+    )
+    tui._write_tool_lifecycle_block = lambda name, ok, detail="": writes.append((name, ok, detail))
+
+    turn = SimpleNamespace(
+        skill_exchanges=[
+            {
+                "role": "tool",
+                "name": "create_file",
+                "content": "{\"ok\": false, \"error\": {\"message\": \"blocked\"}}",
             }
         ]
     )
 
-    # Should be a no-op even with live details enabled.
     assert tui._write_skill_exchanges(turn) is None
+    assert writes == [("create_file", False, "blocked")]
+
+
+def test_write_turn_user_renders_green_edge_bar_without_role_label() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    writes: list[str] = []
+    renderables: list[tuple[object, int]] = []
+    tui._write = writes.append
+    tui._write_renderable = lambda renderable, indent=0: renderables.append((renderable, indent))
+
+    turn = SimpleNamespace(
+        branch_root=False,
+        label="",
+        attachment_summary=lambda: "notes.txt",
+        user_text=lambda: "Hello\nA wrapped user line for the rail",
+    )
+
+    tui._write_turn_user(turn)
+
+    assert writes == [""]
+    assert all("You" not in line for line in writes)
+    assert [indent for _renderable, indent in renderables] == [0, 0, 0]
+    _assert_barred(renderables[0][0], width=30)
+    _assert_barred(renderables[1][0], width=30)
+    _assert_barred(renderables[2][0], width=20)
+
+
+def test_write_completed_turn_asst_omits_role_label() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    writes: list[str] = []
+    renderables: list[tuple[object, int]] = []
+    tui._write = writes.append
+    tui._write_renderable = lambda renderable, indent=0: renderables.append((renderable, indent))
+    tui._write_skill_exchanges = lambda _turn: None
+
+    turn = SimpleNamespace(assistant_content="A wrapped assistant reply for the rail", assistant_state="done")
+
+    tui._write_completed_turn_asst(turn)
+
+    assert writes == ["", ""]
+    assert all("Assistant" not in line for line in writes)
+    assert [indent for _renderable, indent in renderables] == [0]
+    _assert_barred(renderables[0][0], width=20)
+
+
+def test_update_partial_content_renders_assistant_bar_during_stream() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+
+    class PartialStub:
+        def __init__(self) -> None:
+            self.value = None
+
+        def update(self, value) -> None:
+            self.value = value
+
+    partial = PartialStub()
+    tui._partial = lambda: partial
+    tui._in_fence = False
+    tui._buf_c = "Streaming reply that wraps"
+
+    tui._update_partial_content()
+
+    _assert_barred(partial.value, width=20)
+
+
+def test_edge_bar_preserves_content_indent_on_wrapped_lines() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    renderable = tui._bar_renderable(
+        Text.from_markup("* nested item that wraps across multiple visual lines"),
+        "#6366f1",
+        content_indent=4,
+        continuation_indent=6,
+    )
+
+    lines = _render_lines(renderable, width=20)
+    assert lines[0].startswith("┃     * ")
+    assert all(line.startswith("┃       ") for line in lines[1:])
+
+
+def test_tool_call_partial_renders_panel_with_assistant_bar() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+
+    class PartialStub:
+        def __init__(self) -> None:
+            self.value = None
+            self.display = False
+
+        def update(self, value) -> None:
+            self.value = value
+
+    partial = PartialStub()
+    tui._partial = lambda: partial
+
+    tui._update_tool_call_partial("recall_memory", "query=user name")
+
+    assert partial.display is True
+    _assert_barred(partial.value, width=40)
+
+
+def test_live_preview_partial_renders_panel_with_assistant_bar() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+
+    class PartialStub:
+        def __init__(self) -> None:
+            self.value = None
+            self.display = False
+
+        def update(self, value) -> None:
+            self.value = value
+
+    partial = PartialStub()
+    tui._partial = lambda: partial
+
+    tui._update_live_preview_partial(["console.log('hi')"], "javascript")
+
+    assert partial.display is True
+    _assert_barred(partial.value, width=40)
+
+
+def test_handle_content_token_uses_barred_spacer_after_reasoning() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    writes: list[str] = []
+    tui._content_open = False
+    tui._buf_c = ""
+    tui._append_reply_token = lambda _token: None
+    tui._close_reasoning_section = lambda: True
+    tui._write_assistant_bar_line = lambda markup="", content_indent=0: writes.append((markup, content_indent))
+    tui._flush_content_buffer = lambda include_partial=False, update_partial=True: None
+
+    tui._handle_content_token("hello")
+
+    assert writes == [("", 0)]
 
 
 def test_live_tool_preview_shows_create_files_contents() -> None:
@@ -421,11 +595,11 @@ def test_tool_call_create_files_writes_all_file_previews_without_deltas() -> Non
         _guess_language=LiveToolPreviewManager._guess_language,
     )
     tui._write = writes.append
-    tui._write_indented = lambda markup, indent=0: writes.append(markup)
+    tui._write_assistant_bar_line = lambda markup="", content_indent=0: writes.append(markup)
     tui._write_code_block = lambda code, language, indent=0: code_blocks.append((list(code), language, indent))
     tui._clear_partial_preview = lambda: None
     tui._close_reasoning_section = lambda: False
-    tui._update_tool_call_partial = lambda name, detail="", indent=2: partial_updates.append((name, detail, indent))
+    tui._update_tool_call_partial = lambda name, detail="": partial_updates.append((name, detail))
     tui._maybe_scroll_end = lambda *args, **kwargs: None
     tui._partial = lambda: SimpleNamespace(update=lambda *_args, **_kwargs: None, display=False)
     tui._last_scroll = 0.0
@@ -452,6 +626,48 @@ def test_tool_call_create_files_writes_all_file_previews_without_deltas() -> Non
     assert any(language == "html" for _code, language, _indent in code_blocks)
     assert any(language == "css" for _code, language, _indent in code_blocks)
     assert any(language == "javascript" for _code, language, _indent in code_blocks)
+
+
+def test_tool_call_delta_shows_fallback_partial_when_preview_not_ready() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    partial_updates: list[tuple[str, str]] = []
+
+    tui._show_tool_details = True
+    tui._live_preview = SimpleNamespace(update=lambda *_args, **_kwargs: False)
+    tui._update_tool_call_partial = lambda name, detail="": partial_updates.append((name, detail))
+    tui._partial = lambda: SimpleNamespace(update=lambda *_args, **_kwargs: None, display=False)
+    tui._last_scroll = 0.0
+    tui._scroll_interval = 999.0
+    tui._maybe_scroll_end = lambda *args, **kwargs: None
+
+    tui._on_agent_event(
+        {
+            "type": "tool_call_delta",
+            "stream_id": "s1",
+            "name": "create_files",
+            "raw_arguments": '{"files":[',
+        }
+    )
+
+    assert partial_updates == [("create_files", "streaming…")]
+
+
+def test_live_tool_preview_update_returns_false_for_empty_content() -> None:
+    preview = LiveToolPreviewManager()
+    lines: list[str] = []
+    partial_updates: list[tuple[list[str], str | None]] = []
+
+    rendered = preview.update(
+        "stream-1",
+        "create_file",
+        '{"filepath":"a.txt","content":""}',
+        lines.append,
+        lambda code, language: partial_updates.append((code, language)),
+    )
+
+    assert rendered is False
+    assert lines == []
+    assert partial_updates == []
 
 def test_update_context_usage_ignores_total_tokens_without_prompt_tokens() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
