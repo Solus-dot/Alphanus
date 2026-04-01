@@ -88,7 +88,6 @@ _CORE_TOOL_NAMES = frozenset(
         "workspace_tree",
         "create_directory",
         "create_file",
-        "create_files",
         "edit_file",
         "delete_path",
         "run_checks",
@@ -3033,12 +3032,6 @@ class SkillRuntime:
             return [str(args.get("filepath", ""))]
         if reg.name == "edit_file":
             return [str(args.get("filepath", ""))]
-        if reg.name == "create_files":
-            paths: List[str] = []
-            for item in args.get("files") or []:
-                if isinstance(item, dict):
-                    paths.append(str(item.get("filepath", "")))
-            return paths
         return []
 
     @staticmethod
@@ -3053,7 +3046,7 @@ class SkillRuntime:
         selected: List[SkillManifest],
         ctx: SkillContext,
     ) -> None:
-        if reg.name not in {"create_file", "create_files", "edit_file"}:
+        if reg.name not in {"create_file", "edit_file"}:
             return
 
         requested_paths = [path for path in self._requested_filepaths(reg, args) if path.strip()]

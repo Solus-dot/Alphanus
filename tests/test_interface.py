@@ -376,55 +376,6 @@ def test_handle_content_token_uses_barred_spacer_after_reasoning() -> None:
     assert writes == [("", 0)]
 
 
-def test_live_tool_preview_shows_create_files_contents() -> None:
-    preview = LiveToolPreviewManager()
-    lines: list[str] = []
-    code_blocks: list[tuple[list[str], str | None, int]] = []
-
-    preview.write_static_preview(
-        "create_files",
-        {
-            "files": [
-                {"filepath": "site/index.html", "content": "<h1>Hello</h1>\n"},
-                {"filepath": "site/script.js", "content": "console.log('hi')\n"},
-            ]
-        },
-        lines.append,
-        lambda markup, _indent=0: lines.append(markup),
-        lambda code, language, indent=0: code_blocks.append((code, language, indent)),
-    )
-
-    assert any("site/index.html" in line for line in lines)
-    assert any("site/script.js" in line for line in lines)
-    assert any(language == "html" for _code, language, _indent in code_blocks)
-    assert any(language == "javascript" for _code, language, _indent in code_blocks)
-
-
-def test_live_tool_preview_streams_create_files_current_draft() -> None:
-    preview = LiveToolPreviewManager()
-    lines: list[str] = []
-    partial_updates: list[tuple[list[str], str | None]] = []
-    code_blocks: list[tuple[list[str], str | None, int]] = []
-
-    preview.update(
-        "stream-1",
-        "create_files",
-        '{"files":[{"filepath":"site/index.html","content":"<h1>Hello</h1>\\n"},{"filepath":"site/script.js","content":"console.log(\\"hi\\")\\n"}]}',
-        lines.append,
-        lambda code, language: partial_updates.append((code, language)),
-        lambda _text, _indent=0: None,
-        lambda code, language, indent=0: code_blocks.append((code, language, indent)),
-        lambda: None,
-    )
-
-    assert any("site/index.html" in line for line in lines)
-    assert any("site/script.js" in line for line in lines)
-    assert any(language == "html" for _code, language, _indent in code_blocks)
-    assert partial_updates
-    assert partial_updates[-1][1] == "javascript"
-    assert "console.log" in "\n".join(partial_updates[-1][0])
-
-
 def test_live_tool_preview_shows_edit_file_diff() -> None:
     preview = LiveToolPreviewManager()
     lines: list[str] = []
@@ -570,62 +521,11 @@ def test_drain_stream_event_queue_renders_reasoning_once_per_tick() -> None:
 def test_file_tool_success_lines_use_standard_tool_blocks() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._show_tool_details = True
-    tui._live_preview = SimpleNamespace(streamed_file_tools={"create_file", "edit_file", "create_files"})
+    tui._live_preview = SimpleNamespace(streamed_file_tools={"create_file", "edit_file"})
 
-    assert tui._show_tool_result_line("create_files", True) is True
     assert tui._show_tool_result_line("create_file", True) is True
     assert tui._show_tool_result_line("edit_file", True) is True
     assert tui._show_tool_result_line("workspace_tree", True) is True
-
-
-def test_tool_call_create_files_writes_all_file_previews_without_deltas() -> None:
-    tui = AlphanusTUI.__new__(AlphanusTUI)
-    writes: list[str] = []
-    code_blocks: list[tuple[list[str], str | None, int]] = []
-    partial_updates: list[object] = []
-
-    tui._show_tool_details = True
-    tui._pending_tool_details = []
-    tui._live_preview = SimpleNamespace(
-        compact_tool_args=lambda *_args, **_kwargs: "3 files",
-        rendered_filepaths=lambda _stream_id: set(),
-        mark_rendered_filepaths=lambda _stream_id, _paths: None,
-        close=lambda *_args, **_kwargs: False,
-        write_static_preview=lambda *_args, **_kwargs: None,
-        _guess_language=LiveToolPreviewManager._guess_language,
-    )
-    tui._write = writes.append
-    tui._write_assistant_bar_line = lambda markup="", content_indent=0: writes.append(markup)
-    tui._write_code_block = lambda code, language, indent=0: code_blocks.append((list(code), language, indent))
-    tui._clear_partial_preview = lambda: None
-    tui._close_reasoning_section = lambda: False
-    tui._update_tool_call_partial = lambda name, detail="": partial_updates.append((name, detail))
-    tui._maybe_scroll_end = lambda *args, **kwargs: None
-    tui._partial = lambda: SimpleNamespace(update=lambda *_args, **_kwargs: None, display=False)
-    tui._last_scroll = 0.0
-    tui._scroll_interval = 999.0
-
-    tui._on_agent_event(
-        {
-            "type": "tool_call",
-            "stream_id": "s1",
-            "name": "create_files",
-            "arguments": {
-                "files": [
-                    {"filepath": "site/index.html", "content": "<h1>Hello</h1>\n"},
-                    {"filepath": "site/styles.css", "content": "body {}\n"},
-                    {"filepath": "site/script.js", "content": "console.log(1)\n"},
-                ]
-            },
-        }
-    )
-
-    assert any("site/index.html" in line for line in writes)
-    assert any("site/styles.css" in line for line in writes)
-    assert any("site/script.js" in line for line in writes)
-    assert any(language == "html" for _code, language, _indent in code_blocks)
-    assert any(language == "css" for _code, language, _indent in code_blocks)
-    assert any(language == "javascript" for _code, language, _indent in code_blocks)
 
 
 def test_tool_call_delta_shows_fallback_partial_when_preview_not_ready() -> None:
@@ -644,12 +544,12 @@ def test_tool_call_delta_shows_fallback_partial_when_preview_not_ready() -> None
         {
             "type": "tool_call_delta",
             "stream_id": "s1",
-            "name": "create_files",
-            "raw_arguments": '{"files":[',
+            "name": "create_file",
+            "raw_arguments": '{"filepath":"a.txt","content":"',
         }
     )
 
-    assert partial_updates == [("create_files", "streaming…")]
+    assert partial_updates == [("create_file", "streaming…")]
 
 
 def test_live_tool_preview_update_returns_false_for_empty_content() -> None:

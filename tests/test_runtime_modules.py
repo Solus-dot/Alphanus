@@ -28,7 +28,6 @@ tools:
   allowed-tools:
     - create_directory
     - create_file
-    - create_files
 ---
 workspace
 """.strip(),
@@ -89,7 +88,6 @@ def test_console_logging_suppresses_info_telemetry_but_keeps_file_events(tmp_pat
     assert len(lines) >= 2
     events = [json.loads(line) for line in lines]
     assert any(item.get("event") == "http_stream" for item in events)
-
 
 def test_classifier_uses_model_for_local_workspace_task(mocker, tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)

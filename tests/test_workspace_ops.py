@@ -155,7 +155,7 @@ def test_workspace_ops_edit_file_supports_replace_all(tmp_path: Path):
     assert runtime.workspace.read_file("notes.txt") == "gamma\nalpha\ngamma\n"
 
 
-def test_workspace_ops_create_directory_and_create_files(tmp_path: Path):
+def test_workspace_ops_create_directory_and_create_file(tmp_path: Path):
     runtime = _runtime(tmp_path)
     skill = runtime.get_skill("workspace-ops")
     assert skill is not None
@@ -170,20 +170,20 @@ def test_workspace_ops_create_directory_and_create_files(tmp_path: Path):
     assert created_dir["ok"] is True
     assert created_dir["data"]["kind"] == "directory"
 
-    created_files = runtime.execute_tool_call(
-        "create_files",
-        {
-            "files": [
-                {"filepath": "site/index.html", "content": "<!doctype html>"},
-                {"filepath": "site/script.js", "content": "console.log('hi')\n"},
-            ]
-        },
+    created_file = runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "site/index.html", "content": "<!doctype html>"},
         selected=[skill],
         ctx=ctx,
     )
-    assert created_files["ok"] is True
-    assert created_files["data"]["count"] == 2
+    assert created_file["ok"] is True
     assert (runtime.workspace.workspace_root / "site" / "index.html").exists()
+    runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "site/script.js", "content": "console.log('hi')\n"},
+        selected=[skill],
+        ctx=ctx,
+    )
     assert (runtime.workspace.workspace_root / "site" / "script.js").exists()
 
 
@@ -389,18 +389,19 @@ def test_workspace_ops_read_files_search_code_and_run_checks(tmp_path: Path):
 
     ctx = _ctx(str(runtime.workspace.workspace_root))
     runtime.execute_tool_call(
-        "create_files",
+        "create_file",
         {
-            "files": [
-                {
-                    "filepath": "src/app.py",
-                    "content": "def greet(name):\n    return f'hello {name}'\n",
-                },
-                {
-                    "filepath": "src/util.py",
-                    "content": "VALUE = '" + ("x" * 80) + "'\n",
-                },
-            ]
+            "filepath": "src/app.py",
+            "content": "def greet(name):\n    return f'hello {name}'\n",
+        },
+        selected=[skill],
+        ctx=ctx,
+    )
+    runtime.execute_tool_call(
+        "create_file",
+        {
+            "filepath": "src/util.py",
+            "content": "VALUE = '" + ("x" * 80) + "'\n",
         },
         selected=[skill],
         ctx=ctx,

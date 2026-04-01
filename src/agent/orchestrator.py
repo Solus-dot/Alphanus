@@ -186,7 +186,7 @@ class TurnOrchestrator:
         if name in {"create_file", "edit_file", "create_directory", "read_file"}:
             path = str(data.get("filepath", "")).strip()
             return [path] if path else []
-        if name in {"create_files", "read_files"}:
+        if name == "read_files":
             created = data.get("created") or data.get("files")
             if not isinstance(created, list):
                 return []
@@ -225,7 +225,7 @@ class TurnOrchestrator:
         state.evidence.append(record)
         if result.get("ok"):
             paths = self.tool_result_paths(call.name, result)
-            if call.name in {"create_file", "create_files", "edit_file"}:
+            if call.name in {"create_file", "edit_file"}:
                 for path in paths:
                     if path and path not in state.completion.materialized_paths:
                         state.completion.materialized_paths.append(path)
@@ -580,25 +580,26 @@ class TurnOrchestrator:
                 force_finalize_reason = ""
                 shell_workflow_skills = self.skill_runtime.selected_shell_workflow_skills(state.selected, state.ctx)
                 allow_shell_workflow = bool(shell_workflow_skills)
-                for call in stream_result.tool_calls:
-                    state.action_depth += 1
-                    if state.action_depth > self.max_action_depth:
-                        if state.search_mode and state.completion.search_has_success:
-                            return finish(
-                                self.finalize_turn(
-                                    system_content,
-                                    state,
-                                    stop_event,
-                                    on_event,
-                                    pass_id,
-                                    search_rule(
-                                        "The search loop budget is exhausted.",
-                                        "Answer using the successful search or fetch results already in the conversation.",
-                                        "Do not search again.",
-                                    ),
-                                )
+                state.action_depth += 1
+                if state.action_depth > self.max_action_depth:
+                    if state.search_mode and state.completion.search_has_success:
+                        return finish(
+                            self.finalize_turn(
+                                system_content,
+                                state,
+                                stop_event,
+                                on_event,
+                                pass_id,
+                                search_rule(
+                                    "The search loop budget is exhausted.",
+                                    "Answer using the successful search or fetch results already in the conversation.",
+                                    "Do not search again.",
+                                ),
                             )
-                        return finish(AgentTurnResult(status="error", content="", reasoning=state.full_reasoning, skill_exchanges=state.skill_exchanges, error=f"Max skill action depth ({self.max_action_depth}) exceeded"))
+                        )
+                    return finish(AgentTurnResult(status="error", content="", reasoning=state.full_reasoning, skill_exchanges=state.skill_exchanges, error=f"Max skill action depth ({self.max_action_depth}) exceeded"))
+
+                for call in stream_result.tool_calls:
 
                     self.emit(on_event, {"type": "tool_call", "stream_id": call.stream_id, "name": call.name, "arguments": call.arguments, "id": call.id})
 

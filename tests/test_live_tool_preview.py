@@ -33,53 +33,6 @@ def test_live_preview_streams_completed_lines_before_close():
     assert previews[-1] == (["<cleared>"], None)
 
 
-def test_live_preview_create_files_flushes_previous_file_when_switching():
-    manager = LiveToolPreviewManager()
-    writes = []
-    indented = []
-    previews = []
-    code_blocks = []
-
-    manager.update(
-        "s2",
-        "create_files",
-        '{"files":[{"filepath":"site/index.html","content":"<h1>Hello</h1>\\n"}',
-        writes.append,
-        lambda lines, language: previews.append((list(lines), language)),
-        lambda text, indent: indented.append((text, indent)),
-        lambda lines, language, indent: code_blocks.append((list(lines), language, indent)),
-        lambda: previews.append((["<cleared>"], None)),
-    )
-
-    manager.update(
-        "s2",
-        "create_files",
-        '{"files":[{"filepath":"site/index.html","content":"<h1>Hello</h1>\\n"},{"filepath":"site/style.css","content":"body { color: red;"}',
-        writes.append,
-        lambda lines, language: previews.append((list(lines), language)),
-        lambda text, indent: indented.append((text, indent)),
-        lambda lines, language, indent: code_blocks.append((list(lines), language, indent)),
-        lambda: previews.append((["<cleared>"], None)),
-    )
-
-    assert writes[0] == "[dim]  · file draft: site/index.html[/dim]"
-    assert writes[-1] == "[dim]  · file draft: site/style.css[/dim]"
-    assert any("site/index.html" in line for line in writes)
-    assert any("site/style.css" in line for line in writes)
-    assert code_blocks[0] == (["<h1>Hello</h1>"], "html", 2)
-    assert previews[-1] == (["body { color: red;"], "css")
-
-    streamed = manager.close(
-        "s2",
-        lambda text, indent: indented.append((text, indent)),
-        lambda lines, language, indent: code_blocks.append((list(lines), language, indent)),
-        lambda: previews.append((["<cleared>"], None)),
-    )
-
-    assert streamed is True
-    assert code_blocks[-1] == (["body { color: red;"], "css", 2)
-
-
 def test_live_preview_does_not_emit_truncation_marker_for_long_stream():
     manager = LiveToolPreviewManager()
     writes = []
@@ -132,45 +85,3 @@ def test_live_preview_resets_when_stream_rewinds():
     assert writes == ["[dim]  · file draft: demo.py[/dim]", "[dim]  · file draft: demo.py[/dim]"]
     assert previews[-1] == (["reset"], "python")
 
-
-def test_live_preview_does_not_replay_flushed_create_files_when_json_completes():
-    manager = LiveToolPreviewManager()
-    writes = []
-    previews = []
-    code_blocks = []
-
-    manager.update(
-        "s5",
-        "create_files",
-        '{"files":[{"filepath":"a.txt","content":"alpha\\n"},{"filepath":"b.txt","content":"beta"',
-        writes.append,
-        lambda lines, language: previews.append((list(lines), language)),
-        lambda _text, _indent=0: None,
-        lambda lines, language, indent=0: code_blocks.append((list(lines), language, indent)),
-        lambda: previews.append((["<cleared>"], None)),
-    )
-    manager.update(
-        "s5",
-        "create_files",
-        '{"files":[{"filepath":"a.txt","content":"alpha\\n"},{"filepath":"b.txt","content":"beta"}',
-        writes.append,
-        lambda lines, language: previews.append((list(lines), language)),
-        lambda _text, _indent=0: None,
-        lambda lines, language, indent=0: code_blocks.append((list(lines), language, indent)),
-        lambda: previews.append((["<cleared>"], None)),
-    )
-    manager.update(
-        "s5",
-        "create_files",
-        '{"files":[{"filepath":"a.txt","content":"alpha\\n"},{"filepath":"b.txt","content":"beta"}]}',
-        writes.append,
-        lambda lines, language: previews.append((list(lines), language)),
-        lambda _text, _indent=0: None,
-        lambda lines, language, indent=0: code_blocks.append((list(lines), language, indent)),
-        lambda: previews.append((["<cleared>"], None)),
-    )
-
-    assert writes.count("[dim]  · file draft: a.txt[/dim]") == 1
-    assert writes.count("[dim]  · file draft: b.txt[/dim]") == 1
-    assert code_blocks == [(["alpha"], None, 2)]
-    assert previews[-1] == (["beta"], None)

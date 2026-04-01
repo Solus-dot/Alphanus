@@ -1,7 +1,7 @@
 ---
 name: workspace-ops
 description: Read, write, edit, inspect, move, and delete workspace files and folders safely.
-allowed-tools: create_directory create_file create_files edit_file read_file read_files list_files search_code move_path delete_path workspace_tree run_checks
+allowed-tools: create_directory create_file edit_file read_file read_files list_files search_code move_path delete_path workspace_tree run_checks
 metadata:
   version: "1.2.0"
   tags:
@@ -33,7 +33,6 @@ Rules:
 - If the user asks for code, an example, or a snippet without explicitly asking to save, create, or modify a file, answer inline and do not call workspace tools.
 - Use `create_directory` for explicit folder creation inside the workspace.
 - For multi-file scaffolds or programs, prefer separate `create_file` calls so progress is visible file by file.
-- Use `create_files` when batching several new files is acceptable and live per-file visibility is not important.
 - Use `read_file` before `edit_file` when patching existing files.
 - Use `read_files` when you need to inspect several local files together.
 - Prefer `edit_file` with `old_string` and `new_string` for small localized edits.

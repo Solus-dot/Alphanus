@@ -51,7 +51,6 @@ tools:
   allowed-tools:
     - create_directory
     - create_file
-    - create_files
 ---
 workspace
 """.strip(),
@@ -78,15 +77,6 @@ TOOL_SPECS = {
       "required": ["filepath", "content"]
     }
   },
-  "create_files": {
-    "capability": "workspace_write",
-    "description": "Create files",
-    "parameters": {
-      "type": "object",
-      "properties": {"files": {"type": "array"}},
-      "required": ["files"]
-    }
-  }
 }
 
 def execute(tool_name, args, env):
@@ -96,12 +86,6 @@ def execute(tool_name, args, env):
     if tool_name == "create_file":
         path = env.workspace.create_file(args["filepath"], args["content"])
         return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
-    if tool_name == "create_files":
-        created = []
-        for item in args.get("files", []):
-            path = env.workspace.create_file(item["filepath"], item["content"])
-            created.append({"filepath": path})
-        return {"ok": True, "data": {"created": created, "count": len(created)}, "error": None, "meta": {}}
     return {"ok": False, "data": None, "error": {"code": "E_UNSUPPORTED", "message": "nope"}, "meta": {}}
 """.strip(),
         encoding="utf-8",
@@ -1293,7 +1277,9 @@ def test_workspace_scaffold_does_not_stop_after_create_directory(mocker, runtime
                     "content": "",
                     "reasoning": "",
                     "tool_calls": [
-                        type("Call", (), {"stream_id": "2", "index": 0, "id": "call_2", "name": "create_files", "arguments": {"files": [{"filepath": "arjun/index.html", "content": "<html></html>"}, {"filepath": "arjun/styles.css", "content": "body{}"}, {"filepath": "arjun/script.js", "content": "console.log(1)\n"}]}})(),
+                        type("Call", (), {"stream_id": "2", "index": 0, "id": "call_2", "name": "create_file", "arguments": {"filepath": "arjun/index.html", "content": "<html></html>"}})(),
+                        type("Call", (), {"stream_id": "2", "index": 1, "id": "call_3", "name": "create_file", "arguments": {"filepath": "arjun/styles.css", "content": "body{}"}})(),
+                        type("Call", (), {"stream_id": "2", "index": 2, "id": "call_4", "name": "create_file", "arguments": {"filepath": "arjun/script.js", "content": "console.log(1)\n"}})(),
                     ],
                 },
             )()
@@ -1315,7 +1301,7 @@ def test_workspace_scaffold_does_not_stop_after_create_directory(mocker, runtime
         "tools_for_turn",
         return_value=[
             {"type": "function", "function": {"name": "create_directory"}},
-            {"type": "function", "function": {"name": "create_files"}},
+            {"type": "function", "function": {"name": "create_file"}},
         ],
     )
 
@@ -1326,7 +1312,7 @@ def test_workspace_scaffold_does_not_stop_after_create_directory(mocker, runtime
     )
 
     assert result.status == "done"
-    assert executed == ["create_directory", "create_files"]
+    assert executed == ["create_directory", "create_file", "create_file", "create_file"]
     assert calls == ["pass_1", "pass_2", "pass_3"]
 
 
@@ -1513,7 +1499,8 @@ def test_local_workspace_tasks_prefer_workspace_tools_but_still_block_fetch_tool
                     "reasoning": "",
                     "tool_calls": [
                         type("Call", (), {"stream_id": "2", "index": 0, "id": "call_3", "name": "create_directory", "arguments": {"path": "1738"}})(),
-                        type("Call", (), {"stream_id": "2", "index": 1, "id": "call_4", "name": "create_files", "arguments": {"files": [{"filepath": "1738/index.html", "content": "<html></html>"}, {"filepath": "1738/script.js", "content": "console.log(1)\n"}]}})(),
+                        type("Call", (), {"stream_id": "2", "index": 1, "id": "call_4", "name": "create_file", "arguments": {"filepath": "1738/index.html", "content": "<html></html>"}})(),
+                        type("Call", (), {"stream_id": "2", "index": 2, "id": "call_5", "name": "create_file", "arguments": {"filepath": "1738/script.js", "content": "console.log(1)\n"}})(),
                     ],
                 },
             )()
@@ -1535,7 +1522,7 @@ def test_local_workspace_tasks_prefer_workspace_tools_but_still_block_fetch_tool
         "tools_for_turn",
         return_value=[
             {"type": "function", "function": {"name": "create_directory"}},
-            {"type": "function", "function": {"name": "create_files"}},
+            {"type": "function", "function": {"name": "create_file"}},
             {"type": "function", "function": {"name": "shell_command"}},
             {"type": "function", "function": {"name": "fetch_url"}},
         ],
@@ -1548,8 +1535,60 @@ def test_local_workspace_tasks_prefer_workspace_tools_but_still_block_fetch_tool
     )
 
     assert result.status == "done"
-    assert executed == ["shell_command", "create_directory", "create_files"]
+    assert executed == ["shell_command", "create_directory", "create_file", "create_file"]
     assert calls == ["pass_1", "pass_2", "pass_3"]
+
+
+def test_multi_file_scaffold_single_pass_does_not_consume_action_depth_per_file(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {"max_action_depth": 10}}, runtime)
+    mocker.patch.object(agent, "ensure_ready", return_value=True)
+    selected = [runtime.get_skill("workspace-ops")]
+    mocker.patch.object(agent, "_select_skills", return_value=selected)
+
+    calls = []
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        calls.append(pass_id)
+        if pass_id == "pass_1":
+            tool_calls = [
+                type(
+                    "Call",
+                    (),
+                    {
+                        "stream_id": f"1_{index}",
+                        "index": index,
+                        "id": f"call_{index}",
+                        "name": "create_file",
+                        "arguments": {"filepath": f"scaffold/file_{index}.txt", "content": f"file {index}\n"},
+                    },
+                )()
+                for index in range(11)
+            ]
+            return type("R", (), {"finish_reason": "tool_calls", "content": "", "reasoning": "", "tool_calls": tool_calls})()
+        if pass_id == "pass_2":
+            return type("R", (), {"finish_reason": "stop", "content": "Done.", "reasoning": "", "tool_calls": []})()
+        raise AssertionError(f"Unexpected pass id: {pass_id}")
+
+    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    executed = []
+    real_execute = runtime.execute_tool_call
+
+    def wrapped_execute(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
+        executed.append((tool_name, args["filepath"]))
+        return real_execute(tool_name, args, selected=selected, ctx=ctx, confirm_shell=confirm_shell)
+
+    mocker.patch.object(runtime, "execute_tool_call", side_effect=wrapped_execute)
+    mocker.patch.object(runtime, "tools_for_turn", return_value=[{"type": "function", "function": {"name": "create_file"}}])
+
+    result = agent.run_turn(
+        history_messages=[],
+        user_input="Create 11 files in scaffold",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert len(executed) == 11
+    assert calls == ["pass_1", "pass_2"]
 
 
 def test_workspace_action_accepts_successful_mutating_shell_command(mocker, runtime: SkillRuntime):

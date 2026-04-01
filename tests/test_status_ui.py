@@ -16,7 +16,7 @@ def test_topbar_helpers_include_workspace_branch_and_context() -> None:
     )
 
     assert "ALPHANUS" in left
-    assert "Alphanus-Workspace" in left
+    assert "Alphanus-Workspace" not in left
     assert "session:" in center
     assert "branch:" in center
     assert "memory:" not in center
@@ -50,7 +50,7 @@ def test_topbar_right_handles_missing_model_usage() -> None:
         width=180,
     )
 
-    assert right.startswith("  ")
+    assert not right.startswith(" ")
     assert "ctx:" in right
     assert "—" in right
 
@@ -129,7 +129,7 @@ def test_status_helpers_compact_at_small_width() -> None:
         width=90,
     )
 
-    assert "Alphanus-Work…" in left
+    assert "Alphanus-Work…" not in left
     assert "ss:" in center
     assert "br:" in center
     assert "memory:" not in center

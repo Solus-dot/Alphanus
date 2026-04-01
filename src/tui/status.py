@@ -1,4 +1,3 @@
-import os
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -22,6 +21,10 @@ def _short_endpoint(endpoint: str) -> str:
     return endpoint
 
 
+def _join_topbar_segments(*segments: str) -> str:
+    return "  ".join(segment for segment in segments if segment)
+
+
 def context_usage_percent(context_tokens: Optional[int], context_window: Optional[int]) -> Optional[int]:
     if context_tokens is None or context_window is None or context_window <= 0:
         return None
@@ -41,31 +44,23 @@ def _context_usage_markup(context_tokens: Optional[int], context_window: Optiona
 
 
 def topbar_left(workspace_root: str, *, width: int) -> str:
-    workspace_name = os.path.basename(workspace_root) or workspace_root
-    if width < 110:
-        workspace_name = _truncate(workspace_name, 14)
-    elif width < 140:
-        workspace_name = _truncate(workspace_name, 20)
-    return (
-        "[bold #6366f1 on #1a1730] ALPHANUS [/bold #6366f1 on #1a1730] "
-        f"[#f4f4f5]{esc(workspace_name)}[/#f4f4f5]"
-    )
+    return "[bold #6366f1 on #1a1730] ALPHANUS [/bold #6366f1 on #1a1730]"
 
 
 def topbar_center(*, session_name: str, branch_name: str, width: int) -> str:
     if width < 105:
-        return (
-            f"[dim]ss:[/dim] [#f4f4f5]{esc(_truncate(session_name, 10))}[/#f4f4f5]   "
-            f"[dim]br:[/dim] [#6366f1]{esc(_truncate(branch_name, 10))}[/#6366f1]"
+        return _join_topbar_segments(
+            f"[dim]ss:[/dim] [#f4f4f5]{esc(_truncate(session_name, 10))}[/#f4f4f5]",
+            f"[dim]br:[/dim] [#6366f1]{esc(_truncate(branch_name, 10))}[/#6366f1]",
         )
     if width < 140:
-        return (
-            f"[dim]session:[/dim] [#f4f4f5]{esc(_truncate(session_name, 14))}[/#f4f4f5]   "
-            f"[dim]branch:[/dim] [#6366f1]{esc(_truncate(branch_name, 12))}[/#6366f1]"
+        return _join_topbar_segments(
+            f"[dim]session:[/dim] [#f4f4f5]{esc(_truncate(session_name, 14))}[/#f4f4f5]",
+            f"[dim]branch:[/dim] [#6366f1]{esc(_truncate(branch_name, 12))}[/#6366f1]",
         )
-    return (
-        f"[dim]session:[/dim] [#f4f4f5]{esc(session_name)}[/#f4f4f5]   "
-        f"[dim]branch:[/dim] [#6366f1]{esc(branch_name)}[/#6366f1]"
+    return _join_topbar_segments(
+        f"[dim]session:[/dim] [#f4f4f5]{esc(session_name)}[/#f4f4f5]",
+        f"[dim]branch:[/dim] [#6366f1]{esc(branch_name)}[/#6366f1]",
     )
 
 
@@ -74,9 +69,10 @@ def topbar_right(*, endpoint: str, context_tokens: Optional[int], context_window
     if width < 105:
         short_endpoint = ""
     ctx_markup = _context_usage_markup(context_tokens, context_window)
-    if not short_endpoint:
-        return f"  [dim]ctx:[/dim] {ctx_markup}"
-    return f"  [#a1a1aa]{esc(_truncate(short_endpoint, 22 if width < 140 else 28))}[/#a1a1aa]   [dim]ctx:[/dim] {ctx_markup}"
+    endpoint_markup = ""
+    if short_endpoint:
+        endpoint_markup = f"[#a1a1aa]{esc(_truncate(short_endpoint, 22 if width < 140 else 28))}[/#a1a1aa]"
+    return _join_topbar_segments(endpoint_markup, f"[dim]ctx:[/dim] {ctx_markup}")
 
 
 def status_right_markup(

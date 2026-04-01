@@ -36,7 +36,7 @@ class LiveToolPreviewManager:
         max_static_preview_chars: int = 8000,
         max_static_preview_lines: int = 140,
     ) -> None:
-        self.streamed_file_tools = set(streamed_file_tools or {"create_file", "edit_file", "create_files"})
+        self.streamed_file_tools = set(streamed_file_tools or {"create_file", "edit_file"})
         self.draft_preview_tools = {name for name in self.streamed_file_tools if name != "edit_file"}
         self.max_static_preview_chars = int(max_static_preview_chars)
         self.max_static_preview_lines = int(max_static_preview_lines)
@@ -55,27 +55,6 @@ class LiveToolPreviewManager:
         state.line_buf = ""
         state.preview_lines = []
         state.raw_len = 0
-
-    def _begin_new_file_preview(
-        self,
-        state: LivePreviewState,
-        item_index: int,
-        filepath: str,
-        write: WriteFn,
-        write_indented: Optional[WriteIndentedFn],
-        write_code: Optional[WriteCodeFn],
-        clear_preview: Optional[ClearPreviewFn],
-    ) -> None:
-        if item_index == state.item_index and state.filepath == filepath and (state.opened or state.preview_lines or state.line_buf):
-            return
-        if state.opened and write_indented and write_code and clear_preview:
-            self._flush_state_preview(state, write_indented, write_code, clear_preview)
-        state.filepath = ""
-        state.item_index = item_index
-        state.opened = False
-        state.closed = False
-        state.line_buf = ""
-        state.preview_lines = []
 
     def _set_preview_content(
         self,
@@ -119,40 +98,9 @@ class LiveToolPreviewManager:
         state.filepath = filepath or state.filepath
         return self._set_preview_content(state, content, write, update_preview)
 
-    def _preview_file_entries(
-        self,
-        state: LivePreviewState,
-        entries: List[Tuple[str, str, bool]],
-        write: WriteFn,
-        update_preview: UpdatePreviewFn,
-        write_indented: Optional[WriteIndentedFn],
-        write_code: Optional[WriteCodeFn],
-        clear_preview: Optional[ClearPreviewFn],
-    ) -> bool:
-        if not entries:
-            return False
-        start_index = state.flushed_item_count
-        if state.opened:
-            start_index = max(start_index, state.item_index)
-        rendered_any = False
-        for item_index, (filepath, content, content_complete) in enumerate(entries[start_index:], start=start_index):
-            self._begin_new_file_preview(state, item_index, filepath, write, write_indented, write_code, clear_preview)
-            state.filepath = filepath
-            rendered_any = self._set_preview_content(state, content, write, update_preview) or rendered_any
-            is_last = item_index == len(entries) - 1
-            if not is_last and content_complete and write_indented and write_code and clear_preview:
-                self._flush_state_preview(state, write_indented, write_code, clear_preview)
-        return rendered_any
-
     def compact_tool_args(self, tool_name: str, args: Any) -> str:
         if not isinstance(args, dict):
             return str(args)
-
-        if tool_name == "create_files":
-            files = args.get("files")
-            if isinstance(files, list):
-                return f"{len(files)} files"
-            return "files=?"
 
         if tool_name == "edit_file":
             filepath = str(args.get("filepath", ""))
@@ -213,27 +161,10 @@ class LiveToolPreviewManager:
             parsed_args = None
 
         if isinstance(parsed_args, dict):
-            if name == "create_files":
-                files = parsed_args.get("files")
-                entries = [
-                    (str(item.get("filepath", "")), str(item.get("content", "")), True)
-                    for item in files
-                    if isinstance(item, dict) and isinstance(item.get("content"), str)
-                ] if isinstance(files, list) else []
-                return self._preview_file_entries(
-                    state, entries, write, update_preview, write_indented, write_code, clear_preview
-                )
-
             filepath = str(parsed_args.get("filepath", ""))
             content = parsed_args.get("content")
             if isinstance(content, str):
                 return self._preview_single_file(state, filepath, content, write, update_preview)
-
-        if name == "create_files":
-            entries = self._extract_partial_file_entries(raw_arguments)
-            return self._preview_file_entries(
-                state, entries, write, update_preview, write_indented, write_code, clear_preview
-            )
 
         filepath, _ = self._extract_partial_json_string_field(raw_arguments, "filepath")
         content, _ = self._extract_partial_json_string_field(raw_arguments, "content")
@@ -270,19 +201,6 @@ class LiveToolPreviewManager:
         write_code: WriteCodeFn,
     ) -> None:
         if not isinstance(args, dict):
-            return
-        if tool_name == "create_files":
-            files = args.get("files")
-            if not isinstance(files, list):
-                return
-            for item in files:
-                if not isinstance(item, dict):
-                    continue
-                filepath = str(item.get("filepath", ""))
-                content = item.get("content")
-                if not isinstance(content, str) or not content.strip():
-                    continue
-                self._write_file_preview(filepath, content, write, write_indented, write_code)
             return
         if tool_name not in self.draft_preview_tools:
             return
@@ -468,18 +386,3 @@ class LiveToolPreviewManager:
                     out.append(ch)
             i += 1
         return "".join(out), False, i
-
-    @classmethod
-    def _extract_partial_file_entries(cls, raw: str) -> List[Tuple[str, str, bool]]:
-        pos = 0
-        entries: List[Tuple[str, str, bool]] = []
-        while True:
-            filepath, _complete, filepath_end = cls._extract_partial_json_string_field_from(raw, "filepath", pos)
-            if filepath is None:
-                break
-            content, content_complete, content_end = cls._extract_partial_json_string_field_from(raw, "content", filepath_end)
-            if content is None:
-                break
-            entries.append((filepath, content, content_complete))
-            pos = max(content_end, filepath_end) + 1
-        return entries
