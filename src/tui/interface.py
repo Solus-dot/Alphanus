@@ -568,7 +568,6 @@ class AlphanusTUI(App):
         self._last_model_context_tokens: Optional[int] = None
         self._startup_session_prompt_opened = False
         self._resize_redraw_pending = False
-        self._transcript_batch_depth = 0
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="topbar"):
@@ -674,8 +673,6 @@ class AlphanusTUI(App):
 
     def _refresh_transcript_after_resize(self) -> None:
         log = self._log()
-        if log is None:
-            return
         anchor = self._capture_scroll_anchor()
         log.refresh_for_width_change()
         if anchor is not None:
@@ -1230,10 +1227,8 @@ class AlphanusTUI(App):
         return self.query_one("#command-options", OptionList)
 
     def _append_transcript_entry(self, entry: TranscriptEntry) -> None:
-        batch_depth = int(getattr(self, "_transcript_batch_depth", 0) or 0)
-        self._log().append_entry(entry, refresh=batch_depth == 0)
-        if batch_depth == 0:
-            self._maybe_scroll_end()
+        self._log().append_entry(entry)
+        self._maybe_scroll_end()
 
     def _write(self, markup: str) -> None:
         entry = TranscriptEntry("blank", Text("")) if markup == "" else TranscriptEntry("markup_line", Text.from_markup(markup))
@@ -1406,7 +1401,7 @@ class AlphanusTUI(App):
             self._code_blocks = self._code_blocks[-64:]
         return len(self._code_blocks)
 
-    def _write_code_block(self, lines: List[str], language: Optional[str], indent: int = 2) -> None:
+    def _write_code_block(self, lines: List[str], language: Optional[str]) -> None:
         code = "\n".join(lines)
         block_index = self._remember_code_block(code, language)
         self._write_assistant_bar_renderable(self._code_panel_renderable(code, language))
@@ -1423,7 +1418,7 @@ class AlphanusTUI(App):
             if self._is_fence_line(line):
                 if in_fence:
                     if fence_lines:
-                        self._write_code_block(fence_lines, fence_lang, indent=2)
+                        self._write_code_block(fence_lines, fence_lang)
                     in_fence = False
                     fence_lang = None
                     fence_lines = []
@@ -1439,7 +1434,7 @@ class AlphanusTUI(App):
             self._write_assistant_bar_wrapped_line(line, rendered)
 
         if in_fence and fence_lines:
-            self._write_code_block(fence_lines, fence_lang, indent=2)
+            self._write_code_block(fence_lines, fence_lang)
 
     def _reset_fence_state(self) -> None:
         self._in_fence = False
@@ -1453,7 +1448,7 @@ class AlphanusTUI(App):
 
     def _flush_fence_block(self) -> None:
         if self._fence_lines:
-            self._write_code_block(self._fence_lines, self._fence_lang, indent=2)
+            self._write_code_block(self._fence_lines, self._fence_lang)
         self._reset_fence_state()
 
     def _render_content_line(self, line: str) -> None:
@@ -1595,14 +1590,6 @@ class AlphanusTUI(App):
     def _write_usage(self, usage: str) -> bool:
         self._write_error(f"Usage: {usage}")
         return True
-
-    def _begin_transcript_batch(self) -> None:
-        self._transcript_batch_depth = int(getattr(self, "_transcript_batch_depth", 0) or 0) + 1
-
-    def _end_transcript_batch(self) -> None:
-        self._transcript_batch_depth = max(0, int(getattr(self, "_transcript_batch_depth", 0) or 0) - 1)
-        if self._transcript_batch_depth == 0:
-            self._log().refresh(layout=True)
 
     def _ensure_command_gap(self) -> None:
         if not self._last_log_was_blank:
@@ -2144,17 +2131,14 @@ class AlphanusTUI(App):
 
     def _rebuild_viewport(self, *, preserve_scroll: bool = False) -> None:
         scroll_anchor = self._capture_scroll_anchor() if preserve_scroll else None
-        self._log().clear()
-        self._begin_transcript_batch()
-        try:
-            for turn in self.conv_tree.active_path:
-                if turn.id == "root":
-                    continue
-                self._write_turn_user(turn)
-                if turn.assistant_content:
-                    self._write_completed_turn_asst(turn)
-        finally:
-            self._end_transcript_batch()
+        log = self._log()
+        log.clear_entries()
+        for turn in self.conv_tree.active_path:
+            if turn.id == "root":
+                continue
+            self._write_turn_user(turn)
+            if turn.assistant_content:
+                self._write_completed_turn_asst(turn)
         if scroll_anchor is not None:
             self.call_after_refresh(lambda anchor=scroll_anchor: self._restore_scroll_anchor(anchor))
         else:
@@ -2813,7 +2797,7 @@ class AlphanusTUI(App):
             self._loaded_skill_ids = []
             self._reset_context_usage()
             self.pending.clear()
-            self._log().clear()
+            self._log().clear_entries()
             self._set_partial_renderable(None)
             self._save_active_session()
             self._update_pending_attachments()

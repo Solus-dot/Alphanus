@@ -1472,7 +1472,7 @@ def test_handle_clear_resets_context_usage_and_refreshes_topbar() -> None:
     events: list[str] = []
     fresh_tree = ConvTree()
     tui._new_conv_tree = lambda: fresh_tree
-    tui._log = lambda: SimpleNamespace(clear=lambda: events.append("log"))
+    tui._log = lambda: SimpleNamespace(clear_entries=lambda: events.append("log"))
     tui._partial = lambda: SimpleNamespace(update=lambda _value: events.append("partial"))
     tui._save_active_session = lambda rename_to=None: events.append("save")
     tui._update_pending_attachments = lambda: events.append("attachments")

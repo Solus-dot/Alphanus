@@ -77,9 +77,6 @@ class TranscriptView(Static):
         self._last_line_total = 0
         self.refresh(layout=True)
 
-    def clear(self) -> None:
-        self.clear_entries()
-
     def refresh_for_width_change(self) -> None:
         width = self._available_width()
         self._last_render_width = width
