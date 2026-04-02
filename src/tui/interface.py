@@ -1979,7 +1979,6 @@ class AlphanusTUI(App):
             self._write("[dim red]  ✖ interrupted[/dim red]")
         elif failed:
             self._write("[dim red]  ! failed[/dim red]")
-        self._write("")
 
     def _rebuild_viewport(self) -> None:
         self._log().clear()

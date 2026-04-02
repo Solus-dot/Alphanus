@@ -2540,8 +2540,18 @@ def test_large_tool_call_args_are_compacted_in_history(runtime: SkillRuntime):
 
     assert compacted["filepath"] == "a.txt"
     assert compacted["content"].startswith("x" * 1200)
-    assert "[truncated 3800 chars]" in compacted["content"]
-    assert len(compacted["content"]) < len(large)
+    assert "[history excerpt; 3800 chars omitted]" in compacted["content"]
+    assert "truncated" not in compacted["content"]
+
+
+def test_large_non_content_tool_call_args_still_use_generic_truncation(runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    large = "x" * 5000
+    compacted = agent._tool_call_args_for_history({"query": large})
+
+    assert compacted["query"].startswith("x" * 1200)
+    assert "[truncated 3800 chars]" in compacted["query"]
+    assert len(compacted["query"]) < len(large)
 
 
 def test_agent_transport_error_marks_error(mocker, runtime: SkillRuntime):

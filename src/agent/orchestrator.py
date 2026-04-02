@@ -125,7 +125,13 @@ class TurnOrchestrator:
         out: Dict[str, Any] = {}
         for key, value in args.items():
             if isinstance(value, str):
-                out[key] = value[:1200] + f"...[truncated {len(value) - 1200} chars]" if len(value) > 1200 else value
+                if len(value) <= 1200:
+                    out[key] = value
+                elif key in {"content", "old_string", "new_string"}:
+                    omitted = len(value) - 1200
+                    out[key] = value[:1200] + f"\n...[history excerpt; {omitted} chars omitted]"
+                else:
+                    out[key] = value[:1200] + f"...[truncated {len(value) - 1200} chars]"
             else:
                 out[key] = self.compact_jsonish(value)
         return out

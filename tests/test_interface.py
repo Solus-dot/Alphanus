@@ -281,7 +281,7 @@ def test_write_completed_turn_asst_omits_role_label() -> None:
 
     tui._write_completed_turn_asst(turn)
 
-    assert writes == ["", ""]
+    assert writes == [""]
     assert all("Assistant" not in line for line in writes)
     assert [indent for _renderable, indent in renderables] == [0]
     _assert_barred(renderables[0][0], width=20)
