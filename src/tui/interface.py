@@ -23,7 +23,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.reactive import reactive
-from textual.widgets import Button, Input, OptionList, RichLog, Static
+from textual.widgets import Button, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from agent.core import Agent, AgentTurnResult
@@ -59,6 +59,7 @@ from tui.popups import (
 )
 from tui.sidebar import render_sidebar_inspector_markup, render_sidebar_tree_markup
 from tui.status import context_usage_percent, status_left_markup, status_right_markup, topbar_center, topbar_left, topbar_right
+from tui.transcript import ScrollAnchor, TranscriptEntry, TranscriptView, count_renderable_lines
 from tui.tree_render import render_tree_rows
 
 MAX_REPLY_ACC_CHARS = 24000
@@ -532,6 +533,10 @@ class AlphanusTUI(App):
         self._stream_drain_active = False
         self._stream_partial_dirty = False
         self._deferred_live_preview: Optional[Tuple[List[str], Optional[str]]] = None
+        self._partial_renderable: Optional[RenderableType] = None
+        self._last_partial_render_width = 1
+        self._last_partial_line_count = 0
+        self._partial_line_count_dirty = False
 
         self._last_scroll = 0.0
         self._scroll_interval = 0.05
@@ -562,6 +567,8 @@ class AlphanusTUI(App):
         self._last_log_was_blank = False
         self._last_model_context_tokens: Optional[int] = None
         self._startup_session_prompt_opened = False
+        self._resize_redraw_pending = False
+        self._transcript_batch_depth = 0
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="topbar"):
@@ -571,13 +578,7 @@ class AlphanusTUI(App):
         with Horizontal(id="main-area"):
             with Vertical(id="chat-column"):
                 with ScrollableContainer(id="chat-scroll"):
-                    yield RichLog(
-                        id="chat-log",
-                        markup=True,
-                        highlight=False,
-                        wrap=True,
-                        max_lines=self._chat_log_max_lines,
-                    )
+                    yield TranscriptView(id="chat-log", max_lines=self._chat_log_max_lines)
                     yield Static("", id="partial", markup=True)
                 with Vertical(id="footer"):
                     yield Static("", id="footer-sep", markup=True)
@@ -609,6 +610,7 @@ class AlphanusTUI(App):
         self.set_interval(0.1, self._tick)
         self.set_interval(STREAM_DRAIN_INTERVAL_S, self._drain_stream_event_queue)
         self._sync_tree_cursor()
+        self._apply_sidebar_layout(self.size.width)
         self._apply_focus_classes()
         self._update_topbar()
         self._update_status1()
@@ -620,9 +622,64 @@ class AlphanusTUI(App):
         self.call_after_refresh(self._open_startup_session_picker)
 
     def on_resize(self, event) -> None:
+        self._apply_sidebar_layout(event.size.width)
+        if not self.query_one("#sidebar", Vertical).display and self._focused_panel == "tree":
+            self._focused_panel = "chat"
+        self._schedule_resize_redraw()
+
+    def _apply_sidebar_layout(self, width: int) -> None:
         sidebar = self.query_one("#sidebar", Vertical)
-        sidebar.display = event.size.width >= 120
+        target_width = self._sidebar_target_width(width)
+        sidebar.display = target_width > 0
+        if target_width > 0 and hasattr(sidebar, "styles"):
+            sidebar.styles.width = target_width
+
+    @staticmethod
+    def _sidebar_target_width(width: int) -> int:
+        if width < 120:
+            return 0
+        if width < 140:
+            return 32
+        return 38
+
+    def _schedule_resize_redraw(self) -> None:
+        if self._resize_redraw_pending:
+            return
+        self._resize_redraw_pending = True
+        self.call_after_refresh(self._run_resize_redraw)
+
+    def _run_resize_redraw(self) -> None:
+        self._resize_redraw_pending = False
+        self._redraw_after_resize()
+
+    def _refresh_command_popup_for_resize(self) -> None:
+        if not self._command_popup_active():
+            return
+        try:
+            self._refresh_command_popup(self.query_one(ChatInput).value)
+        except Exception:
+            return
+
+    def _redraw_after_resize(self) -> None:
+        self._apply_focus_classes()
+        self._update_topbar()
+        self._update_status1()
+        self._update_status2()
         self._update_sidebar()
+        self._update_pending_attachments()
+        self._refresh_transcript_after_resize()
+        if self.streaming:
+            self._refresh_deferred_partial()
+        self._refresh_command_popup_for_resize()
+
+    def _refresh_transcript_after_resize(self) -> None:
+        log = self._log()
+        if log is None:
+            return
+        anchor = self._capture_scroll_anchor()
+        log.refresh_for_width_change()
+        if anchor is not None:
+            self.call_after_refresh(lambda current=anchor: self._restore_scroll_anchor(current))
 
     def _new_conv_tree(self) -> ConvTree:
         return ConvTree(
@@ -1100,8 +1157,8 @@ class AlphanusTUI(App):
         self._update_status1()
         self._update_status2()
 
-    def _log(self) -> RichLog:
-        return self.query_one("#chat-log", RichLog)
+    def _log(self) -> TranscriptView:
+        return self.query_one("#chat-log", TranscriptView)
 
     def _scroll(self) -> ScrollableContainer:
         return self.query_one("#chat-scroll", ScrollableContainer)
@@ -1109,16 +1166,79 @@ class AlphanusTUI(App):
     def _partial(self) -> Static:
         return self.query_one("#partial", Static)
 
+    def _partial_measurement_width(self) -> int:
+        partial = self._partial()
+        for region_name in ("content_region", "region", "size"):
+            region = getattr(partial, region_name, None)
+            width = int(getattr(region, "width", 0) or 0)
+            if width > 0:
+                return width
+        return 1
+
+    def _set_partial_renderable(
+        self,
+        renderable: Optional[RenderableType],
+        *,
+        visible: Optional[bool] = None,
+    ) -> None:
+        partial = self._partial()
+        if visible is not None:
+            partial.display = visible
+        if renderable is None:
+            partial.update("")
+            self._partial_renderable = None
+            self._last_partial_render_width = self._partial_measurement_width()
+            self._last_partial_line_count = 0
+            self._partial_line_count_dirty = False
+            return
+        partial.update(renderable)
+        self._partial_renderable = renderable
+        self._last_partial_render_width = self._partial_measurement_width()
+        self._partial_line_count_dirty = True
+
+    def _remeasure_partial_line_count(self, width: Optional[int] = None) -> int:
+        partial = self._partial()
+        renderable = getattr(self, "_partial_renderable", None)
+        if not getattr(partial, "display", True) or renderable is None:
+            self._last_partial_line_count = 0
+            self._partial_line_count_dirty = False
+            return 0
+        measured_width = max(1, int(width if width is not None else self._partial_measurement_width()))
+        self._last_partial_render_width = measured_width
+        self._last_partial_line_count = count_renderable_lines(renderable, measured_width)
+        self._partial_line_count_dirty = False
+        return self._last_partial_line_count
+
+    def _cached_partial_line_count(self) -> int:
+        partial = self._partial()
+        if not getattr(partial, "display", True):
+            return 0
+        if getattr(self, "_partial_renderable", None) is None:
+            return 0
+        width = self._partial_measurement_width()
+        if getattr(self, "_partial_line_count_dirty", False) or width != int(getattr(self, "_last_partial_render_width", 0) or 0):
+            return self._remeasure_partial_line_count(width)
+        return int(getattr(self, "_last_partial_line_count", 0) or 0)
+
+    def _current_partial_line_count(self) -> int:
+        return self._remeasure_partial_line_count(self._partial_measurement_width())
+
     def _command_popup(self) -> Vertical:
         return self.query_one("#command-popup", Vertical)
 
     def _command_options(self) -> OptionList:
         return self.query_one("#command-options", OptionList)
 
+    def _append_transcript_entry(self, entry: TranscriptEntry) -> None:
+        batch_depth = int(getattr(self, "_transcript_batch_depth", 0) or 0)
+        self._log().append_entry(entry, refresh=batch_depth == 0)
+        if batch_depth == 0:
+            self._maybe_scroll_end()
+
     def _write(self, markup: str) -> None:
-        self._log().write(Text.from_markup(markup))
+        entry = TranscriptEntry("blank", Text("")) if markup == "" else TranscriptEntry("markup_line", Text.from_markup(markup))
+        self._append_transcript_entry(entry)
         self._last_log_was_blank = markup == ""
-        self._maybe_scroll_end()
 
     @staticmethod
     def _bar_renderable(
@@ -1183,9 +1303,8 @@ class AlphanusTUI(App):
         )
 
     def _write_renderable(self, renderable, indent: int = 2) -> None:
-        self._log().write(Padding(renderable, pad=(0, 0, 0, indent)))
+        self._append_transcript_entry(TranscriptEntry("renderable", Padding(renderable, pad=(0, 0, 0, indent))))
         self._last_log_was_blank = False
-        self._maybe_scroll_end()
 
     def _syntax_renderable(self, code: str, language: Optional[str]) -> Syntax:
         return Syntax(
@@ -1259,9 +1378,10 @@ class AlphanusTUI(App):
         )
 
     def _update_tool_call_partial(self, name: str, detail: str = "") -> None:
-        partial = self._partial()
-        partial.display = True
-        partial.update(self._bar_renderable(self._tool_event_panel("tool", ACCENT_COLOR, ACCENT_COLOR, name, detail), ASSISTANT_MESSAGE_BAR_COLOR))
+        self._set_partial_renderable(
+            self._bar_renderable(self._tool_event_panel("tool", ACCENT_COLOR, ACCENT_COLOR, name, detail), ASSISTANT_MESSAGE_BAR_COLOR),
+            visible=True,
+        )
 
     def _write_tool_lifecycle_block(self, name: str, ok: bool, detail: str = "") -> None:
         self._write_assistant_bar_renderable(
@@ -1354,22 +1474,23 @@ class AlphanusTUI(App):
         self._write_assistant_bar_wrapped_line(line, rendered)
 
     def _update_partial_content(self) -> None:
-        partial = self._partial()
         if self._in_fence:
             lines = list(self._fence_lines)
             if self._buf_c and not self._is_fence_line(self._buf_c):
                 lines.append(self._buf_c)
             if lines:
-                partial.update(self._bar_renderable(self._code_panel_renderable("\n".join(lines), self._fence_lang), ASSISTANT_MESSAGE_BAR_COLOR))
+                self._set_partial_renderable(
+                    self._bar_renderable(self._code_panel_renderable("\n".join(lines), self._fence_lang), ASSISTANT_MESSAGE_BAR_COLOR)
+                )
             else:
-                partial.update("")
+                self._set_partial_renderable(None)
             return
         if not self._buf_c:
-            partial.update("")
+            self._set_partial_renderable(None)
             return
         rendered, _ = render_md(self._buf_c, False)
         first_indent, continuation_indent = self._line_indents(self._buf_c)
-        partial.update(
+        self._set_partial_renderable(
             self._bar_renderable(
                 Text.from_markup(rendered.lstrip(" ")),
                 ASSISTANT_MESSAGE_BAR_COLOR,
@@ -1379,9 +1500,10 @@ class AlphanusTUI(App):
         )
 
     def _update_live_preview_partial(self, lines: List[str], language: Optional[str]) -> None:
-        partial = self._partial()
-        partial.display = True
-        partial.update(self._bar_renderable(self._code_panel_renderable("\n".join(lines), language), ASSISTANT_MESSAGE_BAR_COLOR))
+        self._set_partial_renderable(
+            self._bar_renderable(self._code_panel_renderable("\n".join(lines), language), ASSISTANT_MESSAGE_BAR_COLOR),
+            visible=True,
+        )
 
     def _defer_live_preview_partial(self, lines: List[str], language: Optional[str]) -> None:
         self._deferred_live_preview = (list(lines), language)
@@ -1390,8 +1512,8 @@ class AlphanusTUI(App):
     def _clear_partial_preview(self) -> None:
         self._deferred_live_preview = None
         self._stream_partial_dirty = False
+        self._set_partial_renderable(None)
         partial = self._partial()
-        partial.update("")
         if not self.streaming:
             partial.display = False
 
@@ -1401,6 +1523,26 @@ class AlphanusTUI(App):
             return (scroll.max_scroll_y - scroll.scroll_y) <= threshold
         except Exception:
             return True
+
+    def _capture_scroll_anchor(self) -> Optional[ScrollAnchor]:
+        scroll = self._scroll()
+        try:
+            return self._log().capture_anchor(
+                float(scroll.scroll_y or 0),
+                partial_line_count=self._cached_partial_line_count(),
+            )
+        except Exception:
+            return None
+
+    def _restore_scroll_anchor(self, anchor: Optional[ScrollAnchor]) -> None:
+        if not anchor:
+            return
+        scroll = self._scroll()
+        if anchor.near_bottom:
+            scroll.scroll_end(animate=False)
+            return
+        target_y = self._log().restore_anchor(anchor, partial_line_count=self._current_partial_line_count())
+        scroll.scroll_to(y=target_y, animate=False, immediate=True, force=True)
 
     def _maybe_scroll_end(self, force: bool = False) -> None:
         if force:
@@ -1453,6 +1595,14 @@ class AlphanusTUI(App):
     def _write_usage(self, usage: str) -> bool:
         self._write_error(f"Usage: {usage}")
         return True
+
+    def _begin_transcript_batch(self) -> None:
+        self._transcript_batch_depth = int(getattr(self, "_transcript_batch_depth", 0) or 0) + 1
+
+    def _end_transcript_batch(self) -> None:
+        self._transcript_batch_depth = max(0, int(getattr(self, "_transcript_batch_depth", 0) or 0) - 1)
+        if self._transcript_batch_depth == 0:
+            self._log().refresh(layout=True)
 
     def _ensure_command_gap(self) -> None:
         if not self._last_log_was_blank:
@@ -1904,13 +2054,21 @@ class AlphanusTUI(App):
             self._tree_cursor_id = self.conv_tree.current_id
         else:
             self._sync_tree_cursor()
+        width = self._sidebar_render_width(sidebar)
         self.query_one("#sidebar-tree-meta", Static).update(f"{self.conv_tree.turn_count()} turns")
         self.query_one("#sidebar-tree-content", Static).update(
-            render_sidebar_tree_markup(self.conv_tree, width=30, selected_id=self._tree_cursor_id)
+            render_sidebar_tree_markup(self.conv_tree, width=width, selected_id=self._tree_cursor_id)
         )
         self.query_one("#sidebar-inspector-content", Static).update(
-            render_sidebar_inspector_markup(self.conv_tree, width=30, selected_id=self._tree_cursor_id)
+            render_sidebar_inspector_markup(self.conv_tree, width=width, selected_id=self._tree_cursor_id)
         )
+
+    @staticmethod
+    def _sidebar_render_width(sidebar: Vertical) -> int:
+        width = int(getattr(sidebar.region, "width", 0) or 0)
+        if width <= 0:
+            width = int(getattr(sidebar.size, "width", 0) or 0)
+        return max(20, width - 8) if width > 0 else 30
 
     def _write_turn_user(self, turn: Turn) -> None:
         self._write("")
@@ -1984,15 +2142,23 @@ class AlphanusTUI(App):
         elif failed:
             self._write("[dim red]  ! failed[/dim red]")
 
-    def _rebuild_viewport(self) -> None:
+    def _rebuild_viewport(self, *, preserve_scroll: bool = False) -> None:
+        scroll_anchor = self._capture_scroll_anchor() if preserve_scroll else None
         self._log().clear()
-        for turn in self.conv_tree.active_path:
-            if turn.id == "root":
-                continue
-            self._write_turn_user(turn)
-            if turn.assistant_content:
-                self._write_completed_turn_asst(turn)
-        self._maybe_scroll_end(force=True)
+        self._begin_transcript_batch()
+        try:
+            for turn in self.conv_tree.active_path:
+                if turn.id == "root":
+                    continue
+                self._write_turn_user(turn)
+                if turn.assistant_content:
+                    self._write_completed_turn_asst(turn)
+        finally:
+            self._end_transcript_batch()
+        if scroll_anchor is not None:
+            self.call_after_refresh(lambda anchor=scroll_anchor: self._restore_scroll_anchor(anchor))
+        else:
+            self._maybe_scroll_end(force=True)
 
     def _start_stream(self, turn: Turn, user_input: str, attachment_paths: List[str]) -> None:
         self.streaming = True
@@ -2072,12 +2238,12 @@ class AlphanusTUI(App):
 
     def _flush_reasoning_buffer(self) -> None:
         if not self._buf_r:
-            self._partial().update("")
+            self._set_partial_renderable(None)
             return
         text = self._buf_r
         self._buf_r = ""
         visible = self._visible_reasoning_text(text)
-        self._partial().update("")
+        self._set_partial_renderable(None)
         if visible:
             self._write_assistant_bar_renderable(self._reasoning_panel_renderable(visible))
 
@@ -2099,11 +2265,10 @@ class AlphanusTUI(App):
         self._stream_partial_dirty = False
         if self._reasoning_open and not self._content_open:
             display = self._visible_reasoning_text(self._buf_r)
-            partial = self._partial()
             if display:
-                partial.update(self._bar_renderable(self._reasoning_panel_renderable(display), ASSISTANT_MESSAGE_BAR_COLOR))
+                self._set_partial_renderable(self._bar_renderable(self._reasoning_panel_renderable(display), ASSISTANT_MESSAGE_BAR_COLOR))
             else:
-                partial.update("")
+                self._set_partial_renderable(None)
             return
         self._update_partial_content()
 
@@ -2126,7 +2291,7 @@ class AlphanusTUI(App):
                     rendered, _ = render_md(self._buf_c, False)
                     self._write_assistant_bar_wrapped_line(self._buf_c, rendered)
             self._buf_c = ""
-            self._partial().update("")
+            self._set_partial_renderable(None)
             return
 
         if update_partial:
@@ -2172,7 +2337,6 @@ class AlphanusTUI(App):
             self._stream_drain_active = False
 
     def _on_agent_event(self, event: Dict[str, Any]) -> None:
-        partial = self._partial()
         etype = event.get("type")
         stream_drain_active = bool(getattr(self, "_stream_drain_active", False))
 
@@ -2186,9 +2350,9 @@ class AlphanusTUI(App):
             else:
                 display = self._visible_reasoning_text(self._buf_r)
                 if display:
-                    partial.update(self._bar_renderable(self._reasoning_panel_renderable(display), ASSISTANT_MESSAGE_BAR_COLOR))
+                    self._set_partial_renderable(self._bar_renderable(self._reasoning_panel_renderable(display), ASSISTANT_MESSAGE_BAR_COLOR))
                 else:
-                    partial.update("")
+                    self._set_partial_renderable(None)
 
         elif etype == "content_token":
             token = event.get("text", "")
@@ -2284,7 +2448,7 @@ class AlphanusTUI(App):
             # visible output. Drop that provisional reasoning so it doesn't leak.
             if finish_reason in {"stop", "length"} and not has_content and not has_tool_calls:
                 self._buf_r = ""
-                partial.update("")
+                self._set_partial_renderable(None)
 
         elif etype == "usage":
             usage = event.get("usage") or {}
@@ -2301,9 +2465,7 @@ class AlphanusTUI(App):
 
     def _on_stream_end(self, turn_id: str, result: AgentTurnResult) -> None:
         self._drain_stream_event_queue()
-        partial = self._partial()
-        partial.update("")
-        partial.display = False
+        self._set_partial_renderable(None, visible=False)
 
         self._live_preview.close_all(
             lambda markup, _indent=0: self._write_assistant_bar_line(markup),
@@ -2652,7 +2814,7 @@ class AlphanusTUI(App):
             self._reset_context_usage()
             self.pending.clear()
             self._log().clear()
-            self._partial().update("")
+            self._set_partial_renderable(None)
             self._save_active_session()
             self._update_pending_attachments()
             self._update_status1()

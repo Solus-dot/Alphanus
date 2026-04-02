@@ -16,6 +16,7 @@ from tui.live_tool_preview import LiveToolPreviewManager
 from tui.commands import active_command_query, active_command_span, command_entries_for_query, popup_command_query
 from tui.interface import AlphanusTUI, ChatInput
 from tui.popups import SessionPickerModal
+from tui.transcript import ScrollAnchor, TranscriptEntry, TranscriptView
 
 
 def _render_lines(renderable, *, width: int = 40) -> list[str]:
@@ -189,6 +190,37 @@ async def test_attachment_name_renders_in_separator_without_moving_it(tmp_path: 
         assert "notes.txt" in str(separator.render())
 
 
+@pytest.mark.anyio
+async def test_sidebar_width_changes_at_resize_thresholds(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    tui._open_startup_session_picker = lambda: None
+    tui._maybe_refresh_model_name = lambda force=False: None
+
+    async with tui.run_test(size=(160, 40)) as pilot:
+        await pilot.pause()
+        sidebar = tui.query_one("#sidebar")
+        footer = tui.query_one("#footer")
+
+        assert sidebar.display is True
+        assert sidebar.region.width == 38
+        assert footer.region.right <= sidebar.region.x
+
+        await pilot.resize_terminal(120, 40)
+        await pilot.pause()
+        assert sidebar.display is True
+        assert sidebar.region.width == 32
+        assert footer.region.right <= sidebar.region.x
+
+        await pilot.resize_terminal(119, 40)
+        await pilot.pause()
+        assert sidebar.display is False
+
+        await pilot.resize_terminal(140, 40)
+        await pilot.pause()
+        assert sidebar.display is True
+        assert sidebar.region.width == 38
+
+
 def test_active_command_span_covers_command_token() -> None:
     assert active_command_span("/cont notes", 3) == (0, 5)
     assert active_command_span("  /cont notes", 2) == (2, 7)
@@ -202,6 +234,91 @@ def test_chat_input_binds_new_shortcuts_locally() -> None:
     assert bindings["f1"] == "show_keymap"
     assert bindings["f2"] == "toggle_details"
     assert bindings["f3"] == "toggle_thinking"
+
+
+def test_on_resize_rebuilds_idle_viewport_and_updates_chrome(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    sidebar = SimpleNamespace(display=False)
+    chat_input = SimpleNamespace(disabled=False)
+    attach_file = SimpleNamespace(disabled=False)
+    calls: list[str] = []
+    scheduled: list[object] = []
+    tui._focused_panel = "input"
+    tui.query_one = (
+        lambda selector, _type=None: (
+            sidebar
+            if selector == "#sidebar"
+            else chat_input
+            if selector is ChatInput
+            else attach_file
+            if selector == "#attach-file"
+            else None
+        )
+    )
+    tui._apply_focus_classes = lambda: calls.append("focus")
+    tui._update_topbar = lambda: calls.append("topbar")
+    tui._update_status1 = lambda: calls.append("status1")
+    tui._update_status2 = lambda: calls.append("status2")
+    tui._update_sidebar = lambda: calls.append("sidebar")
+    tui._update_pending_attachments = lambda: calls.append("attachments")
+    tui._refresh_transcript_after_resize = lambda: calls.append("transcript")
+    tui._refresh_deferred_partial = lambda: calls.append("partial")
+    tui._refresh_command_popup_for_resize = lambda: calls.append("popup")
+    tui._hide_command_popup = lambda: calls.append("hide-popup")
+    tui.call_after_refresh = scheduled.append
+    tui.streaming = False
+    calls.clear()
+
+    tui.on_resize(SimpleNamespace(size=SimpleNamespace(width=130)))
+
+    assert sidebar.display is True
+    assert len(scheduled) == 1
+    assert calls == []
+    scheduled.pop()()
+    assert calls == ["focus", "topbar", "status1", "status2", "sidebar", "attachments", "transcript", "popup"]
+
+
+def test_on_resize_refreshes_stream_partial_and_unfocuses_hidden_tree(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    sidebar = SimpleNamespace(display=True)
+    chat_input = SimpleNamespace(disabled=False)
+    attach_file = SimpleNamespace(disabled=False)
+    calls: list[str] = []
+    scheduled: list[object] = []
+    tui._focused_panel = "tree"
+    tui.query_one = (
+        lambda selector, _type=None: (
+            sidebar
+            if selector == "#sidebar"
+            else chat_input
+            if selector is ChatInput
+            else attach_file
+            if selector == "#attach-file"
+            else None
+        )
+    )
+    tui._apply_focus_classes = lambda: calls.append("focus")
+    tui._update_topbar = lambda: calls.append("topbar")
+    tui._update_status1 = lambda: calls.append("status1")
+    tui._update_status2 = lambda: calls.append("status2")
+    tui._update_sidebar = lambda: calls.append("sidebar")
+    tui._update_pending_attachments = lambda: calls.append("attachments")
+    tui._refresh_transcript_after_resize = lambda: calls.append("transcript")
+    tui._refresh_deferred_partial = lambda: calls.append("partial")
+    tui._refresh_command_popup_for_resize = lambda: calls.append("popup")
+    tui._hide_command_popup = lambda: calls.append("hide-popup")
+    tui.call_after_refresh = scheduled.append
+    tui.streaming = True
+    calls.clear()
+
+    tui.on_resize(SimpleNamespace(size=SimpleNamespace(width=100)))
+
+    assert sidebar.display is False
+    assert tui._focused_panel == "chat"
+    assert len(scheduled) == 1
+    assert calls == []
+    scheduled.pop()()
+    assert calls == ["focus", "topbar", "status1", "status2", "sidebar", "attachments", "transcript", "partial", "popup"]
 
 
 def test_config_editor_view_omits_secrets_and_internal_fields() -> None:
@@ -363,6 +480,322 @@ def test_edge_bar_preserves_content_indent_on_wrapped_lines() -> None:
     lines = _render_lines(renderable, width=20)
     assert lines[0].startswith("┃     * ")
     assert all(line.startswith("┃       ") for line in lines[1:])
+
+
+def test_transcript_view_reflows_historical_tool_panel_at_new_width() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    view = TranscriptView(id="chat-log")
+    view.set_entries(
+        [
+            TranscriptEntry(
+                "renderable",
+                tui._bar_renderable(
+                    tui._tool_lifecycle_panel(
+                        "delete_path",
+                        "path=very/long/example/path, recursive=True",
+                        ok=True,
+                    ),
+                    "#6366f1",
+                ),
+            )
+        ]
+    )
+
+    narrow = _render_lines(view.render(), width=40)
+    wide = _render_lines(view.render(), width=90)
+
+    assert len(narrow) > len(wide)
+    assert any("delete_path" in line for line in wide)
+
+
+def test_transcript_view_enforces_max_lines_when_appending() -> None:
+    view = TranscriptView(id="chat-log", max_lines=3)
+    view._available_width = lambda: 40
+
+    view.append_entry(TranscriptEntry("markup_line", Text("one")), refresh=False)
+    view.append_entry(TranscriptEntry("markup_line", Text("two")), refresh=False)
+    view.append_entry(TranscriptEntry("markup_line", Text("three")), refresh=False)
+    view.append_entry(TranscriptEntry("markup_line", Text("four")), refresh=False)
+
+    rendered = _render_lines(view.render(), width=40)
+    assert rendered == ["two", "three", "four"]
+
+
+def test_transcript_view_append_counts_only_new_entry() -> None:
+    view = TranscriptView(id="chat-log", max_lines=10)
+    view._available_width = lambda: 40
+    calls: list[str] = []
+
+    def count_entry(entry: TranscriptEntry, width: int) -> int:
+        calls.append(str(entry.renderable))
+        return 1
+
+    view._entry_line_count_for_width = count_entry
+
+    view.append_entry(TranscriptEntry("markup_line", Text("one")), refresh=False)
+    view.append_entry(TranscriptEntry("markup_line", Text("two")), refresh=False)
+    view.append_entry(TranscriptEntry("markup_line", Text("three")), refresh=False)
+
+    assert calls == ["one", "two", "three"]
+
+
+def test_transcript_view_keeps_oversized_latest_entry() -> None:
+    view = TranscriptView(id="chat-log", max_lines=1)
+    view._available_width = lambda: 20
+
+    view.append_entry(TranscriptEntry("markup_line", Text("older")), refresh=False)
+    view.append_entry(TranscriptEntry("markup_line", Text("latest\nstill here")), refresh=False)
+
+    rendered = _render_lines(view.render(), width=20)
+    assert rendered == ["latest", "still here"]
+
+
+def test_transcript_view_width_refresh_does_not_evict_history() -> None:
+    view = TranscriptView(id="chat-log", max_lines=2)
+    view._available_width = lambda: 60
+    view.append_entry(TranscriptEntry("markup_line", Text("first")), refresh=False)
+    view.append_entry(TranscriptEntry("markup_line", Text("this is a long line that will wrap when narrow")), refresh=False)
+
+    view._available_width = lambda: 10
+    view.refresh_for_width_change()
+
+    rendered = _render_lines(view.render(), width=10)
+    assert any("first" in line for line in rendered)
+    assert any("this is a" in line or "this is" in line for line in rendered)
+
+
+def test_transcript_view_render_does_not_recount_full_history() -> None:
+    view = TranscriptView(id="chat-log")
+    view.set_entries(
+        [
+            TranscriptEntry("markup_line", Text("one")),
+            TranscriptEntry("markup_line", Text("two")),
+        ]
+    )
+    view._recalculate_line_cache = lambda _width: (_ for _ in ()).throw(AssertionError("should not recount on render"))
+
+    _ = view.render()
+    _ = view.render()
+
+
+def test_transcript_view_render_tracks_last_render_width() -> None:
+    view = TranscriptView(id="chat-log")
+    view._available_width = lambda: 37
+
+    _ = view.render()
+
+    assert view._last_render_width == 37
+
+
+def test_transcript_view_restores_scroll_anchor_by_entry_and_line() -> None:
+    class Parent:
+        pass
+
+    view = TranscriptView(id="chat-log")
+    view.set_entries(
+        [
+            TranscriptEntry("blank", Text("")),
+            TranscriptEntry("markup_line", Text("alpha")),
+            TranscriptEntry("markup_line", Text("beta\nbeta-2")),
+            TranscriptEntry("markup_line", Text("gamma")),
+        ]
+    )
+    view._available_width = lambda: 20
+    parent = Parent()
+    parent.max_scroll_y = 10
+    parent.scroll_y = 2
+    view._parent = parent
+
+    anchor = view.capture_anchor(2)
+
+    assert anchor == ScrollAnchor(near_bottom=False, entry_index=2, line_offset=0)
+    assert view.restore_anchor(anchor) == 2.0
+
+
+def test_transcript_view_capture_anchor_uses_cached_pre_resize_line_counts() -> None:
+    class Parent:
+        pass
+
+    view = TranscriptView(id="chat-log")
+    view.set_entries(
+        [
+            TranscriptEntry("markup_line", Text("short")),
+            TranscriptEntry("markup_line", Text("this entry wraps when width is narrow")),
+            TranscriptEntry("markup_line", Text("tail")),
+        ]
+    )
+    view._last_render_width = 40
+    view._last_line_counts = [1, 1, 1]
+    view._available_width = lambda: 10
+    parent = Parent()
+    parent.max_scroll_y = 10
+    parent.scroll_y = 1
+    view._parent = parent
+
+    anchor = view.capture_anchor(1)
+
+    assert anchor == ScrollAnchor(near_bottom=False, entry_index=1, line_offset=0)
+
+
+def test_transcript_view_capture_and_restore_anchor_inside_live_partial() -> None:
+    class Parent:
+        pass
+
+    view = TranscriptView(id="chat-log")
+    view.set_entries(
+        [
+            TranscriptEntry("markup_line", Text("alpha")),
+            TranscriptEntry("markup_line", Text("beta")),
+        ]
+    )
+    view._last_render_width = 40
+    view._last_line_counts = [1, 1]
+    view._available_width = lambda: 20
+    parent = Parent()
+    parent.max_scroll_y = 20
+    parent.scroll_y = 3
+    view._parent = parent
+
+    anchor = view.capture_anchor(3, partial_line_count=4)
+
+    assert anchor == ScrollAnchor(near_bottom=False, entry_index=1, line_offset=0, partial_line_offset=1)
+    assert view.restore_anchor(anchor, partial_line_count=6) == 3.0
+
+
+def test_tui_capture_scroll_anchor_uses_cached_partial_line_count() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._partial_renderable = Text("preview")
+    tui._last_partial_render_width = 20
+    tui._last_partial_line_count = 5
+    tui._partial_line_count_dirty = False
+
+    class ScrollStub:
+        scroll_y = 7
+
+    class PartialStub:
+        display = True
+        content_region = SimpleNamespace(width=20)
+        region = SimpleNamespace(width=20)
+        size = SimpleNamespace(width=20)
+
+    captured: dict[str, float | int] = {}
+
+    class LogStub:
+        def capture_anchor(self, scroll_y, *, partial_line_count=0):
+            captured["scroll_y"] = scroll_y
+            captured["partial_line_count"] = partial_line_count
+            return "anchor"
+
+    tui._scroll = lambda: ScrollStub()
+    tui._partial = lambda: PartialStub()
+    tui._log = lambda: LogStub()
+
+    assert tui._capture_scroll_anchor() == "anchor"
+    assert captured == {"scroll_y": 7.0, "partial_line_count": 5}
+
+
+def test_tui_restore_scroll_anchor_remeasures_current_partial_height() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._partial_renderable = Text("preview line one\npreview line two")
+
+    class PartialStub:
+        display = True
+        content_region = SimpleNamespace(width=20)
+        region = SimpleNamespace(width=20)
+        size = SimpleNamespace(width=20)
+
+    class ScrollStub:
+        target_y = None
+
+        def scroll_end(self, *, animate=False) -> None:
+            raise AssertionError("should not jump to bottom")
+
+        def scroll_to(self, *, y=0.0, animate=False, immediate=False, force=False) -> None:
+            self.target_y = y
+
+    scroll = ScrollStub()
+    partial = PartialStub()
+    captured: dict[str, int] = {}
+
+    class LogStub:
+        def restore_anchor(self, anchor, *, partial_line_count=0):
+            captured["partial_line_count"] = partial_line_count
+            return 9.0
+
+    tui._scroll = lambda: scroll
+    tui._partial = lambda: partial
+    tui._log = lambda: LogStub()
+
+    tui._restore_scroll_anchor(ScrollAnchor(near_bottom=False, entry_index=0, line_offset=0))
+
+    assert captured["partial_line_count"] >= 2
+    assert scroll.target_y == 9.0
+
+
+def test_set_partial_renderable_does_not_recount_lines_eagerly(monkeypatch: pytest.MonkeyPatch) -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._partial_renderable = None
+    tui._last_partial_render_width = 1
+    tui._last_partial_line_count = 0
+    tui._partial_line_count_dirty = False
+
+    class PartialStub:
+        def __init__(self) -> None:
+            self.display = True
+            self.content_region = SimpleNamespace(width=24)
+            self.region = SimpleNamespace(width=24)
+            self.size = SimpleNamespace(width=24)
+            self.value = None
+
+        def update(self, value) -> None:
+            self.value = value
+
+    partial = PartialStub()
+    tui._partial = lambda: partial
+    calls = {"count": 0}
+
+    def _count(*_args, **_kwargs):
+        calls["count"] += 1
+        return 3
+
+    monkeypatch.setattr("tui.interface.count_renderable_lines", _count)
+
+    tui._set_partial_renderable(Text("streaming preview"), visible=True)
+
+    assert partial.value == Text("streaming preview")
+    assert calls["count"] == 0
+    assert tui._partial_line_count_dirty is True
+    assert tui._last_partial_render_width == 24
+
+
+def test_cached_partial_line_count_is_lazy_and_reused(monkeypatch: pytest.MonkeyPatch) -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._partial_renderable = Text("preview")
+    tui._last_partial_render_width = 1
+    tui._last_partial_line_count = 0
+    tui._partial_line_count_dirty = True
+
+    class PartialStub:
+        display = True
+        content_region = SimpleNamespace(width=18)
+        region = SimpleNamespace(width=18)
+        size = SimpleNamespace(width=18)
+
+    tui._partial = lambda: PartialStub()
+    calls = {"count": 0}
+
+    def _count(*_args, **_kwargs):
+        calls["count"] += 1
+        return 4
+
+    monkeypatch.setattr("tui.interface.count_renderable_lines", _count)
+
+    assert tui._cached_partial_line_count() == 4
+    assert tui._cached_partial_line_count() == 4
+
+    assert calls["count"] == 1
+    assert tui._partial_line_count_dirty is False
+    assert tui._last_partial_render_width == 18
 
 
 def test_tool_call_partial_renders_panel_with_assistant_bar() -> None:
