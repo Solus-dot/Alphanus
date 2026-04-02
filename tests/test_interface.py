@@ -145,6 +145,50 @@ async def test_command_popup_narrows_from_he_to_hel_and_keeps_help_visible(tmp_p
         assert tui.query_one("#command-options").region.bottom <= tui.query_one("#command-popup").region.bottom
 
 
+@pytest.mark.anyio
+async def test_footer_stays_in_chat_column_and_sidebar_uses_full_height(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    tui._open_startup_session_picker = lambda: None
+    tui._maybe_refresh_model_name = lambda force=False: None
+
+    async with tui.run_test(size=(160, 40)) as pilot:
+        await pilot.pause()
+        footer = tui.query_one("#footer")
+        sidebar = tui.query_one("#sidebar")
+        inspector = tui.query_one("#sidebar-inspector-scroll")
+        chat_input = tui.query_one(ChatInput)
+        chat_log = tui.query_one("#chat-log")
+
+        assert sidebar.display is True
+        assert footer.region.right <= sidebar.region.x
+        assert chat_input.region.x > chat_log.region.x
+        assert inspector.region.bottom == sidebar.region.bottom
+        assert inspector.region.y > sidebar.region.y + (sidebar.region.height // 3)
+
+
+@pytest.mark.anyio
+async def test_attachment_name_renders_in_separator_without_moving_it(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    tui._open_startup_session_picker = lambda: None
+    tui._maybe_refresh_model_name = lambda force=False: None
+
+    async with tui.run_test(size=(160, 40)) as pilot:
+        separator = tui.query_one("#footer-sep")
+        separator_y_before = separator.region.y
+        attachment = tmp_path / "notes.txt"
+        attachment.write_text("hello", encoding="utf-8")
+        tui.pending.append((str(attachment), "text"))
+        tui._update_pending_attachments()
+        await pilot.pause()
+        attach_file = tui.query_one("#attach-file")
+        chat_input = tui.query_one(ChatInput)
+
+        assert separator.region.y == separator_y_before
+        assert attach_file.region.y >= chat_input.region.y
+        assert attach_file.region.x > chat_input.region.x
+        assert "notes.txt" in str(separator.render())
+
+
 def test_active_command_span_covers_command_token() -> None:
     assert active_command_span("/cont notes", 3) == (0, 5)
     assert active_command_span("  /cont notes", 2) == (2, 7)

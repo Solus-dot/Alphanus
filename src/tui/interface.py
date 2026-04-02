@@ -191,6 +191,13 @@ class AlphanusTUI(App):
         background: #09090b;
     }
 
+    #chat-column {
+        width: 1fr;
+        height: 1fr;
+        layout: vertical;
+        background: #09090b;
+    }
+
     #chat-scroll {
         width: 1fr;
         height: 1fr;
@@ -234,7 +241,9 @@ class AlphanusTUI(App):
         background: #121214;
         display: none;
         padding: 0;
-        layout: vertical;
+        layout: grid;
+        grid-size: 1 2;
+        grid-rows: 3fr 2fr;
     }
 
     #sidebar-tree-section {
@@ -286,7 +295,8 @@ class AlphanusTUI(App):
 
     #sidebar-inspector-section {
         width: 1fr;
-        height: auto;
+        height: 1fr;
+        min-height: 8;
         border-top: solid #27272a;
         background: #121214;
         layout: vertical;
@@ -294,8 +304,7 @@ class AlphanusTUI(App):
 
     #sidebar-inspector-scroll {
         width: 1fr;
-        height: auto;
-        max-height: 12;
+        height: 1fr;
         background: #121214;
         padding: 0 2 1 2;
         scrollbar-background: #121214;
@@ -314,10 +323,11 @@ class AlphanusTUI(App):
     }
 
     #footer {
-        height: auto;
+        width: 1fr;
+        height: 5;
         background: #09090b;
         layout: vertical;
-        dock: bottom;
+        padding: 0 3 0 3;
     }
 
     #command-popup {
@@ -375,6 +385,9 @@ class AlphanusTUI(App):
     #footer-sep {
         height: 1;
         background: #27272a;
+        color: #e4e4e7;
+        content-align: left middle;
+        padding: 0 1;
     }
 
     #status-bar {
@@ -397,10 +410,10 @@ class AlphanusTUI(App):
     }
 
     #input-row {
-        height: auto;
+        height: 3;
         layout: vertical;
         background: #09090b;
-        padding: 0 0 1 0;
+        padding: 0 0 0 0;
         min-height: 3;
     }
 
@@ -437,14 +450,6 @@ class AlphanusTUI(App):
         layout: horizontal;
         align: right middle;
         padding-left: 1;
-    }
-
-    #pending-attachments {
-        width: auto;
-        max-width: 44;
-        height: 1;
-        content-align: right middle;
-        padding-right: 1;
     }
 
     #attach-file {
@@ -564,15 +569,26 @@ class AlphanusTUI(App):
             yield Static("", id="topbar-center")
             yield Static("", id="topbar-right")
         with Horizontal(id="main-area"):
-            with ScrollableContainer(id="chat-scroll"):
-                yield RichLog(
-                    id="chat-log",
-                    markup=True,
-                    highlight=False,
-                    wrap=True,
-                    max_lines=self._chat_log_max_lines,
-                )
-                yield Static("", id="partial", markup=True)
+            with Vertical(id="chat-column"):
+                with ScrollableContainer(id="chat-scroll"):
+                    yield RichLog(
+                        id="chat-log",
+                        markup=True,
+                        highlight=False,
+                        wrap=True,
+                        max_lines=self._chat_log_max_lines,
+                    )
+                    yield Static("", id="partial", markup=True)
+                with Vertical(id="footer"):
+                    yield Static("", id="footer-sep", markup=True)
+                    with Horizontal(id="input-row"):
+                        with Horizontal(id="composer-shell"):
+                            yield ChatInput(id="chat-input", placeholder="Type a message…")
+                            with Horizontal(id="input-accessories"):
+                                yield Button("+ File", id="attach-file")
+                    with Horizontal(id="status-bar"):
+                        yield Static("", id="status-left")
+                        yield Static("", id="status-right")
             with Vertical(id="sidebar"):
                 with Vertical(id="sidebar-tree-section"):
                     yield Static("Conversation Tree", id="sidebar-tree-header")
@@ -583,18 +599,6 @@ class AlphanusTUI(App):
                     yield Static("Inspector", id="sidebar-inspector-header")
                     with ScrollableContainer(id="sidebar-inspector-scroll"):
                         yield Static("", id="sidebar-inspector-content", markup=True)
-
-        with Vertical(id="footer"):
-            yield Static("", id="footer-sep")
-            with Horizontal(id="input-row"):
-                with Horizontal(id="composer-shell"):
-                    yield ChatInput(id="chat-input", placeholder="Type a message…")
-                    with Horizontal(id="input-accessories"):
-                        yield Static("", id="pending-attachments", markup=True)
-                        yield Button("+ File", id="attach-file")
-            with Horizontal(id="status-bar"):
-                yield Static("", id="status-left")
-                yield Static("", id="status-right")
         with Vertical(id="command-popup"):
             yield Static("commands", id="command-popup-title")
             yield Static("type to filter · tab to insert", id="command-popup-hint")
@@ -1568,7 +1572,7 @@ class AlphanusTUI(App):
 
     def _update_pending_attachments(self) -> None:
         try:
-            self.query_one("#pending-attachments", Static).update(self._pending_attachment_markup())
+            self.query_one("#footer-sep", Static).update(self._pending_attachment_markup())
         except Exception:
             return
 
