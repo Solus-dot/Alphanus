@@ -259,12 +259,17 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
     }
 
     #session-modal {
-        width: 72;
+        width: 68;
         max-width: 92%;
         height: auto;
-        background: #121214;
-        border: panel #27272a;
-        padding: 1 2;
+        background: #09090b;
+        border: solid #27272a;
+        padding: 0 1 1 2;
+    }
+
+    #session-modal-kicker {
+        color: #71717a;
+        padding: 0 0 1 0;
     }
 
     #session-modal-title {
@@ -281,16 +286,17 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
     #session-modal-list-label,
     #session-modal-new-label {
         color: #6366f1;
-        padding: 1 0 0 0;
+        padding: 0 0 1 0;
     }
 
     #session-modal-list {
         width: 1fr;
         height: auto;
         max-height: 10;
-        background: #18181b;
+        background: #121214;
         border: solid #27272a;
         margin: 0 0 1 0;
+        padding: 0;
     }
 
     #session-modal-list > .option-list--option-highlighted {
@@ -301,36 +307,42 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
     #session-modal-name {
         width: 1fr;
         margin: 0 0 1 0;
-        background: #18181b;
+        background: #121214;
         color: #e4e4e7;
         border: round #3f3f46;
     }
 
     #session-modal-footer {
+        width: 1fr;
         height: auto;
-        align-horizontal: right;
-        padding: 1 0 0 0;
+        align-horizontal: left;
+        padding: 0;
+    }
+
+    #session-open,
+    #session-delete,
+    #session-new {
+        width: 1fr;
+        min-width: 0;
+        border: none;
+        content-align: center middle;
+        margin-right: 1;
     }
 
     #session-open {
-        background: #6366f1;
-        color: #ffffff;
-        border: none;
-        margin-right: 1;
+        background: #1a1730;
+        color: #c7d2fe;
     }
 
     #session-delete {
-        background: #7f1d1d;
-        color: #ffffff;
-        border: none;
-        margin-right: 1;
+        background: #26181a;
+        color: #f0c4c8;
     }
 
     #session-new {
-        background: #10b981;
-        color: #ffffff;
-        border: none;
-        margin-right: 1;
+        background: #15241f;
+        color: #b9ead9;
+        margin-right: 0;
     }
 
     """
@@ -348,6 +360,7 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="session-modal"):
+            yield Static("SESSION MANAGER", id="session-modal-kicker")
             yield Static("Sessions", id="session-modal-title")
             yield Static("Open, create, or delete sessions from one place.", id="session-modal-subtitle")
             if self._sessions:
