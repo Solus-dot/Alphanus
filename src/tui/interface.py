@@ -214,7 +214,7 @@ class AlphanusTUI(App):
         width: 1fr;
         height: auto;
         background: #09090b;
-        padding: 0 3;
+        padding: 0 3 0 1;
         overflow-x: hidden;
         scrollbar-size: 0 0;
     }
@@ -224,7 +224,7 @@ class AlphanusTUI(App):
         height: auto;
         background: #09090b;
         display: none;
-        padding: 0 3;
+        padding: 0 3 0 1;
         overflow-x: hidden;
     }
 
