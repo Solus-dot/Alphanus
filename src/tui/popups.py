@@ -251,9 +251,9 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
         self.dismiss({"config": parsed, "text": formatted})
 
 
-class SessionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
+class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
     CSS = """
-    SessionPickerModal {
+    SessionManagerModal {
         align: center middle;
         background: rgba(0, 0, 0, 0.76);
     }
@@ -312,8 +312,15 @@ class SessionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
         padding: 1 0 0 0;
     }
 
-    #session-load {
+    #session-open {
         background: #6366f1;
+        color: #ffffff;
+        border: none;
+        margin-right: 1;
+    }
+
+    #session-delete {
+        background: #7f1d1d;
         color: #ffffff;
         border: none;
         margin-right: 1;
@@ -326,31 +333,23 @@ class SessionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
         margin-right: 1;
     }
 
-    #session-continue {
-        background: #18181b;
-        color: #e4e4e7;
-        border: none;
-    }
     """
 
     BINDINGS = [
-        Binding("escape", "continue_current", show=False),
-        Binding("enter", "load_selected", show=False),
+        Binding("escape", "cancel", show=False),
+        Binding("enter", "open_selected", show=False),
     ]
 
-    def __init__(self, sessions: list[SessionSummary], active_session_id: str, active_session_title: str) -> None:
+    def __init__(self, sessions: list[SessionSummary], active_session_id: str) -> None:
         super().__init__()
         self._sessions = sessions
         self._active_session_id = active_session_id
-        self._active_session_title = active_session_title
+        self._pending_delete_session_id = ""
 
     def compose(self) -> ComposeResult:
         with Vertical(id="session-modal"):
-            yield Static("Choose Session", id="session-modal-title")
-            yield Static(
-                "Load an existing session or start a new one before entering the chat.",
-                id="session-modal-subtitle",
-            )
+            yield Static("Sessions", id="session-modal-title")
+            yield Static("Open, create, or delete sessions from one place.", id="session-modal-subtitle")
             if self._sessions:
                 yield Static("Saved Sessions", id="session-modal-list-label")
                 yield OptionList(*self._session_options(), id="session-modal-list")
@@ -361,9 +360,9 @@ class SessionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
                 id="session-modal-name",
             )
             with Horizontal(id="session-modal-footer"):
-                yield Button("Load Selected", id="session-load", variant="primary", disabled=not self._sessions)
+                yield Button("Open Selected", id="session-open", variant="primary", disabled=not self._sessions)
+                yield Button("Delete Selected", id="session-delete", variant="default", disabled=not self._sessions)
                 yield Button("New Session", id="session-new", variant="success")
-                yield Button(f"Continue {self._active_session_title}", id="session-continue")
 
     def _session_options(self) -> list[Option]:
         options: list[Option] = []
@@ -397,39 +396,82 @@ class SessionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
             options.focus()
         else:
             self.query_one("#session-modal-name", Input).focus()
+        self._sync_delete_button()
 
-    def action_continue_current(self) -> None:
-        self.dismiss({"action": "continue"})
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
-    def action_load_selected(self) -> None:
+    def _selected_session_id(self) -> str:
         if not self._sessions:
-            return
+            return ""
         options = self.query_one("#session-modal-list", OptionList)
         selected = options.highlighted_option
         if selected is None or selected.id is None:
             selected = self._session_options()[0]
-        self.dismiss({"action": "load", "selector": str(selected.id)})
+        return str(selected.id)
 
-    @on(Button.Pressed, "#session-load")
-    def _load_button(self) -> None:
-        self.action_load_selected()
+    def _clear_delete_confirmation(self) -> None:
+        if not self._pending_delete_session_id:
+            return
+        self._pending_delete_session_id = ""
+        self._sync_delete_button()
+
+    def _sync_delete_button(self) -> None:
+        if not self._sessions:
+            return
+        button = self.query_one("#session-delete", Button)
+        button.label = (
+            "Confirm Delete"
+            if self._pending_delete_session_id and self._pending_delete_session_id == self._selected_session_id()
+            else "Delete Selected"
+        )
+        button.variant = "error" if button.label == "Confirm Delete" else "default"
+
+    def action_open_selected(self) -> None:
+        session_id = self._selected_session_id()
+        if not session_id:
+            return
+        self.dismiss({"action": "open", "session_id": session_id})
+
+    def action_delete_selected(self) -> None:
+        session_id = self._selected_session_id()
+        if not session_id:
+            return
+        if self._pending_delete_session_id != session_id:
+            self._pending_delete_session_id = session_id
+            self._sync_delete_button()
+            return
+        self.dismiss({"action": "delete", "session_id": session_id})
+
+    @on(Button.Pressed, "#session-open")
+    def _open_button(self) -> None:
+        self._clear_delete_confirmation()
+        self.action_open_selected()
+
+    @on(Button.Pressed, "#session-delete")
+    def _delete_button(self) -> None:
+        self.action_delete_selected()
 
     @on(Button.Pressed, "#session-new")
     def _new_button(self) -> None:
+        self._clear_delete_confirmation()
         name = self.query_one("#session-modal-name", Input).value.strip()
-        self.dismiss({"action": "new", "title": name})
+        self.dismiss({"action": "create", "title": name})
 
     @on(Input.Submitted, "#session-modal-name")
     def _new_name_submitted(self, event: Input.Submitted) -> None:
-        self.dismiss({"action": "new", "title": event.value.strip()})
-
-    @on(Button.Pressed, "#session-continue")
-    def _continue_button(self) -> None:
-        self.action_continue_current()
+        self._clear_delete_confirmation()
+        self.dismiss({"action": "create", "title": event.value.strip()})
 
     @on(OptionList.OptionSelected, "#session-modal-list")
     def _session_selected(self, _event: OptionList.OptionSelected) -> None:
-        self.action_load_selected()
+        self._clear_delete_confirmation()
+        self._sync_delete_button()
+
+    @on(OptionList.OptionHighlighted, "#session-modal-list")
+    def _session_highlighted(self, _event: OptionList.OptionHighlighted) -> None:
+        self._clear_delete_confirmation()
+        self._sync_delete_button()
 
 
 @dataclass(frozen=True)
@@ -568,26 +610,3 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
     @on(OptionList.OptionSelected, "#picker-modal-list")
     def _option_selected(self, _event: OptionList.OptionSelected) -> None:
         self.action_confirm()
-
-
-def session_picker_items(sessions: list[SessionSummary]) -> list[PickerItem]:
-    items: list[PickerItem] = []
-    for index, session in enumerate(sessions, start=1):
-        marker = (
-            "[bold #6366f1]active[/bold #6366f1]"
-            if session.is_active
-            else "[#71717a]saved[/#71717a]"
-        )
-        title = (
-            f"[bold #6366f1]{esc(session.title)}[/bold #6366f1]"
-            if session.is_active
-            else f"[#f4f4f5]{esc(session.title)}[/#f4f4f5]"
-        )
-        prompt = (
-            f"[bold #6366f1]{index}.[/bold #6366f1] "
-            f"{marker} {title} "
-            f"[dim]{session.turn_count} turns · {session.branch_count} branches[/dim]"
-        )
-        items.append(PickerItem(id=session.id, prompt=prompt))
-    return items
-

@@ -212,6 +212,27 @@ class SessionStore:
             self._write_manifest(manifest)
         return session
 
+    def delete_session(self, session_id: str) -> None:
+        target_id = str(session_id or "").strip()
+        if not target_id:
+            raise ValueError("session id is required")
+
+        manifest = self._load_manifest()
+        sessions = manifest.get("sessions")
+        if not isinstance(sessions, dict):
+            sessions = {}
+            manifest["sessions"] = sessions
+
+        sessions.pop(target_id, None)
+        if str(manifest.get("active_session_id") or "") == target_id:
+            manifest["active_session_id"] = ""
+
+        path = self._session_path(target_id)
+        if path.exists():
+            path.unlink()
+
+        self._write_manifest(manifest)
+
     def resolve_session_id(self, selector: str) -> str:
         value = str(selector or "").strip()
         if not value:

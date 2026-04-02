@@ -15,7 +15,7 @@ from agent.policies import OutputSanitizer
 from tui.live_tool_preview import LiveToolPreviewManager
 from tui.commands import active_command_query, active_command_span, command_entries_for_query, popup_command_query
 from tui.interface import AlphanusTUI, ChatInput
-from tui.popups import SessionPickerModal
+from tui.popups import SessionManagerModal
 from tui.transcript import ScrollAnchor, TranscriptEntry, TranscriptView
 
 
@@ -89,10 +89,18 @@ def test_popup_command_query_keeps_partial_command_matches() -> None:
     assert popup_command_query("/cont", 5) == "/cont"
 
 
+def test_command_entries_no_longer_expose_load_or_new_sessions_commands() -> None:
+    prompts = [entry.prompt for entry in command_entries_for_query("/")]
+
+    assert "/sessions" in prompts
+    assert "/load" not in prompts
+    assert not any(prompt.startswith("/new") for prompt in prompts)
+
+
 @pytest.mark.anyio
 async def test_command_popup_tracks_chat_input_geometry(tmp_path: Path) -> None:
     tui = AlphanusTUI(_tui_agent_stub(tmp_path))
-    tui._open_startup_session_picker = lambda: None
+    tui._open_startup_session_manager = lambda: None
     tui._maybe_refresh_model_name = lambda force=False: None
 
     async with tui.run_test() as pilot:
@@ -113,7 +121,7 @@ async def test_command_popup_tracks_chat_input_geometry(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_command_popup_hides_for_unknown_query_and_reappears_when_query_matches(tmp_path: Path) -> None:
     tui = AlphanusTUI(_tui_agent_stub(tmp_path))
-    tui._open_startup_session_picker = lambda: None
+    tui._open_startup_session_manager = lambda: None
     tui._maybe_refresh_model_name = lambda force=False: None
 
     async with tui.run_test() as pilot:
@@ -130,7 +138,7 @@ async def test_command_popup_hides_for_unknown_query_and_reappears_when_query_ma
 @pytest.mark.anyio
 async def test_command_popup_narrows_from_he_to_hel_and_keeps_help_visible(tmp_path: Path) -> None:
     tui = AlphanusTUI(_tui_agent_stub(tmp_path))
-    tui._open_startup_session_picker = lambda: None
+    tui._open_startup_session_manager = lambda: None
     tui._maybe_refresh_model_name = lambda force=False: None
 
     async with tui.run_test() as pilot:
@@ -149,7 +157,7 @@ async def test_command_popup_narrows_from_he_to_hel_and_keeps_help_visible(tmp_p
 @pytest.mark.anyio
 async def test_footer_stays_in_chat_column_and_sidebar_uses_full_height(tmp_path: Path) -> None:
     tui = AlphanusTUI(_tui_agent_stub(tmp_path))
-    tui._open_startup_session_picker = lambda: None
+    tui._open_startup_session_manager = lambda: None
     tui._maybe_refresh_model_name = lambda force=False: None
 
     async with tui.run_test(size=(160, 40)) as pilot:
@@ -170,7 +178,7 @@ async def test_footer_stays_in_chat_column_and_sidebar_uses_full_height(tmp_path
 @pytest.mark.anyio
 async def test_attachment_name_renders_in_separator_without_moving_it(tmp_path: Path) -> None:
     tui = AlphanusTUI(_tui_agent_stub(tmp_path))
-    tui._open_startup_session_picker = lambda: None
+    tui._open_startup_session_manager = lambda: None
     tui._maybe_refresh_model_name = lambda force=False: None
 
     async with tui.run_test(size=(160, 40)) as pilot:
@@ -193,7 +201,7 @@ async def test_attachment_name_renders_in_separator_without_moving_it(tmp_path: 
 @pytest.mark.anyio
 async def test_sidebar_width_changes_at_resize_thresholds(tmp_path: Path) -> None:
     tui = AlphanusTUI(_tui_agent_stub(tmp_path))
-    tui._open_startup_session_picker = lambda: None
+    tui._open_startup_session_manager = lambda: None
     tui._maybe_refresh_model_name = lambda force=False: None
 
     async with tui.run_test(size=(160, 40)) as pilot:
@@ -1168,15 +1176,37 @@ def test_handle_save_renames_and_persists_active_session() -> None:
     assert actions == ["Saved session 'Backend Work'"]
 
 
-def test_handle_load_switches_sessions_and_rebuilds_view() -> None:
+def test_handle_sessions_opens_manager() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._id = "app"
     tui._reactive_streaming = False
     opened: list[str] = []
-    tui._open_load_session_picker = lambda: opened.append("load")
+    tui._open_session_manager = lambda startup=False: opened.append("startup" if startup else "sessions")
+
+    assert tui._handle_command("/sessions") is True
+    assert opened == ["sessions"]
+
+
+def test_handle_load_guides_to_sessions_manager() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    errors: list[str] = []
+    tui._write_error = errors.append
 
     assert tui._handle_command("/load") is True
-    assert opened == ["load"]
+    assert errors == ["Use /sessions to manage sessions."]
+
+
+def test_handle_new_guides_to_sessions_manager() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    errors: list[str] = []
+    tui._write_error = errors.append
+
+    assert tui._handle_command("/new Backend Work") is True
+    assert errors == ["Use /sessions to manage sessions."]
 
 
 def test_handle_file_without_path_opens_attachment_picker() -> None:
@@ -1250,7 +1280,7 @@ def test_open_new_session_reuses_blank_current_session() -> None:
     assert titles == ["Fresh Session"]
 
 
-def test_startup_session_picker_close_loads_selected_session() -> None:
+def test_session_manager_close_opens_selected_session() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     loaded = ChatSession(
         id="sess-2",
@@ -1259,42 +1289,36 @@ def test_startup_session_picker_close_loads_selected_session() -> None:
         updated_at="2026-03-20T10:01:00+00:00",
         tree=ConvTree(),
     )
-    switched: list[ChatSession] = []
+    events: list[str] = []
+    tui._load_session_from_manager = lambda session_id: loaded if session_id == "sess-2" else None
+    tui._write_command_action = lambda text, **_kwargs: events.append(text)
 
-    tui._session_store = SimpleNamespace(load_session=lambda selector: loaded if selector == "sess-2" else None)
-    tui._switch_to_session = lambda session, clear_pending=True: switched.append(session)
+    tui._on_session_manager_close({"action": "open", "session_id": "sess-2"})
 
-    tui._on_startup_session_picker_close({"action": "load", "selector": "sess-2"})
-
-    assert switched == [loaded]
+    assert events == ["Loaded session 'Loaded Session'"]
 
 
-def test_startup_session_picker_close_reports_load_failure() -> None:
+def test_session_manager_close_reports_open_failure() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     errors: list[str] = []
-    switched: list[ChatSession] = []
 
     def load_session(_selector: str) -> ChatSession:
         raise ValueError("broken session file")
 
-    tui._session_store = SimpleNamespace(load_session=load_session)
-    tui._switch_to_session = lambda session, clear_pending=True: switched.append(session)
+    tui._load_session_from_manager = load_session
     tui._write_error = errors.append
 
-    tui._on_startup_session_picker_close({"action": "load", "selector": "sess-2"})
+    tui._on_session_manager_close({"action": "open", "session_id": "sess-2"})
 
-    assert switched == []
     assert errors == ["Load failed: broken session file"]
 
 
-def test_load_session_picker_close_switches_sessions() -> None:
+def test_load_session_from_manager_switches_sessions() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     current_tree = ConvTree()
     loaded_tree = ConvTree()
     loaded_turn = loaded_tree.add_turn("loaded")
     loaded_tree.complete_turn(loaded_turn.id, "done")
-    events: list[str] = []
-    errors: list[str] = []
 
     def save_tree(session_id: str, title: str, tree: ConvTree, *, created_at: str, activate: bool = True) -> ChatSession:
         assert tree is current_tree
@@ -1322,32 +1346,90 @@ def test_load_session_picker_close_switches_sessions() -> None:
     tui._session_created_at = "2026-03-20T10:00:00+00:00"
     tui.conv_tree = current_tree
     tui.pending = [("/tmp/example.txt", "text")]
-    tui._switch_to_session = lambda session, clear_pending=True: events.append(session.title)
+    switched: list[str] = []
+    tui._switch_to_session = lambda session, clear_pending=True: switched.append(session.title)
+
+    loaded = tui._load_session_from_manager("sess-2")
+
+    assert loaded.title == "Loaded Session"
+    assert switched == ["Loaded Session"]
+
+
+def test_delete_session_from_manager_reopens_modal_without_switching_for_non_active() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    events: list[str] = []
+    tui._session_id = "sess-1"
+    tui._session_store = SimpleNamespace(delete_session=lambda session_id: events.append(f"delete:{session_id}"))
+    tui._open_session_manager = lambda: events.append("reopen")
     tui._write_command_action = lambda text, **_kwargs: events.append(text)
+    tui._write_error = lambda text: events.append(f"error:{text}")
+
+    tui._delete_session_from_manager("sess-2")
+
+    assert events == ["delete:sess-2", "Deleted session", "reopen"]
+
+
+def test_delete_session_from_manager_switches_to_newest_remaining_active_session() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    events: list[str] = []
+    replacement = ChatSession(
+        id="sess-2",
+        title="Replacement",
+        created_at="2026-03-20T10:00:00+00:00",
+        updated_at="2026-03-20T10:05:00+00:00",
+        tree=ConvTree(),
+    )
+    tui._session_id = "sess-1"
+    tui._session_store = SimpleNamespace(
+        delete_session=lambda session_id: events.append(f"delete:{session_id}"),
+        list_sessions=lambda: [SimpleNamespace(id="sess-2")],
+        load_session=lambda session_id: replacement if session_id == "sess-2" else None,
+    )
+    tui._switch_to_session = lambda session, clear_pending=True: events.append(f"switch:{session.title}")
+    tui._open_session_manager = lambda: events.append("reopen")
+    tui._write_command_action = lambda text, **_kwargs: events.append(text)
+    tui._write_error = lambda text: events.append(f"error:{text}")
+
+    tui._delete_session_from_manager("sess-1")
+
+    assert events == ["delete:sess-1", "switch:Replacement", "Deleted session", "reopen"]
+
+
+def test_delete_session_from_manager_creates_blank_session_when_last_one_deleted() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    events: list[str] = []
+    replacement = ChatSession(
+        id="sess-2",
+        title="Session 1",
+        created_at="2026-03-20T10:00:00+00:00",
+        updated_at="2026-03-20T10:05:00+00:00",
+        tree=ConvTree(),
+    )
+    tui._session_id = "sess-1"
+    tui._session_store = SimpleNamespace(
+        delete_session=lambda session_id: events.append(f"delete:{session_id}"),
+        list_sessions=lambda: [],
+        create_session=lambda: replacement,
+    )
+    tui._switch_to_session = lambda session, clear_pending=True: events.append(f"switch:{session.title}")
+    tui._open_session_manager = lambda: events.append("reopen")
+    tui._write_command_action = lambda text, **_kwargs: events.append(text)
+    tui._write_error = lambda text: events.append(f"error:{text}")
+
+    tui._delete_session_from_manager("sess-1")
+
+    assert events == ["delete:sess-1", "switch:Session 1", "Deleted session", "reopen"]
+
+
+def test_handle_sessions_is_blocked_while_streaming() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = True
+    errors: list[str] = []
     tui._write_error = errors.append
 
-    tui._on_load_session_picker_close({"id": "sess-2"})
-
-    assert errors == []
-    assert events == ["Loaded Session", "Loaded session 'Loaded Session'"]
-
-
-def test_session_row_label_highlights_active_session() -> None:
-    tui = AlphanusTUI.__new__(AlphanusTUI)
-    label = tui._session_row_label(
-        SimpleNamespace(
-            is_active=True,
-            title="Test123",
-            id="25e4a7bf",
-            turn_count=0,
-            branch_count=0,
-            updated_at="2026-03-19T21:14:00+00:00",
-        )
-    )
-
-    assert "active" in label
-    assert "#6366f1" in label
-    assert "[25e4a7bf]" in label
+    assert tui._handle_command("/sessions") is True
+    assert errors == ["Stop the active response before changing sessions."]
 
 
 def test_activate_session_state_moves_non_empty_root_session_to_latest_leaf() -> None:
@@ -1489,14 +1571,56 @@ def test_handle_clear_resets_context_usage_and_refreshes_topbar() -> None:
     assert events == ["log", "partial", "save", "attachments", "status1", "status2", "sidebar", "placeholder", "topbar"]
 
 
-def test_session_picker_name_submit_creates_new_session() -> None:
-    modal = SessionPickerModal([], "sess-1", "Session 1")
+def test_session_manager_name_submit_creates_new_session() -> None:
+    modal = SessionManagerModal([], "sess-1")
     dismissed: list[dict[str, str]] = []
     modal.dismiss = lambda payload=None: dismissed.append(payload)
 
     modal._new_name_submitted(SimpleNamespace(value="Backend Work"))
 
-    assert dismissed == [{"action": "new", "title": "Backend Work"}]
+    assert dismissed == [{"action": "create", "title": "Backend Work"}]
+
+
+def test_session_manager_delete_requires_confirmation() -> None:
+    modal = SessionManagerModal([], "sess-1")
+    dismissed: list[dict[str, str]] = []
+    syncs: list[str] = []
+    modal.dismiss = lambda payload=None: dismissed.append(payload)
+    modal._sessions = [SimpleNamespace(id="sess-1")]
+    modal._selected_session_id = lambda: "sess-1"
+    modal._sync_delete_button = lambda: syncs.append("sync")
+
+    modal.action_delete_selected()
+    modal.action_delete_selected()
+
+    assert dismissed == [{"action": "delete", "session_id": "sess-1"}]
+    assert modal._pending_delete_session_id == "sess-1"
+    assert syncs == ["sync"]
+
+
+def test_session_manager_selection_change_clears_delete_confirmation() -> None:
+    modal = SessionManagerModal([], "sess-1")
+    modal._pending_delete_session_id = "sess-1"
+    syncs: list[str] = []
+    modal._sync_delete_button = lambda: syncs.append("sync")
+
+    modal._session_highlighted(SimpleNamespace())
+
+    assert modal._pending_delete_session_id == ""
+    assert syncs == ["sync", "sync"]
+
+
+def test_session_manager_row_selection_does_not_auto_open() -> None:
+    modal = SessionManagerModal([], "sess-1")
+    dismissed: list[dict[str, str]] = []
+    modal.dismiss = lambda payload=None: dismissed.append(payload)
+    syncs: list[str] = []
+    modal._sync_delete_button = lambda: syncs.append("sync")
+
+    modal._session_selected(SimpleNamespace())
+
+    assert dismissed == []
+    assert syncs == ["sync"]
 
 
 def test_cmd_skills_shows_trust_validation_and_shadowing() -> None:

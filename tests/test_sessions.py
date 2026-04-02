@@ -49,3 +49,22 @@ def test_bootstrap_skips_unreadable_fallback_session(tmp_path: Path) -> None:
 
     assert bootstrapped.id == second.id
     assert bootstrapped.title == "Healthy Session"
+
+
+def test_delete_session_removes_file_and_manifest_entry(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path, tmp_path / "sessions")
+    session = store.create_session("Delete Me")
+
+    store.delete_session(session.id)
+
+    assert not store._session_path(session.id).exists()
+    assert all(summary.id != session.id for summary in store.list_sessions())
+
+
+def test_delete_active_session_clears_manifest_active_session(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path, tmp_path / "sessions")
+    session = store.bootstrap()
+
+    store.delete_session(session.id)
+
+    assert store._load_manifest()["active_session_id"] == ""

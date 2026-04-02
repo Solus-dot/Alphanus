@@ -36,7 +36,7 @@ from core.configuration import (
     validate_endpoint_policy,
 )
 from core.conv_tree import ConvTree, Turn
-from core.sessions import ChatSession, SessionStore, SessionSummary
+from core.sessions import ChatSession, SessionStore
 from tui.commands import (
     HELP_SECTIONS,
     CommandEntry,
@@ -54,8 +54,7 @@ from tui.popups import (
     ConfigEditorModal,
     PickerItem,
     SelectionPickerModal,
-    SessionPickerModal,
-    session_picker_items,
+    SessionManagerModal,
 )
 from tui.sidebar import render_sidebar_inspector_markup, render_sidebar_tree_markup
 from tui.status import context_usage_percent, status_left_markup, status_right_markup, topbar_center, topbar_left, topbar_right
@@ -618,7 +617,7 @@ class AlphanusTUI(App):
         self._update_pending_attachments()
         self._maybe_refresh_model_name(force=True)
         self.query_one(ChatInput).focus()
-        self.call_after_refresh(self._open_startup_session_picker)
+        self.call_after_refresh(self._open_startup_session_manager)
 
     def on_resize(self, event) -> None:
         self._apply_sidebar_layout(event.size.width)
@@ -736,66 +735,21 @@ class AlphanusTUI(App):
         self._session_created_at = session.created_at
         return session
 
-    def _session_timestamp_label(self, value: str) -> str:
-        text = str(value or "").replace("T", " ").replace("+00:00", "Z")
-        return text[:16] if len(text) >= 16 else text
-
-    def _session_row_label(self, summary: SessionSummary) -> str:
-        status = (
-            f"[bold {ACCENT_COLOR}]active[/bold {ACCENT_COLOR}]"
-            if summary.is_active
-            else "[#71717a]saved[/#71717a]"
-        )
-        title = (
-            f"[bold {ACCENT_COLOR}]{esc(summary.title)}[/bold {ACCENT_COLOR}]"
-            if summary.is_active
-            else f"[#f4f4f5]{esc(summary.title)}[/#f4f4f5]"
-        )
-        turns = "turn" if summary.turn_count == 1 else "turns"
-        branches = "branch" if summary.branch_count == 1 else "branches"
-        return (
-            f"{status}  {title} [#a1a1aa][{esc(summary.id)}][/#a1a1aa]  "
-            f"[#f4f4f5]{summary.turn_count} {turns}[/#f4f4f5]  "
-            f"[#f4f4f5]{summary.branch_count} {branches}[/#f4f4f5]  "
-            f"[#a1a1aa]{esc(self._session_timestamp_label(summary.updated_at))}[/#a1a1aa]"
-        )
-
     def _cmd_sessions(self) -> None:
-        sessions = self._session_store.list_sessions()
-        self._write_section_heading("Sessions")
-        if not sessions:
-            self._write_info("No saved sessions yet.")
-            return
-        self._write_indexed_dim_lines(
-            [self._session_row_label(summary) for summary in sessions],
-            color="#a1a1aa",
-            allow_markup=True,
-        )
+        self._open_session_manager()
 
-    def _open_load_session_picker(self) -> None:
+    def _open_session_manager(self) -> None:
         sessions = self._session_store.list_sessions()
         self.push_screen(
-            SelectionPickerModal(
-                title="Load Session",
-                subtitle="Choose a saved session to open.",
-                confirm_label="Load Session",
-                empty_text="No saved sessions available.",
-                items=session_picker_items(sessions),
-            ),
-            self._on_load_session_picker_close,
+            SessionManagerModal(sessions, self._session_id),
+            self._on_session_manager_close,
         )
 
-    def _on_load_session_picker_close(self, result: Optional[Dict[str, str]]) -> None:
-        session_id = str((result or {}).get("id") or "").strip()
-        if not session_id:
-            return
-        try:
-            self._save_active_session()
-            loaded = self._session_store.load_session(session_id)
-            self._switch_to_session(loaded)
-            self._write_command_action(f"Loaded session '{loaded.title}'", icon="✓")
-        except Exception as exc:
-            self._write_error(f"Load failed: {exc}")
+    def _load_session_from_manager(self, session_id: str) -> ChatSession:
+        self._save_active_session()
+        loaded = self._session_store.load_session(session_id)
+        self._switch_to_session(loaded)
+        return loaded
 
     def _current_session_is_blank(self) -> bool:
         return (
@@ -812,31 +766,52 @@ class AlphanusTUI(App):
         self._save_active_session()
         return self._session_store.create_session(normalized)
 
-    def _open_startup_session_picker(self) -> None:
+    def _open_startup_session_manager(self) -> None:
         if self._startup_session_prompt_opened:
             return
         self._startup_session_prompt_opened = True
-        sessions = self._session_store.list_sessions()
-        self.push_screen(
-            SessionPickerModal(sessions, self._session_id, self._session_title),
-            self._on_startup_session_picker_close,
-        )
+        self._open_session_manager()
 
-    def _on_startup_session_picker_close(self, result: Optional[Dict[str, str]]) -> None:
-        action = str((result or {}).get("action") or "continue")
-        if action == "load":
-            selector = str((result or {}).get("selector") or "").strip()
-            if not selector:
+    def _on_session_manager_close(self, result: Optional[Dict[str, str]]) -> None:
+        action = str((result or {}).get("action") or "").strip()
+        if not action:
+            return
+        if action == "open":
+            session_id = str((result or {}).get("session_id") or "").strip()
+            if not session_id:
                 return
             try:
-                session = self._session_store.load_session(selector)
-                self._switch_to_session(session)
+                loaded = self._load_session_from_manager(session_id)
+                self._write_command_action(f"Loaded session '{loaded.title}'", icon="✓")
             except Exception as exc:
                 self._write_error(f"Load failed: {exc}")
             return
-        if action == "new":
+        if action == "create":
             session = self._open_new_session(str((result or {}).get("title") or ""))
             self._switch_to_session(session)
+            self._write_command_action(f"Opened session '{session.title}'", icon="✓")
+            return
+        if action == "delete":
+            session_id = str((result or {}).get("session_id") or "").strip()
+            if not session_id:
+                return
+            self._delete_session_from_manager(session_id)
+
+    def _delete_session_from_manager(self, session_id: str) -> None:
+        try:
+            active_id = self._session_id
+            self._session_store.delete_session(session_id)
+            deleted_active = session_id == active_id
+            if deleted_active:
+                remaining = self._session_store.list_sessions()
+                if remaining:
+                    self._switch_to_session(self._session_store.load_session(remaining[0].id))
+                else:
+                    self._switch_to_session(self._session_store.create_session())
+            self._write_command_action("Deleted session", icon="✓")
+            self._open_session_manager()
+        except Exception as exc:
+            self._write_error(f"Delete failed: {exc}")
 
     def _switch_to_session(self, session: ChatSession, *, clear_pending: bool = True) -> None:
         self._activate_session_state(session)
@@ -2701,17 +2676,18 @@ class AlphanusTUI(App):
             return True
 
         if cmd == "/sessions":
+            if self.streaming:
+                self._write_error("Stop the active response before changing sessions.")
+                return True
             self._cmd_sessions()
             return True
 
-        if self.streaming and cmd in {"/new", "/load", "/clear"}:
+        if self.streaming and cmd == "/clear":
             self._write_error("Stop the active response before changing sessions.")
             return True
 
         if cmd == "/new":
-            session = self._open_new_session(arg)
-            self._switch_to_session(session)
-            self._write_command_action(f"Opened session '{session.title}'", icon="✓")
+            self._write_error("Use /sessions to manage sessions.")
             return True
 
         if cmd == "/rename":
@@ -2789,7 +2765,7 @@ class AlphanusTUI(App):
             return True
 
         if cmd == "/load":
-            self._open_load_session_picker()
+            self._write_error("Use /sessions to manage sessions.")
             return True
 
         if cmd == "/clear":
