@@ -117,7 +117,6 @@ def test_status_helpers_compact_at_small_width() -> None:
     )
     status_right = status_right_markup(
         model_name="llama-3.2-3b-instruct",
-        model_state="online",
         branch_armed=True,
         branch_label="very-long-branch-name",
         thinking=True,
@@ -149,7 +148,6 @@ def test_status_helpers_compact_at_small_width() -> None:
 def test_status_right_markup_includes_model_label_and_value() -> None:
     status_right = status_right_markup(
         model_name="Meta-Llama-3.1-8B-Instruct-Q4_K_M",
-        model_state="offline",
         branch_armed=False,
         branch_label=None,
         thinking=True,
@@ -159,4 +157,3 @@ def test_status_right_markup_includes_model_label_and_value() -> None:
     assert "model:" in status_right
     assert "Meta-Llama-3.1-8B-Instruct-Q4_K_M" in status_right
     assert "#6366f1" in status_right
-    assert "llm:" in status_right

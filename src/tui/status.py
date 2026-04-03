@@ -95,7 +95,6 @@ def topbar_right(
 def status_right_markup(
     *,
     model_name: Optional[str],
-    model_state: str = "unknown",
     branch_armed: bool,
     branch_label: Optional[str],
     thinking: bool,
@@ -104,11 +103,10 @@ def status_right_markup(
     model_limit = 24 if width < 120 else 40
     model_label = _truncate(model_name or "—", model_limit)
     model_markup = f"[dim]model:[/dim] [#6366f1]{esc(model_label)}[/#6366f1]"
-    state_markup = _endpoint_state_markup(model_state, width=width)
     if width < 90:
-        return "  ".join((model_markup, state_markup))
+        return model_markup
 
-    parts = [model_markup, state_markup]
+    parts = [model_markup]
     if branch_armed:
         if branch_label:
             label = _truncate(branch_label, 10 if width < 120 else 18)

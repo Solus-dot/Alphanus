@@ -1609,7 +1609,6 @@ class AlphanusTUI(App):
     def _update_status1(self) -> None:
         text = status_right_markup(
             model_name=self._model_name,
-            model_state=self._model_status.state,
             branch_armed=bool(self.conv_tree._pending_branch),
             branch_label=self.conv_tree._pending_branch_label,
             thinking=self.thinking,
