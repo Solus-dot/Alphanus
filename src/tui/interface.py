@@ -569,6 +569,7 @@ class AlphanusTUI(App):
         self._last_log_was_blank = False
         self._last_model_context_tokens: Optional[int] = None
         self._startup_session_prompt_opened = False
+        self._startup_readiness_inflight = False
         self._resize_redraw_pending = False
 
     def compose(self) -> ComposeResult:
@@ -619,6 +620,7 @@ class AlphanusTUI(App):
         self._update_sidebar()
         self._update_pending_attachments()
         self._maybe_refresh_model_status(force=True)
+        self._maybe_start_startup_readiness_poll()
         self.query_one(ChatInput).focus()
         self.call_after_refresh(self._open_startup_session_manager)
 
@@ -784,15 +786,13 @@ class AlphanusTUI(App):
             if not session_id:
                 return
             try:
-                loaded = self._load_session_from_manager(session_id)
-                self._write_command_action(f"Loaded session '{loaded.title}'", icon="✓")
+                self._load_session_from_manager(session_id)
             except Exception as exc:
                 self._write_error(f"Load failed: {exc}")
             return
         if action == "create":
             session = self._open_new_session(str((result or {}).get("title") or ""))
             self._switch_to_session(session)
-            self._write_command_action(f"Opened session '{session.title}'", icon="✓")
             return
         if action == "delete":
             session_id = str((result or {}).get("session_id") or "").strip()
@@ -811,7 +811,6 @@ class AlphanusTUI(App):
                     self._switch_to_session(self._session_store.load_session(remaining[0].id))
                 else:
                     self._switch_to_session(self._session_store.create_session())
-            self._write_command_action("Deleted session", icon="✓")
             self._open_session_manager()
         except Exception as exc:
             self._write_error(f"Delete failed: {exc}")
@@ -1628,6 +1627,30 @@ class AlphanusTUI(App):
         if self._model_status.state == "offline" or now < self._model_refresh_fast_until:
             return 2.0
         return self._model_refresh_interval_s
+
+    def _should_startup_readiness_poll(self) -> bool:
+        if self._startup_readiness_inflight:
+            return False
+        status = self._model_status
+        if status.last_success_at > 0:
+            return False
+        return self.agent.llm_client._is_local_endpoint(self.agent.models_endpoint)
+
+    def _maybe_start_startup_readiness_poll(self) -> None:
+        if not self._should_startup_readiness_poll():
+            return
+        self._startup_readiness_inflight = True
+        self._startup_readiness_worker()
+
+    @work(thread=True, exclusive=True)
+    def _startup_readiness_worker(self) -> None:
+        self.agent.ensure_ready(timeout_s=self.agent.readiness_timeout_s)
+        status = self.agent.get_model_status()
+        self.call_from_thread(self._finish_startup_readiness_poll, status)
+
+    def _finish_startup_readiness_poll(self, status: ModelStatus) -> None:
+        self._startup_readiness_inflight = False
+        self._apply_model_status_refresh(status)
 
     def _maybe_refresh_model_status(self, *, force: bool = False) -> None:
         if self._model_refresh_inflight:

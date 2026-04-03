@@ -40,11 +40,14 @@ def _tui_agent_stub(tmp_path: Path) -> SimpleNamespace:
         config={"tui": {}},
         skill_runtime=SimpleNamespace(workspace=SimpleNamespace(workspace_root=workspace_root)),
         connect_timeout_s=1.0,
+        readiness_timeout_s=1.0,
         model_endpoint="http://127.0.0.1:8080/v1/chat/completions",
         models_endpoint="http://127.0.0.1:8080/v1/models",
         fetch_model_metadata=lambda timeout_s=None: (None, None),
-        get_model_status=lambda: ModelStatus(endpoint="http://127.0.0.1:8080/v1/models"),
-        refresh_model_status=lambda timeout_s=None, force=False: ModelStatus(endpoint="http://127.0.0.1:8080/v1/models"),
+        get_model_status=lambda: ModelStatus(endpoint="http://127.0.0.1:8080/v1/models", last_success_at=1.0),
+        refresh_model_status=lambda timeout_s=None, force=False: ModelStatus(endpoint="http://127.0.0.1:8080/v1/models", last_success_at=1.0),
+        ensure_ready=lambda timeout_s=None: True,
+        llm_client=SimpleNamespace(_is_local_endpoint=lambda endpoint: True),
         reload_skills=lambda: 0,
         run_turn=lambda *args, **kwargs: None,
         doctor_report=lambda: {},
@@ -1134,6 +1137,28 @@ def test_current_model_refresh_interval_is_adaptive() -> None:
     assert tui._current_model_refresh_interval() == 2.0
 
 
+def test_should_startup_readiness_poll_only_for_cold_local_model() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._startup_readiness_inflight = False
+    tui.agent = SimpleNamespace(
+        models_endpoint="http://127.0.0.1:8080/v1/models",
+        llm_client=SimpleNamespace(_is_local_endpoint=lambda endpoint: endpoint.startswith("http://127.0.0.1")),
+    )
+    tui._model_status = ModelStatus(state="offline", endpoint="http://127.0.0.1:8080/v1/models", last_success_at=0.0)
+
+    assert tui._should_startup_readiness_poll() is True
+
+    tui._model_status = ModelStatus(state="online", endpoint="http://127.0.0.1:8080/v1/models", last_success_at=1.0)
+    assert tui._should_startup_readiness_poll() is False
+
+    tui._model_status = ModelStatus(state="offline", endpoint="https://example.com/v1/models", last_success_at=0.0)
+    tui.agent = SimpleNamespace(
+        models_endpoint="https://example.com/v1/models",
+        llm_client=SimpleNamespace(_is_local_endpoint=lambda _endpoint: False),
+    )
+    assert tui._should_startup_readiness_poll() is False
+
+
 def test_cmd_context_writes_percent_and_tokens() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     lines: list[str] = []
@@ -1336,7 +1361,7 @@ def test_open_new_session_reuses_blank_current_session() -> None:
     assert titles == ["Fresh Session"]
 
 
-def test_session_manager_close_opens_selected_session() -> None:
+def test_session_manager_close_opens_selected_session_without_writing_to_chat_log() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     loaded = ChatSession(
         id="sess-2",
@@ -1345,13 +1370,13 @@ def test_session_manager_close_opens_selected_session() -> None:
         updated_at="2026-03-20T10:01:00+00:00",
         tree=ConvTree(),
     )
-    events: list[str] = []
+    switched: list[str] = []
     tui._load_session_from_manager = lambda session_id: loaded if session_id == "sess-2" else None
-    tui._write_command_action = lambda text, **_kwargs: events.append(text)
+    tui._write_command_action = lambda text, **_kwargs: switched.append(f"unexpected:{text}")
 
     tui._on_session_manager_close({"action": "open", "session_id": "sess-2"})
 
-    assert events == ["Loaded session 'Loaded Session'"]
+    assert switched == []
 
 
 def test_session_manager_close_reports_open_failure() -> None:
@@ -1417,12 +1442,11 @@ def test_delete_session_from_manager_reopens_modal_without_switching_for_non_act
     tui._session_id = "sess-1"
     tui._session_store = SimpleNamespace(delete_session=lambda session_id: events.append(f"delete:{session_id}"))
     tui._open_session_manager = lambda: events.append("reopen")
-    tui._write_command_action = lambda text, **_kwargs: events.append(text)
     tui._write_error = lambda text: events.append(f"error:{text}")
 
     tui._delete_session_from_manager("sess-2")
 
-    assert events == ["delete:sess-2", "Deleted session", "reopen"]
+    assert events == ["delete:sess-2", "reopen"]
 
 
 def test_delete_session_from_manager_switches_to_newest_remaining_active_session() -> None:
@@ -1443,12 +1467,11 @@ def test_delete_session_from_manager_switches_to_newest_remaining_active_session
     )
     tui._switch_to_session = lambda session, clear_pending=True: events.append(f"switch:{session.title}")
     tui._open_session_manager = lambda: events.append("reopen")
-    tui._write_command_action = lambda text, **_kwargs: events.append(text)
     tui._write_error = lambda text: events.append(f"error:{text}")
 
     tui._delete_session_from_manager("sess-1")
 
-    assert events == ["delete:sess-1", "switch:Replacement", "Deleted session", "reopen"]
+    assert events == ["delete:sess-1", "switch:Replacement", "reopen"]
 
 
 def test_delete_session_from_manager_creates_blank_session_when_last_one_deleted() -> None:
@@ -1469,12 +1492,11 @@ def test_delete_session_from_manager_creates_blank_session_when_last_one_deleted
     )
     tui._switch_to_session = lambda session, clear_pending=True: events.append(f"switch:{session.title}")
     tui._open_session_manager = lambda: events.append("reopen")
-    tui._write_command_action = lambda text, **_kwargs: events.append(text)
     tui._write_error = lambda text: events.append(f"error:{text}")
 
     tui._delete_session_from_manager("sess-1")
 
-    assert events == ["delete:sess-1", "switch:Session 1", "Deleted session", "reopen"]
+    assert events == ["delete:sess-1", "switch:Session 1", "reopen"]
 
 
 def test_handle_sessions_is_blocked_while_streaming() -> None:

@@ -79,13 +79,7 @@ def main() -> int:
         logger.warning(f"memory encoder unavailable: {memory_stats['encoder_detail']}")
     logger.info("use /doctor inside the TUI for readiness and health diagnostics.")
 
-    # Readiness is validated before first generation too; this startup check
-    # keeps failure visible early while still letting TUI boot.
-    logger.info(f"waiting for endpoint {agent.models_endpoint} handshake...")
-    if not agent.ensure_ready():
-        logger.warning(f"Model endpoint not ready at {agent.models_endpoint}; you can still open the TUI.")
-    else:
-        logger.info(f"endpoint {agent.models_endpoint} handshake complete.")
+    logger.info("startup skips blocking model handshake; TUI status will refresh asynchronously.")
 
     app = AlphanusTUI(agent=agent, debug=args.debug)
     app.run()

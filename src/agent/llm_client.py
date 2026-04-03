@@ -365,6 +365,18 @@ class LLMClient:
             return status
         return self.refresh_model_status(timeout_s=self._status_probe_timeout_s(), force=True)
 
+    def should_fail_fast_on_offline_status(self, status: ModelStatus) -> bool:
+        if status.state != "offline":
+            return False
+        if not self.is_model_status_fresh(status):
+            return False
+        # Local model backends often need a cold-start window before the first
+        # successful readiness probe; preserve the old wait-for-ready behavior
+        # until we have seen the endpoint come up at least once.
+        if self._is_local_endpoint(self.models_endpoint) and status.last_success_at <= 0:
+            return False
+        return True
+
     @staticmethod
     def _is_local_endpoint(endpoint: str) -> bool:
         parsed = urllib.parse.urlparse(endpoint)

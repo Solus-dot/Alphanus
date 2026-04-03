@@ -400,14 +400,28 @@ class Agent:
             return AgentTurnResult(status="cancelled", content="", reasoning="", skill_exchanges=[])
         status = self.get_model_status()
         if status.state == "offline" and self.llm_client.is_model_status_fresh(status):
-            detail = f": {status.last_error}" if status.last_error else ""
-            return AgentTurnResult(
-                status="error",
-                content="",
-                reasoning="",
-                skill_exchanges=[],
-                error=f"Model endpoint offline{detail}",
-            )
+            if self.llm_client.should_fail_fast_on_offline_status(status):
+                detail = f": {status.last_error}" if status.last_error else ""
+                return AgentTurnResult(
+                    status="error",
+                    content="",
+                    reasoning="",
+                    skill_exchanges=[],
+                    error=f"Model endpoint offline{detail}",
+                )
+            ready = self.ensure_ready(stop_event=stop_event, on_event=on_event)
+            if ready is None:
+                return AgentTurnResult(status="cancelled", content="", reasoning="", skill_exchanges=[])
+            if not ready:
+                refreshed = self.get_model_status()
+                detail = f": {refreshed.last_error}" if refreshed.last_error else ""
+                return AgentTurnResult(
+                    status="error",
+                    content="",
+                    reasoning="",
+                    skill_exchanges=[],
+                    error=f"Model endpoint offline{detail}" if refreshed.state == "offline" else f"Model endpoint not ready: {self.models_endpoint}",
+                )
         if not self.llm_client.is_model_status_fresh(status):
             if status.state != "unknown":
                 status = self.refresh_model_status(timeout_s=min(self.connect_timeout_s, 1.0), force=True)

@@ -3124,7 +3124,7 @@ def test_run_turn_fails_fast_when_cached_status_is_freshly_offline(mocker, runti
             state="offline",
             model_name="qwen-down",
             last_checked_at=time.monotonic(),
-            last_success_at=0.0,
+            last_success_at=time.monotonic(),
             last_error="[Errno 61] Connection refused",
             endpoint=agent.models_endpoint,
         )
@@ -3138,6 +3138,32 @@ def test_run_turn_fails_fast_when_cached_status_is_freshly_offline(mocker, runti
     assert "offline" in (result.error or "").lower()
     run.assert_not_called()
     refresh.assert_not_called()
+
+
+def test_run_turn_waits_for_cold_local_model_despite_fresh_offline_status(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    agent.llm_client._store_model_status(
+        ModelStatus(
+            state="offline",
+            model_name=None,
+            last_checked_at=time.monotonic(),
+            last_success_at=0.0,
+            last_error="[Errno 61] Connection refused",
+            endpoint=agent.models_endpoint,
+        )
+    )
+    ready = mocker.patch.object(agent, "ensure_ready", return_value=True)
+    run = mocker.patch.object(
+        agent.orchestrator,
+        "run_turn",
+        return_value=type("Result", (), {"status": "done", "content": "", "reasoning": "", "skill_exchanges": []})(),
+    )
+
+    result = agent.run_turn(history_messages=[], user_input="hello", thinking=True)
+
+    assert result.status == "done"
+    ready.assert_called_once()
+    run.assert_called_once()
 
 
 def test_run_turn_probes_when_status_is_stale(mocker, runtime: SkillRuntime):
