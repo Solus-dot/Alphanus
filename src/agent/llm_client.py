@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -10,10 +11,13 @@ from typing import Any, Callable, Dict, List, Optional
 from core.streaming import build_ssl_context, should_retry, stream_chat_completions
 
 from agent.telemetry import TelemetryEmitter
-from agent.types import StreamPassResult, ToolCallAccumulator
+from agent.types import ModelStatus, StreamPassResult, ToolCallAccumulator
 
 
 class LLMClient:
+    ONLINE_STATUS_TTL_S = 5.0
+    OFFLINE_STATUS_TTL_S = 2.0
+
     def __init__(self, config: Dict[str, Any], debug: bool = False, telemetry: Optional[TelemetryEmitter] = None) -> None:
         self.debug = debug
         self.telemetry = telemetry or TelemetryEmitter()
@@ -26,6 +30,8 @@ class LLMClient:
         self.per_turn_retries = 1
         self.retry_backoff_s = 0.5
         self._ready_checked = False
+        self._model_status_lock = threading.Lock()
+        self._model_status = ModelStatus()
         self.reload_config(config)
 
     def reload_config(self, config: Dict[str, Any]) -> None:
@@ -51,6 +57,7 @@ class LLMClient:
         self.max_classifier_tokens = max(32, int(agent_cfg.get("max_classifier_tokens", 256)))
         self.ssl_context = build_ssl_context(self.tls_verify, self.ca_bundle_path)
         self._ready_checked = False
+        self._reset_model_status()
 
     def headers(self) -> Dict[str, str]:
         headers = {}
@@ -201,25 +208,123 @@ class LLMClient:
         request = urllib.request.Request(url, headers=self.headers(), method="GET")
         timeout = self.connect_timeout_s if timeout_s is None else max(0.1, float(timeout_s))
         with urllib.request.urlopen(request, timeout=timeout, context=self.ssl_context) as response:
-            return json.loads(response.read().decode("utf-8"))
+            raw = response.read().decode("utf-8")
+            if not raw.strip():
+                return {}
+            return json.loads(raw)
 
-    def fetch_model_metadata(self, timeout_s: Optional[float] = None) -> tuple[Optional[str], Optional[int]]:
+    def _reset_model_status(self) -> None:
+        with self._model_status_lock:
+            self._model_status = ModelStatus(endpoint=self.models_endpoint)
+
+    def get_model_status(self) -> ModelStatus:
+        with self._model_status_lock:
+            status = self._model_status
+            return ModelStatus(
+                state=status.state,
+                model_name=status.model_name,
+                context_window=status.context_window,
+                last_checked_at=status.last_checked_at,
+                last_success_at=status.last_success_at,
+                last_error=status.last_error,
+                endpoint=status.endpoint,
+            )
+
+    def is_model_status_fresh(self, status: Optional[ModelStatus] = None, *, now: Optional[float] = None) -> bool:
+        current_status = self.get_model_status() if status is None else status
+        return current_status.is_fresh(
+            now=now,
+            online_ttl_s=self.ONLINE_STATUS_TTL_S,
+            offline_ttl_s=self.OFFLINE_STATUS_TTL_S,
+        )
+
+    def _store_model_status(self, status: ModelStatus) -> ModelStatus:
+        with self._model_status_lock:
+            self._model_status = ModelStatus(
+                state=status.state,
+                model_name=status.model_name,
+                context_window=status.context_window,
+                last_checked_at=status.last_checked_at,
+                last_success_at=status.last_success_at,
+                last_error=status.last_error,
+                endpoint=status.endpoint or self.models_endpoint,
+            )
+            stored = self._model_status
+        self._ready_checked = stored.state == "online"
+        return self.get_model_status()
+
+    def _model_status_error_state(self, exc: Exception) -> str:
+        if isinstance(exc, urllib.error.HTTPError):
+            return "offline"
+        if isinstance(exc, urllib.error.URLError):
+            return "offline"
+        if isinstance(exc, (ConnectionError, TimeoutError, ConnectionResetError)):
+            return "offline"
+        return "unknown"
+
+    def refresh_model_status(self, timeout_s: Optional[float] = None, force: bool = False) -> ModelStatus:
+        current = self.get_model_status()
+        if not force and self.is_model_status_fresh(current):
+            return current
+
+        now = time.monotonic()
         try:
             payload = self.fetch_json(self.models_endpoint, timeout_s=timeout_s)
         except Exception as exc:
             self.telemetry.emit("model_fetch_failed", endpoint=self.models_endpoint, error=str(exc))
-            return None, None
-        model_name = self.extract_model_name(payload)
+            return self._store_model_status(
+                ModelStatus(
+                    state=self._model_status_error_state(exc),
+                    model_name=current.model_name,
+                    context_window=current.context_window,
+                    last_checked_at=now,
+                    last_success_at=current.last_success_at,
+                    last_error=str(exc),
+                    endpoint=self.models_endpoint,
+                )
+            )
+
+        model_name = self.extract_model_name(payload) or current.model_name
         context_window = self.extract_model_context_window(payload)
-        if context_window is not None:
-            return model_name, context_window
-        props_endpoint = self.props_endpoint_from_models_endpoint(self.models_endpoint)
-        try:
-            props_payload = self.fetch_json(props_endpoint, timeout_s=timeout_s)
-        except Exception as exc:
-            self.telemetry.emit("model_props_fetch_failed", endpoint=props_endpoint, error=str(exc))
-            return model_name, None
-        return model_name, self.extract_model_context_window(props_payload)
+        if context_window is None and model_name is not None:
+            props_endpoint = self.props_endpoint_from_models_endpoint(self.models_endpoint)
+            try:
+                props_payload = self.fetch_json(props_endpoint, timeout_s=timeout_s)
+            except Exception as exc:
+                self.telemetry.emit("model_props_fetch_failed", endpoint=props_endpoint, error=str(exc))
+            else:
+                context_window = self.extract_model_context_window(props_payload)
+        return self._store_model_status(
+            ModelStatus(
+                state="online",
+                model_name=model_name,
+                context_window=context_window,
+                last_checked_at=now,
+                last_success_at=now,
+                last_error="",
+                endpoint=self.models_endpoint,
+            )
+        )
+
+    def mark_model_transport_failure(self, exc: Exception) -> None:
+        current = self.get_model_status()
+        now = time.monotonic()
+        self.telemetry.emit("model_transport_failure", endpoint=self.models_endpoint, error=str(exc))
+        self._store_model_status(
+            ModelStatus(
+                state="offline",
+                model_name=current.model_name,
+                context_window=current.context_window,
+                last_checked_at=now,
+                last_success_at=current.last_success_at,
+                last_error=str(exc),
+                endpoint=self.models_endpoint,
+            )
+        )
+
+    def fetch_model_metadata(self, timeout_s: Optional[float] = None) -> tuple[Optional[str], Optional[int]]:
+        status = self.refresh_model_status(timeout_s=timeout_s, force=True)
+        return status.model_name, status.context_window
 
     def ensure_ready(
         self,
@@ -229,7 +334,6 @@ class LLMClient:
     ) -> Optional[bool]:
         timeout = self.readiness_timeout_s if timeout_s is None else max(0.0, float(timeout_s))
         deadline = time.monotonic() + timeout
-        req = urllib.request.Request(self.models_endpoint, headers=self.headers(), method="GET")
         attempt_timeout = min(self.connect_timeout_s, 1.0)
         self.telemetry.emit("readiness_start", endpoint=self.models_endpoint, timeout_s=timeout)
         self._emit(on_event, {"type": "info", "text": f"waiting for endpoint handshake: {self.models_endpoint}"})
@@ -239,21 +343,46 @@ class LLMClient:
                 self._ready_checked = False
                 self.telemetry.emit("readiness_cancelled", endpoint=self.models_endpoint)
                 return None
-            try:
-                with urllib.request.urlopen(req, timeout=attempt_timeout, context=self.ssl_context) as resp:
-                    if 200 <= resp.status < 300:
-                        self._ready_checked = True
-                        self.telemetry.emit("readiness_ok", endpoint=self.models_endpoint, status=resp.status)
-                        return True
-            except Exception as exc:
-                self.telemetry.emit("readiness_retry", endpoint=self.models_endpoint, error=str(exc))
-                if not self.sleep_with_stop(self.readiness_poll_s, stop_event):
-                    self._ready_checked = False
-                    self.telemetry.emit("readiness_cancelled", endpoint=self.models_endpoint)
-                    return None
+            status = self.refresh_model_status(timeout_s=attempt_timeout, force=True)
+            if status.state == "online":
+                self.telemetry.emit("readiness_ok", endpoint=self.models_endpoint, status=200)
+                return True
+            self.telemetry.emit("readiness_retry", endpoint=self.models_endpoint, error=status.last_error)
+            if not self.sleep_with_stop(self.readiness_poll_s, stop_event):
+                self._ready_checked = False
+                self.telemetry.emit("readiness_cancelled", endpoint=self.models_endpoint)
+                return None
         self._ready_checked = False
         self.telemetry.emit("readiness_failed", endpoint=self.models_endpoint)
         return False
+
+    def _status_probe_timeout_s(self) -> float:
+        return min(self.connect_timeout_s, 1.0)
+
+    def _status_allows_immediate_send(self) -> ModelStatus:
+        status = self.get_model_status()
+        if self.is_model_status_fresh(status):
+            return status
+        return self.refresh_model_status(timeout_s=self._status_probe_timeout_s(), force=True)
+
+    @staticmethod
+    def _is_local_endpoint(endpoint: str) -> bool:
+        parsed = urllib.parse.urlparse(endpoint)
+        host = (parsed.hostname or "").strip().lower()
+        return host in {"127.0.0.1", "localhost"}
+
+    @staticmethod
+    def _is_connection_refused_error(exc: Exception) -> bool:
+        return "refused" in str(exc).lower()
+
+    def _should_retry_exception(self, exc: Exception) -> bool:
+        if self._is_local_endpoint(self.model_endpoint) and self._is_connection_refused_error(exc):
+            return False
+        return should_retry(exc)
+
+    @staticmethod
+    def _is_transport_failure(exc: Exception) -> bool:
+        return getattr(exc, "status_code", None) is None
 
     def build_payload(
         self,
@@ -386,9 +515,15 @@ class LLMClient:
         attempt = 0
         while True:
             try:
+                status = self._status_allows_immediate_send()
+                if status.state == "offline":
+                    message = status.last_error or f"Model endpoint offline: {self.models_endpoint}"
+                    raise RuntimeError(f"Model endpoint offline: {message}")
                 return self._stream_one_pass(payload, stop_event, on_event, pass_id=pass_id)
             except Exception as exc:
-                if should_retry(exc) and attempt < self.per_turn_retries:
+                if self._is_transport_failure(exc):
+                    self.mark_model_transport_failure(exc)
+                if self._should_retry_exception(exc) and attempt < self.per_turn_retries:
                     attempt += 1
                     self._emit(
                         on_event,
@@ -397,15 +532,17 @@ class LLMClient:
                     self.telemetry.emit("request_retry", pass_id=pass_id, attempt=attempt, error=str(exc))
                     if not self.sleep_with_stop(self.retry_backoff_s, stop_event):
                         return StreamPassResult(finish_reason="cancelled")
-                    ready = self.ensure_ready(
-                        stop_event=stop_event,
-                        on_event=on_event,
-                        timeout_s=min(self.readiness_timeout_s, 5.0),
-                    )
-                    if ready is None:
-                        return StreamPassResult(finish_reason="cancelled")
-                    if not ready:
-                        raise
+                    status = self.refresh_model_status(timeout_s=self._status_probe_timeout_s(), force=True)
+                    if status.state != "online":
+                        ready = self.ensure_ready(
+                            stop_event=stop_event,
+                            on_event=on_event,
+                            timeout_s=min(self.readiness_timeout_s, 5.0),
+                        )
+                        if ready is None:
+                            return StreamPassResult(finish_reason="cancelled")
+                        if not ready:
+                            raise
                     continue
                 raise
 

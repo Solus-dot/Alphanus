@@ -43,7 +43,7 @@ def should_retry(exc: Exception) -> bool:
         if isinstance(reason, RETRYABLE_URL_ERRORS):
             return True
         text = str(reason).lower()
-        return any(tok in text for tok in ("timed out", "reset", "temporarily", "refused"))
+        return any(tok in text for tok in ("timed out", "reset", "temporarily"))
     return False
 
 

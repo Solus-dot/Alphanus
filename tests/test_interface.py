@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +13,7 @@ from core.conv_tree import ConvTree
 from core.sessions import ChatSession
 from core.workspace import WorkspaceManager
 from agent.policies import OutputSanitizer
+from agent.types import ModelStatus
 from tui.live_tool_preview import LiveToolPreviewManager
 from tui.commands import active_command_query, active_command_span, command_entries_for_query, popup_command_query
 from tui.interface import AlphanusTUI, ChatInput
@@ -39,7 +41,10 @@ def _tui_agent_stub(tmp_path: Path) -> SimpleNamespace:
         skill_runtime=SimpleNamespace(workspace=SimpleNamespace(workspace_root=workspace_root)),
         connect_timeout_s=1.0,
         model_endpoint="http://127.0.0.1:8080/v1/chat/completions",
+        models_endpoint="http://127.0.0.1:8080/v1/models",
         fetch_model_metadata=lambda timeout_s=None: (None, None),
+        get_model_status=lambda: ModelStatus(endpoint="http://127.0.0.1:8080/v1/models"),
+        refresh_model_status=lambda timeout_s=None, force=False: ModelStatus(endpoint="http://127.0.0.1:8080/v1/models"),
         reload_skills=lambda: 0,
         run_turn=lambda *args, **kwargs: None,
         doctor_report=lambda: {},
@@ -101,7 +106,7 @@ def test_command_entries_no_longer_expose_load_or_new_sessions_commands() -> Non
 async def test_command_popup_tracks_chat_input_geometry(tmp_path: Path) -> None:
     tui = AlphanusTUI(_tui_agent_stub(tmp_path))
     tui._open_startup_session_manager = lambda: None
-    tui._maybe_refresh_model_name = lambda force=False: None
+    tui._maybe_refresh_model_status = lambda force=False: None
 
     async with tui.run_test() as pilot:
         await pilot.press("/")
@@ -122,7 +127,7 @@ async def test_command_popup_tracks_chat_input_geometry(tmp_path: Path) -> None:
 async def test_command_popup_hides_for_unknown_query_and_reappears_when_query_matches(tmp_path: Path) -> None:
     tui = AlphanusTUI(_tui_agent_stub(tmp_path))
     tui._open_startup_session_manager = lambda: None
-    tui._maybe_refresh_model_name = lambda force=False: None
+    tui._maybe_refresh_model_status = lambda force=False: None
 
     async with tui.run_test() as pilot:
         await pilot.press("/", "z")
@@ -139,7 +144,7 @@ async def test_command_popup_hides_for_unknown_query_and_reappears_when_query_ma
 async def test_command_popup_narrows_from_he_to_hel_and_keeps_help_visible(tmp_path: Path) -> None:
     tui = AlphanusTUI(_tui_agent_stub(tmp_path))
     tui._open_startup_session_manager = lambda: None
-    tui._maybe_refresh_model_name = lambda force=False: None
+    tui._maybe_refresh_model_status = lambda force=False: None
 
     async with tui.run_test() as pilot:
         await pilot.press("/", "h", "e")
@@ -158,7 +163,7 @@ async def test_command_popup_narrows_from_he_to_hel_and_keeps_help_visible(tmp_p
 async def test_footer_stays_in_chat_column_and_sidebar_uses_full_height(tmp_path: Path) -> None:
     tui = AlphanusTUI(_tui_agent_stub(tmp_path))
     tui._open_startup_session_manager = lambda: None
-    tui._maybe_refresh_model_name = lambda force=False: None
+    tui._maybe_refresh_model_status = lambda force=False: None
 
     async with tui.run_test(size=(160, 40)) as pilot:
         await pilot.pause()
@@ -179,7 +184,7 @@ async def test_footer_stays_in_chat_column_and_sidebar_uses_full_height(tmp_path
 async def test_attachment_name_renders_in_separator_without_moving_it(tmp_path: Path) -> None:
     tui = AlphanusTUI(_tui_agent_stub(tmp_path))
     tui._open_startup_session_manager = lambda: None
-    tui._maybe_refresh_model_name = lambda force=False: None
+    tui._maybe_refresh_model_status = lambda force=False: None
 
     async with tui.run_test(size=(160, 40)) as pilot:
         separator = tui.query_one("#footer-sep")
@@ -202,7 +207,7 @@ async def test_attachment_name_renders_in_separator_without_moving_it(tmp_path: 
 async def test_sidebar_width_changes_at_resize_thresholds(tmp_path: Path) -> None:
     tui = AlphanusTUI(_tui_agent_stub(tmp_path))
     tui._open_startup_session_manager = lambda: None
-    tui._maybe_refresh_model_name = lambda force=False: None
+    tui._maybe_refresh_model_status = lambda force=False: None
 
     async with tui.run_test(size=(160, 40)) as pilot:
         await pilot.pause()
@@ -1076,6 +1081,57 @@ def test_update_context_usage_accepts_llamacpp_prompt_eval_count() -> None:
 
     assert tui._last_model_context_tokens == 512
     assert updates == ["topbar"]
+
+
+def test_apply_model_status_refresh_updates_visible_status_and_hot_swap_state() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._model_refresh_inflight = True
+    tui._model_refresh_fast_until = 0.0
+    tui._model_status = ModelStatus(
+        state="online",
+        model_name="qwen-3",
+        context_window=8192,
+        endpoint="http://127.0.0.1:8080/v1/models",
+    )
+    tui._model_name = "qwen-3"
+    tui._model_context_window = 8192
+    updates: list[str] = []
+    tui._update_status1 = lambda: updates.append("status")
+    tui._update_topbar = lambda: updates.append("topbar")
+
+    tui._apply_model_status_refresh(
+        ModelStatus(
+            state="online",
+            model_name="qwen-4",
+            context_window=16384,
+            last_checked_at=time.monotonic(),
+            last_success_at=time.monotonic(),
+            endpoint="http://127.0.0.1:8080/v1/models",
+        )
+    )
+
+    assert tui._model_refresh_inflight is False
+    assert tui._model_status.model_name == "qwen-4"
+    assert tui._model_name == "qwen-4"
+    assert tui._model_context_window == 16384
+    assert tui._model_refresh_fast_until > 0.0
+    assert updates == ["status", "topbar"]
+
+
+def test_current_model_refresh_interval_is_adaptive() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._model_refresh_interval_s = 5.0
+    tui._model_refresh_fast_until = 0.0
+    tui._model_status = ModelStatus(state="online")
+
+    assert tui._current_model_refresh_interval() == 5.0
+
+    tui._model_status = ModelStatus(state="offline")
+    assert tui._current_model_refresh_interval() == 2.0
+
+    tui._model_status = ModelStatus(state="online")
+    tui._model_refresh_fast_until = time.monotonic() + 5.0
+    assert tui._current_model_refresh_interval() == 2.0
 
 
 def test_cmd_context_writes_percent_and_tokens() -> None:

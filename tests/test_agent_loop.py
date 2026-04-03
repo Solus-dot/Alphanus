@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import json
 import threading
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 import pytest
 
 from agent.core import Agent
-from agent.types import TurnClassification
+from agent.types import ModelStatus, TurnClassification
 from core.memory import VectorMemory
 from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
@@ -2996,6 +2998,54 @@ def test_fetch_model_metadata_falls_back_to_props_for_context_window(mocker, run
     assert agent.fetch_model_metadata() == ("llama-3.2-3b-instruct", 40960)
 
 
+def test_refresh_model_status_reports_online_and_context_window(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+
+    def fake_urlopen(req, timeout=None, context=None):
+        assert req.full_url.endswith("/v1/models")
+        return FakeResponse(['{"data":[{"id":"qwen-3","metadata":{"n_ctx_slot":16384}}]}'])
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    status = agent.refresh_model_status(force=True)
+
+    assert status.state == "online"
+    assert status.model_name == "qwen-3"
+    assert status.context_window == 16384
+    assert agent.get_model_status().state == "online"
+    assert agent._ready_checked is True
+
+
+def test_reload_config_resets_model_status_cache(runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    agent.llm_client._store_model_status(
+        ModelStatus(
+            state="online",
+            model_name="qwen-old",
+            context_window=8192,
+            last_checked_at=123.0,
+            last_success_at=123.0,
+            endpoint="http://127.0.0.1:8080/v1/models",
+        )
+    )
+
+    agent.reload_config(
+        {
+            "agent": {
+                "model_endpoint": "http://127.0.0.1:8081/v1/chat/completions",
+                "models_endpoint": "http://127.0.0.1:8081/v1/models",
+            }
+        }
+    )
+
+    status = agent.get_model_status()
+
+    assert status.state == "unknown"
+    assert status.endpoint == "http://127.0.0.1:8081/v1/models"
+    assert status.model_name is None
+    assert agent._ready_checked is False
+
+
 def test_fetch_model_name_accepts_top_level_model_field(runtime: SkillRuntime):
     assert Agent._extract_model_name({"model": "qwen2.5-coder-7b"}) == "qwen2.5-coder-7b"
 
@@ -3065,6 +3115,147 @@ def test_reload_config_rebuilds_context_manager(runtime: SkillRuntime):
     assert agent.context_mgr.context_limit == 4096
     assert agent.context_mgr.keep_last_n == 4
     assert agent.context_mgr.safety_margin == 200
+
+
+def test_run_turn_fails_fast_when_cached_status_is_freshly_offline(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    agent.llm_client._store_model_status(
+        ModelStatus(
+            state="offline",
+            model_name="qwen-down",
+            last_checked_at=time.monotonic(),
+            last_success_at=0.0,
+            last_error="[Errno 61] Connection refused",
+            endpoint=agent.models_endpoint,
+        )
+    )
+    run = mocker.patch.object(agent.orchestrator, "run_turn")
+    refresh = mocker.patch.object(agent, "refresh_model_status", wraps=agent.refresh_model_status)
+
+    result = agent.run_turn(history_messages=[], user_input="hello", thinking=True)
+
+    assert result.status == "error"
+    assert "offline" in (result.error or "").lower()
+    run.assert_not_called()
+    refresh.assert_not_called()
+
+
+def test_run_turn_probes_when_status_is_stale(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    agent.llm_client._store_model_status(
+        ModelStatus(
+            state="online",
+            model_name="qwen-stale",
+            context_window=8192,
+            last_checked_at=1.0,
+            last_success_at=1.0,
+            endpoint=agent.models_endpoint,
+        )
+    )
+    refreshed = ModelStatus(
+        state="online",
+        model_name="qwen-fresh",
+        context_window=16384,
+        last_checked_at=time.monotonic(),
+        last_success_at=time.monotonic(),
+        endpoint=agent.models_endpoint,
+    )
+    refresh = mocker.patch.object(agent, "refresh_model_status", return_value=refreshed)
+    run = mocker.patch.object(
+        agent.orchestrator,
+        "run_turn",
+        return_value=type("Result", (), {"status": "done", "content": "", "reasoning": "", "skill_exchanges": []})(),
+    )
+
+    result = agent.run_turn(history_messages=[], user_input="hello", thinking=True)
+
+    assert result.status == "done"
+    refresh.assert_called_once()
+    run.assert_called_once()
+
+
+def test_run_turn_uses_configured_readiness_timeout_before_first_turn(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "readiness_timeout_s": 30,
+        }
+    }
+    agent = Agent(cfg, runtime)
+    agent.llm_client._store_model_status(ModelStatus(state="unknown", endpoint=agent.models_endpoint))
+    ready = mocker.patch.object(agent, "ensure_ready", return_value=True)
+    run = mocker.patch.object(
+        agent.orchestrator,
+        "run_turn",
+        return_value=type("Result", (), {"status": "done", "content": "", "reasoning": "", "skill_exchanges": []})(),
+    )
+
+    result = agent.run_turn(history_messages=[], user_input="hello", thinking=True)
+
+    assert result.status == "done"
+    ready.assert_called_once()
+    assert ready.call_args.kwargs.get("timeout_s") is None
+    run.assert_called_once()
+
+
+def test_local_connection_refused_is_not_retried(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    events: list[dict] = []
+
+    def boom(*_args, **_kwargs):
+        raise urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
+
+    mocker.patch.object(agent.llm_client, "_status_allows_immediate_send", return_value=ModelStatus(state="online", endpoint=agent.models_endpoint))
+    mocker.patch("agent.llm_client.stream_chat_completions", side_effect=boom)
+
+    with pytest.raises(Exception):
+        agent.llm_client.call_with_retry({"messages": []}, None, events.append, pass_id="pass_1")
+
+    assert not any("Retrying request" in event.get("text", "") for event in events if isinstance(event, dict))
+    assert agent.get_model_status().state == "offline"
+
+
+def test_retryable_transport_error_still_runs_readiness_poll_after_offline_probe(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    events: list[dict] = []
+    mocker.patch.object(agent.llm_client, "_status_allows_immediate_send", return_value=ModelStatus(state="online", endpoint=agent.models_endpoint))
+    stream = mocker.patch(
+        "agent.llm_client.stream_chat_completions",
+        side_effect=urllib.error.URLError(TimeoutError("timed out")),
+    )
+    mocker.patch.object(
+        agent.llm_client,
+        "refresh_model_status",
+        return_value=ModelStatus(state="offline", last_error="timed out", endpoint=agent.models_endpoint),
+    )
+    ready = mocker.patch.object(agent.llm_client, "ensure_ready", return_value=False)
+
+    with pytest.raises(Exception):
+        agent.llm_client.call_with_retry({"messages": []}, None, events.append, pass_id="pass_1")
+
+    assert stream.called
+    ready.assert_called_once()
+    assert ready.call_args.kwargs["timeout_s"] == min(agent.llm_client.readiness_timeout_s, 5.0)
+
+
+def test_refresh_model_status_detects_hot_swapped_model(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    responses = iter(
+        [
+            FakeResponse(['{"data":[{"id":"qwen-3","metadata":{"n_ctx_slot":8192}}]}']),
+            FakeResponse(['{"data":[{"id":"qwen-4","metadata":{"n_ctx_slot":16384}}]}']),
+        ]
+    )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=lambda req, timeout=None, context=None: next(responses))
+
+    first = agent.refresh_model_status(force=True)
+    second = agent.refresh_model_status(force=True)
+
+    assert first.model_name == "qwen-3"
+    assert second.model_name == "qwen-4"
+    assert second.context_window == 16384
 
 
 def test_time_sensitive_search_without_fetch_evidence_declines(mocker, tmp_path: Path, monkeypatch):

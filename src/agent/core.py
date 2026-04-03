@@ -16,7 +16,7 @@ from agent.orchestrator import TurnOrchestrator, new_stop_event, request_user_in
 from agent.policies import PromptPolicyRenderer
 from agent.prompts import build_system_prompt
 from agent.telemetry import TelemetryEmitter
-from agent.types import AgentTurnResult, BackgroundSkillAgentTask
+from agent.types import AgentTurnResult, BackgroundSkillAgentTask, ModelStatus
 from core.configuration import validate_endpoint_policy
 from core.skills import SkillRuntime
 
@@ -119,6 +119,15 @@ class Agent:
 
     def fetch_model_metadata(self, timeout_s: Optional[float] = None) -> tuple[Optional[str], Optional[int]]:
         return self.llm_client.fetch_model_metadata(timeout_s=timeout_s)
+
+    def get_model_status(self) -> ModelStatus:
+        return self.llm_client.get_model_status()
+
+    def refresh_model_status(self, timeout_s: Optional[float] = None, force: bool = False) -> ModelStatus:
+        return self.llm_client.refresh_model_status(timeout_s=timeout_s, force=force)
+
+    def mark_model_transport_failure(self, exc: Exception) -> None:
+        self.llm_client.mark_model_transport_failure(exc)
 
     def fetch_model_name(self, timeout_s: Optional[float] = None) -> Optional[str]:
         model_name, _context_window = self.fetch_model_metadata(timeout_s=timeout_s)
@@ -389,12 +398,46 @@ class Agent:
             return AgentTurnResult(status="error", content="", reasoning="", skill_exchanges=[], error=endpoint_err)
         if self.llm_client.stop_requested(stop_event):
             return AgentTurnResult(status="cancelled", content="", reasoning="", skill_exchanges=[])
-        if not self.llm_client._ready_checked:
+        status = self.get_model_status()
+        if status.state == "offline" and self.llm_client.is_model_status_fresh(status):
+            detail = f": {status.last_error}" if status.last_error else ""
+            return AgentTurnResult(
+                status="error",
+                content="",
+                reasoning="",
+                skill_exchanges=[],
+                error=f"Model endpoint offline{detail}",
+            )
+        if not self.llm_client.is_model_status_fresh(status):
+            if status.state != "unknown":
+                status = self.refresh_model_status(timeout_s=min(self.connect_timeout_s, 1.0), force=True)
+                if status.state == "online":
+                    return self.orchestrator.run_turn(
+                        history_messages=history_messages,
+                        user_input=user_input,
+                        thinking=thinking,
+                        branch_labels=branch_labels,
+                        attachments=attachments,
+                        loaded_skill_ids=loaded_skill_ids,
+                        stop_event=stop_event,
+                        on_event=on_event,
+                        confirm_shell=confirm_shell,
+                        spawn_skill_agent=self._handle_spawn_skill_agent,
+                        request_user_input=request_user_input_passthrough,
+                    )
             ready = self.ensure_ready(stop_event=stop_event, on_event=on_event)
             if ready is None:
                 return AgentTurnResult(status="cancelled", content="", reasoning="", skill_exchanges=[])
             if not ready:
-                return AgentTurnResult(status="error", content="", reasoning="", skill_exchanges=[], error=f"Model endpoint not ready: {self.models_endpoint}")
+                status = self.get_model_status()
+                detail = f": {status.last_error}" if status.last_error else ""
+                return AgentTurnResult(
+                    status="error",
+                    content="",
+                    reasoning="",
+                    skill_exchanges=[],
+                    error=f"Model endpoint offline{detail}" if status.state == "offline" else f"Model endpoint not ready: {self.models_endpoint}",
+                )
         return self.orchestrator.run_turn(
             history_messages=history_messages,
             user_input=user_input,

@@ -43,6 +43,16 @@ def _context_usage_markup(context_tokens: Optional[int], context_window: Optiona
     return f"[#6366f1]{pct}%[/#6366f1]"
 
 
+def _endpoint_state_markup(state: str, *, width: int) -> str:
+    normalized = (state or "unknown").strip().lower() or "unknown"
+    if width < 110:
+        label = {"online": "on", "offline": "off", "unknown": "?"}.get(normalized, "?")
+    else:
+        label = {"online": "online", "offline": "offline", "unknown": "unknown"}.get(normalized, normalized)
+    color = {"online": "#10b981", "offline": "#f43f5e", "unknown": "#a1a1aa"}.get(normalized, "#a1a1aa")
+    return f"[dim]llm:[/dim] [{color}]{esc(label)}[/{color}]"
+
+
 def topbar_left(workspace_root: str, *, width: int) -> str:
     return "[bold #6366f1 on #1a1730] ALPHANUS [/bold #6366f1 on #1a1730]"
 
@@ -64,7 +74,14 @@ def topbar_center(*, session_name: str, branch_name: str, width: int) -> str:
     )
 
 
-def topbar_right(*, endpoint: str, context_tokens: Optional[int], context_window: Optional[int], width: int) -> str:
+def topbar_right(
+    *,
+    endpoint: str,
+    context_tokens: Optional[int],
+    context_window: Optional[int],
+    width: int,
+    endpoint_state: str = "unknown",
+) -> str:
     short_endpoint = _short_endpoint(endpoint)
     if width < 105:
         short_endpoint = ""
@@ -72,12 +89,13 @@ def topbar_right(*, endpoint: str, context_tokens: Optional[int], context_window
     endpoint_markup = ""
     if short_endpoint:
         endpoint_markup = f"[#a1a1aa]{esc(_truncate(short_endpoint, 22 if width < 140 else 28))}[/#a1a1aa]"
-    return _join_topbar_segments(endpoint_markup, f"[dim]ctx:[/dim] {ctx_markup}")
+    return _join_topbar_segments(endpoint_markup, _endpoint_state_markup(endpoint_state, width=width), f"[dim]ctx:[/dim] {ctx_markup}")
 
 
 def status_right_markup(
     *,
     model_name: Optional[str],
+    model_state: str = "unknown",
     branch_armed: bool,
     branch_label: Optional[str],
     thinking: bool,
@@ -86,10 +104,11 @@ def status_right_markup(
     model_limit = 24 if width < 120 else 40
     model_label = _truncate(model_name or "—", model_limit)
     model_markup = f"[dim]model:[/dim] [#6366f1]{esc(model_label)}[/#6366f1]"
+    state_markup = _endpoint_state_markup(model_state, width=width)
     if width < 90:
-        return model_markup
+        return "  ".join((model_markup, state_markup))
 
-    parts = [model_markup]
+    parts = [model_markup, state_markup]
     if branch_armed:
         if branch_label:
             label = _truncate(branch_label, 10 if width < 120 else 18)

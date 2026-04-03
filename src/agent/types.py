@@ -27,6 +27,35 @@ class StreamPassResult:
 
 
 @dataclass(slots=True)
+class ModelStatus:
+    state: str = "unknown"
+    model_name: Optional[str] = None
+    context_window: Optional[int] = None
+    last_checked_at: float = 0.0
+    last_success_at: float = 0.0
+    last_error: str = ""
+    endpoint: str = ""
+
+    def is_fresh(
+        self,
+        *,
+        now: Optional[float] = None,
+        online_ttl_s: float = 5.0,
+        offline_ttl_s: float = 2.0,
+    ) -> bool:
+        if self.last_checked_at <= 0:
+            return False
+        if self.state == "online":
+            ttl = max(0.0, float(online_ttl_s))
+        elif self.state == "offline":
+            ttl = max(0.0, float(offline_ttl_s))
+        else:
+            return False
+        current = time.monotonic() if now is None else float(now)
+        return (current - self.last_checked_at) <= ttl
+
+
+@dataclass(slots=True)
 class AgentTurnResult:
     status: str
     content: str

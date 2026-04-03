@@ -27,6 +27,7 @@ from textual.widgets import Button, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from agent.core import Agent, AgentTurnResult
+from agent.types import ModelStatus
 from alphanus_paths import get_app_paths
 from core.attachments import build_content, classify_attachment
 from core.configuration import (
@@ -542,11 +543,13 @@ class AlphanusTUI(App):
         self._last_status_left = ""
         self._last_status_right = ""
         self._auto_follow_stream = True
+        self._model_status = self.agent.get_model_status()
         self._model_name: Optional[str] = None
         self._model_context_window: Optional[int] = None
         self._model_refresh_inflight = False
         self._last_model_refresh = 0.0
         self._model_refresh_interval_s = 5.0
+        self._model_refresh_fast_until = 0.0
 
         self._esc_pending = False
         self._esc_ts = 0.0
@@ -615,7 +618,7 @@ class AlphanusTUI(App):
         self._update_status2()
         self._update_sidebar()
         self._update_pending_attachments()
-        self._maybe_refresh_model_name(force=True)
+        self._maybe_refresh_model_status(force=True)
         self.query_one(ChatInput).focus()
         self.call_after_refresh(self._open_startup_session_manager)
 
@@ -1099,7 +1102,7 @@ class AlphanusTUI(App):
             event.stop()
 
     def _tick(self) -> None:
-        self._maybe_refresh_model_name()
+        self._maybe_refresh_model_status()
         if self._esc_pending and time.monotonic() - self._esc_ts > 3.0:
             self._esc_pending = False
             self._update_status2()
@@ -1607,6 +1610,7 @@ class AlphanusTUI(App):
     def _update_status1(self) -> None:
         text = status_right_markup(
             model_name=self._model_name,
+            model_state=self._model_status.state,
             branch_armed=bool(self.conv_tree._pending_branch),
             branch_label=self.conv_tree._pending_branch_label,
             thinking=self.thinking,
@@ -1619,25 +1623,36 @@ class AlphanusTUI(App):
         self.query_one("#status-right", Static).update(text)
         self._update_topbar()
 
-    def _maybe_refresh_model_name(self, *, force: bool = False) -> None:
+    def _current_model_refresh_interval(self) -> float:
+        now = time.monotonic()
+        if self._model_status.state == "offline" or now < self._model_refresh_fast_until:
+            return 2.0
+        return self._model_refresh_interval_s
+
+    def _maybe_refresh_model_status(self, *, force: bool = False) -> None:
         if self._model_refresh_inflight:
             return
         now = time.monotonic()
-        if not force and now - self._last_model_refresh < self._model_refresh_interval_s:
+        if not force and now - self._last_model_refresh < self._current_model_refresh_interval():
             return
         self._last_model_refresh = now
         self._model_refresh_inflight = True
-        self._refresh_model_name_worker()
+        self._refresh_model_status_worker()
 
     @work(thread=True, exclusive=True)
-    def _refresh_model_name_worker(self) -> None:
-        model_name, context_window = self.agent.fetch_model_metadata(timeout_s=min(self.agent.connect_timeout_s, 2.0))
-        self.call_from_thread(self._apply_model_name_refresh, model_name, context_window)
+    def _refresh_model_status_worker(self) -> None:
+        status = self.agent.refresh_model_status(timeout_s=min(self.agent.connect_timeout_s, 2.0), force=True)
+        self.call_from_thread(self._apply_model_status_refresh, status)
 
-    def _apply_model_name_refresh(self, model_name: Optional[str], context_window: Optional[int]) -> None:
+    def _apply_model_status_refresh(self, status: ModelStatus) -> None:
         self._model_refresh_inflight = False
-        self._model_name = model_name
-        self._model_context_window = context_window if isinstance(context_window, int) and context_window > 0 else None
+        previous_name = self._model_name
+        previous_context = self._model_context_window
+        self._model_status = status
+        self._model_name = status.model_name
+        self._model_context_window = status.context_window if isinstance(status.context_window, int) and status.context_window > 0 else None
+        if previous_name != self._model_name or previous_context != self._model_context_window:
+            self._model_refresh_fast_until = time.monotonic() + 6.0
         self._update_status1()
         self._update_topbar()
 
@@ -1674,6 +1689,7 @@ class AlphanusTUI(App):
                 context_tokens=self._context_tokens(),
                 context_window=self._context_window_tokens(),
                 width=width,
+                endpoint_state=self._model_status.state,
             )
         )
 
@@ -1991,11 +2007,12 @@ class AlphanusTUI(App):
         merged = self._merge_live_config(self.agent.config, normalized)
         self.agent.reload_config(merged)
         self.thinking = bool(merged.get("agent", {}).get("enable_thinking", self.thinking))
+        self._model_status = self.agent.get_model_status()
         self._model_name = None
         self._model_context_window = None
         self._update_topbar()
         self._apply_tui_config()
-        self._maybe_refresh_model_name(force=True)
+        self._maybe_refresh_model_status(force=True)
         suffix = f" ({len(warnings)} normalization warning{'s' if len(warnings) != 1 else ''})." if warnings else "."
         self._write_info("Saved global config. Use environment variables for secrets like TAVILY_API_KEY or BRAVE_SEARCH_API_KEY" + suffix)
         for warning in warnings:
