@@ -3227,6 +3227,16 @@ def test_run_turn_uses_configured_readiness_timeout_before_first_turn(mocker, ru
 
 def test_local_connection_refused_is_not_retried(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
+    agent.llm_client._store_model_status(
+        ModelStatus(
+            state="online",
+            model_name="qwen-3",
+            context_window=8192,
+            last_checked_at=1.0,
+            last_success_at=1.0,
+            endpoint=agent.models_endpoint,
+        )
+    )
     events: list[dict] = []
 
     def boom(*_args, **_kwargs):
@@ -3240,6 +3250,7 @@ def test_local_connection_refused_is_not_retried(mocker, runtime: SkillRuntime):
 
     assert not any("Retrying request" in event.get("text", "") for event in events if isinstance(event, dict))
     assert agent.get_model_status().state == "offline"
+    assert agent.get_model_status().model_name == "qwen-3"
 
 
 def test_retryable_transport_error_still_runs_readiness_poll_after_offline_probe(mocker, runtime: SkillRuntime):
@@ -3263,6 +3274,27 @@ def test_retryable_transport_error_still_runs_readiness_poll_after_offline_probe
     assert stream.called
     ready.assert_called_once()
     assert ready.call_args.kwargs["timeout_s"] == min(agent.llm_client.readiness_timeout_s, 5.0)
+
+
+def test_refresh_model_status_preserves_model_name_when_endpoint_goes_offline(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    agent.llm_client._store_model_status(
+        ModelStatus(
+            state="online",
+            model_name="qwen-3",
+            context_window=8192,
+            last_checked_at=1.0,
+            last_success_at=1.0,
+            endpoint=agent.models_endpoint,
+        )
+    )
+    mocker.patch.object(urllib.request, "urlopen", side_effect=urllib.error.URLError("offline"))
+
+    status = agent.refresh_model_status(force=True)
+
+    assert status.state == "offline"
+    assert status.model_name == "qwen-3"
+    assert status.context_window == 8192
 
 
 def test_refresh_model_status_detects_hot_swapped_model(mocker, runtime: SkillRuntime):

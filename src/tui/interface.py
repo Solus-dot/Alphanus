@@ -1671,7 +1671,7 @@ class AlphanusTUI(App):
         previous_name = self._model_name
         previous_context = self._model_context_window
         self._model_status = status
-        self._model_name = status.model_name
+        self._model_name = status.model_name if status.state != "offline" else None
         self._model_context_window = status.context_window if isinstance(status.context_window, int) and status.context_window > 0 else None
         if previous_name != self._model_name or previous_context != self._model_context_window:
             self._model_refresh_fast_until = time.monotonic() + 6.0

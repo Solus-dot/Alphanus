@@ -1137,6 +1137,39 @@ def test_current_model_refresh_interval_is_adaptive() -> None:
     assert tui._current_model_refresh_interval() == 2.0
 
 
+def test_apply_model_status_refresh_clears_model_name_when_offline() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._model_refresh_inflight = True
+    tui._model_refresh_fast_until = 0.0
+    tui._model_status = ModelStatus(
+        state="online",
+        model_name="qwen-3",
+        context_window=8192,
+        endpoint="http://127.0.0.1:8080/v1/models",
+    )
+    tui._model_name = "qwen-3"
+    tui._model_context_window = 8192
+    updates: list[str] = []
+    tui._update_status1 = lambda: updates.append("status")
+    tui._update_topbar = lambda: updates.append("topbar")
+
+    tui._apply_model_status_refresh(
+        ModelStatus(
+            state="offline",
+            model_name="qwen-stale",
+            context_window=8192,
+            last_checked_at=time.monotonic(),
+            endpoint="http://127.0.0.1:8080/v1/models",
+        )
+    )
+
+    assert tui._model_status.state == "offline"
+    assert tui._model_name is None
+    assert tui._model_context_window == 8192
+    assert tui._model_refresh_fast_until > 0.0
+    assert updates == ["status", "topbar"]
+
+
 def test_should_startup_readiness_poll_only_for_cold_local_model() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._startup_readiness_inflight = False
