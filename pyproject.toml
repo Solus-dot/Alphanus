@@ -1,10 +1,6 @@
-[build-system]
-requires = ["setuptools>=69", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "alphanus"
-version = "0.1.0"
+version = "0.1.2"
 description = "Personal on-device AI coding assistant with Textual TUI"
 readme = "README.md"
 requires-python = ">=3.11"
