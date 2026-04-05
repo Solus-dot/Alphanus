@@ -817,7 +817,7 @@ class SkillRuntime:
             skill_id="__runtime__",
             tool_scope="core",
             capability="skill_manager",
-            description="Create, patch, edit, delete, or manage files for user-local skills under ~/.alphanus/skills.",
+            description="Create, patch, edit, delete, or manage files for workspace-local skills under .alphanus/skills.",
             parameters={
                 "type": "object",
                 "properties": {

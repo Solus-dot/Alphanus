@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from alphanus_paths import DEFAULT_APP_DIRNAME, get_app_paths
+from alphanus_paths import DEFAULT_APP_DIRNAME, DEFAULT_WORKSPACE_DIRNAME, get_app_paths
 
 
 def test_get_app_paths_uses_repo_root_inside_checkout() -> None:
@@ -29,6 +29,6 @@ def test_get_app_paths_falls_back_to_user_dir_outside_checkout(tmp_path: Path, m
     paths = alphanus_paths.get_app_paths()
 
     assert paths.repo_root is None
-    assert paths.app_root == home / DEFAULT_APP_DIRNAME
-    assert paths.config_path == home / DEFAULT_APP_DIRNAME / "config" / "global_config.json"
+    assert paths.app_root == home / "Desktop" / DEFAULT_WORKSPACE_DIRNAME / DEFAULT_APP_DIRNAME
+    assert paths.config_path == home / "Desktop" / DEFAULT_WORKSPACE_DIRNAME / DEFAULT_APP_DIRNAME / "config" / "global_config.json"
     assert (paths.bundled_skills_dir / "utilities" / "SKILL.md").exists()

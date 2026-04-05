@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 DEFAULT_APP_DIRNAME = ".alphanus"
+DEFAULT_WORKSPACE_DIRNAME = "Alphanus-Workspace"
 APP_ROOT_ENV_VAR = "ALPHANUS_APP_ROOT"
 
 
@@ -55,11 +56,16 @@ def _bundled_skills_dir() -> Path:
     return Path(str(resources.files("alphanus_bundled"))).resolve()
 
 
+def default_workspace_root(home_root: Path | None = None) -> Path:
+    home = (home_root or Path.home()).resolve()
+    return (home / "Desktop" / DEFAULT_WORKSPACE_DIRNAME).resolve()
+
+
 def _installed_app_root() -> Path:
     override = os.environ.get(APP_ROOT_ENV_VAR, "").strip()
     if override:
         return Path(os.path.expanduser(override)).resolve()
-    return (Path.home() / DEFAULT_APP_DIRNAME).resolve()
+    return (default_workspace_root() / DEFAULT_APP_DIRNAME).resolve()
 
 
 def get_app_paths() -> AppPaths:

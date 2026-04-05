@@ -17,7 +17,7 @@ Important limitation:
 
 Skill discovery scans:
 - upward from the workspace for `skills/`, `.claude/skills`, `.agents/skills`, and `.opencode/skills`
-- user-local roots under `~/.alphanus/skills`, `~/.claude/skills`, `~/.agents/skills`, and `~/.config/opencode/skills`
+- local skill roots under `.alphanus/skills`, `~/.claude/skills`, `~/.agents/skills`, and `~/.config/opencode/skills`
 - the bundled repo `skills/` root
 - any extra roots from `skills.load.extra_dirs`
 
@@ -268,7 +268,7 @@ Additional runtime tools appear when relevant:
 What they do:
 - `skills_list`: list enabled skills with minimal metadata
 - `skill_view`: load a skill's full prompt into the session or read a specific file inside the skill root
-- `skill_manage`: create/edit/patch/delete user-local skills under `~/.alphanus/skills`
+- `skill_manage`: create/edit/patch/delete workspace-local skills under `.alphanus/skills`
 - `read_skill_resource`: read a bundled file from an active skill
 - `run_skill_command`: run one declared shell/python workflow command from an active skill
 - `run_skill_script`: run one bundled script from an active skill
