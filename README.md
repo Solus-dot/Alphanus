@@ -10,7 +10,6 @@
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: alpha">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/backend-llama.cpp-black" alt="Backend: llama.cpp">
-  <img src="https://img.shields.io/badge/ui-Textual-5c6ac4" alt="UI: Textual">
   <img src="https://img.shields.io/badge/platform-local--first-lightgrey" alt="Local first">
 </p>
 
