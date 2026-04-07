@@ -25,8 +25,8 @@ class CodeViewerModal(ModalScreen[None]):
     #code-modal {
         width: 88%;
         height: 88%;
-        background: #121214;
-        border: panel #27272a;
+        background: #000000;
+        border: panel #52525b;
         padding: 1 2;
     }
 
@@ -39,9 +39,9 @@ class CodeViewerModal(ModalScreen[None]):
     #code-modal-editor {
         width: 1fr;
         height: 1fr;
-        background: #18181b;
+        background: #000000;
         color: #e4e4e7;
-        border: solid #27272a;
+        border: solid #52525b;
     }
 
     #code-modal-footer {
@@ -64,7 +64,7 @@ class CodeViewerModal(ModalScreen[None]):
     }
 
     #code-close {
-        background: #18181b;
+        background: #000000;
         color: #e4e4e7;
         border: none;
     }
@@ -126,8 +126,8 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
     #config-modal {
         width: 90%;
         height: 90%;
-        background: #121214;
-        border: panel #27272a;
+        background: #000000;
+        border: panel #52525b;
         padding: 1 2;
     }
 
@@ -150,9 +150,9 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
     #config-modal-editor {
         width: 1fr;
         height: 1fr;
-        background: #18181b;
+        background: #000000;
         color: #e4e4e7;
-        border: solid #27272a;
+        border: solid #52525b;
     }
 
     #config-modal-error {
@@ -175,7 +175,7 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
     }
 
     #config-cancel {
-        background: #18181b;
+        background: #000000;
         color: #e4e4e7;
         border: none;
     }
@@ -263,7 +263,7 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
         max-width: 92%;
         height: auto;
         background: #09090b;
-        border: solid #27272a;
+        border: solid #52525b;
         padding: 0 1 1 2;
     }
 
@@ -293,8 +293,8 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
         width: 1fr;
         height: auto;
         max-height: 10;
-        background: #121214;
-        border: solid #27272a;
+        background: #000000;
+        border: solid #52525b;
         margin: 0 0 1 0;
         padding: 0;
     }
@@ -307,9 +307,9 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
     #session-modal-name {
         width: 1fr;
         margin: 0 0 1 0;
-        background: #121214;
+        background: #000000;
         color: #e4e4e7;
-        border: round #3f3f46;
+        border: round #63636b;
     }
 
     #session-modal-footer {
@@ -504,8 +504,8 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
         width: 72;
         max-width: 92%;
         height: auto;
-        background: #121214;
-        border: panel #27272a;
+        background: #000000;
+        border: panel #52525b;
         padding: 1 2;
     }
 
@@ -524,8 +524,8 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
         width: 1fr;
         height: auto;
         max-height: 12;
-        background: #18181b;
-        border: solid #27272a;
+        background: #000000;
+        border: solid #52525b;
         margin: 0 0 1 0;
     }
 
@@ -553,7 +553,7 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
     }
 
     #picker-cancel {
-        background: #18181b;
+        background: #000000;
         color: #e4e4e7;
         border: none;
     }

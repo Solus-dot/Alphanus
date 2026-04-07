@@ -161,8 +161,8 @@ class AlphanusTUI(App):
     #topbar {
         height: 3;
         layout: horizontal;
-        background: #121214;
-        border-bottom: solid #27272a;
+        background: #000000;
+        border-bottom: solid #52525b;
         padding: 0 2;
     }
 
@@ -205,13 +205,13 @@ class AlphanusTUI(App):
         background: #09090b;
         overflow-x: hidden;
         scrollbar-size: 1 1;
-        scrollbar-color: #3f3f46 #121214;
-        scrollbar-background: #121214;
+        scrollbar-color: #52525b #000000;
+        scrollbar-background: #000000;
         scrollbar-background-hover: #18181b;
         scrollbar-background-active: #18181b;
         scrollbar-color-hover: #52525b;
         scrollbar-color-active: #6366f1;
-        scrollbar-corner-color: #121214;
+        scrollbar-corner-color: #000000;
     }
 
     #chat-scroll.-active-panel {
@@ -238,8 +238,8 @@ class AlphanusTUI(App):
 
     #sidebar {
         width: 38;
-        border-left: solid #27272a;
-        background: #121214;
+        border-left: solid #52525b;
+        background: #000000;
         display: none;
         padding: 0;
         layout: grid;
@@ -273,15 +273,15 @@ class AlphanusTUI(App):
     #sidebar-tree-scroll {
         width: 1fr;
         height: 1fr;
-        background: #121214;
+        background: #000000;
         padding: 0 2 1 2;
-        scrollbar-background: #121214;
+        scrollbar-background: #000000;
         scrollbar-background-hover: #18181b;
         scrollbar-background-active: #18181b;
         scrollbar-color: #3f3f46;
         scrollbar-color-hover: #52525b;
         scrollbar-color-active: #6366f1;
-        scrollbar-corner-color: #121214;
+        scrollbar-corner-color: #000000;
     }
 
     #sidebar.-active-panel {
@@ -291,36 +291,36 @@ class AlphanusTUI(App):
     #sidebar-tree-content {
         width: 1fr;
         height: auto;
-        background: #121214;
+        background: #000000;
     }
 
     #sidebar-inspector-section {
         width: 1fr;
         height: 1fr;
         min-height: 8;
-        border-top: solid #27272a;
-        background: #121214;
+        border-top: solid #52525b;
+        background: #000000;
         layout: vertical;
     }
 
     #sidebar-inspector-scroll {
         width: 1fr;
         height: 1fr;
-        background: #121214;
+        background: #000000;
         padding: 0 2 1 2;
-        scrollbar-background: #121214;
+        scrollbar-background: #000000;
         scrollbar-background-hover: #18181b;
         scrollbar-background-active: #18181b;
         scrollbar-color: #3f3f46;
         scrollbar-color-hover: #52525b;
         scrollbar-color-active: #6366f1;
-        scrollbar-corner-color: #121214;
+        scrollbar-corner-color: #000000;
     }
 
     #sidebar-inspector-content {
         width: 1fr;
         height: auto;
-        background: #121214;
+        background: #000000;
     }
 
     #footer {
@@ -334,8 +334,8 @@ class AlphanusTUI(App):
     #command-popup {
         width: 64;
         max-height: 13;
-        background: #121214;
-        border: round #27272a;
+        background: #000000;
+        border: round #52525b;
         display: none;
         position: absolute;
         overlay: screen;
@@ -359,16 +359,16 @@ class AlphanusTUI(App):
         width: 1fr;
         height: auto;
         max-height: 8;
-        background: #121214;
+        background: #000000;
         border: none;
         padding: 0 1 1 1;
-        scrollbar-background: #121214;
+        scrollbar-background: #000000;
         scrollbar-background-hover: #18181b;
         scrollbar-background-active: #18181b;
         scrollbar-color: #3f3f46;
         scrollbar-color-hover: #52525b;
         scrollbar-color-active: #6366f1;
-        scrollbar-corner-color: #121214;
+        scrollbar-corner-color: #000000;
     }
 
     #command-options > .option-list--option-highlighted {
@@ -385,7 +385,7 @@ class AlphanusTUI(App):
 
     #footer-sep {
         height: 1;
-        background: #27272a;
+        background: #5a5a66;
         color: #e4e4e7;
         content-align: left middle;
         padding: 0 1;
@@ -422,8 +422,8 @@ class AlphanusTUI(App):
         width: 1fr;
         height: 3;
         layout: horizontal;
-        background: #18181b;
-        border: round #3f3f46;
+        background: #000000;
+        border: round #63636b;
         padding: 0 1;
         align: left middle;
     }
