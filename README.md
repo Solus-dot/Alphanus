@@ -38,7 +38,7 @@ The current implementation is built around `llama.cpp` and a Textual interface, 
 - Persistent semantic memory with automatic re-embedding on model change
 - Explicit session-loaded skills with enable and disable controls
 - Web search support for time-sensitive answers
-- Workspace-aware tooling with confirmation gates and executable skill trust boundaries
+- Workspace-aware tooling with confirmation gates and explicit session-loaded skill execution
 
 ---
 
@@ -157,8 +157,8 @@ Important runtime notes:
 * `agent.max_tokens` defaults to `null`, so no explicit `max_tokens` cap is sent unless configured
 * Internal context budget defaults exist at runtime, but several budget controls are intentionally hidden from the editable config file and TUI editor
 * `search.provider` currently supports `tavily` and `brave`
-* `skills.load.extra_dirs`, `skills.load.watch`, and `skills.load.upward_scan` control skill discovery
-* `agents.enable_skill_agents` and `runtime.ask_user_tool` gate companion-agent and structured follow-up flows
+* Skills are discovered from the configured repo `skills/` root only
+* `runtime.ask_user_tool` gates structured follow-up question flows via `request_user_input`
 
 ---
 
@@ -182,20 +182,13 @@ Alphanus separates skill discovery, enabling, and session loading.
 
 Important behavior:
 
-* Skill discovery scans upward from the workspace for `skills/`, `.claude/skills`, `.agents/skills`, and `.opencode/skills`
-* It also checks user-local skill roots under the home directory
-* Shadowing priority is:
-
-```text
-workspace/local > bundled > user/local > external/local
-```
-
-* Only bundled and workspace-local roots are trusted executable roots
-* Home and external roots are visible in `/skills` and `/doctor`, but executable surfaces are blocked
+* Skill discovery uses the configured repo `skills/` root only
+* Skills are expected to live under `<repo>/skills/<skill-id>/SKILL.md`
 * `/skill-on` and `/skill-off` control whether a skill is globally enabled
 * Skills become session-loaded when the runtime calls `skill_view(name)`
 * Session-loaded skills persist with the session and can be removed with `/skill-unload` or `/skill-unload-all`
-* Core tools from enabled trusted skills remain model-exposed; optional skill runtime surfaces are added when a skill is loaded for the session
+* Native `tools.py` tools are available only when the owning skill is loaded in the active session
+* Executable skills run through unified `run_skill` (entrypoint or bundled script), scoped to loaded skills for the current turn
 
 ---
 
