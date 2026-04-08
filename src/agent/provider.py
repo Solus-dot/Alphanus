@@ -233,6 +233,18 @@ class OpenAICompatibleProvider:
             path = "/props"
         return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
 
+    @staticmethod
+    def slots_endpoint_from_models_endpoint(models_endpoint: str) -> str:
+        parsed = urllib.parse.urlparse(models_endpoint)
+        path = parsed.path or ""
+        if path.endswith("/v1/models"):
+            path = path[: -len("/v1/models")] + "/slots"
+        elif path.endswith("/models"):
+            path = path[: -len("/models")] + "/slots"
+        else:
+            path = "/slots"
+        return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
+
     def fetch_json(self, url: str, timeout_s: Optional[float] = None) -> Any:
         request = urllib.request.Request(url, headers=self.headers(), method="GET")
         timeout = self.connect_timeout_s if timeout_s is None else max(0.1, float(timeout_s))
@@ -293,15 +305,34 @@ class OpenAICompatibleProvider:
             return current
 
         now = time.monotonic()
+        deadline = None if timeout_s is None else now + max(0.0, float(timeout_s))
+
+        def remaining_timeout() -> Optional[float]:
+            if deadline is None:
+                return None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Model status probe timed out")
+            return remaining
+
+        context_window = current.context_window
+        slots_endpoint = self.slots_endpoint_from_models_endpoint(self.models_endpoint)
         try:
-            payload = self.list_models(timeout_s=timeout_s)
+            slots_payload = self.fetch_json(slots_endpoint, timeout_s=remaining_timeout())
+        except Exception as exc:
+            self.telemetry.emit("model_slots_fetch_failed", endpoint=slots_endpoint, error=str(exc))
+        else:
+            context_window = self.extract_model_context_window(slots_payload) or context_window
+
+        try:
+            payload = self.list_models(timeout_s=remaining_timeout())
         except Exception as exc:
             self.telemetry.emit("model_fetch_failed", endpoint=self.models_endpoint, error=str(exc))
             return self._store_model_status(
                 ModelStatus(
                     state=self._model_status_error_state(exc),
                     model_name=current.model_name,
-                    context_window=current.context_window,
+                    context_window=context_window,
                     last_checked_at=now,
                     last_success_at=current.last_success_at,
                     last_error=str(exc),
@@ -310,11 +341,12 @@ class OpenAICompatibleProvider:
             )
 
         model_name = self.extract_model_name(payload) or current.model_name
-        context_window = self.extract_model_context_window(payload)
-        if context_window is None and model_name is not None:
+        if context_window is None:
+            context_window = self.extract_model_context_window(payload)
+        if context_window is None:
             props_endpoint = self.props_endpoint_from_models_endpoint(self.models_endpoint)
             try:
-                props_payload = self.fetch_json(props_endpoint, timeout_s=timeout_s)
+                props_payload = self.fetch_json(props_endpoint, timeout_s=remaining_timeout())
             except Exception as exc:
                 self.telemetry.emit("model_props_fetch_failed", endpoint=props_endpoint, error=str(exc))
             else:

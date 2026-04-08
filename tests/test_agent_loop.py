@@ -116,13 +116,17 @@ def test_agent_tool_call_loop(mocker, runtime: SkillRuntime):
     agent = Agent(cfg, runtime)
 
     calls = []
+    chat_reqs = []
 
     def fake_urlopen(req, timeout=None, context=None):
         calls.append(req)
         url = req.full_url
         if url.endswith("/v1/models"):
             return FakeResponse([])
-        if len(calls) == 2:
+        if url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
             # First completion emits tool_calls.
             return FakeResponse(
                 [
@@ -153,7 +157,7 @@ def test_agent_tool_call_loop(mocker, runtime: SkillRuntime):
     assert any(msg.get("role") == "tool" for msg in result.skill_exchanges)
 
     # Ensure POST payload uses stream=true.
-    post_req = calls[1]
+    post_req = chat_reqs[0]
     body = json.loads(post_req.data.decode("utf-8"))
     assert body["stream"] is True
     assert body["messages"][0]["role"] == "system"
@@ -284,6 +288,8 @@ def test_agent_requests_final_answer_if_post_tool_content_empty(mocker, runtime:
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):
             return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
         chat_reqs.append(req)
         if len(chat_reqs) == 1:
             return FakeResponse(
@@ -359,6 +365,8 @@ def test_agent_does_not_finish_after_helper_file_for_opaque_artifact_request(moc
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):
             return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
         chat_reqs.append(req)
         if len(chat_reqs) == 1:
             return FakeResponse(
@@ -1798,6 +1806,8 @@ def test_finalization_retries_when_model_leaks_tool_markup(mocker, runtime: Skil
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):
             return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
         chat_reqs.append(req)
         if len(chat_reqs) == 1:
             return FakeResponse(
@@ -1883,6 +1893,8 @@ def test_finalization_returns_error_when_markup_repeats(mocker, runtime: SkillRu
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):
             return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
         chat_reqs.append(req)
         if len(chat_reqs) == 1:
             return FakeResponse(
@@ -1931,6 +1943,8 @@ def test_finalization_strips_think_tags_from_model_output(mocker, runtime: Skill
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):
             return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
         return FakeResponse(
             [
                 'data: {"choices":[{"delta":{"content":"<think>internal</think>\\n\\nVisible answer"}}]}',
@@ -1974,6 +1988,8 @@ def test_main_pass_tool_markup_forces_clean_finalization(mocker, runtime: SkillR
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):
             return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
         chat_reqs.append(req)
         if len(chat_reqs) == 1:
             return FakeResponse(
@@ -2257,6 +2273,8 @@ def execute(tool_name, args, env):
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):
             return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
         chat_reqs.append(req)
         if len(chat_reqs) == 1:
             return FakeResponse(
@@ -2351,6 +2369,8 @@ def execute(tool_name, args, env):
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):
             return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
         chat_reqs.append(req)
         if len(chat_reqs) == 1:
             return FakeResponse(
@@ -2445,6 +2465,8 @@ def execute(tool_name, args, env):
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):
             return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
         chat_reqs.append(req)
         if len(chat_reqs) == 1:
             payload = json.loads(req.data.decode("utf-8"))
@@ -2574,6 +2596,8 @@ def test_agent_transport_error_marks_error(mocker, runtime: SkillRuntime):
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):
             return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
         raise urllib.error.URLError("boom")
 
     mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
@@ -2607,6 +2631,8 @@ def test_agent_infers_tool_calls_when_finish_reason_missing(mocker, runtime: Ski
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):
             return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
         chat_reqs.append(req)
         if len(chat_reqs) == 1:
             # Backend bug: emits tool_calls but final reason is "stop".
@@ -2660,6 +2686,8 @@ def test_agent_emits_unique_tool_stream_ids_per_pass(mocker, runtime: SkillRunti
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):
             return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
         chat_reqs.append(req)
         if len(chat_reqs) == 1:
             return FakeResponse(
@@ -2726,6 +2754,8 @@ def test_tool_result_history_not_compacted_by_default(mocker, runtime: SkillRunt
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):
             return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
         chat_reqs.append(req)
         if len(chat_reqs) == 1:
             return FakeResponse(
@@ -2788,6 +2818,8 @@ def test_tool_result_history_compaction_can_be_gated_by_tool_name(mocker, runtim
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):
             return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
         chat_reqs.append(req)
         if len(chat_reqs) == 1:
             return FakeResponse(
@@ -2928,6 +2960,8 @@ def test_fetch_model_name_reads_first_model_id(mocker, runtime: SkillRuntime):
     agent = Agent(cfg, runtime)
 
     def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":8192}'])
         assert req.full_url.endswith("/v1/models")
         return FakeResponse(['{"data":[{"id":"llama-3.2-3b-instruct"}]}'])
 
@@ -2950,13 +2984,22 @@ def test_fetch_model_metadata_reads_model_id_and_context_window(mocker, runtime:
     }
     agent = Agent(cfg, runtime)
 
+    seen_urls: list[str] = []
+
     def fake_urlopen(req, timeout=None, context=None):
+        seen_urls.append(req.full_url)
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":24576}'])
         assert req.full_url.endswith("/v1/models")
         return FakeResponse(['{"data":[{"id":"llama-3.2-3b-instruct","metadata":{"n_ctx_slot":40960}}]}'])
 
     mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
 
-    assert agent.fetch_model_metadata() == ("llama-3.2-3b-instruct", 40960)
+    assert agent.fetch_model_metadata() == ("llama-3.2-3b-instruct", 24576)
+    assert seen_urls == [
+        "http://127.0.0.1:8080/slots",
+        "http://127.0.0.1:8080/v1/models",
+    ]
 
 
 def test_select_skills_returns_only_explicitly_loaded_skills(runtime: SkillRuntime):
@@ -2972,7 +3015,7 @@ def test_select_skills_returns_only_explicitly_loaded_skills(runtime: SkillRunti
     assert agent._select_skills(ctx, threading.Event()) == []
 
 
-def test_fetch_model_metadata_falls_back_to_props_for_context_window(mocker, runtime: SkillRuntime):
+def test_fetch_model_metadata_falls_back_to_slots_for_context_window(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
             "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
@@ -2985,8 +3028,44 @@ def test_fetch_model_metadata_falls_back_to_props_for_context_window(mocker, run
         }
     }
     agent = Agent(cfg, runtime)
+    seen_urls: list[str] = []
 
     def fake_urlopen(req, timeout=None, context=None):
+        seen_urls.append(req.full_url)
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960,"params":{"seed":1}}'])
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse(['{"data":[{"id":"llama-3.2-3b-instruct"}]}'])
+        raise AssertionError(f"unexpected endpoint: {req.full_url}")
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    assert agent.fetch_model_metadata() == ("llama-3.2-3b-instruct", 40960)
+    assert seen_urls == [
+        "http://127.0.0.1:8080/slots",
+        "http://127.0.0.1:8080/v1/models",
+    ]
+
+
+def test_fetch_model_metadata_falls_back_to_props_after_slots_miss(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+        }
+    }
+    agent = Agent(cfg, runtime)
+    seen_urls: list[str] = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        seen_urls.append(req.full_url)
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"params":{"seed":1}}'])
         if req.full_url.endswith("/v1/models"):
             return FakeResponse(['{"data":[{"id":"llama-3.2-3b-instruct"}]}'])
         if req.full_url.endswith("/props"):
@@ -2996,12 +3075,19 @@ def test_fetch_model_metadata_falls_back_to_props_for_context_window(mocker, run
     mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
 
     assert agent.fetch_model_metadata() == ("llama-3.2-3b-instruct", 40960)
+    assert seen_urls == [
+        "http://127.0.0.1:8080/slots",
+        "http://127.0.0.1:8080/v1/models",
+        "http://127.0.0.1:8080/props",
+    ]
 
 
 def test_refresh_model_status_reports_online_and_context_window(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
 
     def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":16384}'])
         assert req.full_url.endswith("/v1/models")
         return FakeResponse(['{"data":[{"id":"qwen-3","metadata":{"n_ctx_slot":16384}}]}'])
 
@@ -3014,6 +3100,45 @@ def test_refresh_model_status_reports_online_and_context_window(mocker, runtime:
     assert status.context_window == 16384
     assert agent.get_model_status().state == "online"
     assert agent._ready_checked is True
+
+
+def test_refresh_model_status_shares_timeout_budget_across_probes(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    provider = agent.llm_client.provider
+    probe_timeouts: list[tuple[str, float]] = []
+
+    mocker.patch(
+        "agent.provider.time.monotonic",
+        side_effect=[100.0, 100.0, 100.4, 100.8],
+    )
+
+    def fake_fetch_json(url: str, timeout_s=None):
+        assert timeout_s is not None
+        if url.endswith("/slots"):
+            probe_timeouts.append(("slots", float(timeout_s)))
+            return {"id": 0, "params": {"seed": 1}}
+        if url.endswith("/props"):
+            probe_timeouts.append(("props", float(timeout_s)))
+            return {"default_generation_settings": {"n_ctx": 40960}}
+        raise AssertionError(f"unexpected endpoint: {url}")
+
+    def fake_list_models(timeout_s=None):
+        assert timeout_s is not None
+        probe_timeouts.append(("models", float(timeout_s)))
+        return {"data": [{"id": "qwen-3"}]}
+
+    mocker.patch.object(provider, "fetch_json", side_effect=fake_fetch_json)
+    mocker.patch.object(provider, "list_models", side_effect=fake_list_models)
+
+    status = provider.refresh_model_status(timeout_s=1.0, force=True)
+
+    assert status.model_name == "qwen-3"
+    assert status.context_window == 40960
+    assert probe_timeouts == [
+        ("slots", pytest.approx(1.0)),
+        ("models", pytest.approx(0.6)),
+        ("props", pytest.approx(0.2)),
+    ]
 
 
 def test_reload_config_resets_model_status_cache(runtime: SkillRuntime):
@@ -3299,14 +3424,21 @@ def test_refresh_model_status_preserves_model_name_when_endpoint_goes_offline(mo
 
 def test_refresh_model_status_detects_hot_swapped_model(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
-    responses = iter(
-        [
-            FakeResponse(['{"data":[{"id":"qwen-3","metadata":{"n_ctx_slot":8192}}]}']),
-            FakeResponse(['{"data":[{"id":"qwen-4","metadata":{"n_ctx_slot":16384}}]}']),
-        ]
-    )
+    refresh_index = {"value": 0}
 
-    mocker.patch.object(urllib.request, "urlopen", side_effect=lambda req, timeout=None, context=None: next(responses))
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/slots"):
+            refresh_index["value"] += 1
+            if refresh_index["value"] == 1:
+                return FakeResponse(['{"id":0,"n_ctx":8192}'])
+            return FakeResponse(['{"id":0,"n_ctx":16384}'])
+        if req.full_url.endswith("/v1/models"):
+            if refresh_index["value"] == 1:
+                return FakeResponse(['{"data":[{"id":"qwen-3"}]}'])
+            return FakeResponse(['{"data":[{"id":"qwen-4"}]}'])
+        raise AssertionError(f"unexpected endpoint: {req.full_url}")
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
 
     first = agent.refresh_model_status(force=True)
     second = agent.refresh_model_status(force=True)
@@ -3466,6 +3598,8 @@ Use scripts/convert.py when needed.
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):
             return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
         chat_reqs.append(req)
         return FakeResponse(
             [
@@ -3512,6 +3646,8 @@ def test_reasoning_tokens_strip_think_markers_in_journal_and_output(mocker, runt
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):
             return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
         return FakeResponse(
             [
                 'data: {"choices":[{"delta":{"reasoning_content":"<think>internal chain</think>"}}]}',
@@ -3576,6 +3712,8 @@ Ask a follow-up before continuing.
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):
             return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
         chat_reqs.append(req)
         return FakeResponse(
             [
