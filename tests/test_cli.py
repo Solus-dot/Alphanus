@@ -36,7 +36,13 @@ def test_main_does_not_block_on_model_readiness_before_launching_tui(monkeypatch
     monkeypatch.setattr(alphanus_cli, "resolve_path", lambda path, _root: path)
     monkeypatch.setattr(alphanus_cli, "WorkspaceManager", lambda workspace_root: SimpleNamespace(workspace_root=workspace_root))
     monkeypatch.setattr(alphanus_cli, "VectorMemory", lambda **kwargs: SimpleNamespace(model_name="toy", stats=lambda: {"mode_label": "stub", "encoder_status": "ready"}))
-    monkeypatch.setattr(alphanus_cli, "SkillRuntime", lambda **kwargs: SimpleNamespace())
+    runtime_calls: list[dict[str, object]] = []
+
+    def _skill_runtime_stub(**kwargs):
+        runtime_calls.append(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(alphanus_cli, "SkillRuntime", _skill_runtime_stub)
 
     class LoggerStub:
         def info(self, *_args, **_kwargs):
@@ -80,3 +86,5 @@ def test_main_does_not_block_on_model_readiness_before_launching_tui(monkeypatch
     assert exit_code == 0
     assert agent_calls == ["init"]
     assert app_calls == ["init", "run"]
+    assert runtime_calls
+    assert runtime_calls[0]["skills_dir"] == str(tmp_path / "skills")

@@ -1,4 +1,6 @@
 import argparse
+import shutil
+from pathlib import Path
 
 from alphanus_paths import get_app_paths
 from agent.core import Agent
@@ -14,6 +16,33 @@ from core.memory import RECOMMENDED_EMBEDDING_MODEL_NAME, VectorMemory
 from core.skills import SkillRuntime
 from core.workspace import WorkspaceManager
 from tui.interface import AlphanusTUI
+
+
+def _resolve_runtime_skills_dir(app_paths) -> Path:
+    repo_root = getattr(app_paths, "repo_root", None)
+    if repo_root is not None:
+        return (Path(repo_root).resolve() / "skills").resolve()
+    return (Path(app_paths.app_root).resolve() / "skills").resolve()
+
+
+def _seed_runtime_skills(runtime_skills_dir: Path, bundled_skills_dir: Path) -> None:
+    runtime_skills_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        if runtime_skills_dir.resolve() == bundled_skills_dir.resolve():
+            return
+    except Exception:
+        return
+    if not bundled_skills_dir.exists():
+        return
+    for child in sorted(bundled_skills_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        if not (child / "SKILL.md").exists():
+            continue
+        target = runtime_skills_dir / child.name
+        if target.exists():
+            continue
+        shutil.copytree(child, target)
 
 
 def main() -> int:
@@ -59,8 +88,10 @@ def main() -> int:
         eager_load_encoder=bool(memory_cfg.get("eager_load_encoder", False)),
         allow_model_download=bool(memory_cfg.get("allow_model_download", True)),
     )
+    runtime_skills_dir = _resolve_runtime_skills_dir(app_paths)
+    _seed_runtime_skills(runtime_skills_dir, Path(app_paths.bundled_skills_dir))
     runtime = SkillRuntime(
-        skills_dir=str(app_paths.bundled_skills_dir),
+        skills_dir=str(runtime_skills_dir),
         workspace=workspace,
         memory=memory,
         config=config,
