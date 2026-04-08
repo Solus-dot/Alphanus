@@ -2306,6 +2306,7 @@ def execute(tool_name, args, env):
         history_messages=[{"role": "user", "content": "tell me about the latest open source models"}],
         user_input="tell me about the latest open source models",
         thinking=True,
+        loaded_skill_ids=["search-ops"],
     )
 
     assert result.status == "done"
@@ -2409,7 +2410,7 @@ def execute(tool_name, args, env):
     assert len(chat_reqs) == 1
 
 
-def test_all_active_skills_expose_search_tool_on_first_turn(mocker, runtime: SkillRuntime):
+def test_session_loaded_search_skill_exposes_search_tool_on_first_turn(mocker, runtime: SkillRuntime):
     search_skill = runtime.skills_dir / "search-ops"
     search_skill.mkdir(parents=True)
     (search_skill / "SKILL.md").write_text(
@@ -2493,9 +2494,116 @@ def execute(tool_name, args, env):
         history_messages=[{"role": "user", "content": "tell me about the latest acquisitions"}],
         user_input="tell me about the latest acquisitions",
         thinking=True,
+        loaded_skill_ids=["search-ops"],
     )
 
     assert result.status == "done"
+
+
+def test_time_sensitive_turn_recomputes_search_safeguards_after_skill_view(mocker, runtime: SkillRuntime):
+    search_skill = runtime.skills_dir / "search-ops"
+    search_skill.mkdir(parents=True)
+    (search_skill / "SKILL.md").write_text(
+        """
+---
+name: search-ops
+description: Search the web for current information.
+allowed-tools: web_search
+---
+Search the web.
+""".strip(),
+        encoding="utf-8",
+    )
+    (search_skill / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "web_search": {
+    "capability": "web_search",
+    "description": "Search web",
+    "parameters": {
+      "type": "object",
+      "properties": {"query": {"type": "string"}},
+      "required": ["query"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    return {"ok": True, "data": {"results": [{"title": "Meta News", "url": "https://example.com", "domain": "example.com", "snippet": "Verified"}]}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+    runtime.load_skills()
+
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        },
+    }
+    agent = Agent(cfg, runtime)
+    mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(time_sensitive=True))
+
+    chat_reqs: list[urllib.request.Request] = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"skill_view","arguments":"{\\"name\\": \\\"search-ops\\\", \\\"file_path\\\": \\\"\\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        if len(chat_reqs) == 2:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"As of my knowledge, no major updates."}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        if len(chat_reqs) == 3:
+            payload = json.loads(req.data.decode("utf-8"))
+            system_message = payload["messages"][0]["content"]
+            assert "You must call web_search before answering." in system_message
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"latest acquisitions\\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"I checked the web before answering."}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "latest acquisitions"}],
+        user_input="latest acquisitions",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert "checked the web" in result.content
+    assert len(chat_reqs) >= 4
 
 
 def test_skill_index_keeps_full_catalog_available_until_a_skill_is_loaded(runtime: SkillRuntime):
