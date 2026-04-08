@@ -215,7 +215,7 @@ Hello
     assert not (home / "Desktop" / "demo" / "SKILL.md").exists()
 
 
-def test_tools_for_turn_includes_core_tools_without_selected_skill(tmp_path: Path):
+def test_tools_for_turn_requires_selected_skill_for_native_tools(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -313,8 +313,14 @@ def execute(tool_name, args, env):
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
-    core_tool_names = set(_tool_names(runtime, []))
-    assert core_tool_names == {
+    runtime_only_tool_names = set(_tool_names(runtime, []))
+    assert runtime_only_tool_names == _always_available_tool_names()
+
+    workspace_skill = runtime.get_skill("workspace-ops")
+    search_skill = runtime.get_skill("search-ops")
+    assert workspace_skill is not None and search_skill is not None
+    merged_tool_names = set(_tool_names(runtime, [workspace_skill, search_skill]))
+    assert merged_tool_names == {
         "create_file",
         "read_file",
         "request_user_input",
@@ -323,11 +329,6 @@ def execute(tool_name, args, env):
         "skills_list",
         "web_search",
     }
-
-    search_skill = runtime.get_skill("search-ops")
-    assert search_skill is not None
-    merged_tool_names = set(_tool_names(runtime, [search_skill]))
-    assert merged_tool_names == core_tool_names
 
 
 def test_tools_for_turn_includes_generic_script_runner_for_selected_script_skill(tmp_path: Path):
@@ -458,7 +459,7 @@ Use validate_json.py when available.
     assert runtime._reported_skill_scripts(skill) == ["validate_json.py"]
 
 
-def test_produces_entrypoint_still_matches_create_plus_review_request(tmp_path: Path):
+def test_entrypoint_skill_stays_runnable_without_artifact_heuristics(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -512,11 +513,10 @@ Create PDFs through the declared entrypoint.
         memory_hits=[],
     )
 
-    assert runtime._skill_supports_artifact(skill, [".pdf"], intents=runtime.task_intents(ctx)) is True
     assert set(_tool_names(runtime, [skill], ctx=ctx)) == (_always_available_tool_names() | {"run_skill"})
 
 
-def test_core_tool_executes_without_selected_skill(tmp_path: Path):
+def test_core_tool_executes_with_selected_skill(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -572,10 +572,15 @@ def execute(tool_name, args, env):
         memory_hits=[],
     )
 
+    loaded = runtime.skill_view("workspace-ops", "", ctx)
+    assert loaded["loaded"] is True
+    selected = runtime.select_skills(ctx)
+    assert [skill.id for skill in selected] == ["workspace-ops"]
+
     out = runtime.execute_tool_call(
         "create_file",
         {"filepath": "hello.txt", "content": "hi"},
-        selected=[],
+        selected=selected,
         ctx=ctx,
     )
 
@@ -1238,6 +1243,40 @@ Loaded on demand
     assert skill.prompt == "Loaded on demand"
 
 
+def test_hooks_file_is_reported_as_disabled(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "hooked-skill").mkdir(parents=True)
+    (skills / "hooked-skill" / "SKILL.md").write_text(
+        """
+---
+name: hooked-skill
+description: has hooks file
+version: 1.0.0
+---
+Hooked skill.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "hooked-skill" / "hooks.py").write_text(
+        "def pre_prompt(context):\n    return 'ignored'\n",
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("hooked-skill")
+    assert skill is not None
+    assert "hooks_disabled" in skill.blocked_features
+    assert "hooks.py ignored; hook execution is disabled" in skill.validation_warnings
+
+
 def test_bundled_scripts_without_tool_definitions_use_generic_script_runner(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
@@ -1328,7 +1367,7 @@ if __name__ == "__main__":
 
     out = runtime.execute_tool_call(
         "run_skill",
-        {"script": "helper.py", "stdin": "hello", "args": {"mode": "demo"}},
+        {"script": "helper.py", "stdin": "hello", "params": {"mode": "demo"}},
         selected=[skill],
         ctx=ctx,
     )
@@ -1751,7 +1790,7 @@ Hello
     assert report[0]["availability_code"] == "ready"
 
 
-def test_bundled_skill_inside_workspace_repo_stays_trusted(tmp_path: Path):
+def test_bundled_skill_inside_workspace_repo_is_executable(tmp_path: Path):
     home = tmp_path / "home"
     repo = home / "Desktop" / "Alphanus"
     skills = repo / "skills"
@@ -1808,7 +1847,7 @@ def execute(tool_name, args, env):
     assert set(_tool_names(runtime, [skill])) == (_always_available_tool_names() | {"echo_text"})
 
 
-def test_bundled_skill_under_home_outside_workspace_stays_trusted(tmp_path: Path):
+def test_bundled_skill_under_home_outside_workspace_is_executable(tmp_path: Path):
     home = tmp_path / "home"
     repo = home / "Desktop" / "Alphanus"
     workspace_root = home / "projects" / "demo"
@@ -1848,7 +1887,7 @@ Bundled repo helper.
     assert skill_report["execution_allowed"] is True
 
 
-def test_untrusted_home_skill_is_metadata_only(tmp_path: Path):
+def test_home_skill_root_is_not_discovered(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     bundled = tmp_path / "bundled"
@@ -1910,34 +1949,11 @@ Do work.
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
-    skill = runtime.get_skill("home-helper")
-    assert skill is not None
-    assert skill.source_tier == "user/local"
-    assert skill.trust_level == "untrusted"
-    assert skill.execution_allowed is False
-    assert skill.available is False
-    assert "untrusted_root" in skill.blocked_features
-    assert "tools.py" in skill.blocked_features
-    assert "hooks.py" in skill.blocked_features
-    assert "scripts" in skill.blocked_features
-    assert "entrypoints" in skill.blocked_features
-    assert "command_tools" in skill.blocked_features
-
-    assert runtime._reported_skill_scripts(skill) == []
-    assert runtime._blocked_skill_scripts(skill) == []
-    assert runtime._reported_skill_entrypoints(skill) == []
-
-    report = runtime.skill_health_report()
-    skill_report = next(item for item in report if item["id"] == "home-helper")
-    assert skill_report["source_tier"] == "user/local"
-    assert skill_report["trust_level"] == "untrusted"
-    assert skill_report["execution_allowed"] is False
-    assert skill_report["tools"] == []
-    assert skill_report["scripts"] == []
-    assert skill_report["entrypoints"] == []
+    assert runtime.get_skill("home-helper") is None
+    assert all(skill.id != "home-helper" for skill in runtime.list_skills())
 
 
-def test_workspace_skill_shadows_bundled_duplicate(tmp_path: Path):
+def test_only_bundled_root_is_used_for_discovery(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     bundled = tmp_path / "bundled"
@@ -1979,16 +1995,9 @@ Workspace version.
 
     active = runtime.get_skill("dup-skill")
     assert active is not None
-    assert active.description == "workspace"
-    assert active.source_tier == "workspace/local"
-    assert active.shadowing == ["dup-skill"]
-
-    listed = runtime.list_skills()
-    assert len([skill for skill in listed if skill.id == "dup-skill"]) == 2
-    shadowed = next(skill for skill in listed if skill.id == "dup-skill" and skill.shadowed_by)
-    assert shadowed.source_tier == "bundled"
-    assert shadowed.shadowed_by == "dup-skill"
-    assert shadowed.availability_code == "shadowed"
+    assert active.description == "bundled"
+    assert active.source_tier == "bundled"
+    assert len(runtime.list_skills()) == 1
 
 
 def test_request_user_input_runtime_tool_uses_callback(tmp_path: Path):
@@ -2410,7 +2419,6 @@ Use the bundled helper script when available.
     docx_tools = runtime.tools_for_turn([skill], ctx=docx_ctx)
     png_tools = runtime.tools_for_turn([skill], ctx=png_ctx)
 
-    assert calls["count"] == 2
-    assert docx_tools != png_tools
+    assert calls["count"] == 1
+    assert docx_tools == png_tools
     assert docx_tools[0]["ctx"] == "set up report.docx"
-    assert png_tools[0]["ctx"] == "create image.png"

@@ -120,7 +120,7 @@ def test_shell_command_recovers_from_raw_argument_payload(tmp_path: Path):
     assert out["data"]["stdout"].strip() == "hi"
 
 
-def test_shell_command_executes_as_core_tool_without_selected_skill(tmp_path: Path):
+def test_shell_command_executes_with_selected_shell_skill(tmp_path: Path):
     runtime = _runtime(
         tmp_path,
         {
@@ -131,10 +131,13 @@ def test_shell_command_executes_as_core_tool_without_selected_skill(tmp_path: Pa
         },
     )
 
+    shell_skill = runtime.get_skill("shell-ops")
+    assert shell_skill is not None
+
     out = runtime.execute_tool_call(
         "shell_command",
         {"command": "echo hi"},
-        selected=[],
+        selected=[shell_skill],
         ctx=_ctx(str(runtime.workspace.workspace_root)),
         confirm_shell=lambda _: True,
     )
@@ -155,10 +158,13 @@ def test_shell_command_nonzero_exit_bubbles_up_as_tool_failure(tmp_path: Path):
         },
     )
 
+    shell_skill = runtime.get_skill("shell-ops")
+    assert shell_skill is not None
+
     out = runtime.execute_tool_call(
         "shell_command",
         {"command": "python3 -c \"raise SystemExit(3)\""},
-        selected=[],
+        selected=[shell_skill],
         ctx=_ctx(str(runtime.workspace.workspace_root)),
         confirm_shell=lambda _: True,
     )

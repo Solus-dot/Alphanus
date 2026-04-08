@@ -22,43 +22,6 @@ from core.runtime_config import SkillsRuntimeConfig
 from core.skill_parser import SKILL_DOC, SkillEntrypointDef, SkillManifest, extract_skill_doc, parse_agentskill_manifest
 from core.workspace import WorkspaceManager
 
-_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9+#._/-]{1,}")
-_STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "app",
-    "application",
-    "artifact",
-    "artifacts",
-    "build",
-    "create",
-    "for",
-    "help",
-    "i",
-    "in",
-    "interface",
-    "is",
-    "it",
-    "me",
-    "my",
-    "of",
-    "on",
-    "or",
-    "page",
-    "please",
-    "production",
-    "project",
-    "quality",
-    "the",
-    "this",
-    "to",
-    "use",
-    "using",
-    "with",
-    "write",
-}
-
 _CORE_TOOL_NAMES = frozenset(
     {
         "shell_command",
@@ -72,52 +35,6 @@ _CORE_TOOL_NAMES = frozenset(
         "edit_file",
         "delete_path",
         "run_checks",
-    }
-)
-
-_TEXT_LIKE_EXTENSIONS = frozenset(
-    {
-        "",
-        ".c",
-        ".cc",
-        ".cfg",
-        ".conf",
-        ".cpp",
-        ".css",
-        ".csv",
-        ".env",
-        ".gitignore",
-        ".go",
-        ".graphql",
-        ".h",
-        ".hpp",
-        ".html",
-        ".ini",
-        ".java",
-        ".js",
-        ".json",
-        ".jsx",
-        ".kt",
-        ".log",
-        ".lua",
-        ".md",
-        ".mjs",
-        ".pbtxt",
-        ".php",
-        ".py",
-        ".rb",
-        ".rs",
-        ".scss",
-        ".sh",
-        ".sql",
-        ".svg",
-        ".toml",
-        ".ts",
-        ".tsx",
-        ".txt",
-        ".xml",
-        ".yaml",
-        ".yml",
     }
 )
 
@@ -140,51 +57,6 @@ _SCRIPT_INTERPRETER_BY_EXT = {
     ".js": ["node"],
     ".mjs": ["node"],
 }
-_SKILL_DIR_NAMES = ("skills", ".claude/skills", ".agents/skills", ".opencode/skills")
-_USER_SKILL_DIRS = (
-    ".alphanus/skills",
-    ".claude/skills",
-    ".agents/skills",
-    ".config/opencode/skills",
-)
-_TRUSTED_SOURCE_TIERS = frozenset({"workspace/local", "bundled"})
-_SOURCE_PRIORITY = {
-    "workspace/local": 0,
-    "bundled": 1,
-    "user/local": 2,
-    "external/local": 3,
-}
-_ARTIFACT_SYNONYMS = {
-    ".docx": ("docx", "word document", "word doc", "microsoft word"),
-    ".pdf": ("pdf", "portable document format"),
-    ".png": ("png", "image", "screenshot"),
-    ".jpg": ("jpg", "jpeg", "image", "photo"),
-    ".jpeg": ("jpeg", "jpg", "image", "photo"),
-    ".csv": ("csv", "spreadsheet", "comma separated"),
-    ".xlsx": ("xlsx", "excel", "spreadsheet"),
-}
-_CREATE_INTENT_TERMS = frozenset(
-    {
-        "build",
-        "create",
-        "generate",
-        "make",
-        "materialize",
-        "new",
-        "produce",
-        "save",
-        "scaffold",
-        "write",
-    }
-)
-_EDIT_INTENT_TERMS = frozenset({"edit", "format", "modify", "patch", "revise", "update"})
-_REVIEW_INTENT_TERMS = frozenset({"inspect", "preview", "read", "render", "review", "view", "visual"})
-_SETUP_INTENT_TERMS = frozenset({"bootstrap", "check", "dependency", "install", "setup", "verify"})
-_SCRIPT_CREATE_HINTS = frozenset({"build", "convert", "create", "export", "generate", "make", "write"})
-_SCRIPT_EDIT_HINTS = frozenset({"edit", "fix", "format", "modify", "patch", "rewrite", "update"})
-_SCRIPT_REVIEW_HINTS = frozenset({"extract", "inspect", "preview", "read", "render", "review", "view"})
-_SCRIPT_SETUP_HINTS = frozenset({"bootstrap", "dependency", "install", "setup", "verify"})
-
 
 def _ok(data: Any, duration_ms: int) -> Dict[str, Any]:
     return {"ok": True, "data": data, "error": None, "meta": {"duration_ms": duration_ms}}
@@ -291,8 +163,7 @@ class SkillRuntime:
         self.debug = debug
         self.skills_cfg = {}
         self.tools_cfg = {}
-        self.upward_scan = True
-        self.extra_skill_dirs: List[Path] = []
+        self._ignored_skill_runtime_settings: set[str] = set()
         self.python_executable = sys.executable
         self.reload_config(config or {})
         self.generation = 0
@@ -300,7 +171,6 @@ class SkillRuntime:
         self.skill_roots = self._discover_skill_roots()
         self.skills: Dict[str, SkillManifest] = {}
         self._all_skills: List[SkillManifest] = []
-        self._shadowed_skills: List[SkillManifest] = []
         self._skill_index: Dict[str, Dict[str, Any]] = {}
         self._tool_registry: Dict[str, RegisteredTool] = {}
         self._list_skills_cache: Optional[Tuple[SkillManifest, ...]] = None
@@ -318,9 +188,12 @@ class SkillRuntime:
         self.skills_cfg = self.config.get("skills", {}) if isinstance(self.config.get("skills"), dict) else {}
         self.tools_cfg = self.config.get("tools", {}) if isinstance(self.config.get("tools"), dict) else {}
         self.runtime_config = SkillsRuntimeConfig.from_config(self.config)
-        self.upward_scan = self.runtime_config.upward_scan
-        self.extra_skill_dirs = list(self.runtime_config.extra_skill_dirs)
         self.python_executable = self.runtime_config.python_executable
+        for warning in self.runtime_config.ignored_settings:
+            if warning in self._ignored_skill_runtime_settings:
+                continue
+            self._ignored_skill_runtime_settings.add(warning)
+            logging.warning(warning)
 
     def _build_proc_env_base(self) -> Dict[str, str]:
         env = os.environ.copy()
@@ -360,43 +233,8 @@ class SkillRuntime:
         return env
 
     def _discover_skill_roots(self) -> List[Path]:
-        roots: List[Path] = []
-        seen: set[str] = set()
-
-        def add(path: Path) -> None:
-            resolved = path.resolve()
-            key = str(resolved)
-            if key in seen:
-                return
-            seen.add(key)
-            roots.append(resolved)
-
-        current = self.workspace.workspace_root.resolve()
-        while True:
-            for rel in _SKILL_DIR_NAMES:
-                add(current / rel)
-            if not self.upward_scan or current.parent == current:
-                break
-            current = current.parent
-
-        home_root = self.workspace.home_root.resolve()
-        for rel in _USER_SKILL_DIRS:
-            add(home_root / rel)
-
-        add(self.skills_dir)
-        for path in self.extra_skill_dirs:
-            add(path)
-        return roots
-
-    def _root_source_tier(self, root: Path) -> str:
-        root_resolved = root.resolve()
-        if self._is_relative_to(root_resolved, self.skills_dir.resolve()):
-            return "bundled"
-        if self._is_relative_to(root_resolved, self.workspace.workspace_root.resolve()):
-            return "workspace/local"
-        if self._is_relative_to(root_resolved, self.workspace.home_root.resolve()):
-            return "user/local"
-        return "external/local"
+        # Temporary simplified model: skills live exclusively in the configured repo root.
+        return [self.skills_dir]
 
     def _discover_skill_dirs(self, root: Path) -> List[Path]:
         if not root.exists():
@@ -482,8 +320,8 @@ class SkillRuntime:
         manifest = parse_agentskill_manifest(child, skill_doc, include_prompt=False)
         manifest.bundled_files = self._bundled_files_for_path(child)
         manifest.source_tier = self._skill_source_tier(manifest)
-        manifest.trust_level = self._trust_level_for_source_tier(manifest.source_tier)
-        manifest.execution_allowed = manifest.trust_level == "trusted"
+        manifest.trust_level = "trusted"
+        manifest.execution_allowed = True
         manifest.adapter = str(getattr(manifest, "vendor_flavor", "") or manifest.format or "agentskills")
         return manifest
 
@@ -496,20 +334,6 @@ class SkillRuntime:
         _, prompt = extract_skill_doc(manifest.doc_path, include_prompt=True)
         manifest.prompt = prompt
         return manifest.prompt
-
-    def _ensure_skill_hooks(self, manifest: SkillManifest) -> Optional[object]:
-        if not manifest.execution_allowed:
-            return None
-        if manifest.hooks is not None:
-            return manifest.hooks
-        hooks_path = manifest.hooks_path
-        if not hooks_path or not hooks_path.exists():
-            return None
-        manifest.hooks = self._load_module(
-            hooks_path,
-            f"alphanus_hooks_{manifest.id.replace('-', '_')}",
-        )
-        return manifest.hooks
 
     def _remove_skill_tools(self, skill_id: str) -> None:
         for tool_name, reg in list(self._tool_registry.items()):
@@ -530,68 +354,13 @@ class SkillRuntime:
         if text and text not in items:
             items.append(text)
 
-    def _source_priority(self, source_tier: str) -> int:
-        return _SOURCE_PRIORITY.get(str(source_tier).strip(), 99)
-
-    @staticmethod
-    def _trust_level_for_source_tier(source_tier: str) -> str:
-        return "trusted" if source_tier in _TRUSTED_SOURCE_TIERS else "untrusted"
-
-    def _manifest_priority(self, manifest: SkillManifest) -> Tuple[int, str]:
-        path = manifest.path or manifest.doc_path
-        return (self._source_priority(manifest.source_tier), str(path or manifest.id))
-
-    def _has_executable_surface(self, manifest: SkillManifest) -> bool:
-        if manifest.command_tools or manifest.entrypoints:
-            return True
-        if manifest.path is None:
-            return False
-        if (manifest.path / "tools.py").exists():
-            return True
-        if manifest.hooks_path and manifest.hooks_path.exists():
-            return True
-        if self._skill_runnable_scripts(manifest):
-            return True
-        return False
-
     def _validate_manifest_policy(self, manifest: SkillManifest) -> None:
         if manifest.command_tools:
             self._append_unique(manifest.blocked_features, "command_tools")
             self._append_unique(manifest.validation_warnings, "command_tools disabled_pending_safe_runner")
-
-        if manifest.trust_level != "trusted":
-            manifest.execution_allowed = False
-            self._append_unique(manifest.blocked_features, "untrusted_root")
-            if manifest.path is not None:
-                if (manifest.path / "tools.py").exists():
-                    self._append_unique(manifest.blocked_features, "tools.py")
-                if manifest.hooks_path and manifest.hooks_path.exists():
-                    self._append_unique(manifest.blocked_features, "hooks.py")
-            if manifest.entrypoints:
-                self._append_unique(manifest.blocked_features, "entrypoints")
-            if self._skill_runnable_scripts(manifest):
-                self._append_unique(manifest.blocked_features, "scripts")
-            if self._has_executable_surface(manifest):
-                self._append_unique(
-                    manifest.validation_errors,
-                    "untrusted skill roots are metadata-only; executable surfaces are blocked",
-                )
-            manifest.available = False
-            manifest.availability_code = "untrusted"
-            manifest.availability_reason = "untrusted skill roots are metadata-only"
-
-    def _record_shadowed(self, manifest: SkillManifest, winner: SkillManifest) -> None:
-        manifest.execution_allowed = False
-        manifest.available = False
-        manifest.availability_code = "shadowed"
-        manifest.shadowed_by = winner.id
-        source = self.skill_source_label(winner) or winner.id
-        manifest.availability_reason = f"shadowed by {winner.id} ({source})"
-        self._append_unique(winner.shadowing, manifest.id)
-        if manifest in self._all_skills:
-            self._all_skills.remove(manifest)
-        self._shadowed_skills.append(manifest)
-        self._all_skills.append(manifest)
+        if manifest.hooks_path and manifest.hooks_path.exists():
+            self._append_unique(manifest.blocked_features, "hooks_disabled")
+            self._append_unique(manifest.validation_warnings, "hooks.py ignored; hook execution is disabled")
 
     def _rebuild_skill_index(self) -> None:
         self._skill_index = {}
@@ -679,7 +448,7 @@ class SkillRuntime:
             skill_id="__runtime__",
             tool_scope="core",
             capability="skill_manager",
-            description="Create, patch, edit, delete, or manage files for workspace-local skills under .alphanus/skills.",
+            description="Create, patch, edit, delete, or manage files for skills under the repo skills/ root.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -741,7 +510,6 @@ class SkillRuntime:
         self.skill_roots = self._discover_skill_roots()
         self.skills = {}
         self._all_skills = []
-        self._shadowed_skills = []
         self._skill_index = {}
         self._tool_registry = {}
         self._invalidate_skill_caches()
@@ -752,7 +520,6 @@ class SkillRuntime:
         for root in self.skill_roots:
             if not root.exists():
                 continue
-            source_tier = self._root_source_tier(root)
             for child in self._discover_skill_dirs(root):
                 manifest: Optional[SkillManifest] = None
                 try:
@@ -763,9 +530,6 @@ class SkillRuntime:
                     if manifest.id in previous_enabled:
                         manifest.enabled = previous_enabled[manifest.id]
 
-                    manifest.source_tier = source_tier
-                    manifest.trust_level = self._trust_level_for_source_tier(source_tier)
-                    manifest.execution_allowed = manifest.trust_level == "trusted"
                     (
                         manifest.available,
                         manifest.availability_code,
@@ -775,13 +539,13 @@ class SkillRuntime:
 
                     existing = self.skills.get(manifest.id)
                     if existing is not None:
-                        if self._manifest_priority(manifest) < self._manifest_priority(existing):
-                            self._remove_skill_tools(existing.id)
-                            self.skills.pop(existing.id, None)
-                            self._record_shadowed(existing, manifest)
-                        else:
-                            self._record_shadowed(manifest, existing)
-                            continue
+                        source = self.skill_source_label(existing) or existing.id
+                        incoming = self.skill_source_label(manifest) or manifest.id
+                        self._append_unique(
+                            existing.validation_warnings,
+                            f"duplicate skill id '{manifest.id}' ignored from {incoming}; using {source}",
+                        )
+                        continue
 
                     if manifest.available and manifest.execution_allowed and not self._load_skill_tools(manifest):
                         manifest.available = False
@@ -918,7 +682,7 @@ class SkillRuntime:
             self._list_skills_cache = tuple(
                 sorted(
                     self._all_skills,
-                    key=lambda s: (s.id, self._source_priority(s.source_tier), self.skill_source_label(s)),
+                    key=lambda s: (s.id, self.skill_source_label(s)),
                 )
             )
         return list(self._list_skills_cache)
@@ -943,8 +707,6 @@ class SkillRuntime:
 
     @staticmethod
     def skill_status_label(skill: SkillManifest) -> Tuple[str, str]:
-        if skill.shadowed_by:
-            return "shadowed", "yellow"
         if not skill.available:
             return "blocked", "yellow"
         if skill.enabled:
@@ -956,7 +718,7 @@ class SkillRuntime:
             self._enabled_skills_cache = tuple(
                 skill
                 for skill in self.skills.values()
-                if skill.enabled and skill.available and skill.execution_allowed and not skill.shadowed_by
+                if skill.enabled and skill.available and skill.execution_allowed
             )
         return list(self._enabled_skills_cache)
 
@@ -999,12 +761,9 @@ class SkillRuntime:
         )
 
     def model_exposed_tool_names(self) -> List[str]:
-        names = set(_ALWAYS_AVAILABLE_TOOL_NAMES)
-        for skill in self.enabled_skills():
-            if skill.disable_model_invocation or not getattr(skill, "execution_allowed", True):
-                continue
-            names.update(self._reported_skill_tools(skill))
-        return sorted(name for name in names if name in self._tool_registry)
+        # Skill-native tools are exposed only through turn selection
+        # (loaded skills), not globally through enablement alone.
+        return sorted(name for name in _ALWAYS_AVAILABLE_TOOL_NAMES if name in self._tool_registry)
 
     def skill_catalog_text_for(self, skills: List[SkillManifest], max_tags: int = 3) -> str:
         lines: List[str] = []
@@ -1048,8 +807,6 @@ class SkillRuntime:
                 "validation_errors": list(skill.validation_errors),
                 "validation_warnings": list(skill.validation_warnings),
                 "blocked_features": list(skill.blocked_features),
-                "shadowed_by": skill.shadowed_by,
-                "shadowing": list(skill.shadowing),
             }
             for skill in self.list_skills()
         ]
@@ -1100,96 +857,6 @@ class SkillRuntime:
         if len(fuzzy) == 1:
             return fuzzy[0]
         return None
-
-    @staticmethod
-    def _match_tokens(text: str) -> List[str]:
-        tokens: List[str] = []
-        for token in _TOKEN_RE.findall(text.lower()):
-            normalized = token.strip("._/-")
-            if len(normalized) < 3 or normalized in _STOPWORDS:
-                continue
-            tokens.append(normalized)
-        return tokens
-
-    @staticmethod
-    def _extract_inline_extensions(text: str) -> List[str]:
-        lowered = text.lower()
-        found = set()
-        for match in re.finditer(r"(?<!\w)\.[a-z0-9]{2,8}\b", lowered):
-            token = match.group(0).lower()
-            window = lowered[max(0, match.start() - 48) : min(len(lowered), match.end() + 48)]
-            if any(phrase in window for phrase in ("do not create", "don't create", "fake ", "surrogate", "instead of")):
-                continue
-            found.add(token)
-        return sorted(found)
-
-    @staticmethod
-    def _extract_filename_extensions(text: str) -> List[str]:
-        found = set()
-        for match in re.finditer(r"\b[^\s/\\]+\.([a-z0-9]{2,8})\b", text.lower()):
-            suffix = Path(match.group(0)).suffix.lower()
-            if suffix:
-                found.add(suffix)
-        return sorted(found)
-
-    def requested_artifact_extensions(self, ctx: SkillContext) -> List[str]:
-        found = set(self._extract_inline_extensions(ctx.user_input))
-        found.update(self._extract_filename_extensions(ctx.user_input))
-        for attachment in ctx.attachments:
-            suffix = Path(str(attachment).strip()).suffix.lower()
-            if suffix:
-                found.add(suffix)
-        lowered = ctx.user_input.lower()
-        for ext, phrases in _ARTIFACT_SYNONYMS.items():
-            if ext in found:
-                continue
-            if any(phrase in lowered for phrase in phrases):
-                found.add(ext)
-        return sorted(found)
-
-    def task_intents(self, ctx: SkillContext) -> set[str]:
-        text = ctx.user_input.lower()
-        tokens = set(self._match_tokens(ctx.user_input))
-        intents: set[str] = set()
-        if tokens & _CREATE_INTENT_TERMS or re.search(r"\b(?:create|generate|make|save|write|build|produce)\b", text):
-            intents.add("create")
-        if tokens & _EDIT_INTENT_TERMS or re.search(r"\b(?:edit|modify|update|format|revise)\b", text):
-            intents.add("edit")
-        if tokens & _REVIEW_INTENT_TERMS or re.search(r"\b(?:review|render|preview|inspect|read|view)\b", text):
-            intents.add("review")
-        if tokens & _SETUP_INTENT_TERMS or re.search(r"\b(?:install|setup|dependency|verify|check)\b", text):
-            intents.add("setup")
-        if not intents:
-            intents.add("general")
-        return intents
-
-    @staticmethod
-    def _normalize_extension_token(token: str) -> str:
-        raw = str(token).strip().lower()
-        if not raw:
-            return ""
-        if raw.startswith("."):
-            return raw
-        if re.fullmatch(r"[a-z0-9]{2,8}", raw):
-            return f".{raw}"
-        return raw
-
-    @staticmethod
-    def _script_intents(relpath: str) -> set[str]:
-        stem = Path(relpath).stem.lower()
-        tokens = set(re.split(r"[^a-z0-9]+", stem))
-        intents: set[str] = set()
-        if tokens & _SCRIPT_CREATE_HINTS:
-            intents.add("create")
-        if tokens & _SCRIPT_EDIT_HINTS:
-            intents.add("edit")
-        if tokens & _SCRIPT_REVIEW_HINTS:
-            intents.add("review")
-        if tokens & _SCRIPT_SETUP_HINTS:
-            intents.add("setup")
-        if not intents:
-            intents.add("general")
-        return intents
 
     @staticmethod
     def _is_skill_script_candidate(relpath: str) -> bool:
@@ -1351,11 +1018,6 @@ class SkillRuntime:
         self._python_module_probe_cache[module_name] = available
         return available
 
-    @staticmethod
-    def _entrypoint_intents(entrypoint: SkillEntrypointDef) -> set[str]:
-        intents = {str(item).strip().lower() for item in entrypoint.intents if str(item).strip()}
-        return intents or {"general"}
-
     def _skill_entrypoints(self, skill: SkillManifest) -> List[SkillEntrypointDef]:
         return list(getattr(skill, "entrypoints", []) or [])
 
@@ -1395,148 +1057,12 @@ class SkillRuntime:
     def _exposed_relevant_skill_scripts(self, skill: SkillManifest, ctx: Optional[SkillContext]) -> List[str]:
         if not self._skill_allows_generic_script_runner(skill):
             return []
-        return self._relevant_skill_scripts(skill, ctx)
+        return self._reported_skill_scripts(skill)
 
     def _exposed_relevant_skill_entrypoints(self, skill: SkillManifest, ctx: Optional[SkillContext]) -> List[SkillEntrypointDef]:
         if not self._skill_allows_generic_entrypoint_runner(skill):
             return []
-        return self._relevant_skill_entrypoints(skill, ctx)
-
-    def _entrypoint_supports_artifact(
-        self,
-        entrypoint: SkillEntrypointDef,
-        skill: SkillManifest,
-        extensions: List[str],
-        intents: Optional[set[str]] = None,
-    ) -> bool:
-        if not extensions:
-            return False
-        intents = intents or {"general"}
-        entry_intents = self._entrypoint_intents(entrypoint)
-        if "create" in intents and not (entry_intents & {"create", "edit", "general"}):
-            return False
-        if "edit" in intents and not (entry_intents & {"edit", "create", "general"}):
-            return False
-        if "review" in intents and not (entry_intents & {"review", "edit", "create", "general"}):
-            return False
-        normalized_exts = {self._normalize_extension_token(item) for item in extensions if item}
-        produced = {self._normalize_extension_token(item) for item in entrypoint.produces if item}
-        if produced & normalized_exts:
-            return True
-        for ext in normalized_exts:
-            naked = ext.lstrip(".")
-            if naked and naked in entrypoint.command.lower():
-                return True
-            if naked and naked in entrypoint.description.lower():
-                return True
-        return False
-
-    def _relevant_skill_entrypoints(self, skill: SkillManifest, ctx: Optional[SkillContext]) -> List[SkillEntrypointDef]:
-        entrypoints = self._skill_entrypoints(skill)
-        if ctx is None:
-            return entrypoints
-        intents = self.task_intents(ctx)
-        requested_exts = self.requested_artifact_extensions(ctx)
-        relevant: List[SkillEntrypointDef] = []
-        for entrypoint in entrypoints:
-            entry_intents = self._entrypoint_intents(entrypoint)
-            if "create" in intents and not (entry_intents & {"create", "edit", "general"}):
-                continue
-            if "edit" in intents and not (entry_intents & {"edit", "create", "general"}):
-                continue
-            if "review" in intents and not (entry_intents & {"review", "edit", "create", "general"}):
-                continue
-            if "setup" in intents and not (entry_intents & {"setup", "create", "edit", "general"}):
-                continue
-            if requested_exts and not self._entrypoint_supports_artifact(entrypoint, skill, requested_exts, intents=intents):
-                continue
-            relevant.append(entrypoint)
-        return relevant
-
-    def _relevant_skill_scripts(self, skill: SkillManifest, ctx: Optional[SkillContext]) -> List[str]:
-        runnable = self._skill_runnable_scripts(skill)
-        if ctx is None:
-            return runnable
-
-        intents = self.task_intents(ctx)
-        requested_exts = self.requested_artifact_extensions(ctx)
-        relevant: List[str] = []
-        for rel in runnable:
-            rel_lower = rel.lower()
-            script_intents = self._script_intents(rel)
-            if "create" in intents:
-                if not (script_intents & {"create", "edit"}):
-                    continue
-            elif "edit" in intents:
-                if not (script_intents & {"edit", "create"}):
-                    continue
-            elif "review" in intents:
-                if not (script_intents & {"review", "edit", "create"}):
-                    continue
-            elif "setup" in intents:
-                if not (script_intents & {"setup"}):
-                    continue
-
-            if requested_exts:
-                tokens = {ext.lstrip(".") for ext in requested_exts}
-                if tokens and not any(token in rel_lower for token in tokens):
-                    if not self._skill_supports_artifact(skill, requested_exts, intents=intents):
-                        continue
-            relevant.append(rel)
-        return sorted(dict.fromkeys(relevant))
-
-    def _skill_supports_artifact(
-        self,
-        skill: SkillManifest,
-        extensions: List[str],
-        intents: Optional[set[str]] = None,
-    ) -> bool:
-        if not extensions:
-            return False
-        intents = intents or {"general"}
-        normalized_exts = {self._normalize_extension_token(item) for item in extensions if item}
-        for entrypoint in self._skill_entrypoints(skill):
-            if self._entrypoint_supports_artifact(entrypoint, skill, extensions, intents=intents):
-                return True
-        produce_tokens = {self._normalize_extension_token(item) for item in skill.produces if item}
-        if produce_tokens & normalized_exts:
-            return True
-        for ext in normalized_exts:
-            if not ext:
-                continue
-            naked = ext.lstrip(".")
-            if ext in skill.description.lower() or naked in skill.description.lower():
-                return True
-            if ext in skill.name.lower() or naked in skill.name.lower():
-                return True
-            if any(ext == self._normalize_extension_token(tag) or naked in tag.lower() for tag in skill.tags):
-                return True
-            for spec in skill.command_tools:
-                if self._tool_supports_extension(
-                    RegisteredTool(
-                        name=spec.name,
-                        skill_id=skill.id,
-                        tool_scope="skill",
-                        capability=spec.capability,
-                        description=spec.description,
-                        parameters=spec.parameters,
-                    ),
-                    skill,
-                    naked,
-                ):
-                    return True
-            for rel in self._skill_runnable_scripts(skill):
-                if naked not in rel.lower():
-                    continue
-                rel_intents = self._script_intents(rel)
-                if "create" in intents and not (rel_intents & {"create", "edit"}):
-                    continue
-                if "edit" in intents and not (rel_intents & {"edit", "create"}):
-                    continue
-                if "review" in intents and not (rel_intents & {"review", "edit", "create"}):
-                    continue
-                return True
-        return False
+        return self._reported_skill_entrypoints(skill)
 
     def select_skills(self, ctx: SkillContext, top_n: int = 3) -> List[SkillManifest]:
         loaded = self.skills_by_ids(list(getattr(ctx, "loaded_skill_ids", []) or []))
@@ -1598,7 +1124,7 @@ class SkillRuntime:
             resource_count = len([rel for rel in bundled_files if not rel.startswith("scripts/")])
             lines.append(
                 f"- {getattr(skill, 'id', '')}: {getattr(skill, 'description', '')} | tools: {tool_text} | resources: {resource_count} | "
-                f"trust: {getattr(skill, 'trust_level', 'trusted')} | execution: {'yes' if getattr(skill, 'execution_allowed', True) else 'no'} | "
+                f"execution: {'yes' if getattr(skill, 'execution_allowed', True) else 'no'} | "
                 f"adapter: {getattr(skill, 'adapter', 'agentskills')} | user_invocable: {'yes' if getattr(skill, 'user_invocable', True) else 'no'} | "
                 f"model_invocable: {'no' if getattr(skill, 'disable_model_invocation', False) else 'yes'}"
             )
@@ -1607,45 +1133,8 @@ class SkillRuntime:
         return rendered
 
     def _skill_runtime_note(self, skill: SkillManifest, ctx: SkillContext) -> str:
-        requested_exts = self.requested_artifact_extensions(ctx)
-        intents = self.task_intents(ctx)
-        relevant_entrypoints = self._exposed_relevant_skill_entrypoints(skill, ctx)
-        relevant_scripts = self._exposed_relevant_skill_scripts(skill, ctx)
-        if not requested_exts:
-            return ""
-        if not self._skill_supports_artifact(skill, requested_exts, intents=intents) and not relevant_entrypoints and not relevant_scripts:
-            return ""
-        if relevant_entrypoints:
-            entry = relevant_entrypoints[0]
-            install_text = ", ".join(entry.install[:3]) if entry.install else "none"
-            verify_text = ", ".join(entry.verify[:3]) if entry.verify else "none"
-            return (
-                "Runtime note:\n"
-                f"- This skill exposes structured execution entrypoints for {', '.join(requested_exts[:3])}.\n"
-                f"- Preferred entrypoint: {entry.name}\n"
-                f"- Install commands: {install_text}\n"
-                f"- Verify commands: {verify_text}\n"
-                "- Prefer run_skill over ad-hoc shell planning.\n"
-                "- Do not invent commands or helper scripts outside the declared entrypoint contract."
-            )
-        ext_text = ", ".join(requested_exts[:3])
-        if relevant_scripts:
-            return (
-                "Runtime note:\n"
-                f"- Relevant bundled scripts for this request: {', '.join(relevant_scripts[:4])}\n"
-                f"- Treat those as the only bundled executable script paths for {ext_text}."
-            )
-        if "create" in intents:
-            available = self._skill_runnable_scripts(skill)
-            available_text = ", ".join(available[:4]) if available else "none"
-            return (
-                "Runtime note:\n"
-                f"- This skill has no bundled create-capable executable path for {ext_text} in this runtime.\n"
-                f"- Available runnable scripts: {available_text}\n"
-                "- Do not invent script names.\n"
-                "- Do not probe dependencies with shell or verification tools for this local workspace file task.\n"
-                "- If a real opaque artifact is required, say directly that no executable creation path is available."
-            )
+        _ = ctx
+        _ = skill
         return ""
 
     def compose_skill_block(
@@ -1663,21 +1152,7 @@ class SkillRuntime:
 
         sections: List[str] = []
         for skill in selected:
-            extra = ""
-            hooks = self._ensure_skill_hooks(skill) if skill.execution_allowed else None
-            if hooks and hasattr(hooks, "pre_prompt"):
-                try:
-                    hook_out = hooks.pre_prompt(ctx)  # type: ignore[attr-defined]
-                    if hook_out:
-                        extra = str(hook_out).strip()
-                except Exception as exc:
-                    logging.warning("pre_prompt hook failed for skill %s: %s", skill.id, exc)
             body = self._ensure_skill_prompt(skill).strip()
-            if extra:
-                body += "\n\n" + extra
-            runtime_note = self._skill_runtime_note(skill, ctx)
-            if runtime_note:
-                body = runtime_note + "\n\n" + body
             sections.append(f"### Skill: {skill.name} ({skill.id})\n{body}")
 
         budget = max(200, int(context_limit * ratio * 4))
@@ -1739,7 +1214,7 @@ class SkillRuntime:
         return out
 
     def user_skill_root(self) -> Path:
-        return (self.workspace.home_root / ".alphanus" / "skills").resolve()
+        return self.skills_dir.resolve()
 
     def _skill_linked_files(self, skill: SkillManifest) -> Dict[str, List[str]]:
         linked: Dict[str, List[str]] = {}
@@ -1828,16 +1303,16 @@ class SkillRuntime:
         if raw_category:
             category_path = Path(raw_category)
             if category_path.is_absolute():
-                raise PermissionError("category must stay inside the user skill root")
+                raise PermissionError("category must stay inside the skill root")
             base = (root / category_path).resolve()
         target = (base / name).resolve()
         if not self._is_relative_to(target, root):
-            raise PermissionError("category must stay inside the user skill root")
+            raise PermissionError("category must stay inside the skill root")
         return target
 
     def _resolve_user_skill_dir(self, name: str) -> Path:
         skill = self.get_skill(name)
-        if skill and skill.path and skill.source_tier == "user/local":
+        if skill and skill.path and self._is_relative_to(skill.path.resolve(), self.skills_dir.resolve()):
             return skill.path.resolve()
         return (self.user_skill_root() / name).resolve()
 
@@ -1980,7 +1455,7 @@ class SkillRuntime:
                 ):
                     allowed.append(tool_name)
                 continue
-            if reg.tool_scope == "core":
+            if reg.skill_id == "__runtime__":
                 continue
             skill = selected_map.get(reg.skill_id)
             if not skill:
@@ -2022,12 +1497,8 @@ class SkillRuntime:
         return self._tool_names_for_turn(selected, ctx=ctx)
 
     def _tool_schema_context_fingerprint(self, ctx: Optional[SkillContext]) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
-        if ctx is None:
-            return ((), ())
-        return (
-            tuple(sorted(self.task_intents(ctx))),
-            tuple(self.requested_artifact_extensions(ctx)),
-        )
+        _ = ctx
+        return ((), ())
 
     def _tool_schema_cache_key(
         self,
@@ -2048,46 +1519,6 @@ class SkillRuntime:
             active_skill_ids,
             self._tool_schema_context_fingerprint(ctx),
         )
-
-    @staticmethod
-    def _opaque_extension_token(path: str) -> str:
-        return Path(str(path).strip()).suffix.lower().lstrip(".")
-
-    @staticmethod
-    def _tool_supports_extension(reg: RegisteredTool, skill: SkillManifest, extension: str) -> bool:
-        if not extension:
-            return False
-        haystacks = [
-            reg.name,
-            reg.capability,
-            reg.description,
-            skill.id,
-            skill.name,
-            skill.description,
-            " ".join(getattr(skill, "produces", []) or []),
-        ]
-        lowered = extension.lower()
-        return any(lowered in str(value).lower() for value in haystacks if str(value).strip())
-
-    def _selected_relevant_materializers(self, selected: List[SkillManifest], opaque_paths: List[str]) -> List[str]:
-        relevant: List[str] = []
-        extensions = sorted(
-            {
-                token
-                for token in (self._opaque_extension_token(path) for path in opaque_paths)
-                if token
-            }
-        )
-        if not extensions:
-            return relevant
-
-        for skill in selected:
-            for reg in self._tool_registry.values():
-                if reg.skill_id != skill.id or reg.tool_scope == "core":
-                    continue
-                if any(self._tool_supports_extension(reg, skill, extension) for extension in extensions):
-                    relevant.append(f"{skill.id}:{reg.name}")
-        return sorted(dict.fromkeys(relevant))
 
     def _dynamic_run_skill_schema(self, selected: List[SkillManifest], ctx: Optional[SkillContext]) -> Dict[str, Any]:
         executable_skills = [
@@ -2182,39 +1613,10 @@ class SkillRuntime:
         self._tools_schema_cache[cache_key] = tools
         return tools
 
-    def _run_pre_action_hooks(
-        self,
-        selected: List[SkillManifest],
-        ctx: SkillContext,
-        action_name: str,
-        args: Dict[str, Any],
-    ) -> Tuple[bool, str]:
-        for skill in selected:
-            if not skill.execution_allowed:
-                continue
-            hooks = self._ensure_skill_hooks(skill)
-            if not hooks or not hasattr(hooks, "pre_action"):
-                continue
-            try:
-                allowed, reason = hooks.pre_action(ctx, action_name, args)  # type: ignore[attr-defined]
-            except Exception as exc:
-                logging.warning("pre_action hook failed for skill %s action %s: %s", skill.id, action_name, exc)
-                continue
-            if not allowed:
-                return False, str(reason or "Denied by skill policy")
-        return True, ""
-
     def post_response(self, selected: List[SkillManifest], ctx: SkillContext, text: str) -> None:
-        for skill in selected:
-            if not skill.execution_allowed:
-                continue
-            hooks = self._ensure_skill_hooks(skill)
-            if hooks and hasattr(hooks, "post_response"):
-                try:
-                    hooks.post_response(ctx, text)  # type: ignore[attr-defined]
-                except Exception as exc:
-                    logging.warning("post_response hook failed for skill %s: %s", skill.id, exc)
-                    continue
+        _ = selected
+        _ = ctx
+        _ = text
 
     @staticmethod
     def _schema_type_matches(value: Any, expected: str) -> bool:
@@ -2325,10 +1727,6 @@ class SkillRuntime:
         validated = self._validate_tool_args(reg, recovered)
         if reg.name == _RUN_SKILL_TOOL_NAME:
             validated = self._validate_run_skill_args(validated, selected, ctx)
-        self._enforce_artifact_materialization_policy(reg, validated, selected, ctx)
-        allowed, reason = self._run_pre_action_hooks(selected, ctx, reg.name, validated)
-        if not allowed:
-            raise PermissionError(reason or "Denied by skill policy")
         return validated
 
     def _resolve_active_skill(
@@ -2404,9 +1802,20 @@ class SkillRuntime:
         if not chosen:
             raise PermissionError(f"Script '{requested_script}' is not available for skill '{skill.id}'")
 
+        params = args.get("params")
+        if params is None and args.get("args") is not None:
+            # Backward-compat alias for older tool calls; normalized to `params`.
+            params = args.get("args")
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            raise ValueError("Invalid 'params': expected object")
+
         out = dict(args)
         out["skill_id"] = skill.id
         out["script"] = chosen
+        out["params"] = params
+        out.pop("args", None)
         timeout_s = out.get("timeout_s")
         if timeout_s is None:
             out["timeout_s"] = 30
@@ -2459,47 +1868,6 @@ class SkillRuntime:
         if out.get("timeout_s") is None:
             out["timeout_s"] = entrypoint.timeout_s
         return out
-
-    @staticmethod
-    def _requested_filepaths(reg: RegisteredTool, args: Dict[str, Any]) -> List[str]:
-        if reg.name == "create_file":
-            return [str(args.get("filepath", ""))]
-        if reg.name == "edit_file":
-            return [str(args.get("filepath", ""))]
-        return []
-
-    @staticmethod
-    def _is_text_like_path(path: str) -> bool:
-        suffix = Path(str(path).strip()).suffix.lower()
-        return suffix in _TEXT_LIKE_EXTENSIONS
-
-    def _enforce_artifact_materialization_policy(
-        self,
-        reg: RegisteredTool,
-        args: Dict[str, Any],
-        selected: List[SkillManifest],
-        ctx: SkillContext,
-    ) -> None:
-        if reg.name not in {"create_file", "edit_file"}:
-            return
-
-        requested_paths = [path for path in self._requested_filepaths(reg, args) if path.strip()]
-        if not requested_paths:
-            return
-
-        opaque_paths = [path for path in requested_paths if not self._is_text_like_path(path)]
-        if not opaque_paths:
-            return
-
-        relevant_materializers = self._selected_relevant_materializers(selected, opaque_paths)
-        if relevant_materializers:
-            return
-
-        formatted = ", ".join(sorted(dict.fromkeys(opaque_paths))[:3])
-        raise PermissionError(
-            "Cannot materialize opaque artifact paths with prompt-only skills via plain workspace text tools: "
-            f"{formatted}. Use an executable skill/tool path or decline."
-        )
 
     def _execute_registered_tool(
         self,
@@ -2610,7 +1978,12 @@ class SkillRuntime:
         proc_env["ALPHANUS_SELECTED_SKILL_ID"] = skill.id
         proc_env["ALPHANUS_SKILL_ROOT"] = str(skill.path)
         proc_env["ALPHANUS_SKILL_SCRIPT"] = rel_script
-        proc_env["ALPHANUS_TOOL_ARGS_JSON"] = json.dumps(args.get("args") or {}, ensure_ascii=False)
+        params_payload = args.get("params")
+        if params_payload is None and isinstance(args.get("args"), dict):
+            params_payload = args.get("args")
+        if not isinstance(params_payload, dict):
+            params_payload = {}
+        proc_env["ALPHANUS_TOOL_ARGS_JSON"] = json.dumps(params_payload, ensure_ascii=False)
         proc = subprocess.run(
             list(interpreter) + [str(script_path)] + [str(item) for item in argv],
             cwd=str(skill.path),

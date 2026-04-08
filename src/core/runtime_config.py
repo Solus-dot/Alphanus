@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import os
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
@@ -191,24 +189,25 @@ class ProviderConfig:
 
 @dataclass(slots=True)
 class SkillsRuntimeConfig:
-    upward_scan: bool = True
-    extra_skill_dirs: List[Path] = field(default_factory=list)
     python_executable: str = sys.executable
+    ignored_settings: List[str] = field(default_factory=list)
 
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> SkillsRuntimeConfig:
         skills_cfg = _section(config, "skills")
         load_cfg = _section(skills_cfg, "load")
-        extra_skill_dirs = [
-            Path(os.path.expanduser(item)).resolve()
-            for item in _coerce_string_list(load_cfg.get("extra_dirs"))
-        ]
+        ignored: List[str] = []
+        if _coerce_string_list(load_cfg.get("extra_dirs")):
+            ignored.append("skills.load.extra_dirs is ignored; skill discovery is root-only")
+        if not _coerce_bool(load_cfg.get("upward_scan"), True):
+            ignored.append("skills.load.upward_scan is ignored; skill discovery is root-only")
+        if not _coerce_bool(load_cfg.get("watch"), True):
+            ignored.append("skills.load.watch is ignored; skill discovery is root-only")
         configured_python = _coerce_string(
             load_cfg.get("python_executable") or skills_cfg.get("python_executable"),
             sys.executable,
         )
         return cls(
-            upward_scan=_coerce_bool(load_cfg.get("upward_scan"), True),
-            extra_skill_dirs=extra_skill_dirs,
             python_executable=configured_python or sys.executable,
+            ignored_settings=ignored,
         )
