@@ -325,7 +325,7 @@ class AlphanusTUI(App):
 
     #footer {
         width: 1fr;
-        height: 5;
+        height: 7;
         background: #09090b;
         layout: vertical;
         padding: 0 3 0 3;
@@ -385,7 +385,16 @@ class AlphanusTUI(App):
 
     #footer-sep {
         height: 1;
-        background: #5a5a66;
+        background: #000000;
+        color: #5a5a66;
+        content-align: left middle;
+        padding: 0 0;
+    }
+
+    #attachment-bar {
+        width: 1fr;
+        height: 1;
+        background: #000000;
         color: #e4e4e7;
         content-align: left middle;
         padding: 0 1;
@@ -411,11 +420,11 @@ class AlphanusTUI(App):
     }
 
     #input-row {
-        height: 3;
+        height: 4;
         layout: vertical;
         background: #09090b;
         padding: 0 0 0 0;
-        min-height: 3;
+        min-height: 4;
     }
 
     #composer-shell {
@@ -425,6 +434,7 @@ class AlphanusTUI(App):
         background: #000000;
         border: round #63636b;
         padding: 0 1;
+        margin: 0 0 1 0;
         align: left middle;
     }
 
@@ -584,6 +594,7 @@ class AlphanusTUI(App):
                     yield Static("", id="partial", markup=True)
                 with Vertical(id="footer"):
                     yield Static("", id="footer-sep", markup=True)
+                    yield Static("", id="attachment-bar", markup=True)
                     with Horizontal(id="input-row"):
                         with Horizontal(id="composer-shell"):
                             yield ChatInput(id="chat-input", placeholder="Type a message…")
@@ -617,6 +628,7 @@ class AlphanusTUI(App):
         self._update_topbar()
         self._update_status1()
         self._update_status2()
+        self._update_footer_separator()
         self._update_sidebar()
         self._update_pending_attachments()
         self._maybe_refresh_model_status(force=True)
@@ -668,6 +680,7 @@ class AlphanusTUI(App):
         self._update_topbar()
         self._update_status1()
         self._update_status2()
+        self._update_footer_separator()
         self._update_sidebar()
         self._update_pending_attachments()
         self._refresh_transcript_after_resize()
@@ -1720,9 +1733,21 @@ class AlphanusTUI(App):
             "Type to start branch…" if self.conv_tree._pending_branch else "Type a message…"
         )
 
+    def _update_footer_separator(self) -> None:
+        try:
+            separator = self.query_one("#footer-sep", Static)
+            width = int(getattr(separator.region, "width", 0) or 0)
+            if width <= 0:
+                width = int(getattr(separator.size, "width", 0) or 0)
+            separator.update("─" * max(1, width))
+        except Exception:
+            return
+
     def _update_pending_attachments(self) -> None:
         try:
-            self.query_one("#footer-sep", Static).update(self._pending_attachment_markup())
+            markup = self._pending_attachment_markup()
+            bar = self.query_one("#attachment-bar", Static)
+            bar.update(markup)
         except Exception:
             return
 

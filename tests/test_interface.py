@@ -192,6 +192,7 @@ async def test_attachment_name_renders_in_separator_without_moving_it(tmp_path: 
     async with tui.run_test(size=(160, 40)) as pilot:
         separator = tui.query_one("#footer-sep")
         separator_y_before = separator.region.y
+        attachment_bar = tui.query_one("#attachment-bar")
         attachment = tmp_path / "notes.txt"
         attachment.write_text("hello", encoding="utf-8")
         tui.pending.append((str(attachment), "text"))
@@ -201,9 +202,10 @@ async def test_attachment_name_renders_in_separator_without_moving_it(tmp_path: 
         chat_input = tui.query_one(ChatInput)
 
         assert separator.region.y == separator_y_before
+        assert attachment_bar.region.y > separator.region.y
         assert attach_file.region.y >= chat_input.region.y
         assert attach_file.region.x > chat_input.region.x
-        assert "notes.txt" in str(separator.render())
+        assert "notes.txt" in str(attachment_bar.render())
 
 
 @pytest.mark.anyio
