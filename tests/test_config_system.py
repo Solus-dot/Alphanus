@@ -197,6 +197,6 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
     assert provider.per_turn_retries == 2
     assert provider.auth_header == "Authorization: Bearer demo"
     assert skills.python_executable == "/usr/bin/python3"
-    assert len(skills.extra_skill_dirs) == 1
+    assert any("skills.load.extra_dirs is ignored" in msg for msg in skills.ignored_settings)
     assert ui.chat_log_max_lines == 1234
     assert ui.timing.model_refresh_interval_s == 9.0
