@@ -13,6 +13,7 @@ from core.configuration import (
     normalize_config,
     validate_endpoint_policy,
 )
+from core.runtime_config import ProviderConfig, SkillsRuntimeConfig, UiRuntimeConfig
 
 
 def test_normalize_config_strips_secret_like_fields() -> None:
@@ -152,3 +153,50 @@ def test_validate_endpoint_policy_rejects_cross_host_when_disallowed() -> None:
     }
     with pytest.raises(ValueError, match="must share host"):
         validate_endpoint_policy(config)
+
+
+def test_normalize_config_preserves_new_runtime_boundary_fields() -> None:
+    raw = {
+        "schema_version": "1.0.0",
+        "agent": {
+            "provider": "openai-compatible",
+            "connect_timeout_s": "2.5",
+            "per_turn_retries": "2",
+            "retry_backoff_s": "0.75",
+        },
+        "skills": {"load": {"python_executable": "/usr/bin/python3"}},
+        "tui": {"timing": {"stream_drain_interval_s": "0.02", "shell_confirm_timeout_s": "90"}},
+    }
+
+    normalized, _warnings = normalize_config(raw)
+
+    assert normalized["agent"]["provider"] == "openai-compatible"
+    assert normalized["agent"]["connect_timeout_s"] == 2.5
+    assert normalized["agent"]["per_turn_retries"] == 2
+    assert normalized["agent"]["retry_backoff_s"] == 0.75
+    assert normalized["skills"]["load"]["python_executable"] == "/usr/bin/python3"
+    assert normalized["tui"]["timing"]["stream_drain_interval_s"] == 0.02
+    assert normalized["tui"]["timing"]["shell_confirm_timeout_s"] == 90.0
+
+
+def test_typed_runtime_configs_parse_normalized_config() -> None:
+    normalized, _warnings = normalize_config(
+        {
+            "schema_version": "1.0.0",
+            "agent": {"connect_timeout_s": 3, "per_turn_retries": 2},
+            "skills": {"load": {"extra_dirs": ["~/skills"], "python_executable": "/usr/bin/python3"}},
+            "tui": {"chat_log_max_lines": 1234, "timing": {"model_refresh_interval_s": 9}},
+        }
+    )
+
+    provider = ProviderConfig.from_config(normalized, auth_header="Authorization: Bearer demo")
+    skills = SkillsRuntimeConfig.from_config(normalized)
+    ui = UiRuntimeConfig.from_config(normalized)
+
+    assert provider.connect_timeout_s == 3.0
+    assert provider.per_turn_retries == 2
+    assert provider.auth_header == "Authorization: Bearer demo"
+    assert skills.python_executable == "/usr/bin/python3"
+    assert len(skills.extra_skill_dirs) == 1
+    assert ui.chat_log_max_lines == 1234
+    assert ui.timing.model_refresh_interval_s == 9.0

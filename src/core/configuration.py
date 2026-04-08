@@ -36,11 +36,15 @@ _VALID_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DEFAULT_CONFIG: Dict[str, Any] = {
     "schema_version": SCHEMA_VERSION,
     "agent": {
+        "provider": "openai-compatible",
         "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
         "models_endpoint": "http://127.0.0.1:8080/v1/models",
+        "connect_timeout_s": 10,
         "request_timeout_s": 180,
         "readiness_timeout_s": 30,
         "readiness_poll_s": 0.5,
+        "per_turn_retries": 1,
+        "retry_backoff_s": 0.5,
         "enable_thinking": True,
         "tls_verify": True,
         "ca_bundle_path": "",
@@ -81,6 +85,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "extra_dirs": [],
             "watch": True,
             "upward_scan": True,
+            "python_executable": "",
         },
     },
     "agents": {
@@ -100,6 +105,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "tui": {
         "chat_log_max_lines": 5000,
+        "timing": {
+            "stream_drain_interval_s": 0.016,
+            "scroll_interval_s": 0.05,
+            "model_refresh_interval_s": 5.0,
+            "model_refresh_fast_interval_s": 2.0,
+            "model_refresh_fast_window_s": 6.0,
+            "shell_confirm_timeout_s": 60.0,
+        },
         "tree_compaction": {
             "enabled": True,
             "inactive_assistant_char_limit": 12000,
@@ -322,6 +335,13 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
 
     default_agent = DEFAULT_CONFIG["agent"]
     agent_cfg = merged.get("agent", {}) if isinstance(merged.get("agent"), dict) else {}
+    agent_cfg["provider"] = _coerce_string(
+        agent_cfg.get("provider"),
+        str(default_agent["provider"]),
+        path="agent.provider",
+        warnings=warnings,
+        allow_empty=False,
+    )
     agent_cfg["model_endpoint"] = _normalize_endpoint(
         agent_cfg.get("model_endpoint"),
         default=default_agent["model_endpoint"],
@@ -333,6 +353,14 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         default=default_agent["models_endpoint"],
         path="agent.models_endpoint",
         warnings=warnings,
+    )
+    agent_cfg["connect_timeout_s"] = _coerce_float(
+        agent_cfg.get("connect_timeout_s"),
+        float(default_agent["connect_timeout_s"]),
+        path="agent.connect_timeout_s",
+        warnings=warnings,
+        minimum=0.1,
+        maximum=60.0,
     )
     agent_cfg["request_timeout_s"] = _coerce_float(
         agent_cfg.get("request_timeout_s"),
@@ -357,6 +385,22 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         warnings=warnings,
         minimum=0.05,
         maximum=10.0,
+    )
+    agent_cfg["per_turn_retries"] = _coerce_int(
+        agent_cfg.get("per_turn_retries"),
+        int(default_agent["per_turn_retries"]),
+        path="agent.per_turn_retries",
+        warnings=warnings,
+        minimum=0,
+        maximum=5,
+    )
+    agent_cfg["retry_backoff_s"] = _coerce_float(
+        agent_cfg.get("retry_backoff_s"),
+        float(default_agent["retry_backoff_s"]),
+        path="agent.retry_backoff_s",
+        warnings=warnings,
+        minimum=0.0,
+        maximum=30.0,
     )
     agent_cfg["enable_thinking"] = _coerce_bool(
         agent_cfg.get("enable_thinking"),
@@ -601,6 +645,12 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         path="skills.load.upward_scan",
         warnings=warnings,
     )
+    load_cfg["python_executable"] = _coerce_string(
+        load_cfg.get("python_executable"),
+        str(DEFAULT_CONFIG["skills"]["load"]["python_executable"]),
+        path="skills.load.python_executable",
+        warnings=warnings,
+    )
     skills_cfg["load"] = load_cfg
     merged["skills"] = skills_cfg
 
@@ -681,6 +731,60 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         minimum=100,
         maximum=200000,
     )
+    timing_cfg = tui_cfg.get("timing", {})
+    if not isinstance(timing_cfg, dict):
+        _warn(warnings, "tui.timing: expected object, using defaults")
+        timing_cfg = {}
+    default_timing = DEFAULT_CONFIG["tui"]["timing"]
+    timing_cfg["stream_drain_interval_s"] = _coerce_float(
+        timing_cfg.get("stream_drain_interval_s"),
+        float(default_timing["stream_drain_interval_s"]),
+        path="tui.timing.stream_drain_interval_s",
+        warnings=warnings,
+        minimum=0.001,
+        maximum=1.0,
+    )
+    timing_cfg["scroll_interval_s"] = _coerce_float(
+        timing_cfg.get("scroll_interval_s"),
+        float(default_timing["scroll_interval_s"]),
+        path="tui.timing.scroll_interval_s",
+        warnings=warnings,
+        minimum=0.001,
+        maximum=1.0,
+    )
+    timing_cfg["model_refresh_interval_s"] = _coerce_float(
+        timing_cfg.get("model_refresh_interval_s"),
+        float(default_timing["model_refresh_interval_s"]),
+        path="tui.timing.model_refresh_interval_s",
+        warnings=warnings,
+        minimum=0.1,
+        maximum=60.0,
+    )
+    timing_cfg["model_refresh_fast_interval_s"] = _coerce_float(
+        timing_cfg.get("model_refresh_fast_interval_s"),
+        float(default_timing["model_refresh_fast_interval_s"]),
+        path="tui.timing.model_refresh_fast_interval_s",
+        warnings=warnings,
+        minimum=0.1,
+        maximum=60.0,
+    )
+    timing_cfg["model_refresh_fast_window_s"] = _coerce_float(
+        timing_cfg.get("model_refresh_fast_window_s"),
+        float(default_timing["model_refresh_fast_window_s"]),
+        path="tui.timing.model_refresh_fast_window_s",
+        warnings=warnings,
+        minimum=0.0,
+        maximum=300.0,
+    )
+    timing_cfg["shell_confirm_timeout_s"] = _coerce_float(
+        timing_cfg.get("shell_confirm_timeout_s"),
+        float(default_timing["shell_confirm_timeout_s"]),
+        path="tui.timing.shell_confirm_timeout_s",
+        warnings=warnings,
+        minimum=1.0,
+        maximum=600.0,
+    )
+    tui_cfg["timing"] = timing_cfg
     tree_cfg = tui_cfg.get("tree_compaction", {})
     if not isinstance(tree_cfg, dict):
         _warn(warnings, "tui.tree_compaction: expected object, using defaults")
