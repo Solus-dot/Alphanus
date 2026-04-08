@@ -492,7 +492,6 @@ class TurnOrchestrator:
         stop_event=None,
         on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
         confirm_shell: Optional[Callable[[str], bool]] = None,
-        spawn_skill_agent: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
         request_user_input: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
     ) -> AgentTurnResult:
         branch_labels = branch_labels or []
@@ -584,8 +583,6 @@ class TurnOrchestrator:
                 state.skill_exchanges.append(assistant_msg)
 
                 force_finalize_reason = ""
-                shell_workflow_skills = self.skill_runtime.selected_shell_workflow_skills(state.selected, state.ctx)
-                allow_shell_workflow = bool(shell_workflow_skills)
                 state.action_depth += 1
                 if state.action_depth > self.max_action_depth:
                     if state.search_mode and state.completion.search_has_success:
@@ -616,27 +613,26 @@ class TurnOrchestrator:
                         break
 
                     if state.prefer_local_workspace_tools and self.skill_runtime.tool_is_blocked_for_local_workspace(call.name):
-                        if call.name != "shell_command" or not allow_shell_workflow:
-                            result = {
-                                "ok": False,
-                                "data": None,
-                                "error": {
-                                    "code": "E_POLICY",
-                                    "message": f"{call.name} is not allowed for local workspace file tasks; use workspace tools instead.",
-                                },
-                                "meta": {},
-                            }
-                            self.emit(on_event, {"type": "tool_result", "name": call.name, "id": call.id, "result": result})
-                            tool_message = {
-                                "role": "tool",
-                                "tool_call_id": call.id,
-                                "name": call.name,
-                                "content": self.safe_json_dumps(self.tool_result_for_history(call.name, result)),
-                            }
-                            state.dynamic_history.append(tool_message)
-                            state.skill_exchanges.append(tool_message)
-                            self.record_tool_effects(state, call, result, policy_blocked=True)
-                            continue
+                        result = {
+                            "ok": False,
+                            "data": None,
+                            "error": {
+                                "code": "E_POLICY",
+                                "message": f"{call.name} is not allowed for local workspace file tasks; use workspace tools instead.",
+                            },
+                            "meta": {},
+                        }
+                        self.emit(on_event, {"type": "tool_result", "name": call.name, "id": call.id, "result": result})
+                        tool_message = {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "name": call.name,
+                            "content": self.safe_json_dumps(self.tool_result_for_history(call.name, result)),
+                        }
+                        state.dynamic_history.append(tool_message)
+                        state.skill_exchanges.append(tool_message)
+                        self.record_tool_effects(state, call, result, policy_blocked=True)
+                        continue
 
                     if state.search_mode and call.name == "fetch_url":
                         raw_url = str(call.arguments.get("url", "")).strip()
@@ -655,7 +651,6 @@ class TurnOrchestrator:
                         selected=state.selected,
                         ctx=state.ctx,
                         confirm_shell=confirm_shell,
-                        spawn_skill_agent=spawn_skill_agent,
                         request_user_input=request_user_input,
                     )
                     self.emit(on_event, {"type": "tool_result", "name": call.name, "id": call.id, "result": result})

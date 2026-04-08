@@ -3646,7 +3646,7 @@ Ask a follow-up before continuing.
             return FakeResponse([])
         return FakeResponse(
             [
-                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"request_user_input","arguments":"{\\"question\\": \\\"Pick a format\\\", \\\"options\\\": [\\\"pdf\\\", \\\"docx\\\"]}"}},{"index":1,"id":"call_2","type":"function","function":{"name":"read_skill_resource","arguments":"{\\"skill_id\\": \\\"asker\\\", \\\"path\\": \\\"LICENSE.txt\\"}"}}]}}]}',
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"request_user_input","arguments":"{\\"question\\": \\\"Pick a format\\\", \\\"options\\\": [\\\"pdf\\\", \\\"docx\\\"]}"}},{"index":1,"id":"call_2","type":"function","function":{"name":"skill_view","arguments":"{\\"name\\": \\\"asker\\\", \\\"file_path\\": \\\"SKILL.md\\"}"}}]}}]}',
                 'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                 "data: [DONE]",
             ]

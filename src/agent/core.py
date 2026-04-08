@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import copy
 import os
-import threading
 import time
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -12,11 +9,11 @@ from typing import Any, Callable, Dict, List, Optional
 from agent.classifier import TurnClassifier
 from agent.context import ContextWindowManager
 from agent.llm_client import LLMClient
-from agent.orchestrator import TurnOrchestrator, new_stop_event, request_user_input_passthrough
+from agent.orchestrator import TurnOrchestrator, request_user_input_passthrough
 from agent.policies import PromptPolicyRenderer
 from agent.prompts import build_system_prompt
 from agent.telemetry import TelemetryEmitter
-from agent.types import AgentTurnResult, BackgroundSkillAgentTask, ModelStatus
+from agent.types import AgentTurnResult, ModelStatus
 from core.configuration import validate_endpoint_policy
 from core.skills import SkillRuntime
 
@@ -26,8 +23,6 @@ class Agent:
         self.skill_runtime = skill_runtime
         self.debug = debug
         self.telemetry = TelemetryEmitter()
-        self._bg_skill_agent_tasks: Dict[str, BackgroundSkillAgentTask] = {}
-        self._bg_skill_agent_lock = threading.Lock()
         self.system_prompt = build_system_prompt(self.skill_runtime.workspace.workspace_root)
         self.context_mgr = ContextWindowManager()
         self.llm_client = LLMClient(config, debug=debug, telemetry=self.telemetry)
@@ -256,131 +251,6 @@ class Agent:
     def _tool_call_args_for_history(self, args: Dict[str, Any]) -> Dict[str, Any]:
         return self.orchestrator.tool_call_args_for_history(args)
 
-    def _run_nested_skill_agent(self, agent_name: str, prompt: str, skill_id: str = "") -> AgentTurnResult:
-        try:
-            agent_contract = self.skill_runtime.load_agent_contract(agent_name, skill_id=skill_id)
-        except Exception as exc:
-            return AgentTurnResult(status="error", content="", reasoning="", skill_exchanges=[], error=str(exc))
-        agent_record = self.skill_runtime.get_agent(agent_name)
-        if agent_record is None:
-            return AgentTurnResult(
-                status="error",
-                content="",
-                reasoning="",
-                skill_exchanges=[],
-                error=f"Unknown companion agent: {agent_name}",
-            )
-        nested_config = copy.deepcopy(self.config) if isinstance(self.config, dict) else {}
-        nested_agents_cfg = nested_config.get("agents", {}) if isinstance(nested_config.get("agents"), dict) else {}
-        nested_agents_cfg["enable_skill_agents"] = False
-        nested_config["agents"] = nested_agents_cfg
-        nested = Agent(nested_config, self.skill_runtime, debug=self.debug)
-        nested.system_prompt = (
-            f"{self.system_prompt}\n\n"
-            f"Companion agent profile: {agent_record.name}\n"
-            f"{agent_record.description}\n\n"
-            f"{agent_contract.prompt}"
-        ).strip()
-        nested.prompt_renderer = PromptPolicyRenderer(nested.system_prompt, nested.skill_runtime)
-        nested.orchestrator = TurnOrchestrator(
-            skill_runtime=nested.skill_runtime,
-            context_mgr=nested.context_mgr,
-            llm_client=nested.llm_client,
-            classifier=nested.classifier,
-            prompt_renderer=nested.prompt_renderer,
-            telemetry=nested.telemetry,
-        )
-        return nested.run_turn(
-            history_messages=[],
-            user_input=prompt,
-            thinking=False,
-            branch_labels=[],
-            attachments=[],
-            stop_event=new_stop_event(),
-            on_event=None,
-            confirm_shell=None,
-        )
-
-    def _background_skill_agent_worker(self, task_id: str, agent_name: str, prompt: str, skill_id: str) -> None:
-        result = self._run_nested_skill_agent(agent_name, prompt, skill_id=skill_id)
-        with self._bg_skill_agent_lock:
-            task = self._bg_skill_agent_tasks.get(task_id)
-            if not task:
-                return
-            task.completed_at = time.time()
-            if result.status == "done":
-                task.status = "done"
-                task.output = result.content
-            elif result.status == "cancelled":
-                task.status = "cancelled"
-                task.error = "cancelled"
-            else:
-                task.status = "error"
-                task.error = result.error or "background agent failed"
-
-    def _handle_spawn_skill_agent(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        agents_cfg = self.config.get("agents", {}) if isinstance(self.config.get("agents"), dict) else {}
-        if not bool(agents_cfg.get("enable_skill_agents", True)):
-            raise PermissionError("Skill agents are disabled in configuration")
-        action = str(args.get("action", "start")).strip().lower() or "start"
-        if action in {"status", "wait"}:
-            task_id = str(args.get("task_id", "")).strip()
-            if not task_id:
-                raise ValueError("Missing required argument: task_id")
-            deadline = time.time() + max(1, int(args.get("timeout_s", 30))) if action == "wait" else time.time()
-            while True:
-                with self._bg_skill_agent_lock:
-                    task = self._bg_skill_agent_tasks.get(task_id)
-                    snapshot = None if task is None else {
-                        "task_id": task.task_id,
-                        "agent_name": task.agent_name,
-                        "skill_id": task.skill_id,
-                        "status": task.status,
-                        "output": task.output,
-                        "error": task.error,
-                    }
-                if snapshot is None:
-                    raise FileNotFoundError(f"Unknown skill agent task: {task_id}")
-                if action == "status" or snapshot["status"] != "running" or time.time() >= deadline:
-                    return snapshot
-                time.sleep(0.05)
-        agent_name = str(args.get("agent_name", "")).strip()
-        skill_id = str(args.get("skill_id", "")).strip()
-        prompt = str(args.get("prompt", "")).strip()
-        if not agent_name:
-            raise ValueError("Missing required argument: agent_name")
-        if not prompt:
-            raise ValueError("Missing required argument: prompt")
-        background = bool(args.get("background", True))
-        if not background:
-            result = self._run_nested_skill_agent(agent_name, prompt, skill_id=skill_id)
-            return {
-                "task_id": "",
-                "agent_name": agent_name,
-                "skill_id": skill_id,
-                "status": result.status,
-                "output": result.content,
-                "error": result.error or "",
-            }
-        task_id = f"skill-agent-{uuid.uuid4().hex[:10]}"
-        with self._bg_skill_agent_lock:
-            self._bg_skill_agent_tasks[task_id] = BackgroundSkillAgentTask(
-                task_id=task_id,
-                agent_name=agent_name,
-                skill_id=skill_id,
-                prompt=prompt,
-            )
-        thread = threading.Thread(target=self._background_skill_agent_worker, args=(task_id, agent_name, prompt, skill_id), daemon=True)
-        thread.start()
-        return {
-            "task_id": task_id,
-            "agent_name": agent_name,
-            "skill_id": skill_id,
-            "status": "running",
-            "output": "",
-            "error": "",
-        }
-
     def run_turn(
         self,
         history_messages: List[Dict[str, Any]],
@@ -436,7 +306,6 @@ class Agent:
                         stop_event=stop_event,
                         on_event=on_event,
                         confirm_shell=confirm_shell,
-                        spawn_skill_agent=self._handle_spawn_skill_agent,
                         request_user_input=request_user_input_passthrough,
                     )
             ready = self.ensure_ready(stop_event=stop_event, on_event=on_event)
@@ -462,6 +331,5 @@ class Agent:
             stop_event=stop_event,
             on_event=on_event,
             confirm_shell=confirm_shell,
-            spawn_skill_agent=self._handle_spawn_skill_agent,
             request_user_input=request_user_input_passthrough,
         )

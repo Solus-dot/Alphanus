@@ -117,19 +117,6 @@ class TurnTelemetry:
 
 
 @dataclass(slots=True)
-class BackgroundSkillAgentTask:
-    task_id: str
-    agent_name: str
-    prompt: str
-    skill_id: str = ""
-    status: str = "running"
-    output: str = ""
-    error: str = ""
-    started_at: float = field(default_factory=time.time)
-    completed_at: float = 0.0
-
-
-@dataclass(slots=True)
 class TurnState:
     ctx: SkillContext
     selected: List[Any]
