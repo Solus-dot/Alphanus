@@ -1194,6 +1194,57 @@ def test_should_startup_readiness_poll_only_for_cold_local_model() -> None:
     assert tui._should_startup_readiness_poll() is False
 
 
+def test_apply_tui_config_reinstalls_stream_drain_timer_when_interval_changes() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui.agent = SimpleNamespace(config={"tui": {"timing": {"stream_drain_interval_s": 0.016}}})
+    tui.conv_tree = ConvTree()
+    tui._apply_tree_compaction_policy = lambda tree: tree
+    tui._log = lambda: SimpleNamespace(max_lines=None)
+    tui._update_status1 = lambda: None
+    tui._update_status2 = lambda: None
+    tui._update_sidebar = lambda: None
+    first_timer = SimpleNamespace(stopped=False, stop=lambda: setattr(first_timer, "stopped", True))
+    second_timer = SimpleNamespace(stopped=False, stop=lambda: setattr(second_timer, "stopped", True))
+    calls: list[float] = []
+
+    def fake_set_interval(interval_s: float, callback):
+        calls.append(interval_s)
+        assert callback == tui._drain_stream_event_queue
+        return first_timer if len(calls) == 1 else second_timer
+
+    tui.set_interval = fake_set_interval
+    tui._stream_drain_timer = None
+    tui._apply_tui_config()
+
+    tui.agent.config = {"tui": {"timing": {"stream_drain_interval_s": 0.05}}}
+    tui._apply_tui_config()
+
+    assert calls == [0.016, 0.05]
+    assert first_timer.stopped is True
+    assert tui._stream_drain_timer is second_timer
+
+
+def test_apply_tui_config_keeps_existing_stream_drain_timer_when_interval_is_unchanged() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui.agent = SimpleNamespace(config={"tui": {"timing": {"stream_drain_interval_s": 0.016}}})
+    tui.conv_tree = ConvTree()
+    tui._apply_tree_compaction_policy = lambda tree: tree
+    tui._log = lambda: SimpleNamespace(max_lines=None)
+    tui._update_status1 = lambda: None
+    tui._update_status2 = lambda: None
+    tui._update_sidebar = lambda: None
+    timer = SimpleNamespace(stopped=False, stop=lambda: setattr(timer, "stopped", True), _alphanus_interval_s=0.016)
+    calls: list[float] = []
+    tui.set_interval = lambda interval_s, callback: calls.append(interval_s) or timer
+    tui._stream_drain_timer = timer
+
+    tui._apply_tui_config()
+
+    assert calls == []
+    assert timer.stopped is False
+    assert tui._stream_drain_timer is timer
+
+
 def test_cmd_context_writes_percent_and_tokens() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     lines: list[str] = []
@@ -1741,7 +1792,6 @@ def test_cmd_skills_shows_trust_validation_and_shadowing() -> None:
         id="home-helper",
         version="1.0.0",
         description="Home helper",
-        metadata={"_pack_id": "pack-1"},
         user_invocable=True,
         disable_model_invocation=False,
         trust_level="untrusted",
@@ -1762,7 +1812,6 @@ def test_cmd_skills_shows_trust_validation_and_shadowing() -> None:
         _reported_skill_tools=lambda _skill: [],
         _reported_skill_scripts=lambda _skill: [],
         _reported_skill_entrypoints=lambda _skill: [],
-        _reported_skill_agents=lambda _skill: [],
     )
 
     tui = AlphanusTUI.__new__(AlphanusTUI)
@@ -1801,7 +1850,6 @@ def test_cmd_doctor_shows_skill_policy_details() -> None:
             {
                 "id": "dup-skill",
                 "source_tier": "bundled",
-                "pack_id": "standalone",
                 "availability_code": "shadowed",
                 "availability_reason": "shadowed by dup-skill (workspace/.claude/skills/dup-skill)",
                 "status": "shadowed",
@@ -1811,7 +1859,6 @@ def test_cmd_doctor_shows_skill_policy_details() -> None:
                 "tools": [],
                 "scripts": [],
                 "entrypoints": [],
-                "agents": [],
                 "user_invocable": True,
                 "model_invocable": True,
                 "blocked_features": ["command_tools"],
