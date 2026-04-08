@@ -1787,7 +1787,7 @@ def test_session_manager_row_selection_does_not_auto_open() -> None:
     assert syncs == ["sync"]
 
 
-def test_cmd_skills_shows_trust_validation_and_shadowing() -> None:
+def test_cmd_skills_shows_validation_summary() -> None:
     skill = SimpleNamespace(
         id="home-helper",
         version="1.0.0",
@@ -1824,10 +1824,8 @@ def test_cmd_skills_shows_trust_validation_and_shadowing() -> None:
 
     joined = "\n".join(lines)
     assert "SECTION:Skills" in joined
-    assert "trust=untrusted" in joined
     assert "execution=no" in joined
     assert "adapter=claude" in joined
-    assert "blocked_features: untrusted_root, scripts" in joined
     assert "validation:" in joined
 
 
@@ -1883,8 +1881,6 @@ def test_cmd_doctor_shows_skill_policy_details() -> None:
     joined = "\n".join(lines)
     assert "SECTION:Doctor" in joined
     assert "SECTION:Skills" in joined
-    assert "trust=trusted" in joined
     assert "execution=no" in joined
     assert "adapter=agentskills" in joined
-    assert "blocked_features: command_tools" in joined
-    assert "shadowed_by: dup-skill" in joined
+    assert "validation:" in joined

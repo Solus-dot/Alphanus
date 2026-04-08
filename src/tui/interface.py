@@ -49,6 +49,7 @@ from tui.commands import (
     exact_command_inputs,
     popup_command_query,
 )
+from tui.command_runtime import handle_command as handle_tui_command
 from tui.live_tool_preview import LiveToolPreviewManager
 from tui.markdown_utils import fence_language, hanging_indent, render_md
 from tui.popups import (
@@ -59,6 +60,15 @@ from tui.popups import (
     SessionManagerModal,
 )
 from tui.sidebar import render_sidebar_inspector_markup, render_sidebar_tree_markup
+from tui.session_runtime import (
+    activate_session_state as activate_tui_session_state,
+    current_session_is_blank as is_blank_tui_session,
+    delete_session_from_manager as delete_tui_session_from_manager,
+    load_session_from_manager as load_tui_session_from_manager,
+    open_new_session as open_tui_new_session,
+    save_active_session as save_tui_session,
+    switch_to_session as switch_tui_session,
+)
 from tui.status import context_usage_percent, status_left_markup, status_right_markup, topbar_center, topbar_left, topbar_right
 from tui.status_runtime import StatusRuntimeState
 from tui.stream_runtime import StreamRuntimeState
@@ -753,54 +763,10 @@ class AlphanusTUI(App):
         )
 
     def _activate_session_state(self, session: ChatSession) -> None:
-        self._session_id = session.id
-        self._session_title = session.title
-        self._session_created_at = session.created_at
-        agent = getattr(self, "agent", None)
-        runtime = getattr(agent, "skill_runtime", None)
-        if runtime and hasattr(runtime, "skills_by_ids"):
-            self._loaded_skill_ids = [
-                skill.id
-                for skill in runtime.skills_by_ids(list(getattr(session, "loaded_skill_ids", []) or []))
-            ]
-        else:
-            self._loaded_skill_ids = [
-                str(item).strip()
-                for item in (getattr(session, "loaded_skill_ids", []) or [])
-                if str(item).strip()
-            ]
-        tree = self._apply_tree_compaction_policy(session.tree)
-        if tree.current_id == "root" and tree.nodes["root"].children and not tree._pending_branch:
-            for node_id in reversed(list(tree.nodes.keys())):
-                if node_id != "root" and not tree.nodes[node_id].children:
-                    tree.current_id = node_id
-                    break
-        self.conv_tree = tree
-        self._tree_cursor_id = self.conv_tree.current_id
+        activate_tui_session_state(self, session)
 
     def _save_active_session(self, rename_to: Optional[str] = None) -> ChatSession:
-        title = (rename_to or self._session_title or "").strip() or self._session_title or "Untitled Session"
-        loaded_skill_ids = list(getattr(self, "_loaded_skill_ids", []))
-        try:
-            session = self._session_store.save_tree(
-                self._session_id,
-                title,
-                self.conv_tree,
-                loaded_skill_ids=loaded_skill_ids,
-                created_at=self._session_created_at,
-                activate=True,
-            )
-        except TypeError:
-            session = self._session_store.save_tree(
-                self._session_id,
-                title,
-                self.conv_tree,
-                created_at=self._session_created_at,
-                activate=True,
-            )
-        self._session_title = session.title
-        self._session_created_at = session.created_at
-        return session
+        return save_tui_session(self, rename_to=rename_to)
 
     def _cmd_sessions(self) -> None:
         self._open_session_manager()
@@ -813,25 +779,13 @@ class AlphanusTUI(App):
         )
 
     def _load_session_from_manager(self, session_id: str) -> ChatSession:
-        self._save_active_session()
-        loaded = self._session_store.load_session(session_id)
-        self._switch_to_session(loaded)
-        return loaded
+        return load_tui_session_from_manager(self, session_id)
 
     def _current_session_is_blank(self) -> bool:
-        return (
-            self.conv_tree.current_id == "root"
-            and len(self.conv_tree.nodes) == 1
-            and not self.conv_tree.current.children
-            and not self.conv_tree._pending_branch
-        )
+        return is_blank_tui_session(self)
 
     def _open_new_session(self, title: str = "") -> ChatSession:
-        normalized = title.strip()
-        if self._current_session_is_blank():
-            return self._save_active_session(rename_to=normalized or None)
-        self._save_active_session()
-        return self._session_store.create_session(normalized)
+        return open_tui_new_session(self, title)
 
     def _open_startup_session_manager(self) -> None:
         if self._startup_session_prompt_opened:
@@ -863,32 +817,10 @@ class AlphanusTUI(App):
             self._delete_session_from_manager(session_id)
 
     def _delete_session_from_manager(self, session_id: str) -> None:
-        try:
-            active_id = self._session_id
-            self._session_store.delete_session(session_id)
-            deleted_active = session_id == active_id
-            if deleted_active:
-                remaining = self._session_store.list_sessions()
-                if remaining:
-                    self._switch_to_session(self._session_store.load_session(remaining[0].id))
-                else:
-                    self._switch_to_session(self._session_store.create_session())
-            self._open_session_manager()
-        except Exception as exc:
-            self._write_error(f"Delete failed: {exc}")
+        delete_tui_session_from_manager(self, session_id)
 
     def _switch_to_session(self, session: ChatSession, *, clear_pending: bool = True) -> None:
-        self._activate_session_state(session)
-        self._reset_context_usage()
-        if clear_pending:
-            self.pending.clear()
-        self._rebuild_viewport()
-        self._update_sidebar()
-        self._update_pending_attachments()
-        self._update_status1()
-        self._update_status2()
-        self._update_input_placeholder()
-        self._update_topbar()
+        switch_tui_session(self, session, clear_pending=clear_pending)
 
     def _tree_rows(self) -> List[Tuple[str, str, bool]]:
         return render_tree_rows(self.conv_tree, width=30)
@@ -2777,204 +2709,7 @@ class AlphanusTUI(App):
             self._update_status2()
 
     def _handle_command(self, text: str) -> bool:
-        parts = text.strip().split(None, 1)
-        cmd = parts[0].lower()
-        arg = parts[1].strip() if len(parts) > 1 else ""
-
-        if cmd in {"/quit", "/exit", "/q"}:
-            self.exit()
-            return True
-
-        if cmd == "/help":
-            self._cmd_help()
-            return True
-
-        if cmd in {"/keyboard-shortcuts", "/shortcuts", "/keymap", "/keys"}:
-            self._show_keyboard_shortcuts()
-            return True
-
-        if cmd == "/details":
-            self._toggle_tool_details()
-            return True
-
-        if cmd == "/think":
-            self._toggle_thinking_mode()
-            return True
-
-        if cmd == "/sessions":
-            if self.streaming:
-                self._write_error("Stop the active response before changing sessions.")
-                return True
-            self._cmd_sessions()
-            return True
-
-        if self.streaming and cmd == "/clear":
-            self._write_error("Stop the active response before changing sessions.")
-            return True
-
-        if cmd == "/new":
-            self._write_error("Use /sessions to manage sessions.")
-            return True
-
-        if cmd == "/rename":
-            if not arg:
-                return self._write_usage("/rename <name>")
-            session = self._save_active_session(rename_to=arg)
-            self._update_topbar()
-            self._write_command_action(f"Renamed session to '{session.title}'", icon="✓")
-            return True
-
-        if cmd == "/branch":
-            self.conv_tree.arm_branch(arg)
-            self._save_active_session()
-            label = self.conv_tree._pending_branch_label
-            self._write_command_action(f"Branch armed '{label}'", icon="⎇", color=ACCENT_COLOR)
-            self._update_status1()
-            self._update_input_placeholder()
-            return True
-
-        if cmd == "/unbranch":
-            if self.conv_tree._pending_branch:
-                self.conv_tree.clear_pending_branch()
-                self._save_active_session()
-                self._write_command_action("Disarmed pending branch", icon="↩", color=ACCENT_COLOR)
-                self._update_status1()
-                self._update_input_placeholder()
-                return True
-            moved = self.conv_tree.unbranch()
-            if moved is None:
-                self._write_error("No branch to leave.")
-            else:
-                self._save_active_session()
-                self._write_command_action("Returned to fork point", icon="↩", color=ACCENT_COLOR)
-                self._rebuild_viewport()
-                self._update_sidebar()
-            self._update_status1()
-            return True
-
-        if cmd == "/branches":
-            children = self.conv_tree.current.children
-            if not children:
-                self._write_info("No child branches from current turn.")
-            else:
-                self._write_section_heading("Children")
-                self._write_indexed_dim_lines([self.conv_tree.nodes[cid].short(60) for cid in children])
-            return True
-
-        if cmd == "/switch":
-            try:
-                idx = int(arg)
-            except ValueError:
-                self._write_error("/switch requires an integer index")
-                return True
-            turn = self.conv_tree.switch_child(idx)
-            if not turn:
-                self._write_error(f"No child {idx} at current node")
-            else:
-                self._save_active_session()
-                self._write_command_action(f"Switched to branch {idx}", icon="↪")
-                self._rebuild_viewport()
-                self._update_sidebar()
-            return True
-
-        if cmd == "/tree":
-            self._cmd_tree()
-            return True
-
-        if cmd == "/save":
-            try:
-                session = self._save_active_session(rename_to=arg or None)
-                self._update_topbar()
-                self._write_command_action(f"Saved session '{session.title}'", icon="✓")
-            except Exception as exc:
-                self._write_error(f"Save failed: {exc}")
-            return True
-
-        if cmd == "/load":
-            self._write_error("Use /sessions to manage sessions.")
-            return True
-
-        if cmd == "/clear":
-            self.conv_tree = self._new_conv_tree()
-            self._loaded_skill_ids = []
-            self._reset_context_usage()
-            self.pending.clear()
-            self._log().clear_entries()
-            self._set_partial_renderable(None)
-            self._save_active_session()
-            self._update_pending_attachments()
-            self._update_status1()
-            self._update_status2()
-            self._update_sidebar()
-            self._update_input_placeholder()
-            self._update_topbar()
-            return True
-
-        if cmd in {"/file", "/image"}:
-            if not arg:
-                self._open_attachment_picker(".")
-                return True
-            try:
-                path = self._resolve_attachment_path(arg)
-            except FileNotFoundError:
-                self._write_error(f"File not found: {arg}")
-                return True
-            self._attach_file_path(path)
-            return True
-
-        if cmd == "/skills":
-            self._cmd_skills()
-            return True
-
-        if cmd == "/reload":
-            return self._reload_skills()
-
-        if cmd == "/doctor":
-            self._cmd_doctor()
-            return True
-
-        if cmd == "/skill-on":
-            return self._cmd_skill(f"on {arg}".strip())
-
-        if cmd == "/skill-off":
-            return self._cmd_skill(f"off {arg}".strip())
-
-        if cmd == "/skill-unload":
-            return self._cmd_skill(f"unload {arg}".strip())
-
-        if cmd == "/skill-unload-all":
-            return self._cmd_skill("unload-all")
-
-        if cmd == "/skill-reload":
-            return self._cmd_skill("reload")
-
-        if cmd == "/skill-info":
-            return self._cmd_skill(f"info {arg}".strip())
-
-        if cmd == "/memory-stats":
-            return self._cmd_memory("stats")
-
-        if cmd == "/context":
-            return self._cmd_context(arg)
-
-        if cmd == "/workspace-tree":
-            return self._cmd_workspace("tree")
-
-        if cmd == "/config":
-            self._open_config_editor()
-            return True
-
-        if cmd == "/report":
-            return self._cmd_report(arg)
-
-        if cmd == "/code":
-            return self._cmd_code(arg)
-
-        if cmd.startswith("/"):
-            self._write_error(f"Unknown command: {cmd}")
-            return True
-
-        return False
+        return handle_tui_command(self, text)
 
     def _cmd_help(self) -> None:
         self._write("")
@@ -3016,7 +2751,6 @@ class AlphanusTUI(App):
                 source_bits += f" · {source}"
             self._write(f"    [#71717a]{esc(source_bits)}[/#71717a]")
             flags = [
-                f"trust={getattr(skill, 'trust_level', 'trusted')}",
                 f"execution={'yes' if getattr(skill, 'execution_allowed', True) else 'no'}",
                 f"adapter={getattr(skill, 'adapter', 'agentskills')}",
                 f"user={'yes' if skill.user_invocable else 'no'}",
@@ -3035,15 +2769,9 @@ class AlphanusTUI(App):
             if not skill.available and skill.availability_reason:
                 code = esc(skill.availability_code or "blocked")
                 self._write(f"    [bold {ACCENT_COLOR}]blocked ({code}):[/bold {ACCENT_COLOR}] [#a1a1aa]{esc(skill.availability_reason)}[/#a1a1aa]")
-            blocked = ", ".join(getattr(skill, "blocked_features", []) or [])
-            if blocked:
-                self._write(f"    [#71717a]blocked_features: {esc(blocked)}[/#71717a]")
             validation_errors = list(getattr(skill, "validation_errors", []) or [])
             if validation_errors:
                 self._write(f"    [#f59e0b]validation:[/#f59e0b] [#a1a1aa]{esc(validation_errors[0])}[/#a1a1aa]")
-            shadowed_by = str(getattr(skill, "shadowed_by", "") or "").strip()
-            if shadowed_by:
-                self._write(f"    [#71717a]shadowed_by: {esc(shadowed_by)}[/#71717a]")
         self._write("")
 
     def _load_skill_into_session(self, skill_id: str) -> bool:
@@ -3120,7 +2848,6 @@ class AlphanusTUI(App):
             self._write_detail_line("status", f"[{color}]{enabled}[/{color}]", value_markup=True)
             self._write_detail_line("provenance", self.agent.skill_runtime.skill_provenance_label(skill))
             self._write_detail_line("source", self.agent.skill_runtime.skill_source_label(skill) or "unknown")
-            self._write_detail_line("trust_level", getattr(skill, "trust_level", "trusted"))
             self._write_detail_line("execution_allowed", str(bool(getattr(skill, "execution_allowed", True))).lower())
             self._write_detail_line("adapter", getattr(skill, "adapter", "agentskills"))
             self._write_detail_line("availability_code", skill.availability_code or "ready")
@@ -3135,11 +2862,8 @@ class AlphanusTUI(App):
             entrypoints = ", ".join(entry.name for entry in self.agent.skill_runtime._reported_skill_entrypoints(skill)) or "none"
             self._write_detail_line("scripts", scripts)
             self._write_detail_line("entrypoints", entrypoints)
-            self._write_detail_line("blocked_features", ", ".join(getattr(skill, "blocked_features", []) or []) or "none")
             self._write_detail_line("validation_errors", "; ".join(getattr(skill, "validation_errors", []) or []) or "none")
             self._write_detail_line("validation_warnings", "; ".join(getattr(skill, "validation_warnings", []) or []) or "none")
-            self._write_detail_line("shadowed_by", getattr(skill, "shadowed_by", "") or "none")
-            self._write_detail_line("shadowing", ", ".join(getattr(skill, "shadowing", []) or []) or "none")
             self._write("")
             return True
 
@@ -3217,7 +2941,6 @@ class AlphanusTUI(App):
             if reason and reason != "ready":
                 self._write(f"    [#a1a1aa]{esc(reason)}[/#a1a1aa]")
             capabilities: List[str] = []
-            capabilities.append(f"trust={skill.get('trust_level', 'trusted')}")
             capabilities.append(f"execution={'yes' if skill.get('execution_allowed', True) else 'no'}")
             capabilities.append(f"adapter={skill.get('adapter', 'agentskills')}")
             if skill.get("tools"):
@@ -3229,15 +2952,9 @@ class AlphanusTUI(App):
             capabilities.append(f"user={'yes' if skill.get('user_invocable', True) else 'no'}")
             capabilities.append(f"model={'yes' if skill.get('model_invocable', True) else 'no'}")
             self._write(f"    [#71717a]{esc(' · '.join(capabilities))}[/#71717a]")
-            blocked = ", ".join(str(item) for item in skill.get("blocked_features", []) if str(item).strip())
-            if blocked:
-                self._write(f"    [#71717a]blocked_features: {esc(blocked)}[/#71717a]")
             validation_errors = [str(item) for item in skill.get("validation_errors", []) if str(item).strip()]
             if validation_errors:
                 self._write(f"    [#f59e0b]validation:[/#f59e0b] [#a1a1aa]{esc(validation_errors[0])}[/#a1a1aa]")
-            shadowed_by = str(skill.get("shadowed_by", "") or "").strip()
-            if shadowed_by:
-                self._write(f"    [#71717a]shadowed_by: {esc(shadowed_by)}[/#71717a]")
         self._write("")
 
     def _cmd_report(self, arg: str) -> bool:
