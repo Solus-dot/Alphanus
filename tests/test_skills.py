@@ -362,7 +362,7 @@ Use the helper script when available.
 
     skill = runtime.get_skill("script-only")
     assert skill is not None
-    assert set(_tool_names(runtime, [skill])) == (_always_available_tool_names() | {"run_skill_script"})
+    assert set(_tool_names(runtime, [skill])) == (_always_available_tool_names() | {"run_skill"})
 
 
 def test_tools_for_turn_includes_generic_entrypoint_runner_for_structured_skill(tmp_path: Path):
@@ -419,7 +419,7 @@ Create PDFs with the declared entrypoint.
         memory_hits=[],
     )
 
-    assert set(_tool_names(runtime, [skill], ctx=ctx)) == (_always_available_tool_names() | {"run_skill_entrypoint"})
+    assert set(_tool_names(runtime, [skill], ctx=ctx)) == (_always_available_tool_names() | {"run_skill"})
 
 
 def test_root_level_skill_helper_script_is_exposed(tmp_path: Path):
@@ -454,7 +454,7 @@ Use validate_json.py when available.
 
     skill = runtime.get_skill("research-helper")
     assert skill is not None
-    assert set(_tool_names(runtime, [skill])) == (_always_available_tool_names() | {"run_skill_script"})
+    assert set(_tool_names(runtime, [skill])) == (_always_available_tool_names() | {"run_skill"})
     assert runtime._reported_skill_scripts(skill) == ["validate_json.py"]
 
 
@@ -513,7 +513,7 @@ Create PDFs through the declared entrypoint.
     )
 
     assert runtime._skill_supports_artifact(skill, [".pdf"], intents=runtime.task_intents(ctx)) is True
-    assert set(_tool_names(runtime, [skill], ctx=ctx)) == (_always_available_tool_names() | {"run_skill_entrypoint"})
+    assert set(_tool_names(runtime, [skill], ctx=ctx)) == (_always_available_tool_names() | {"run_skill"})
 
 
 def test_core_tool_executes_without_selected_skill(tmp_path: Path):
@@ -1270,7 +1270,7 @@ Use the helper script if your runtime knows how.
     skill = runtime.get_skill("script-only")
     assert skill is not None
 
-    assert set(_tool_names(runtime, [skill])) == (_always_available_tool_names() | {"run_skill_script"})
+    assert set(_tool_names(runtime, [skill])) == (_always_available_tool_names() | {"run_skill"})
     assert runtime._reported_skill_scripts(skill) == ["scripts/helper.py"]
 
 
@@ -1324,10 +1324,10 @@ if __name__ == "__main__":
         memory_hits=[],
     )
 
-    assert set(_tool_names(runtime, [skill], ctx=ctx)) == (_always_available_tool_names() | {"run_skill_script"})
+    assert set(_tool_names(runtime, [skill], ctx=ctx)) == (_always_available_tool_names() | {"run_skill"})
 
     out = runtime.execute_tool_call(
-        "run_skill_script",
+        "run_skill",
         {"script": "helper.py", "stdin": "hello", "args": {"mode": "demo"}},
         selected=[skill],
         ctx=ctx,
@@ -1379,7 +1379,7 @@ Do not expose the raw script runner.
     assert set(_tool_names(runtime, [skill], ctx=ctx)) == _always_available_tool_names()
 
     out = runtime.execute_tool_call(
-        "run_skill_script",
+        "run_skill",
         {"script": "helper.py"},
         selected=[skill],
         ctx=ctx,
@@ -1447,10 +1447,10 @@ Create PDFs with the declared entrypoint.
         memory_hits=[],
     )
 
-    assert set(_tool_names(runtime, [skill], ctx=ctx)) == (_always_available_tool_names() | {"run_skill_entrypoint"})
+    assert set(_tool_names(runtime, [skill], ctx=ctx)) == (_always_available_tool_names() | {"run_skill"})
 
     out = runtime.execute_tool_call(
-        "run_skill_entrypoint",
+        "run_skill",
         {"entrypoint": "create_report", "params": {"filename": "report.pdf"}},
         selected=[skill],
         ctx=ctx,
@@ -1460,6 +1460,72 @@ Create PDFs with the declared entrypoint.
     assert out["data"]["skill_id"] == "report-pdf"
     assert out["data"]["entrypoint"] == "create_report"
     assert (ws / "report.pdf").read_text(encoding="utf-8") == "artifact"
+
+
+def test_run_skill_supports_compact_execution_command_manifest(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "compact-report" / "scripts").mkdir(parents=True)
+
+    (skills / "compact-report" / "SKILL.md").write_text(
+        """
+---
+name: compact-report
+description: Compact execution manifest.
+produces:
+  - .txt
+execution:
+  command: python3 {skill_root}/scripts/create_report.py {workspace_root}/{filename}
+  cwd: workspace
+  timeout_s: 20
+  parameters:
+    type: object
+    properties:
+      filename:
+        type: string
+    required:
+      - filename
+---
+Generate the report through the compact execution contract.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "compact-report" / "scripts" / "create_report.py").write_text(
+        "from pathlib import Path\nimport sys\nPath(sys.argv[1]).write_text('compact', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"capabilities": {"shell_require_confirmation": False, "dangerously_skip_permissions": True}},
+    )
+    skill = runtime.get_skill("compact-report")
+    assert skill is not None
+    ctx = SkillContext(
+        user_input="create compact-report.txt",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    assert set(_tool_names(runtime, [skill], ctx=ctx)) == (_always_available_tool_names() | {"run_skill"})
+
+    out = runtime.execute_tool_call(
+        "run_skill",
+        {"entrypoint": "run", "params": {"filename": "compact-report.txt"}},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    assert out["ok"] is True
+    assert out["data"]["entrypoint"] == "run"
+    assert (ws / "compact-report.txt").read_text(encoding="utf-8") == "compact"
 
 
 def test_frontmatter_metadata_command_tool_is_blocked(tmp_path: Path):
@@ -1856,13 +1922,10 @@ Do work.
     assert "scripts" in skill.blocked_features
     assert "entrypoints" in skill.blocked_features
     assert "command_tools" in skill.blocked_features
-    assert runtime.get_agent("researcher") is None
 
     assert runtime._reported_skill_scripts(skill) == []
     assert runtime._blocked_skill_scripts(skill) == []
-    assert runtime._runtime_visible_skill_commands(skill, None) == []
     assert runtime._reported_skill_entrypoints(skill) == []
-    assert runtime._reported_skill_agents(skill) == []
 
     report = runtime.skill_health_report()
     skill_report = next(item for item in report if item["id"] == "home-helper")
@@ -1872,7 +1935,6 @@ Do work.
     assert skill_report["tools"] == []
     assert skill_report["scripts"] == []
     assert skill_report["entrypoints"] == []
-    assert skill_report["agents"] == []
 
 
 def test_workspace_skill_shadows_bundled_duplicate(tmp_path: Path):
@@ -1929,61 +1991,6 @@ Workspace version.
     assert shadowed.availability_code == "shadowed"
 
 
-def test_runtime_discovers_pack_agents_and_rebases_agent_paths(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    bundled = tmp_path / "bundled"
-    pack_root = ws / ".claude"
-    skill_dir = pack_root / "skills" / "frontend-design"
-    agent_dir = pack_root / "agents"
-    home.mkdir()
-    ws.mkdir()
-    skill_dir.mkdir(parents=True)
-    agent_dir.mkdir(parents=True)
-
-    (skill_dir / "SKILL.md").write_text(
-        """
----
-name: frontend-design
-description: frontend design skill
-version: 1.0.0
----
-Use ~/.codex/skills/frontend-design/templates/mockup.html
-""".strip(),
-        encoding="utf-8",
-    )
-    (agent_dir / "researcher.md").write_text(
-        """
----
-name: researcher
-description: Research helper
----
-Read ~/.codex/skills/frontend-design/SKILL.md and coordinate with ~/.codex/agents/researcher.
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(bundled),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-
-    skill = runtime.resolve_skill_reference("front")
-    assert skill is not None
-    assert skill.id == "frontend-design"
-
-    assert runtime.get_agent("researcher") is not None
-
-    contract = runtime.load_agent_contract("researcher", skill_id="frontend-design")
-    assert str(skill_dir) in contract.prompt
-    assert str((agent_dir / "researcher.md").resolve()) in contract.prompt
-
-    report = runtime.skill_health_report()
-    assert report[0]["agents"] == ["researcher"]
-    assert report[0]["source_tier"] == "workspace/local"
-
-
 def test_request_user_input_runtime_tool_uses_callback(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
@@ -2034,85 +2041,6 @@ Ask for clarification when needed.
     assert out["ok"] is True
     assert out["data"]["awaiting_user_input"] is True
     assert out["data"]["options"] == ["a", "b"]
-
-
-def test_runtime_visible_skill_commands_expose_declared_commands(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "doc-helper").mkdir(parents=True)
-    (skills / "doc-helper" / "SKILL.md").write_text(
-        """
----
-name: doc-helper
-description: helper for documents
-version: 1.0.0
----
-Use these commands:
-
-```bash
-npm install -g docx
-python scripts/build.py proposal.md proposal.docx
-```
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-
-    skill = runtime.get_skill("doc-helper")
-    assert skill is not None
-    assert runtime._runtime_visible_skill_commands(skill, None) == ["npm install -g docx", "python scripts/build.py proposal.md proposal.docx"]
-
-
-def test_shell_workflow_commands_keep_inline_install_and_ignore_javascript_fence(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "doc-helper").mkdir(parents=True)
-    (skills / "doc-helper" / "SKILL.md").write_text(
-        """
----
-name: doc-helper
-description: helper for documents
-version: 1.0.0
----
-Install: `npm install -g docx`
-
-```javascript
-const width = 9360;
-```
-
-```
-category: International Product
-```
-
-```bash
-python scripts/office/validate.py doc.docx
-```
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-
-    skill = runtime.get_skill("doc-helper")
-    assert skill is not None
-    assert runtime._runtime_visible_skill_commands(skill, None) == ["npm install -g docx", "python scripts/office/validate.py doc.docx"]
-    assert runtime._skill_install_commands(skill) == ["npm install -g docx"]
-    assert runtime._skill_verify_commands(skill) == ["python scripts/office/validate.py doc.docx"]
 
 
 def test_blocked_python_scripts_are_reported_from_runtime_metadata(tmp_path: Path):
@@ -2282,55 +2210,7 @@ Use the bundled helper script when available.
     ]
 
 
-def test_run_skill_command_rejects_undeclared_command(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "doc-helper").mkdir(parents=True)
-    (skills / "doc-helper" / "SKILL.md").write_text(
-        """
----
-name: doc-helper
-description: helper for documents
-version: 1.0.0
----
-```bash
-npm install -g docx
-```
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-    skill = runtime.get_skill("doc-helper")
-    assert skill is not None
-    ctx = SkillContext(
-        user_input="use skill doc-helper",
-        branch_labels=[],
-        attachments=[],
-        workspace_root=str(ws),
-        memory_hits=[],
-        explicit_skill_id="doc-helper",
-    )
-
-    out = runtime.execute_tool_call(
-        "run_skill_command",
-        {"skill_id": "doc-helper", "command": "create-proposal"},
-        selected=[skill],
-        ctx=ctx,
-    )
-
-    assert out["ok"] is False
-    assert out["error"]["code"] == "E_POLICY"
-
-
-def test_read_skill_resource_uses_single_active_skill_when_skill_id_is_omitted(tmp_path: Path):
+def test_skill_view_uses_single_active_skill_when_file_path_is_provided(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -2377,86 +2257,26 @@ Read the bundled README when needed.
     assert out["data"]["file_path"] == "README.md"
 
 
-def test_run_skill_command_rejects_inactive_skill_id(tmp_path: Path):
+def test_obsolete_runtime_tools_are_not_exposed(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
     home.mkdir()
     ws.mkdir()
-    for skill_id in ("alpha", "beta"):
-        (skills / skill_id).mkdir(parents=True)
-        (skills / skill_id / "SKILL.md").write_text(
-            f"""
----
-name: {skill_id}
-description: {skill_id} helper
-version: 1.0.0
----
-```bash
-echo {skill_id}
-```
-""".strip(),
-            encoding="utf-8",
-        )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-    alpha = runtime.get_skill("alpha")
-    assert alpha is not None
-    ctx = SkillContext(
-        user_input="use alpha then beta",
-        branch_labels=[],
-        attachments=[],
-        workspace_root=str(ws),
-        memory_hits=[],
-    )
-
-    out = runtime.execute_tool_call(
-        "run_skill_command",
-        {"skill_id": "beta", "command": "echo beta"},
-        selected=[alpha],
-        ctx=ctx,
-    )
-
-    assert out["ok"] is False
-    assert out["error"]["code"] == "E_POLICY"
-
-
-def test_spawn_skill_agent_rejects_inactive_skill_id(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    pack = tmp_path / "pack"
-    skills = pack / "skills"
-    agents = pack / "agents"
-    home.mkdir()
-    ws.mkdir()
-    agents.mkdir(parents=True)
-    for skill_id in ("alpha", "beta"):
-        (skills / skill_id).mkdir(parents=True)
-        (skills / skill_id / "SKILL.md").write_text(
-            f"""
----
-name: {skill_id}
-description: {skill_id} helper
-version: 1.0.0
----
-Use {skill_id}.
-""".strip(),
-            encoding="utf-8",
-        )
-    (agents / "helper.md").write_text(
+    (skills / "alpha").mkdir(parents=True)
+    (skills / "alpha" / "scripts").mkdir(parents=True)
+    (skills / "alpha" / "SKILL.md").write_text(
         """
 ---
-name: helper-agent
-description: helper agent
+name: alpha
+description: alpha helper
+version: 1.0.0
 ---
-You are a helper agent.
+Use the helper script.
 """.strip(),
         encoding="utf-8",
     )
+    (skills / "alpha" / "scripts" / "helper.py").write_text("print('ok')\n", encoding="utf-8")
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
@@ -2465,7 +2285,6 @@ You are a helper agent.
     )
     alpha = runtime.get_skill("alpha")
     assert alpha is not None
-    assert "helper-agent" in runtime._agents_for_skill(alpha)
     ctx = SkillContext(
         user_input="use alpha",
         branch_labels=[],
@@ -2474,16 +2293,14 @@ You are a helper agent.
         memory_hits=[],
     )
 
-    out = runtime.execute_tool_call(
-        "spawn_skill_agent",
-        {"skill_id": "beta", "agent_name": "helper-agent", "prompt": "hi"},
-        selected=[alpha],
-        ctx=ctx,
-        spawn_skill_agent=lambda args: {"ok": True, "data": args, "error": None, "meta": {}},
-    )
-
-    assert out["ok"] is False
-    assert out["error"]["code"] == "E_POLICY"
+    tool_names = {item["function"]["name"] for item in runtime.tools_for_turn([alpha], ctx=ctx)}
+    assert "run_skill" in tool_names
+    assert "read_skill_resource" not in tool_names
+    assert "run_skill_command" not in tool_names
+    assert "spawn_skill_agent" not in tool_names
+    assert runtime.tool_registration("read_skill_resource") is None
+    assert runtime.tool_registration("run_skill_command") is None
+    assert runtime.tool_registration("spawn_skill_agent") is None
 
 
 def test_runtime_tool_schema_requires_skill_id_only_when_multiple_active_skills_are_available(tmp_path: Path):
@@ -2597,59 +2414,3 @@ Use the bundled helper script when available.
     assert docx_tools != png_tools
     assert docx_tools[0]["ctx"] == "set up report.docx"
     assert png_tools[0]["ctx"] == "create image.png"
-
-
-def test_run_skill_command_allows_external_skill_root_as_cwd(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    pack = tmp_path / "external-pack"
-    skills = pack / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "doc-helper").mkdir(parents=True)
-    (skills / "doc-helper" / "scripts").mkdir(parents=True)
-    (skills / "doc-helper" / "scripts" / "show_cwd.py").write_text(
-        "import os\nprint(os.getcwd())\n",
-        encoding="utf-8",
-    )
-    command = "python3 scripts/show_cwd.py"
-    (skills / "doc-helper" / "SKILL.md").write_text(
-        f"""
----
-name: doc-helper
-description: helper for documents
-version: 1.0.0
----
-```bash
-{command}
-```
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-    skill = runtime.get_skill("doc-helper")
-    assert skill is not None
-    ctx = SkillContext(
-        user_input="use skill doc-helper",
-        branch_labels=[],
-        attachments=[],
-        workspace_root=str(ws),
-        memory_hits=[],
-        explicit_skill_id="doc-helper",
-    )
-
-    out = runtime.execute_tool_call(
-        "run_skill_command",
-        {"skill_id": "doc-helper", "command": command},
-        selected=[skill],
-        ctx=ctx,
-        confirm_shell=lambda _command: True,
-    )
-
-    assert out["ok"] is False
-    assert out["error"]["code"] == "E_POLICY"

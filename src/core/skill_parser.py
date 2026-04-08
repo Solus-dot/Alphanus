@@ -242,6 +242,21 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         or execution_raw.get("preflight")
     )
     raw_entrypoints = execution_raw.get("entrypoints") or []
+    if not raw_entrypoints and str(execution_raw.get("command", "")).strip():
+        raw_entrypoints = [
+            {
+                "name": str(execution_raw.get("name", "")).strip() or "run",
+                "description": str(execution_raw.get("description", "")).strip() or description,
+                "command": str(execution_raw.get("command", "")).strip(),
+                "parameters": execution_raw.get("parameters") or {"type": "object", "properties": {}, "required": []},
+                "intents": execution_raw.get("intents") or execution_raw.get("intent") or ["general"],
+                "produces": execution_raw.get("produces") or execution_raw.get("artifacts") or produces,
+                "install": execution_raw.get("install") or execution_raw.get("install_commands") or global_install,
+                "verify": execution_raw.get("verify") or execution_raw.get("verify_commands") or global_verify,
+                "timeout-s": execution_raw.get("timeout-s", execution_raw.get("timeout_s", 30)),
+                "cwd": execution_raw.get("cwd", "workspace"),
+            }
+        ]
     if raw_entrypoints and not isinstance(raw_entrypoints, list):
         raise ValueError("SKILL.md execution.entrypoints must be a list")
     entrypoints: List[SkillEntrypointDef] = []
