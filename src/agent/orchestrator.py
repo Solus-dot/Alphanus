@@ -219,7 +219,7 @@ class TurnOrchestrator:
         latest_user = self._latest_user_message(model_messages)
         if latest_user is None or not self._message_contains_vision_content(latest_user):
             return None
-        simplified_messages = [latest_user]
+        simplified_messages = self._leading_system_messages(model_messages) + [latest_user]
         payload = self.llm_client.build_payload(simplified_messages, thinking=thinking, tools=None)
         self.emit(on_event, {"type": "info", "text": "Retrying image request with simplified multimodal payload..."})
         return self.call_with_retry(payload, stop_event, on_event, pass_id=f"{pass_id}_vision_retry")

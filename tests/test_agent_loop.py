@@ -462,6 +462,7 @@ def test_image_turn_retries_with_latest_user_only_after_tokenize_failure(mocker,
     assert len(requests) == 2
     assert requests[0]["messages"][0]["role"] == "system"
     assert requests[1]["messages"] == [
+        requests[0]["messages"][0],
         {
             "role": "user",
             "content": [
