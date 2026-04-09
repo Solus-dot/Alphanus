@@ -1,30 +1,19 @@
 from __future__ import annotations
 
 import json
-import os
-import queue
-import re
 import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from rich import box
-from rich.console import Console, ConsoleOptions, RenderResult, RenderableType
+from rich.console import RenderableType
 from rich.markup import escape as esc
-from rich.padding import Padding
-from rich.panel import Panel
-from rich.segment import Segment
-from rich.style import Style
-from rich.syntax import Syntax
-from rich.text import Text
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.reactive import reactive
 from textual.widgets import Button, Input, OptionList, Static
-from textual.widgets.option_list import Option
 
 from agent.core import Agent, AgentTurnResult
 from agent.types import ModelStatus
@@ -38,20 +27,49 @@ from core.configuration import (
 )
 from core.conv_tree import ConvTree, Turn
 from core.runtime_config import UiRuntimeConfig
-from core.sessions import ChatSession, SessionStore
+from core.sessions import ChatSession
+from tui.app_shell_runtime import compose_shell as compose_tui_shell
+from tui.app_shell_runtime import initialize_shell_state as init_tui_shell_state
 from tui.commands import (
     HELP_SECTIONS,
-    CommandEntry,
-    active_command_query,
-    active_command_span,
-    command_entries_for_query,
-    command_label,
-    exact_command_inputs,
-    popup_command_query,
+)
+from tui.command_palette_runtime import (
+    accept_command_selection as accept_tui_command_selection,
+    command_popup_active as tui_command_popup_active,
+    hide_command_popup as hide_tui_command_popup,
+    move_command_selection as move_tui_command_selection,
+    refresh_command_popup as refresh_tui_command_popup,
+    select_command_option as select_tui_command_option,
+    should_accept_popup_on_enter as should_tui_accept_popup_on_enter,
 )
 from tui.command_runtime import handle_command as handle_tui_command
-from tui.live_tool_preview import LiveToolPreviewManager
-from tui.markdown_utils import fence_language, hanging_indent, render_md
+from tui.command_output_runtime import (
+    cmd_code as cmd_tui_code,
+    cmd_context as cmd_tui_context,
+    cmd_doctor as cmd_tui_doctor,
+    cmd_help as cmd_tui_help,
+    cmd_memory as cmd_tui_memory,
+    cmd_report as cmd_tui_report,
+    cmd_skill as cmd_tui_skill,
+    cmd_skills as cmd_tui_skills,
+    cmd_tree as cmd_tui_tree,
+    cmd_workspace as cmd_tui_workspace,
+    load_skill_into_session as load_tui_skill_into_session,
+    unload_skill_from_session as unload_tui_skill_from_session,
+)
+from tui.config_runtime import apply_tui_config as apply_tui_runtime_config
+from tui.config_runtime import install_stream_drain_timer as install_tui_stream_drain_timer
+from tui.config_runtime import merge_live_config as merge_tui_live_config
+from tui.interaction_runtime import (
+    action_handle_esc as action_tui_handle_esc,
+    begin_shell_confirm as begin_tui_shell_confirm,
+    confirm_shell_command as confirm_tui_shell_command,
+    expire_shell_confirm as expire_tui_shell_confirm,
+    finish_shell_confirm as finish_tui_shell_confirm,
+    on_input_submitted as on_tui_input_submitted,
+    on_session_manager_close as on_tui_session_manager_close,
+    show_keyboard_shortcuts as show_tui_keyboard_shortcuts,
+)
 from tui.popups import (
     CodeViewerModal,
     ConfigEditorModal,
@@ -59,7 +77,18 @@ from tui.popups import (
     SelectionPickerModal,
     SessionManagerModal,
 )
-from tui.sidebar import render_sidebar_inspector_markup, render_sidebar_tree_markup
+from tui.attachment_runtime import (
+    attach_file_path as attach_tui_file_path,
+    attachment_picker_items as attachment_tui_picker_items,
+    attachment_root_label as attachment_tui_root_label,
+    attachment_root_path as attachment_tui_root_path,
+    home_root as home_tui_root,
+    on_attachment_picker_close as on_tui_attachment_picker_close,
+    open_attachment_picker as open_tui_attachment_picker,
+    resolve_attachment_path as resolve_tui_attachment_path,
+    root_relative_label as tui_root_relative_label,
+    workspace_root as workspace_tui_root,
+)
 from tui.session_runtime import (
     activate_session_state as activate_tui_session_state,
     current_session_is_blank as is_blank_tui_session,
@@ -69,51 +98,98 @@ from tui.session_runtime import (
     save_active_session as save_tui_session,
     switch_to_session as switch_tui_session,
 )
-from tui.status import context_usage_percent, status_left_markup, status_right_markup, topbar_center, topbar_left, topbar_right
-from tui.status_runtime import StatusRuntimeState
-from tui.stream_runtime import StreamRuntimeState
+from tui.status import status_right_markup
+from tui.status_runtime import (
+    StatusRuntimeState,
+    apply_model_status as apply_tui_model_status,
+    current_model_refresh_interval as tui_model_refresh_interval,
+    finish_startup_readiness_poll as finish_tui_startup_readiness_poll,
+    maybe_refresh_model_status as maybe_refresh_tui_model_status,
+    should_startup_readiness_poll as should_tui_startup_readiness_poll,
+    start_startup_readiness_poll as start_tui_startup_readiness_poll,
+    update_status2 as update_tui_status2,
+    update_topbar as update_tui_topbar,
+)
+from tui.stream_runtime import (
+    StreamRuntimeState,
+    close_reasoning_section as close_tui_reasoning_section,
+    drain_events as drain_tui_stream_events,
+    enqueue_event as enqueue_tui_stream_event,
+    finish_turn_stream as finish_tui_turn_stream,
+    flush_content_buffer as flush_tui_content_buffer,
+    flush_reasoning_buffer as flush_tui_reasoning_buffer,
+    handle_content_token as handle_tui_content_token,
+    on_agent_event as on_tui_agent_event,
+    refresh_deferred_partial as refresh_tui_deferred_partial,
+    start_turn_stream as start_tui_turn_stream,
+    visible_reasoning_text as visible_tui_reasoning_text,
+)
 from tui.transcript import ScrollAnchor, TranscriptEntry, TranscriptView, count_renderable_lines
+from tui.transcript_runtime import (
+    append_transcript_entry as tui_append_transcript_entry,
+    bar_renderable as tui_bar_renderable,
+    cached_partial_line_count as tui_cached_partial_line_count,
+    capture_scroll_anchor as tui_capture_scroll_anchor,
+    clear_partial_preview as tui_clear_partial_preview,
+    code_panel_renderable as tui_code_panel_renderable,
+    current_partial_line_count as tui_current_partial_line_count,
+    defer_live_preview_partial as tui_defer_live_preview_partial,
+    ensure_command_gap as tui_ensure_command_gap,
+    flush_fence_block as tui_flush_fence_block,
+    is_fence_line as tui_is_fence_line,
+    is_near_bottom as tui_is_near_bottom,
+    line_indents as tui_line_indents,
+    maybe_scroll_end as tui_maybe_scroll_end,
+    partial_measurement_width as tui_partial_measurement_width,
+    pending_attachment_markup as tui_pending_attachment_markup,
+    reasoning_panel_renderable as tui_reasoning_panel_renderable,
+    remeasure_partial_line_count as tui_remeasure_partial_line_count,
+    remember_code_block as tui_remember_code_block,
+    render_content_line as tui_render_content_line,
+    render_static_markdown as tui_render_static_markdown,
+    reset_fence_state as tui_reset_fence_state,
+    restore_scroll_anchor as tui_restore_scroll_anchor,
+    set_partial_renderable as tui_set_partial_renderable,
+    show_tool_result_line as tui_show_tool_result_line,
+    syntax_renderable as tui_syntax_renderable,
+    take_pending_tool_detail as tui_take_pending_tool_detail,
+    tool_event_panel as tui_tool_event_panel,
+    tool_lifecycle_panel as tui_tool_lifecycle_panel,
+    update_live_preview_partial as tui_update_live_preview_partial,
+    update_partial_content as tui_update_partial_content,
+    update_tool_call_partial as tui_update_tool_call_partial,
+    write_assistant_bar_line as tui_write_assistant_bar_line,
+    write_assistant_bar_renderable as tui_write_assistant_bar_renderable,
+    write_assistant_bar_wrapped_line as tui_write_assistant_bar_wrapped_line,
+    write_code_block as tui_write_code_block,
+    write_command_action as tui_write_command_action,
+    write_command_row as tui_write_command_row,
+    write_detail_line as tui_write_detail_line,
+    write_error as tui_write_error,
+    write_indexed_dim_lines as tui_write_indexed_dim_lines,
+    write_info as tui_write_info,
+    write_markup as tui_write_markup,
+    write_muted_lines as tui_write_muted_lines,
+    write_renderable as tui_write_renderable,
+    write_section_heading as tui_write_section_heading,
+    write_tool_lifecycle_block as tui_write_tool_lifecycle_block,
+    write_usage as tui_write_usage,
+    write_user_bar_line as tui_write_user_bar_line,
+    write_user_bar_wrapped_line as tui_write_user_bar_wrapped_line,
+)
+from tui.ui_styles import ALPHANUS_TUI_CSS
 from tui.tree_render import render_tree_rows
+from tui.view_runtime import (
+    rebuild_viewport as rebuild_tui_viewport,
+    sidebar_render_width as tui_sidebar_render_width,
+    update_sidebar as update_tui_sidebar,
+    write_completed_turn_assistant as write_tui_completed_turn_assistant,
+    write_skill_exchanges as write_tui_skill_exchanges,
+    write_turn_user as write_tui_turn_user,
+)
 
 MAX_REPLY_ACC_CHARS = 24000
 ACCENT_COLOR = "#6366f1"
-USER_MESSAGE_BAR_COLOR = "#10b981"
-ASSISTANT_MESSAGE_BAR_COLOR = ACCENT_COLOR
-
-
-class EdgeBar:
-    def __init__(
-        self,
-        renderable: RenderableType,
-        color: str,
-        first_indent: int = 0,
-        continuation_indent: Optional[int] = None,
-    ) -> None:
-        self.renderable = renderable
-        self.color = color
-        self.first_indent = max(0, int(first_indent))
-        self.continuation_indent = (
-            self.first_indent if continuation_indent is None else max(0, int(continuation_indent))
-        )
-
-    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        inner_width = max(1, options.max_width - 2)
-        wrap_indent = max(self.first_indent, self.continuation_indent)
-        style = Style.parse(f"bold {self.color}")
-        if isinstance(self.renderable, Text):
-            wrap_width = max(1, inner_width - wrap_indent)
-            lines = [text.render(console) for text in self.renderable.wrap(console, wrap_width)] or [[]]
-        else:
-            inner_options = options.update(width=max(1, inner_width - wrap_indent))
-            lines = console.render_lines(self.renderable, inner_options, pad=False, new_lines=False)
-        for index, line in enumerate(lines or [[]]):
-            indent = self.first_indent if index == 0 else self.continuation_indent
-            yield Segment("┃", style)
-            yield Segment(" ")
-            if indent:
-                yield Segment(" " * indent)
-            yield from line
-            yield Segment.line()
 
 
 def _global_config_path() -> Path:
@@ -162,329 +238,7 @@ class ChatInput(Input):
 class AlphanusTUI(App):
     TITLE = "Alphanus"
 
-    CSS = """
-    Screen {
-        layout: vertical;
-        background: #09090b;
-        color: #e4e4e7;
-    }
-
-    #topbar {
-        height: 3;
-        layout: horizontal;
-        background: #000000;
-        border-bottom: solid #52525b;
-        padding: 0 2;
-    }
-
-    #topbar-left {
-        width: 1fr;
-        height: 3;
-        content-align: left middle;
-    }
-
-    #topbar-center {
-        width: auto;
-        min-width: 0;
-        height: 3;
-        content-align: left middle;
-    }
-
-    #topbar-right {
-        width: auto;
-        height: 3;
-        content-align: right middle;
-        padding-left: 2;
-    }
-
-    #main-area {
-        height: 1fr;
-        layout: horizontal;
-        background: #09090b;
-    }
-
-    #chat-column {
-        width: 1fr;
-        height: 1fr;
-        layout: vertical;
-        background: #09090b;
-    }
-
-    #chat-scroll {
-        width: 1fr;
-        height: 1fr;
-        background: #09090b;
-        overflow-x: hidden;
-        scrollbar-size: 1 1;
-        scrollbar-color: #52525b #000000;
-        scrollbar-background: #000000;
-        scrollbar-background-hover: #18181b;
-        scrollbar-background-active: #18181b;
-        scrollbar-color-hover: #52525b;
-        scrollbar-color-active: #6366f1;
-        scrollbar-corner-color: #000000;
-    }
-
-    #chat-scroll.-active-panel {
-        border: round #6366f1;
-    }
-
-    #chat-log {
-        width: 1fr;
-        height: auto;
-        background: #09090b;
-        padding: 0 3 0 1;
-        overflow-x: hidden;
-        scrollbar-size: 0 0;
-    }
-
-    #partial {
-        width: 1fr;
-        height: auto;
-        background: #09090b;
-        display: none;
-        padding: 0 3 0 1;
-        overflow-x: hidden;
-    }
-
-    #sidebar {
-        width: 38;
-        border-left: solid #52525b;
-        background: #000000;
-        display: none;
-        padding: 0;
-        layout: grid;
-        grid-size: 1 2;
-        grid-rows: 3fr 2fr;
-    }
-
-    #sidebar-tree-section {
-        width: 1fr;
-        height: 1fr;
-        layout: vertical;
-        min-height: 5;
-    }
-
-    #sidebar-tree-header,
-    #sidebar-inspector-header {
-        width: 1fr;
-        height: auto;
-        color: #a1a1aa;
-        text-style: bold;
-        padding: 1 2 0 2;
-    }
-
-    #sidebar-tree-meta {
-        width: 1fr;
-        height: auto;
-        color: #71717a;
-        padding: 0 2 1 2;
-    }
-
-    #sidebar-tree-scroll {
-        width: 1fr;
-        height: 1fr;
-        background: #000000;
-        padding: 0 2 1 2;
-        scrollbar-background: #000000;
-        scrollbar-background-hover: #18181b;
-        scrollbar-background-active: #18181b;
-        scrollbar-color: #3f3f46;
-        scrollbar-color-hover: #52525b;
-        scrollbar-color-active: #6366f1;
-        scrollbar-corner-color: #000000;
-    }
-
-    #sidebar.-active-panel {
-        border-left: solid #6366f1;
-    }
-
-    #sidebar-tree-content {
-        width: 1fr;
-        height: auto;
-        background: #000000;
-    }
-
-    #sidebar-inspector-section {
-        width: 1fr;
-        height: 1fr;
-        min-height: 8;
-        border-top: solid #52525b;
-        background: #000000;
-        layout: vertical;
-    }
-
-    #sidebar-inspector-scroll {
-        width: 1fr;
-        height: 1fr;
-        background: #000000;
-        padding: 0 2 1 2;
-        scrollbar-background: #000000;
-        scrollbar-background-hover: #18181b;
-        scrollbar-background-active: #18181b;
-        scrollbar-color: #3f3f46;
-        scrollbar-color-hover: #52525b;
-        scrollbar-color-active: #6366f1;
-        scrollbar-corner-color: #000000;
-    }
-
-    #sidebar-inspector-content {
-        width: 1fr;
-        height: auto;
-        background: #000000;
-    }
-
-    #footer {
-        width: 1fr;
-        height: 7;
-        background: #09090b;
-        layout: vertical;
-        padding: 0 3 0 3;
-    }
-
-    #command-popup {
-        width: 64;
-        max-height: 13;
-        background: #000000;
-        border: round #52525b;
-        display: none;
-        position: absolute;
-        overlay: screen;
-        padding: 0 1;
-    }
-
-    #command-popup-title {
-        height: auto;
-        color: #6366f1;
-        padding: 1 1 0 1;
-        text-style: bold;
-    }
-
-    #command-popup-hint {
-        height: auto;
-        color: #a1a1aa;
-        padding: 0 1 1 1;
-    }
-
-    #command-options {
-        width: 1fr;
-        height: auto;
-        max-height: 8;
-        background: #000000;
-        border: none;
-        padding: 0 1 1 1;
-        scrollbar-background: #000000;
-        scrollbar-background-hover: #18181b;
-        scrollbar-background-active: #18181b;
-        scrollbar-color: #3f3f46;
-        scrollbar-color-hover: #52525b;
-        scrollbar-color-active: #6366f1;
-        scrollbar-corner-color: #000000;
-    }
-
-    #command-options > .option-list--option-highlighted {
-        color: #e4e4e7;
-        background: #18181b;
-        text-style: none;
-    }
-
-    #command-options:focus > .option-list--option-highlighted {
-        color: #ffffff;
-        background: #1a1730;
-        text-style: bold;
-    }
-
-    #footer-sep {
-        height: 1;
-        background: #000000;
-        color: #5a5a66;
-        content-align: left middle;
-        padding: 0 0;
-    }
-
-    #attachment-bar {
-        width: 1fr;
-        height: 1;
-        background: #000000;
-        color: #e4e4e7;
-        content-align: left middle;
-        padding: 0 1;
-    }
-
-    #status-bar {
-        height: 1;
-        layout: horizontal;
-        padding: 0 0;
-        background: #09090b;
-    }
-
-    #status-left {
-        width: 1fr;
-        height: 1;
-        content-align: left middle;
-    }
-
-    #status-right {
-        width: auto;
-        height: 1;
-        content-align: right middle;
-    }
-
-    #input-row {
-        height: 4;
-        layout: vertical;
-        background: #09090b;
-        padding: 0 0 0 0;
-        min-height: 4;
-    }
-
-    #composer-shell {
-        width: 1fr;
-        height: 3;
-        layout: horizontal;
-        background: #000000;
-        border: round #63636b;
-        padding: 0 1;
-        margin: 0 0 1 0;
-        align: left middle;
-    }
-
-    ChatInput {
-        width: 1fr;
-        height: 3;
-        border: none;
-        background: transparent;
-        color: #e4e4e7;
-    }
-
-    ChatInput:focus {
-        border: none;
-        background: transparent;
-    }
-
-    #input-row.-active-panel #composer-shell {
-        border: round #6366f1;
-    }
-
-    #input-accessories {
-        width: auto;
-        height: 1;
-        layout: horizontal;
-        align: right middle;
-        padding-left: 1;
-    }
-
-    #attach-file {
-        width: auto;
-        min-width: 8;
-        height: 1;
-        background: #1a1730;
-        color: #6366f1;
-        border: none;
-        text-style: bold;
-        padding: 0 1;
-    }
-    """
+    CSS = ALPHANUS_TUI_CSS
 
     BINDINGS = [
         Binding("ctrl+c", "quit", show=False),
@@ -517,115 +271,10 @@ class AlphanusTUI(App):
 
     def __init__(self, agent: Agent, debug: bool = False):
         super().__init__()
-        self.agent = agent
-        self._debug_mode = debug
-        self._ui_config = UiRuntimeConfig.from_config(self.agent.config)
-        self._ui_timing = self._ui_config.timing
-        self._chat_log_max_lines = self._ui_config.chat_log_max_lines
-        self._tree_compaction_enabled = self._ui_config.tree_compaction_enabled
-        self._inactive_assistant_char_limit = self._ui_config.inactive_assistant_char_limit
-        self._inactive_tool_argument_char_limit = self._ui_config.inactive_tool_argument_char_limit
-        self._inactive_tool_content_char_limit = self._ui_config.inactive_tool_content_char_limit
-
-        self._session_store = SessionStore(self.agent.skill_runtime.workspace.workspace_root)
-        self._session_id = ""
-        self._session_title = ""
-        self._session_created_at = ""
-        self._loaded_skill_ids: List[str] = []
-        self.conv_tree = self._new_conv_tree()
-        self._activate_session_state(self._session_store.bootstrap())
-        self.pending: List[Tuple[str, str]] = []
-
-        self._stop_event = threading.Event()
-        self._active_turn_id: Optional[str] = None
-        self._reply_acc = ""
-        self._live_preview = LiveToolPreviewManager()
-
-        self._reasoning_open = False
-        self._content_open = False
-        self._buf_r = ""
-        self._buf_c = ""
-        self._in_fence = False
-        self._fence_lang: Optional[str] = None
-        self._fence_lines: List[str] = []
-        self._stream_runtime = StreamRuntimeState()
-        self._stream_drain_timer = None
-        self._partial_renderable: Optional[RenderableType] = None
-        self._last_partial_render_width = 1
-        self._last_partial_line_count = 0
-        self._partial_line_count_dirty = False
-
-        self._last_scroll = 0.0
-        self._scroll_interval = self._ui_timing.scroll_interval_s
-        self._last_status_left = ""
-        self._last_status_right = ""
-        self._auto_follow_stream = True
-        initial_status = self.agent.get_model_status()
-        self._status_runtime = StatusRuntimeState(
-            model_status=initial_status,
-            model_name=initial_status.model_name if initial_status.state != "offline" else None,
-            model_context_window=(
-                initial_status.context_window
-                if isinstance(initial_status.context_window, int) and initial_status.context_window > 0
-                else None
-            ),
-        )
-
-        self._esc_pending = False
-        self._esc_ts = 0.0
-        self._spin_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-        self._spin_i = 0
-
-        self._await_shell_confirm = False
-        self._shell_confirm_command = ""
-        self._shell_confirm_event: Optional[threading.Event] = None
-        self._shell_confirm_result: Optional[Dict[str, bool]] = None
-        self._command_matches: List[CommandEntry] = []
-        self._code_blocks: List[Tuple[str, Optional[str]]] = []
-        self._show_tool_details = True
-        self._pending_tool_details: List[Tuple[str, str]] = []
-        self._focused_panel = "input"
-        self._tree_cursor_id = "root"
-        self._last_log_was_blank = False
-        self._last_model_context_tokens: Optional[int] = None
-        self._startup_session_prompt_opened = False
-        self._resize_redraw_pending = False
+        init_tui_shell_state(self, agent=agent, debug=debug)
 
     def compose(self) -> ComposeResult:
-        with Horizontal(id="topbar"):
-            yield Static("", id="topbar-left")
-            yield Static("", id="topbar-center")
-            yield Static("", id="topbar-right")
-        with Horizontal(id="main-area"):
-            with Vertical(id="chat-column"):
-                with ScrollableContainer(id="chat-scroll"):
-                    yield TranscriptView(id="chat-log", max_lines=self._chat_log_max_lines)
-                    yield Static("", id="partial", markup=True)
-                with Vertical(id="footer"):
-                    yield Static("", id="footer-sep", markup=True)
-                    yield Static("", id="attachment-bar", markup=True)
-                    with Horizontal(id="input-row"):
-                        with Horizontal(id="composer-shell"):
-                            yield ChatInput(id="chat-input", placeholder="Type a message…")
-                            with Horizontal(id="input-accessories"):
-                                yield Button("+ File", id="attach-file")
-                    with Horizontal(id="status-bar"):
-                        yield Static("", id="status-left")
-                        yield Static("", id="status-right")
-            with Vertical(id="sidebar"):
-                with Vertical(id="sidebar-tree-section"):
-                    yield Static("Conversation Tree", id="sidebar-tree-header")
-                    yield Static("0 turns", id="sidebar-tree-meta")
-                    with ScrollableContainer(id="sidebar-tree-scroll"):
-                        yield Static("", id="sidebar-tree-content", markup=True)
-                with Vertical(id="sidebar-inspector-section"):
-                    yield Static("Inspector", id="sidebar-inspector-header")
-                    with ScrollableContainer(id="sidebar-inspector-scroll"):
-                        yield Static("", id="sidebar-inspector-content", markup=True)
-        with Vertical(id="command-popup"):
-            yield Static("commands", id="command-popup-title")
-            yield Static("type to filter · tab to insert", id="command-popup-hint")
-            yield OptionList(id="command-options")
+        yield from compose_tui_shell(self, chat_input_cls=ChatInput, transcript_view_cls=TranscriptView)
 
     def _timing_config(self):
         timing = getattr(self, "_ui_timing", None)
@@ -633,6 +282,13 @@ class AlphanusTUI(App):
             timing = UiRuntimeConfig.from_config({}).timing
             self._ui_timing = timing
         return timing
+
+    def _stream_runtime_state(self) -> StreamRuntimeState:
+        state = getattr(self, "_stream_runtime", None)
+        if state is None:
+            state = StreamRuntimeState()
+            self._stream_runtime = state
+        return state
 
     def on_mount(self) -> None:
         self.thinking = bool(self.agent.config.get("agent", {}).get("enable_thinking", True))
@@ -751,27 +407,7 @@ class AlphanusTUI(App):
         self._open_session_manager()
 
     def _on_session_manager_close(self, result: Optional[Dict[str, str]]) -> None:
-        action = str((result or {}).get("action") or "").strip()
-        if not action:
-            return
-        if action == "open":
-            session_id = str((result or {}).get("session_id") or "").strip()
-            if not session_id:
-                return
-            try:
-                self._load_session_from_manager(session_id)
-            except Exception as exc:
-                self._write_error(f"Load failed: {exc}")
-            return
-        if action == "create":
-            session = self._open_new_session(str((result or {}).get("title") or ""))
-            self._switch_to_session(session)
-            return
-        if action == "delete":
-            session_id = str((result or {}).get("session_id") or "").strip()
-            if not session_id:
-                return
-            self._delete_session_from_manager(session_id)
+        on_tui_session_manager_close(self, result)
 
     def _delete_session_from_manager(self, session_id: str) -> None:
         delete_tui_session_from_manager(self, session_id)
@@ -978,12 +614,7 @@ class AlphanusTUI(App):
                 ],
             ),
         ]
-        col = max((len(command) for _title, rows in sections for command, _desc in rows), default=20) + 4
-        for title, rows in sections:
-            self._write_section_heading(title)
-            for command, desc in rows:
-                self._write_command_row(command, desc, col=col)
-            self._write("")
+        show_tui_keyboard_shortcuts(self, sections=sections)
 
     def action_show_keymap(self) -> None:
         self._show_keyboard_shortcuts()
@@ -1092,13 +723,7 @@ class AlphanusTUI(App):
         return self.query_one("#partial", Static)
 
     def _partial_measurement_width(self) -> int:
-        partial = self._partial()
-        for region_name in ("content_region", "region", "size"):
-            region = getattr(partial, region_name, None)
-            width = int(getattr(region, "width", 0) or 0)
-            if width > 0:
-                return width
-        return 1
+        return tui_partial_measurement_width(self)
 
     def _set_partial_renderable(
         self,
@@ -1106,47 +731,16 @@ class AlphanusTUI(App):
         *,
         visible: Optional[bool] = None,
     ) -> None:
-        partial = self._partial()
-        if visible is not None:
-            partial.display = visible
-        if renderable is None:
-            partial.update("")
-            self._partial_renderable = None
-            self._last_partial_render_width = self._partial_measurement_width()
-            self._last_partial_line_count = 0
-            self._partial_line_count_dirty = False
-            return
-        partial.update(renderable)
-        self._partial_renderable = renderable
-        self._last_partial_render_width = self._partial_measurement_width()
-        self._partial_line_count_dirty = True
+        tui_set_partial_renderable(self, renderable, visible=visible)
 
     def _remeasure_partial_line_count(self, width: Optional[int] = None) -> int:
-        partial = self._partial()
-        renderable = getattr(self, "_partial_renderable", None)
-        if not getattr(partial, "display", True) or renderable is None:
-            self._last_partial_line_count = 0
-            self._partial_line_count_dirty = False
-            return 0
-        measured_width = max(1, int(width if width is not None else self._partial_measurement_width()))
-        self._last_partial_render_width = measured_width
-        self._last_partial_line_count = count_renderable_lines(renderable, measured_width)
-        self._partial_line_count_dirty = False
-        return self._last_partial_line_count
+        return tui_remeasure_partial_line_count(self, width, count_lines=count_renderable_lines)
 
     def _cached_partial_line_count(self) -> int:
-        partial = self._partial()
-        if not getattr(partial, "display", True):
-            return 0
-        if getattr(self, "_partial_renderable", None) is None:
-            return 0
-        width = self._partial_measurement_width()
-        if getattr(self, "_partial_line_count_dirty", False) or width != int(getattr(self, "_last_partial_render_width", 0) or 0):
-            return self._remeasure_partial_line_count(width)
-        return int(getattr(self, "_last_partial_line_count", 0) or 0)
+        return tui_cached_partial_line_count(self, count_lines=count_renderable_lines)
 
     def _current_partial_line_count(self) -> int:
-        return self._remeasure_partial_line_count(self._partial_measurement_width())
+        return tui_current_partial_line_count(self, count_lines=count_renderable_lines)
 
     def _command_popup(self) -> Vertical:
         return self.query_one("#command-popup", Vertical)
@@ -1155,13 +749,10 @@ class AlphanusTUI(App):
         return self.query_one("#command-options", OptionList)
 
     def _append_transcript_entry(self, entry: TranscriptEntry) -> None:
-        self._log().append_entry(entry)
-        self._maybe_scroll_end()
+        tui_append_transcript_entry(self, entry)
 
     def _write(self, markup: str) -> None:
-        entry = TranscriptEntry("blank", Text("")) if markup == "" else TranscriptEntry("markup_line", Text.from_markup(markup))
-        self._append_transcript_entry(entry)
-        self._last_log_was_blank = markup == ""
+        tui_write_markup(self, markup)
 
     @staticmethod
     def _bar_renderable(
@@ -1170,96 +761,44 @@ class AlphanusTUI(App):
         *,
         content_indent: int = 0,
         continuation_indent: Optional[int] = None,
-    ) -> EdgeBar:
-        return EdgeBar(
+    ):
+        return tui_bar_renderable(
             renderable,
             color,
-            first_indent=content_indent,
+            content_indent=content_indent,
             continuation_indent=continuation_indent,
         )
 
     @staticmethod
     def _line_indents(line: str, *, base_indent: int = 2) -> tuple[int, int]:
-        lead = len(line) - len(line.lstrip(" "))
-        return max(base_indent, lead), max(base_indent, hanging_indent(line))
+        return tui_line_indents(line, base_indent=base_indent)
 
     def _write_user_bar_line(self, markup: str = "", *, content_indent: int = 0) -> None:
-        self._write_renderable(
-            self._bar_renderable(Text.from_markup(markup), USER_MESSAGE_BAR_COLOR, content_indent=content_indent),
-            indent=0,
-        )
+        tui_write_user_bar_line(self, markup, content_indent=content_indent)
 
     def _write_assistant_bar_line(self, markup: str = "", *, content_indent: int = 0) -> None:
-        self._write_renderable(
-            self._bar_renderable(Text.from_markup(markup), ASSISTANT_MESSAGE_BAR_COLOR, content_indent=content_indent),
-            indent=0,
-        )
+        tui_write_assistant_bar_line(self, markup, content_indent=content_indent)
 
     def _write_assistant_bar_renderable(self, renderable: RenderableType, *, content_indent: int = 0) -> None:
-        self._write_renderable(
-            self._bar_renderable(renderable, ASSISTANT_MESSAGE_BAR_COLOR, content_indent=content_indent),
-            indent=0,
-        )
+        tui_write_assistant_bar_renderable(self, renderable, content_indent=content_indent)
 
     def _write_user_bar_wrapped_line(self, line: str) -> None:
-        first_indent, continuation_indent = self._line_indents(line)
-        self._write_renderable(
-            self._bar_renderable(
-                Text.from_markup(esc(line.lstrip(" "))),
-                USER_MESSAGE_BAR_COLOR,
-                content_indent=first_indent,
-                continuation_indent=continuation_indent,
-            ),
-            indent=0,
-        )
+        tui_write_user_bar_wrapped_line(self, line)
 
     def _write_assistant_bar_wrapped_line(self, line: str, markup: str) -> None:
-        first_indent, continuation_indent = self._line_indents(line)
-        self._write_renderable(
-            self._bar_renderable(
-                Text.from_markup(markup.lstrip(" ")),
-                ASSISTANT_MESSAGE_BAR_COLOR,
-                content_indent=first_indent,
-                continuation_indent=continuation_indent,
-            ),
-            indent=0,
-        )
+        tui_write_assistant_bar_wrapped_line(self, line, markup)
 
     def _write_renderable(self, renderable, indent: int = 2) -> None:
-        self._append_transcript_entry(TranscriptEntry("renderable", Padding(renderable, pad=(0, 0, 0, indent))))
-        self._last_log_was_blank = False
+        tui_write_renderable(self, renderable, indent=indent)
 
-    def _syntax_renderable(self, code: str, language: Optional[str]) -> Syntax:
-        return Syntax(
-            code,
-            language or "text",
-            theme="github-dark",
-            word_wrap=True,
-            background_color="#09090b",
-            line_numbers=False,
-        )
+    def _syntax_renderable(self, code: str, language: Optional[str]):
+        return tui_syntax_renderable(code, language)
 
-    def _code_panel_renderable(self, code: str, language: Optional[str]) -> Panel:
-        return Panel(
-            self._syntax_renderable(code, language),
-            expand=True,
-            padding=(0, 1),
-            border_style="#27272a",
-            style="on #09090b",
-        )
+    def _code_panel_renderable(self, code: str, language: Optional[str]):
+        return tui_code_panel_renderable(self, code, language)
 
-    def _reasoning_panel_renderable(self, text: str) -> Panel:
-        rendered, _ = render_md(text, False)
-        return Panel(
-            Text.from_markup(f"[dim]{rendered}[/dim]"),
-            title="[dim #6366f1]thinking[/dim #6366f1]",
-            title_align="left",
-            expand=True,
-            padding=(0, 1),
-            border_style="#27272a",
-            style="on #09090b",
-            box=box.SQUARE,
-        )
+    def _reasoning_panel_renderable(self, text: str):
+        return tui_reasoning_panel_renderable(text)
 
     def _tool_event_panel(
         self,
@@ -1268,22 +807,8 @@ class AlphanusTUI(App):
         border_color: str,
         name: str,
         detail: str = "",
-    ) -> Panel:
-        text = Text()
-        text.append(name, style="bold #f4f4f5")
-        if detail:
-            text.append("   ")
-            text.append(detail, style="#a1a1aa")
-        return Panel(
-            text,
-            title=f"[bold {title_color}]{title}[/bold {title_color}]",
-            title_align="left",
-            expand=True,
-            padding=(0, 1),
-            border_style=border_color,
-            style="on #09090b",
-            box=box.SQUARE,
-        )
+    ):
+        return tui_tool_event_panel(title, title_color, border_color, name, detail)
 
     def _tool_lifecycle_panel(
         self,
@@ -1291,239 +816,96 @@ class AlphanusTUI(App):
         detail: str,
         *,
         ok: bool,
-    ) -> Panel:
-        return self._tool_event_panel(
-            "tool → done" if ok else "tool → fail",
-            "#10b981" if ok else "#f87171",
-            "#10b981" if ok else "#f87171",
-            name,
-            detail,
-        )
+    ):
+        return tui_tool_lifecycle_panel(self, name, detail, ok=ok)
 
     def _update_tool_call_partial(self, name: str, detail: str = "") -> None:
-        self._set_partial_renderable(
-            self._bar_renderable(self._tool_event_panel("tool", ACCENT_COLOR, ACCENT_COLOR, name, detail), ASSISTANT_MESSAGE_BAR_COLOR),
-            visible=True,
-        )
+        tui_update_tool_call_partial(self, name, detail)
 
     def _write_tool_lifecycle_block(self, name: str, ok: bool, detail: str = "") -> None:
-        self._write_assistant_bar_renderable(
-            self._tool_lifecycle_panel(name, detail or ("completed" if ok else "failed"), ok=ok),
-        )
+        tui_write_tool_lifecycle_block(self, name, ok, detail)
 
     def _show_tool_result_line(self, name: str, ok: bool) -> bool:
-        if not ok:
-            return True
-        return self._show_tool_details
+        return tui_show_tool_result_line(self, name, ok)
 
     def _take_pending_tool_detail(self, name: str) -> str:
-        for idx, (pending_name, pending_detail) in enumerate(self._pending_tool_details):
-            if pending_name == name:
-                self._pending_tool_details.pop(idx)
-                return pending_detail
-        return ""
+        return tui_take_pending_tool_detail(self, name)
 
     def _remember_code_block(self, code: str, language: Optional[str]) -> int:
-        self._code_blocks.append((code, language))
-        if len(self._code_blocks) > 64:
-            self._code_blocks = self._code_blocks[-64:]
-        return len(self._code_blocks)
+        return tui_remember_code_block(self, code, language)
 
     def _write_code_block(self, lines: List[str], language: Optional[str]) -> None:
-        code = "\n".join(lines)
-        block_index = self._remember_code_block(code, language)
-        self._write_assistant_bar_renderable(self._code_panel_renderable(code, language))
-        self._write_assistant_bar_line(
-            f"[dim]code block {block_index} · /code {block_index} to open copyable view[/dim]",
-            content_indent=2,
-        )
+        tui_write_code_block(self, lines, language)
 
     def _render_static_markdown(self, text: str) -> None:
-        in_fence = False
-        fence_lang: Optional[str] = None
-        fence_lines: List[str] = []
-        for line in text.splitlines() or [""]:
-            if self._is_fence_line(line):
-                if in_fence:
-                    if fence_lines:
-                        self._write_code_block(fence_lines, fence_lang)
-                    in_fence = False
-                    fence_lang = None
-                    fence_lines = []
-                else:
-                    in_fence = True
-                    fence_lang = fence_language(line)
-                    fence_lines = []
-                continue
-            if in_fence:
-                fence_lines.append(line)
-                continue
-            rendered, _ = render_md(line, False)
-            self._write_assistant_bar_wrapped_line(line, rendered)
-
-        if in_fence and fence_lines:
-            self._write_code_block(fence_lines, fence_lang)
+        tui_render_static_markdown(self, text)
 
     def _reset_fence_state(self) -> None:
-        self._in_fence = False
-        self._fence_lang = None
-        self._fence_lines = []
+        tui_reset_fence_state(self)
 
     @staticmethod
     def _is_fence_line(line: str) -> bool:
-        stripped = line.strip()
-        return stripped.startswith("```") or stripped.startswith("~~~")
+        return tui_is_fence_line(line)
 
     def _flush_fence_block(self) -> None:
-        if self._fence_lines:
-            self._write_code_block(self._fence_lines, self._fence_lang)
-        self._reset_fence_state()
+        tui_flush_fence_block(self)
 
     def _render_content_line(self, line: str) -> None:
-        if self._is_fence_line(line):
-            if self._in_fence:
-                self._flush_fence_block()
-            else:
-                self._in_fence = True
-                self._fence_lang = fence_language(line)
-                self._fence_lines = []
-            return
-
-        if self._in_fence:
-            self._fence_lines.append(line)
-            return
-
-        rendered, _ = render_md(line, False)
-        self._write_assistant_bar_wrapped_line(line, rendered)
+        tui_render_content_line(self, line)
 
     def _update_partial_content(self) -> None:
-        if self._in_fence:
-            lines = list(self._fence_lines)
-            if self._buf_c and not self._is_fence_line(self._buf_c):
-                lines.append(self._buf_c)
-            if lines:
-                self._set_partial_renderable(
-                    self._bar_renderable(self._code_panel_renderable("\n".join(lines), self._fence_lang), ASSISTANT_MESSAGE_BAR_COLOR)
-                )
-            else:
-                self._set_partial_renderable(None)
-            return
-        if not self._buf_c:
-            self._set_partial_renderable(None)
-            return
-        rendered, _ = render_md(self._buf_c, False)
-        first_indent, continuation_indent = self._line_indents(self._buf_c)
-        self._set_partial_renderable(
-            self._bar_renderable(
-                Text.from_markup(rendered.lstrip(" ")),
-                ASSISTANT_MESSAGE_BAR_COLOR,
-                content_indent=first_indent,
-                continuation_indent=continuation_indent,
-            )
-        )
+        tui_update_partial_content(self)
 
     def _update_live_preview_partial(self, lines: List[str], language: Optional[str]) -> None:
-        self._set_partial_renderable(
-            self._bar_renderable(self._code_panel_renderable("\n".join(lines), language), ASSISTANT_MESSAGE_BAR_COLOR),
-            visible=True,
-        )
+        tui_update_live_preview_partial(self, lines, language)
 
     def _defer_live_preview_partial(self, lines: List[str], language: Optional[str]) -> None:
-        state = self._stream_runtime
-        state.deferred_live_preview = (list(lines), language)
-        state.partial_dirty = False
+        tui_defer_live_preview_partial(self, lines, language)
 
     def _clear_partial_preview(self) -> None:
-        state = self._stream_runtime
-        state.deferred_live_preview = None
-        state.partial_dirty = False
-        self._set_partial_renderable(None)
-        partial = self._partial()
-        if not self.streaming:
-            partial.display = False
+        tui_clear_partial_preview(self)
 
     def _is_near_bottom(self, threshold: float = 1.0) -> bool:
-        scroll = self._scroll()
-        try:
-            return (scroll.max_scroll_y - scroll.scroll_y) <= threshold
-        except Exception:
-            return True
+        return tui_is_near_bottom(self, threshold=threshold)
 
     def _capture_scroll_anchor(self) -> Optional[ScrollAnchor]:
-        scroll = self._scroll()
-        try:
-            return self._log().capture_anchor(
-                float(scroll.scroll_y or 0),
-                partial_line_count=self._cached_partial_line_count(),
-            )
-        except Exception:
-            return None
+        return tui_capture_scroll_anchor(self)
 
     def _restore_scroll_anchor(self, anchor: Optional[ScrollAnchor]) -> None:
-        if not anchor:
-            return
-        scroll = self._scroll()
-        if anchor.near_bottom:
-            scroll.scroll_end(animate=False)
-            return
-        target_y = self._log().restore_anchor(anchor, partial_line_count=self._current_partial_line_count())
-        scroll.scroll_to(y=target_y, animate=False, immediate=True, force=True)
+        tui_restore_scroll_anchor(self, anchor)
 
     def _maybe_scroll_end(self, force: bool = False) -> None:
-        if force:
-            self._scroll().scroll_end(animate=False)
-            return
-        if self.streaming and self._auto_follow_stream and not self._is_near_bottom():
-            self._auto_follow_stream = False
-            self._update_status2()
-        if not self.streaming or self._auto_follow_stream:
-            self._scroll().scroll_end(animate=False)
+        tui_maybe_scroll_end(self, force=force)
 
     def _write_info(self, text: str) -> None:
-        self._write(f"  [bold {ACCENT_COLOR}]›[/bold {ACCENT_COLOR}] [#f4f4f5]{esc(text)}[/#f4f4f5]")
+        tui_write_info(self, text, accent_color=ACCENT_COLOR)
 
     def _write_error(self, text: str) -> None:
-        self._write(f"[bold red]  ✖ {esc(text)}[/bold red]")
+        tui_write_error(self, text)
 
     def _write_section_heading(self, title: str, color: str = ACCENT_COLOR) -> None:
-        self._write("")
-        self._write(f"[bold {color}]  {esc(title)}[/bold {color}]")
+        tui_write_section_heading(self, title, color=color)
 
     def _write_detail_line(self, label: str, value: str, *, value_markup: bool = False) -> None:
-        rendered = value if value_markup else esc(value)
-        self._write(
-            f"  [bold {ACCENT_COLOR}]{esc(label)}:[/bold {ACCENT_COLOR}] [#f4f4f5]{rendered}[/#f4f4f5]"
-            if not value_markup
-            else f"  [bold {ACCENT_COLOR}]{esc(label)}:[/bold {ACCENT_COLOR}] {rendered}"
-        )
+        tui_write_detail_line(self, label, value, accent_color=ACCENT_COLOR, value_markup=value_markup)
 
     def _write_indexed_dim_lines(self, rows: List[str], *, color: str = ACCENT_COLOR, allow_markup: bool = False) -> None:
-        for index, row in enumerate(rows):
-            if allow_markup:
-                self._write(f"  [{color}]{index}.[/{color}] {row}")
-            else:
-                self._write(f"  [{color}]{index}.[/{color}] [#f4f4f5]{esc(row)}[/#f4f4f5]")
+        tui_write_indexed_dim_lines(self, rows, color=color, allow_markup=allow_markup)
 
     def _write_command_action(self, text: str, *, icon: str = "•", color: str = ACCENT_COLOR) -> None:
-        self._write(f"  [bold {color}]{esc(icon)}[/bold {color}] [#f4f4f5]{esc(text)}[/#f4f4f5]")
+        tui_write_command_action(self, text, color=color, icon=icon)
 
     def _write_command_row(self, command: str, desc: str, *, col: int) -> None:
-        gap = max(1, col - len(command))
-        self._write(
-            f"  [bold {ACCENT_COLOR}]{esc(command)}[/bold {ACCENT_COLOR}]{' ' * gap}[#a1a1aa]{esc(desc)}[/#a1a1aa]"
-        )
+        tui_write_command_row(self, command, desc, col=col, accent_color=ACCENT_COLOR)
 
     def _write_muted_lines(self, rows: List[str]) -> None:
-        for row in rows:
-            self._write(f"  [#a1a1aa]{esc(row)}[/#a1a1aa]")
+        tui_write_muted_lines(self, rows)
 
     def _write_usage(self, usage: str) -> bool:
-        self._write_error(f"Usage: {usage}")
-        return True
+        return tui_write_usage(self, usage)
 
     def _ensure_command_gap(self) -> None:
-        if not self._last_log_was_blank:
-            self._write("")
+        tui_ensure_command_gap(self)
 
     def _reload_skills(self) -> bool:
         self.agent.reload_skills()
@@ -1555,6 +937,62 @@ class AlphanusTUI(App):
         self._reply_acc_parts.append(chunk)
         self._reply_acc_len += len(chunk)
 
+    @property
+    def _reasoning_open(self) -> bool:
+        return bool(self._stream_runtime_state().text.reasoning_open)
+
+    @_reasoning_open.setter
+    def _reasoning_open(self, value: bool) -> None:
+        self._stream_runtime_state().text.reasoning_open = bool(value)
+
+    @property
+    def _content_open(self) -> bool:
+        return bool(self._stream_runtime_state().text.content_open)
+
+    @_content_open.setter
+    def _content_open(self, value: bool) -> None:
+        self._stream_runtime_state().text.content_open = bool(value)
+
+    @property
+    def _buf_r(self) -> str:
+        return str(self._stream_runtime_state().text.reasoning_buffer)
+
+    @_buf_r.setter
+    def _buf_r(self, value: str) -> None:
+        self._stream_runtime_state().text.reasoning_buffer = str(value)
+
+    @property
+    def _buf_c(self) -> str:
+        return str(self._stream_runtime_state().text.content_buffer)
+
+    @_buf_c.setter
+    def _buf_c(self, value: str) -> None:
+        self._stream_runtime_state().text.content_buffer = str(value)
+
+    @property
+    def _in_fence(self) -> bool:
+        return bool(self._stream_runtime_state().text.in_fence)
+
+    @_in_fence.setter
+    def _in_fence(self, value: bool) -> None:
+        self._stream_runtime_state().text.in_fence = bool(value)
+
+    @property
+    def _fence_lang(self) -> Optional[str]:
+        return self._stream_runtime_state().text.fence_lang
+
+    @_fence_lang.setter
+    def _fence_lang(self, value: Optional[str]) -> None:
+        self._stream_runtime_state().text.fence_lang = value
+
+    @property
+    def _fence_lines(self) -> List[str]:
+        return self._stream_runtime_state().text.fence_lines
+
+    @_fence_lines.setter
+    def _fence_lines(self, value: List[str]) -> None:
+        self._stream_runtime_state().text.fence_lines = list(value)
+
     def _is_tool_trace_line(self, line: str) -> bool:
         s = line.strip().lower()
         return "tool call:" in s
@@ -1575,19 +1013,13 @@ class AlphanusTUI(App):
         self._update_topbar()
 
     def _current_model_refresh_interval(self) -> float:
-        return self._status_runtime.current_model_refresh_interval(self._timing_config())
+        return tui_model_refresh_interval(self)
 
     def _should_startup_readiness_poll(self) -> bool:
-        return self._status_runtime.should_startup_readiness_poll(
-            is_local_endpoint=self.agent.llm_client._is_local_endpoint(self.agent.models_endpoint)
-        )
+        return should_tui_startup_readiness_poll(self)
 
     def _maybe_start_startup_readiness_poll(self) -> None:
-        if not self._should_startup_readiness_poll():
-            return
-        state = self._status_runtime
-        state.startup_readiness_inflight = True
-        self._startup_readiness_worker()
+        start_tui_startup_readiness_poll(self)
 
     @work(thread=True, exclusive=True)
     def _startup_readiness_worker(self) -> None:
@@ -1596,17 +1028,10 @@ class AlphanusTUI(App):
         self.call_from_thread(self._finish_startup_readiness_poll, status)
 
     def _finish_startup_readiness_poll(self, status: ModelStatus) -> None:
-        state = self._status_runtime
-        state.startup_readiness_inflight = False
-        self._apply_model_status_refresh(status)
+        finish_tui_startup_readiness_poll(self, status)
 
     def _maybe_refresh_model_status(self, *, force: bool = False) -> None:
-        now = time.monotonic()
-        state = self._status_runtime
-        if not state.should_refresh(self._timing_config(), force=force, now=now):
-            return
-        state.mark_refresh_started(now=now)
-        self._refresh_model_status_worker()
+        maybe_refresh_tui_model_status(self, force=force)
 
     @work(thread=True, exclusive=True)
     def _refresh_model_status_worker(self) -> None:
@@ -1614,47 +1039,13 @@ class AlphanusTUI(App):
         self.call_from_thread(self._apply_model_status_refresh, status)
 
     def _apply_model_status_refresh(self, status: ModelStatus) -> None:
-        state = self._status_runtime
-        state.apply_model_status(status, self._timing_config())
-        self._update_status1()
-        self._update_topbar()
+        apply_tui_model_status(self, status)
 
     def _update_status2(self) -> None:
-        left = status_left_markup(
-            await_shell_confirm=self._await_shell_confirm,
-            streaming=self.streaming,
-            spinner_frame=self._spin_frames[self._spin_i % len(self._spin_frames)],
-            stop_requested=self._stop_event.is_set(),
-            esc_pending=self._esc_pending,
-            auto_follow_stream=self._auto_follow_stream,
-            focus_panel=self._focused_panel,
-            width=self.size.width,
-        )
-        if left == self._last_status_left:
-            return
-        self._last_status_left = left
-        self.query_one("#status-left", Static).update(left)
+        update_tui_status2(self)
 
     def _update_topbar(self) -> None:
-        workspace_root = str(self.agent.skill_runtime.workspace.workspace_root)
-        width = self.size.width
-        self.query_one("#topbar-left", Static).update(topbar_left(workspace_root, width=width))
-        self.query_one("#topbar-center", Static).update(
-            topbar_center(
-                session_name=self._session_title or "Session",
-                branch_name=self._current_branch_name(),
-                width=width,
-            )
-        )
-        self.query_one("#topbar-right", Static).update(
-            topbar_right(
-                endpoint=self.agent.model_endpoint,
-                context_tokens=self._context_tokens(),
-                context_window=self._context_window_tokens(),
-                width=width,
-                endpoint_state=self._status_runtime.model_status.state,
-            )
-        )
+        update_tui_topbar(self)
 
     def _update_input_placeholder(self) -> None:
         self.query_one(ChatInput).placeholder = (
@@ -1680,243 +1071,56 @@ class AlphanusTUI(App):
             return
 
     def _pending_attachment_markup(self) -> str:
-        if not self.pending:
-            return ""
-        chips: List[str] = []
-        visible = self.pending[:3]
-        for path, _kind in visible:
-            chips.append(f"[#f4f4f5 on #1a1730] {esc(os.path.basename(path))} [/#f4f4f5 on #1a1730]")
-        overflow = len(self.pending) - len(visible)
-        if overflow > 0:
-            chips.append(f"[#a1a1aa on #1a1730] +{overflow} more [/#a1a1aa on #1a1730]")
-        return " ".join(chips)
+        return tui_pending_attachment_markup(self)
 
     def _workspace_root(self) -> Path:
-        return Path(str(self.agent.skill_runtime.workspace.workspace_root)).resolve()
+        return workspace_tui_root(self)
 
     def _home_root(self) -> Path:
-        home_root = getattr(self.agent.skill_runtime.workspace, "home_root", None)
-        if home_root:
-            return Path(str(home_root)).resolve()
-        return Path.home().resolve()
+        return home_tui_root(self)
 
     def _attachment_root_path(self, root_id: str) -> Path:
-        if root_id == "home":
-            return self._home_root()
-        return self._workspace_root()
+        return attachment_tui_root_path(self, root_id)
 
     def _attachment_root_label(self, root_id: str) -> str:
-        return "Home" if root_id == "home" else "Workspace"
+        return attachment_tui_root_label(root_id)
 
     def _root_relative_label(self, path: Path, root: Path) -> str:
-        try:
-            relative = path.resolve().relative_to(root)
-            text = relative.as_posix()
-            return text if text else "."
-        except Exception:
-            return path.as_posix()
+        return tui_root_relative_label(path, root)
 
     def _resolve_attachment_path(self, raw_path: str) -> Path:
-        candidate = Path(os.path.expanduser(raw_path.strip()))
-        if candidate.is_absolute():
-            resolved = candidate.resolve()
-            if resolved.is_file():
-                return resolved
-            raise FileNotFoundError(str(resolved))
-
-        workspace_candidate = (self._workspace_root() / candidate).resolve()
-        cwd_candidate = (Path.cwd() / candidate).resolve()
-        for resolved in (workspace_candidate, cwd_candidate):
-            if resolved.is_file():
-                return resolved
-        raise FileNotFoundError(str(workspace_candidate))
+        return resolve_tui_attachment_path(self, raw_path)
 
     def _attach_file_path(self, path: str | Path) -> bool:
-        resolved = Path(path).resolve()
-        if not resolved.is_file():
-            self._write_error(f"File not found: {resolved}")
-            return False
-        kind = classify_attachment(str(resolved))
-        if kind == "unknown":
-            self._write_error("Unsupported file type")
-            return False
-        normalized = str(resolved)
-        if any(existing_path == normalized for existing_path, _existing_kind in self.pending):
-            self._write_info(f"Already attached: {resolved.name}")
-            return False
-        self.pending.append((normalized, kind))
-        self._update_pending_attachments()
-        self._update_status1()
-        return True
+        return attach_tui_file_path(self, path)
 
     def _attachment_picker_items(self, relative_dir: str = ".", *, root_id: str = "workspace") -> List[PickerItem]:
-        items: List[PickerItem] = []
-        current = Path(relative_dir)
-        for candidate_root in ("workspace", "home"):
-            if candidate_root == root_id:
-                continue
-            items.append(
-                PickerItem(
-                    id=f"root:{candidate_root}:.",
-                    prompt=(
-                        f"[bold {ACCENT_COLOR}]switch → {self._attachment_root_label(candidate_root).lower()}[/bold {ACCENT_COLOR}]"
-                    ),
-                )
-            )
-        if relative_dir not in {".", ""}:
-            parent = current.parent.as_posix()
-            if parent == "":
-                parent = "."
-            items.append(PickerItem(id=f"nav:{parent}", prompt=f"[dim]{esc('../')}[/dim] [#a1a1aa]parent[/#a1a1aa]"))
-
-        root_path = self._attachment_root_path(root_id)
-        list_target = str(root_path if relative_dir in {".", ""} else (root_path / relative_dir))
-        entries = self.agent.skill_runtime.workspace.list_files(list_target)
-        for entry in entries:
-            target = (current / entry.rstrip("/")).as_posix()
-            if entry.endswith("/"):
-                items.append(
-                    PickerItem(
-                        id=f"nav:{target}",
-                        prompt=f"[bold {ACCENT_COLOR}]{esc(entry)}[/bold {ACCENT_COLOR}] [dim]open[/dim]",
-                    )
-                )
-                continue
-            target_path = root_path / target
-            kind = classify_attachment(str(target_path))
-            if kind == "unknown":
-                continue
-            items.append(
-                PickerItem(
-                    id=f"file:{target}",
-                    prompt=f"[#f4f4f5]{esc(entry)}[/#f4f4f5] [dim]{kind}[/dim]",
-                )
-            )
-        return items
+        return attachment_tui_picker_items(self, relative_dir, root_id=root_id, accent_color=ACCENT_COLOR)
 
     def _open_attachment_picker(self, relative_dir: str = ".", root_id: str = "workspace") -> None:
-        clean_dir = relative_dir or "."
-        root_path = self._attachment_root_path(root_id)
-        title = f"Attach File · {self._attachment_root_label(root_id)}"
-        subtitle = self._root_relative_label(root_path / clean_dir, root_path)
-        items = self._attachment_picker_items(clean_dir, root_id=root_id)
-        self.push_screen(
-            SelectionPickerModal(
-                title=title,
-                subtitle=subtitle,
-                confirm_label="Open / Attach",
-                empty_text="No attachable files in this folder.",
-                items=items,
-            ),
-            lambda result: self._on_attachment_picker_close(root_id, clean_dir, result),
-        )
+        open_tui_attachment_picker(self, relative_dir, root_id=root_id, accent_color=ACCENT_COLOR)
 
     def _on_attachment_picker_close(self, root_id: str, current_dir: str, result: Optional[Dict[str, str]]) -> None:
-        selection = str((result or {}).get("id") or "").strip()
-        if not selection:
-            self.query_one(ChatInput).focus()
-            return
-        if selection.startswith("root:"):
-            _, next_root, next_dir = selection.split(":", 2)
-            self._open_attachment_picker(next_dir or ".", root_id=next_root or "workspace")
-            return
-        if selection.startswith("nav:"):
-            self._open_attachment_picker(selection[4:] or ".", root_id=root_id)
-            return
-        if selection.startswith("file:"):
-            target = selection[5:]
-            self._attach_file_path(self._attachment_root_path(root_id) / target)
-        self.query_one(ChatInput).focus()
+        on_tui_attachment_picker_close(self, root_id, current_dir, result, accent_color=ACCENT_COLOR)
 
     def _refresh_command_popup(self, value: str) -> None:
-        popup = self._command_popup()
-        options = self._command_options()
-        chat_input = self.query_one(ChatInput)
-        query = popup_command_query(value, chat_input.cursor_position)
-        next_matches = command_entries_for_query(query)
-        if not next_matches or self.streaming or self._await_shell_confirm:
-            next_matches = []
-
-        if not next_matches:
-            self._command_matches = []
-            popup.display = False
-            options.clear_options()
-            options.styles.height = 0
-            popup.styles.height = 0
-            popup.offset = (0, 0)
-            return
-
-        self._command_matches = next_matches
-        option_rows = min(len(self._command_matches), 8)
-        option_height = option_rows + 1
-        popup_height = option_height + 5
-        separator = self.query_one("#footer-sep", Static)
-        popup.display = True
-        popup.styles.height = popup_height
-        popup.styles.width = max(44, min(72, max(chat_input.region.width, 44)))
-        popup.offset = (max(1, int(chat_input.region.x)), max(1, int(separator.region.y) - popup_height))
-        options.styles.height = option_height
-        rendered = [
-            Option(
-                f"[bold #6366f1]{esc(command_label(entry))}[/bold #6366f1] [dim]{esc(entry.description)}[/dim]",
-                id=str(index),
-            )
-            for index, entry in enumerate(self._command_matches)
-        ]
-        options.clear_options()
-        options.add_options(rendered)
-        options.highlighted = 0
+        refresh_tui_command_popup(self, value, chat_input_cls=ChatInput)
 
     def _hide_command_popup(self) -> None:
-        self._command_matches = []
-        self._command_options().clear_options()
-        self._command_popup().display = False
-        self._command_popup().styles.height = 0
-        self._command_popup().offset = (0, 0)
+        hide_tui_command_popup(self)
 
     def _command_popup_active(self) -> bool:
-        return bool(self._command_matches) and bool(self._command_popup().display)
+        return tui_command_popup_active(self)
 
     def _move_command_selection(self, delta: int) -> None:
-        if not self._command_popup_active():
-            return
-        options = self._command_options()
-        current = 0 if options.highlighted is None else int(options.highlighted)
-        count = len(self._command_matches)
-        if count <= 0:
-            return
-        options.highlighted = (current + delta) % count
-        options.scroll_to_highlight(top=False)
+        move_tui_command_selection(self, delta)
 
     def _accept_command_selection(self) -> bool:
-        if not self._command_popup_active():
-            return False
-        options = self._command_options()
-        highlighted = 0 if options.highlighted is None else int(options.highlighted)
-        if highlighted < 0 or highlighted >= len(self._command_matches):
-            return False
-        entry = self._command_matches[highlighted]
-        chat_input = self.query_one(ChatInput)
-        span = active_command_span(chat_input.value, chat_input.cursor_position)
-        if span is None:
-            chat_input.value = entry.insert_text
-            chat_input.cursor_position = len(chat_input.value)
-        else:
-            start, end = span
-            chat_input.value = f"{chat_input.value[:start]}{entry.insert_text}{chat_input.value[end:]}"
-            chat_input.cursor_position = start + len(entry.insert_text)
-        self._refresh_command_popup(chat_input.value)
-        return True
+        return accept_tui_command_selection(self, chat_input_cls=ChatInput)
 
     def _should_accept_popup_on_enter(self, text: str) -> bool:
-        if not self._command_popup_active():
-            return False
-        chat_input = self.query_one(ChatInput)
-        query = active_command_query(chat_input.value, chat_input.cursor_position).strip()
-        if not query or " " in query:
-            return False
-        base = query.lower()
-        return base not in exact_command_inputs()
+        _ = text
+        return should_tui_accept_popup_on_enter(self, chat_input_cls=ChatInput)
 
     @staticmethod
     def _config_for_editor(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -1936,50 +1140,13 @@ class AlphanusTUI(App):
             self._write_info(f"Config warning: {warning}")
 
     def _merge_live_config(self, base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
-        merged: Dict[str, Any] = dict(base)
-        for key, value in updates.items():
-            if isinstance(value, dict) and isinstance(base.get(key), dict):
-                merged[key] = self._merge_live_config(base[key], value)
-            else:
-                merged[key] = value
-        return merged
+        return merge_tui_live_config(base, updates)
 
     def _install_stream_drain_timer(self) -> None:
-        interval_s = self._timing_config().stream_drain_interval_s
-        current_timer = getattr(self, "_stream_drain_timer", None)
-        current_interval = getattr(current_timer, "_alphanus_interval_s", None)
-        if current_timer is not None and current_interval == interval_s:
-            return
-        if current_timer is not None and hasattr(current_timer, "stop"):
-            try:
-                current_timer.stop()
-            except Exception:
-                pass
-        timer = self.set_interval(interval_s, self._drain_stream_event_queue)
-        try:
-            setattr(timer, "_alphanus_interval_s", interval_s)
-        except Exception:
-            pass
-        self._stream_drain_timer = timer
+        install_tui_stream_drain_timer(self)
 
     def _apply_tui_config(self) -> None:
-        self._ui_config = UiRuntimeConfig.from_config(self.agent.config)
-        self._ui_timing = self._ui_config.timing
-        self._chat_log_max_lines = self._ui_config.chat_log_max_lines
-        self._tree_compaction_enabled = self._ui_config.tree_compaction_enabled
-        self._inactive_assistant_char_limit = self._ui_config.inactive_assistant_char_limit
-        self._inactive_tool_argument_char_limit = self._ui_config.inactive_tool_argument_char_limit
-        self._inactive_tool_content_char_limit = self._ui_config.inactive_tool_content_char_limit
-        self._scroll_interval = self._ui_timing.scroll_interval_s
-        self._install_stream_drain_timer()
-        self.conv_tree = self._apply_tree_compaction_policy(self.conv_tree)
-        try:
-            self._log().max_lines = self._chat_log_max_lines
-        except Exception:
-            pass
-        self._update_status1()
-        self._update_status2()
-        self._update_sidebar()
+        apply_tui_runtime_config(self)
 
     def _on_config_editor_close(self, result: Optional[Dict[str, Any]]) -> None:
         if not result:
@@ -2029,147 +1196,26 @@ class AlphanusTUI(App):
         self.push_screen(CodeViewerModal(code, language, title=f"Code Block {index}"))
 
     def _update_sidebar(self) -> None:
-        sidebar = self.query_one("#sidebar", Vertical)
-        if not sidebar.display:
-            return
-        if self._focused_panel != "tree":
-            self._tree_cursor_id = self.conv_tree.current_id
-        else:
-            self._sync_tree_cursor()
-        width = self._sidebar_render_width(sidebar)
-        self.query_one("#sidebar-tree-meta", Static).update(f"{self.conv_tree.turn_count()} turns")
-        self.query_one("#sidebar-tree-content", Static).update(
-            render_sidebar_tree_markup(self.conv_tree, width=width, selected_id=self._tree_cursor_id)
-        )
-        self.query_one("#sidebar-inspector-content", Static).update(
-            render_sidebar_inspector_markup(self.conv_tree, width=width, selected_id=self._tree_cursor_id)
-        )
+        update_tui_sidebar(self)
 
     @staticmethod
     def _sidebar_render_width(sidebar: Vertical) -> int:
-        width = int(getattr(sidebar.region, "width", 0) or 0)
-        if width <= 0:
-            width = int(getattr(sidebar.size, "width", 0) or 0)
-        return max(20, width - 8) if width > 0 else 30
+        return tui_sidebar_render_width(sidebar)
 
     def _write_turn_user(self, turn: Turn) -> None:
-        self._write("")
-        if turn.branch_root:
-            label = f" ⎇  {esc(turn.label)}" if turn.label else " ⎇  branch"
-            self._write(f"[dim #6366f1]{label}[/dim #6366f1]")
-        attachment_summary = turn.attachment_summary()
-        if attachment_summary:
-            self._write_user_bar_line(
-                f"[dim]attachments:[/dim] [#a1a1aa]{esc(attachment_summary)}[/#a1a1aa]",
-                content_indent=2,
-            )
-        body = turn.user_text()
-        for line in body.splitlines() or [""]:
-            self._write_user_bar_wrapped_line(line)
+        write_tui_turn_user(self, turn, accent_color=ACCENT_COLOR)
 
     def _write_skill_exchanges(self, turn: Turn) -> None:
-        pending_details: List[Tuple[str, str]] = []
-        for msg in turn.skill_exchanges:
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                if not self._show_tool_details:
-                    continue
-                for call in msg["tool_calls"]:
-                    name = call.get("function", {}).get("name", "unknown")
-                    raw_args = call.get("function", {}).get("arguments", "{}")
-                    try:
-                        args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                    except Exception:
-                        args = raw_args
-                    pending_details.append((name, self._live_preview.compact_tool_args(name, args)))
-                    self._live_preview.write_static_preview(
-                        name, args, self._write_assistant_bar_line, lambda markup, _indent=0: self._write_assistant_bar_line(markup), self._write_code_block
-                    )
-            elif msg.get("role") == "tool":
-                name = msg.get("name", "tool")
-                try:
-                    payload = json.loads(msg.get("content", "{}"))
-                except Exception:
-                    payload = {"ok": False, "error": {"message": "invalid tool response"}}
-                if payload.get("ok") and self._show_tool_details:
-                    self._live_preview.write_result_preview(
-                        name, payload, self._write_assistant_bar_line, lambda markup, _indent=0: self._write_assistant_bar_line(markup), self._write_code_block
-                    )
-                if not self._show_tool_result_line(name, bool(payload.get("ok"))):
-                    continue
-                detail = ""
-                for idx, (pending_name, pending_detail) in enumerate(pending_details):
-                    if pending_name == name:
-                        detail = pending_detail
-                        pending_details.pop(idx)
-                        break
-                if payload.get("ok"):
-                    self._write_tool_lifecycle_block(name, True, detail or "completed")
-                else:
-                    em = payload.get("error", {}).get("message", "failed")
-                    self._write_tool_lifecycle_block(name, False, f"{detail}   {em}".strip())
+        write_tui_skill_exchanges(self, turn)
 
     def _write_completed_turn_asst(self, turn: Turn) -> None:
-        self._write("")
-        self._write_skill_exchanges(turn)
-
-        content = turn.assistant_content or ""
-        state = str(getattr(turn, "assistant_state", "") or ("cancelled" if "[interrupted]" in content else "done"))
-        interrupted = state == "cancelled"
-        failed = state == "error"
-        display = content.replace("\n[interrupted]", "").rstrip()
-        self._render_static_markdown(display)
-
-        if interrupted:
-            self._write("[dim red]  ✖ interrupted[/dim red]")
-        elif failed:
-            self._write("[dim red]  ! failed[/dim red]")
+        write_tui_completed_turn_assistant(self, turn)
 
     def _rebuild_viewport(self, *, preserve_scroll: bool = False) -> None:
-        scroll_anchor = self._capture_scroll_anchor() if preserve_scroll else None
-        log = self._log()
-        log.clear_entries()
-        for turn in self.conv_tree.active_path:
-            if turn.id == "root":
-                continue
-            self._write_turn_user(turn)
-            if turn.assistant_content:
-                self._write_completed_turn_asst(turn)
-        if scroll_anchor is not None:
-            self.call_after_refresh(lambda anchor=scroll_anchor: self._restore_scroll_anchor(anchor))
-        else:
-            self._maybe_scroll_end(force=True)
+        rebuild_tui_viewport(self, preserve_scroll=preserve_scroll)
 
     def _start_stream(self, turn: Turn, user_input: str, attachment_paths: List[str]) -> None:
-        self.streaming = True
-        self._auto_follow_stream = True
-        self._active_turn_id = turn.id
-        self._reply_acc = ""
-        self._live_preview.reset()
-        self._pending_tool_details = []
-        self._last_stream_error_text = ""
-        self._reasoning_open = False
-        self._content_open = False
-        self._buf_r = ""
-        self._buf_c = ""
-        self._reset_fence_state()
-        self._stream_runtime = StreamRuntimeState()
-        self._stop_event = threading.Event()
-        self._partial().display = True
-
-        self._write("")
-
-        branch_labels = [t.label for t in self.conv_tree.active_path if t.branch_root and t.label]
-        history_messages = self.conv_tree.history_messages()
-        self._stream_worker(
-            turn.id,
-            history_messages,
-            user_input,
-            branch_labels,
-            attachment_paths,
-            list(self._loaded_skill_ids),
-            self.thinking,
-            self._stop_event,
-        )
+        start_tui_turn_stream(self, turn, user_input, attachment_paths)
 
     @work(thread=True, exclusive=True)
     def _stream_worker(
@@ -2184,9 +1230,7 @@ class AlphanusTUI(App):
         stop_event: threading.Event,
     ) -> None:
         def on_event(event: Dict[str, Any]) -> None:
-            self._stream_runtime.event_queue.put(event)
-            if event.get("type") in {"tool_phase_started", "tool_call", "tool_result", "error", "info", "pass_end", "usage"}:
-                self.call_from_thread(self._drain_stream_event_queue)
+            enqueue_tui_stream_event(self, event)
 
         result = self.agent.run_turn(
             history_messages=history_messages,
@@ -2203,355 +1247,44 @@ class AlphanusTUI(App):
         self.call_from_thread(self._on_stream_end, turn_id, result)
 
     def _visible_reasoning_text(self, text: str) -> str:
-        if not text:
-            return ""
-        text = re.sub(r"</?think>", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"</?tool_call>", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"</?function(?:=[^>]+)?>", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"</?parameter(?:=[^>]+)?>", "", text, flags=re.IGNORECASE)
-        filtered_lines = [line for line in text.splitlines() if not self._is_tool_trace_line(line)]
-        visible = "\n".join(filtered_lines).strip()
-        return visible
+        filtered_lines = [line for line in visible_tui_reasoning_text(text).splitlines() if not self._is_tool_trace_line(line)]
+        return "\n".join(filtered_lines).strip()
 
     def _flush_reasoning_buffer(self) -> None:
-        if not self._buf_r:
-            self._set_partial_renderable(None)
-            return
-        text = self._buf_r
-        self._buf_r = ""
-        visible = self._visible_reasoning_text(text)
-        self._set_partial_renderable(None)
-        if visible:
-            self._write_assistant_bar_renderable(self._reasoning_panel_renderable(visible))
+        flush_tui_reasoning_buffer(self)
 
     def _close_reasoning_section(self) -> bool:
-        if not self._reasoning_open:
-            return False
-        self._flush_reasoning_buffer()
-        self._reasoning_open = False
-        return True
+        return close_tui_reasoning_section(self)
 
     def _refresh_deferred_partial(self) -> None:
-        stream_state = self._stream_runtime
-        if stream_state.deferred_live_preview is not None:
-            lines, language = stream_state.deferred_live_preview
-            stream_state.deferred_live_preview = None
-            self._update_live_preview_partial(lines, language)
-            return
-        if not stream_state.partial_dirty:
-            return
-        stream_state.partial_dirty = False
-        if self._reasoning_open and not self._content_open:
-            display = self._visible_reasoning_text(self._buf_r)
-            if display:
-                self._set_partial_renderable(self._bar_renderable(self._reasoning_panel_renderable(display), ASSISTANT_MESSAGE_BAR_COLOR))
-            else:
-                self._set_partial_renderable(None)
-            return
-        self._update_partial_content()
+        refresh_tui_deferred_partial(self)
 
     def _flush_content_buffer(self, include_partial: bool = False, *, update_partial: bool = True) -> None:
-        while "\n" in self._buf_c:
-            line, self._buf_c = self._buf_c.split("\n", 1)
-            if self._is_tool_trace_line(line):
-                continue
-            self._render_content_line(line)
-
-        if include_partial and self._buf_c:
-            if not self._is_tool_trace_line(self._buf_c):
-                if self._in_fence:
-                    if self._is_fence_line(self._buf_c):
-                        self._flush_fence_block()
-                    else:
-                        self._fence_lines.append(self._buf_c)
-                        self._flush_fence_block()
-                else:
-                    rendered, _ = render_md(self._buf_c, False)
-                    self._write_assistant_bar_wrapped_line(self._buf_c, rendered)
-            self._buf_c = ""
-            self._set_partial_renderable(None)
-            return
-
-        if update_partial:
-            self._update_partial_content()
-        else:
-            self._stream_runtime.partial_dirty = True
+        flush_tui_content_buffer(self, include_partial=include_partial, update_partial=update_partial)
 
     def _handle_content_token(self, token: str, *, update_partial: bool = True) -> None:
-        if not self._content_open:
-            self._content_open = True
-            if self._close_reasoning_section():
-                self._write_assistant_bar_line()
-        self._buf_c += token
-        self._append_reply_token(token)
-        self._flush_content_buffer(include_partial=False, update_partial=update_partial)
+        handle_tui_content_token(self, token, update_partial=update_partial)
 
     def _drain_stream_event_queue(self) -> None:
-        stream_state = self._stream_runtime
-        if stream_state.drain_active:
-            return
-
-        queued: List[Dict[str, Any]] = []
-        while True:
-            try:
-                queued.append(stream_state.event_queue.get_nowait())
-            except queue.Empty:
-                break
-
-        if not queued:
-            return
-
-        stream_state.drain_active = True
-        try:
-            for event in queued:
-                if event.get("type") in {"tool_phase_started", "tool_call", "tool_result", "error", "info", "pass_end", "usage"}:
-                    self._refresh_deferred_partial()
-                self._on_agent_event(event)
-            self._refresh_deferred_partial()
-            now = time.monotonic()
-            if now - self._last_scroll >= self._scroll_interval:
-                self._maybe_scroll_end()
-                self._last_scroll = now
-        finally:
-            stream_state.drain_active = False
+        drain_tui_stream_events(self)
 
     def _on_agent_event(self, event: Dict[str, Any]) -> None:
-        etype = event.get("type")
-        stream_drain_active = bool(self._stream_runtime.drain_active)
-
-        if etype == "reasoning_token":
-            token = event.get("text", "")
-            if not self._reasoning_open:
-                self._reasoning_open = True
-            self._buf_r += token
-            if stream_drain_active:
-                self._stream_runtime.partial_dirty = True
-            else:
-                display = self._visible_reasoning_text(self._buf_r)
-                if display:
-                    self._set_partial_renderable(self._bar_renderable(self._reasoning_panel_renderable(display), ASSISTANT_MESSAGE_BAR_COLOR))
-                else:
-                    self._set_partial_renderable(None)
-
-        elif etype == "content_token":
-            token = event.get("text", "")
-            self._handle_content_token(token, update_partial=not stream_drain_active)
-
-        elif etype == "tool_phase_started":
-            # Preserve in-progress text before tool call deltas start.
-            self._close_reasoning_section()
-            self._flush_content_buffer(include_partial=True, update_partial=True)
-            self._content_open = False
-
-        elif etype == "tool_call_delta":
-            if not self._show_tool_details:
-                return
-            stream_id = str(event.get("stream_id") or "")
-            name = str(event.get("name") or "")
-            raw_arguments = str(event.get("raw_arguments") or "")
-            if stream_id and name:
-                rendered_preview = self._live_preview.update(
-                    stream_id,
-                    name,
-                    raw_arguments,
-                    self._write_assistant_bar_line,
-                    self._defer_live_preview_partial if stream_drain_active else self._update_live_preview_partial,
-                    lambda markup, _indent=0: self._write_assistant_bar_line(markup),
-                    self._write_code_block,
-                    self._clear_partial_preview,
-                )
-                if not rendered_preview:
-                    self._update_tool_call_partial(name, "streaming…")
-
-        elif etype == "tool_call":
-            self._close_reasoning_section()
-            name = event.get("name", "tool")
-            args = event.get("arguments", {})
-            stream_id = str(event.get("stream_id") or "")
-            detail = self._live_preview.compact_tool_args(name, args)
-            if self._show_tool_details:
-                self._pending_tool_details.append((name, detail))
-                self._update_tool_call_partial(name, detail)
-                streamed = (
-                    self._live_preview.close(
-                        stream_id,
-                        lambda markup, _indent=0: self._write_assistant_bar_line(markup),
-                        self._write_code_block,
-                        self._clear_partial_preview,
-                    )
-                    if stream_id
-                    else False
-                )
-                if not streamed:
-                    self._live_preview.write_static_preview(
-                        name, args, self._write_assistant_bar_line, lambda markup, _indent=0: self._write_assistant_bar_line(markup), self._write_code_block
-                    )
-            elif stream_id:
-                self._live_preview.close(
-                    stream_id,
-                    lambda markup, _indent=0: self._write_assistant_bar_line(markup),
-                    self._write_code_block,
-                    self._clear_partial_preview,
-                )
-
-        elif etype == "tool_result":
-            self._close_reasoning_section()
-            name = event.get("name", "tool")
-            result = event.get("result", {})
-            if result.get("ok"):
-                self._live_preview.write_result_preview(
-                    name, result, self._write_assistant_bar_line, lambda markup, _indent=0: self._write_assistant_bar_line(markup), self._write_code_block
-                )
-            self._clear_partial_preview()
-            if not self._show_tool_result_line(name, bool(result.get("ok"))):
-                return
-            detail = self._take_pending_tool_detail(name)
-            if result.get("ok"):
-                self._write_tool_lifecycle_block(name, True, detail or "completed")
-            else:
-                msg = result.get("error", {}).get("message", "failed")
-                self._write_tool_lifecycle_block(name, False, f"{detail}   {msg}".strip())
-
-        elif etype == "error":
-            self._last_stream_error_text = str(event.get("text", "Unknown error"))
-            self._write_error(self._last_stream_error_text)
-
-        elif etype == "info":
-            self._write_info(str(event.get("text", "")))
-
-        elif etype == "pass_end":
-            finish_reason = str(event.get("finish_reason") or "")
-            has_content = bool(event.get("has_content"))
-            has_tool_calls = bool(event.get("has_tool_calls"))
-            # Some model passes end with reasoning-only stop and no
-            # visible output. Drop that provisional reasoning so it doesn't leak.
-            if finish_reason in {"stop", "length"} and not has_content and not has_tool_calls:
-                self._buf_r = ""
-                self._set_partial_renderable(None)
-
-        elif etype == "usage":
-            usage = event.get("usage") or {}
-            if isinstance(usage, dict):
-                self._update_context_usage_from_payload(usage)
-
-        if stream_drain_active:
-            return
-
-        now = time.monotonic()
-        if now - self._last_scroll >= self._scroll_interval:
-            self._maybe_scroll_end()
-            self._last_scroll = now
+        on_tui_agent_event(self, event)
 
     def _on_stream_end(self, turn_id: str, result: AgentTurnResult) -> None:
-        self._drain_stream_event_queue()
-        self._set_partial_renderable(None, visible=False)
-
-        self._live_preview.close_all(
-            lambda markup, _indent=0: self._write_assistant_bar_line(markup),
-            self._write_code_block,
-            self._clear_partial_preview,
-        )
-
-        if self._buf_r and not self._content_open:
-            self._close_reasoning_section()
-        elif self._reasoning_open and not self._content_open:
-            self._close_reasoning_section()
-
-        self._flush_content_buffer(include_partial=True)
-
-        reply = result.content if result.content else self._reply_acc
-        if result.status == "done" and not self._content_open and reply.strip():
-            self._render_static_markdown(reply)
-
-        if turn_id in self.conv_tree.nodes:
-            for msg in result.skill_exchanges:
-                self.conv_tree.append_skill_exchange(turn_id, msg)
-
-        if result.status == "done":
-            self.conv_tree.complete_turn(turn_id, reply)
-        elif result.status == "cancelled":
-            self.conv_tree.cancel_turn(turn_id, reply)
-        else:
-            self.conv_tree.fail_turn(turn_id, reply)
-        usage = result.journal.get("model_usage", {}) if isinstance(result.journal, dict) else {}
-        if isinstance(usage, dict):
-            self._update_context_usage_from_payload(usage)
-        loaded_skill_ids = result.journal.get("loaded_skill_ids", []) if isinstance(result.journal, dict) else []
-        if isinstance(loaded_skill_ids, list):
-            self._loaded_skill_ids = [
-                skill.id
-                for skill in self.agent.skill_runtime.skills_by_ids(
-                    [str(item).strip() for item in loaded_skill_ids if str(item).strip()]
-                )
-            ]
-
-        if result.status != "done":
-            if result.error and result.error != self._last_stream_error_text:
-                self._write_error(result.error)
-            if result.status == "cancelled":
-                self._write("[bold red]  ✖ interrupted[/bold red]")
-
-        self._save_active_session()
-        self._write("")
-        self._maybe_scroll_end()
-        self.streaming = False
-        self._live_preview.reset()
-        self._active_turn_id = None
-        self._esc_pending = False
-        self._auto_follow_stream = True
-        self._update_status1()
-        self._update_status2()
-        self._update_sidebar()
-        self._update_topbar()
+        finish_tui_turn_stream(self, turn_id, result)
 
     def _confirm_shell_command(self, command: str) -> bool:
-        event = threading.Event()
-        holder = {"value": False}
-        self.call_from_thread(self._begin_shell_confirm, command, event, holder)
-        if not event.wait(timeout=self._timing_config().shell_confirm_timeout_s):
-            self.call_from_thread(self._expire_shell_confirm, event)
-            return False
-        return bool(holder.get("value", False))
+        return confirm_tui_shell_command(self, command)
 
     def _begin_shell_confirm(self, command: str, event: threading.Event, holder: Dict[str, bool]) -> None:
-        self._await_shell_confirm = True
-        self._shell_confirm_command = command
-        self._shell_confirm_event = event
-        self._shell_confirm_result = holder
-        self._write(f"[yellow]  ? Run shell command: {esc(command)}[/yellow]")
-        self._update_status2()
+        begin_tui_shell_confirm(self, command, event, holder, esc=esc)
 
     def _expire_shell_confirm(self, event: threading.Event) -> None:
-        if not self._await_shell_confirm:
-            return
-        if self._shell_confirm_event is not event:
-            return
-        if self._shell_confirm_result is not None:
-            self._shell_confirm_result["value"] = False
-        self._shell_confirm_event.set()
-        self._write("[dim red]  · shell command approval timed out[/dim red]")
-        self._await_shell_confirm = False
-        self._shell_confirm_command = ""
-        self._shell_confirm_event = None
-        self._shell_confirm_result = None
-        self._update_status2()
+        expire_tui_shell_confirm(self, event)
 
     def _finish_shell_confirm(self, approved: bool) -> None:
-        if not self._await_shell_confirm:
-            return
-        if self._shell_confirm_result is not None:
-            self._shell_confirm_result["value"] = approved
-        if self._shell_confirm_event is not None:
-            self._shell_confirm_event.set()
-        msg = "approved" if approved else "rejected"
-        color = "green" if approved else "red"
-        self._write(f"[dim {color}]  · shell command {msg}[/dim {color}]")
-
-        self._await_shell_confirm = False
-        self._shell_confirm_command = ""
-        self._shell_confirm_event = None
-        self._shell_confirm_result = None
-        self._update_status2()
+        finish_tui_shell_confirm(self, approved)
 
     def _send(self, text: str) -> None:
         attachments = list(self.pending)
@@ -2569,24 +1302,7 @@ class AlphanusTUI(App):
 
     @on(Input.Submitted, "#chat-input")
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        text = event.value.strip()
-        if not text:
-            self.query_one(ChatInput).value = ""
-            return
-        if self._should_accept_popup_on_enter(text):
-            self._accept_command_selection()
-            return
-        self.query_one(ChatInput).value = ""
-        self._hide_command_popup()
-        handled = self._handle_command(text)
-        if handled:
-            cmd = text.split(None, 1)[0].lower()
-            if cmd not in {"/quit", "/exit", "/q", "/config"}:
-                self._ensure_command_gap()
-            return
-        if not handled:
-            if not self.streaming:
-                self._send(text)
+        on_tui_input_submitted(self, event, chat_input_cls=ChatInput)
 
     @on(Input.Changed, "#chat-input")
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -2608,40 +1324,12 @@ class AlphanusTUI(App):
             index = int(option_id)
         except ValueError:
             return
-        if index < 0 or index >= len(self._command_matches):
+        if not select_tui_command_option(self, index, chat_input_cls=ChatInput):
             return
-        entry = self._command_matches[index]
-        chat_input = self.query_one(ChatInput)
-        span = active_command_span(chat_input.value, chat_input.cursor_position)
-        if span is None:
-            chat_input.value = entry.insert_text
-            chat_input.cursor_position = len(chat_input.value)
-        else:
-            start, end = span
-            chat_input.value = f"{chat_input.value[:start]}{entry.insert_text}{chat_input.value[end:]}"
-            chat_input.cursor_position = start + len(entry.insert_text)
-        chat_input.focus()
-        self._refresh_command_popup(chat_input.value)
+        self.query_one(ChatInput).focus()
 
     def action_handle_esc(self) -> None:
-        if self._await_shell_confirm:
-            self._finish_shell_confirm(False)
-            return
-        if self._command_popup_active():
-            self._hide_command_popup()
-            return
-        if not self.streaming:
-            self.query_one(ChatInput).value = ""
-            return
-        now = time.monotonic()
-        if not self._esc_pending:
-            self._esc_pending = True
-            self._esc_ts = now
-            self._update_status2()
-        else:
-            self._stop_event.set()
-            self._esc_pending = False
-            self._update_status2()
+        action_tui_handle_esc(self, chat_input_cls=ChatInput)
 
     def action_scroll_up(self) -> None:
         self._scroll().scroll_page_up()
@@ -2674,277 +1362,37 @@ class AlphanusTUI(App):
         return handle_tui_command(self, text)
 
     def _cmd_help(self) -> None:
-        self._write("")
-        col = max((len(command) for _, rows in HELP_SECTIONS for command, _ in rows), default=22) + 2
-        for section, rows in HELP_SECTIONS:
-            self._write_section_heading(section)
-            for c, desc in rows:
-                self._write_command_row(c, desc, col=col)
-        self._write("")
+        cmd_tui_help(self, help_sections=HELP_SECTIONS, accent_color=ACCENT_COLOR)
 
     def _cmd_tree(self) -> None:
-        self._write_section_heading("Tree")
-        for text, tag, active in render_tree_rows(self.conv_tree, width=80):
-            if tag == self.conv_tree.current_id:
-                self._write(f"  [bold {ACCENT_COLOR}]{esc(text)}[/bold {ACCENT_COLOR}]")
-            elif active:
-                self._write(f"  [{ACCENT_COLOR}]{esc(text)}[/{ACCENT_COLOR}]")
-            else:
-                self._write(f"  [#a1a1aa]{esc(text)}[/#a1a1aa]")
-        self._write("")
+        cmd_tui_tree(self, accent_color=ACCENT_COLOR)
 
     def _cmd_skills(self) -> None:
-        skills = self.agent.skill_runtime.list_skills()
-        loaded_skill_ids = set(getattr(self, "_loaded_skill_ids", []))
-        self._write_section_heading("Skills")
-        for skill in skills:
-            state, color = self.agent.skill_runtime.skill_status_label(skill)
-            source = self.agent.skill_runtime.skill_source_label(skill)
-            provenance = self.agent.skill_runtime.skill_provenance_label(skill)
-            self._write(
-                f"  [bold {ACCENT_COLOR}]{esc(skill.id)}[/bold {ACCENT_COLOR}] "
-                f"[#a1a1aa]({esc(skill.version)})[/#a1a1aa] "
-                f"[{color}]{state}[/{color}]"
-                f"{' [bold #22c55e]loaded[/bold #22c55e]' if skill.id in loaded_skill_ids else ''}"
-            )
-            self._write(f"    [#a1a1aa]{esc(skill.description)}[/#a1a1aa]")
-            source_bits = provenance
-            if source:
-                source_bits += f" · {source}"
-            self._write(f"    [#71717a]{esc(source_bits)}[/#71717a]")
-            flags = [
-                f"execution={'yes' if getattr(skill, 'execution_allowed', True) else 'no'}",
-                f"adapter={getattr(skill, 'adapter', 'agentskills')}",
-                f"user={'yes' if skill.user_invocable else 'no'}",
-                f"model={'no' if skill.disable_model_invocation else 'yes'}",
-            ]
-            tools = self.agent.skill_runtime._reported_skill_tools(skill)
-            if tools:
-                flags.append(f"tools={len(tools)}")
-            scripts = self.agent.skill_runtime._reported_skill_scripts(skill)
-            if scripts:
-                flags.append(f"scripts={len(scripts)}")
-            entrypoints = self.agent.skill_runtime._reported_skill_entrypoints(skill)
-            if entrypoints:
-                flags.append(f"entrypoints={len(entrypoints)}")
-            self._write(f"    [#71717a]{esc(' · '.join(flags))}[/#71717a]")
-            if not skill.available and skill.availability_reason:
-                code = esc(skill.availability_code or "blocked")
-                self._write(f"    [bold {ACCENT_COLOR}]blocked ({code}):[/bold {ACCENT_COLOR}] [#a1a1aa]{esc(skill.availability_reason)}[/#a1a1aa]")
-            validation_errors = list(getattr(skill, "validation_errors", []) or [])
-            if validation_errors:
-                self._write(f"    [#f59e0b]validation:[/#f59e0b] [#a1a1aa]{esc(validation_errors[0])}[/#a1a1aa]")
-        self._write("")
+        cmd_tui_skills(self, accent_color=ACCENT_COLOR)
 
     def _load_skill_into_session(self, skill_id: str) -> bool:
-        skill = self.agent.skill_runtime.get_skill(skill_id)
-        if not skill or not skill.enabled or not skill.available:
-            self._write_error(f"Skill not found or unavailable: {skill_id}")
-            return False
-        if not hasattr(self, "_loaded_skill_ids"):
-            self._loaded_skill_ids = []
-        if skill_id not in self._loaded_skill_ids:
-            self._loaded_skill_ids.append(skill_id)
-        self._loaded_skill_ids = [skill.id for skill in self.agent.skill_runtime.skills_by_ids(self._loaded_skill_ids)]
-        self._save_active_session()
-        return True
+        return load_tui_skill_into_session(self, skill_id)
 
     def _unload_skill_from_session(self, skill_id: str) -> bool:
-        if skill_id not in getattr(self, "_loaded_skill_ids", []):
-            self._write_error(f"Skill not loaded: {skill_id}")
-            return False
-        self._loaded_skill_ids = [item for item in self._loaded_skill_ids if item != skill_id]
-        self._save_active_session()
-        return True
+        return unload_tui_skill_from_session(self, skill_id)
 
     def _cmd_skill(self, arg: str) -> bool:
-        parts = arg.split()
-        if not parts:
-            return self._write_usage("/skill-on <id> | /skill-off <id> | /skill-unload <id> | /skill-unload-all | /skill-reload | /skill-info <id>")
-
-        sub = parts[0].lower()
-        if sub == "reload":
-            return self._reload_skills()
-
-        if sub in {"on", "off"}:
-            if len(parts) < 2:
-                return self._write_usage("/skill-on <id> | /skill-off <id>")
-            skill_id = parts[1]
-            ok = self.agent.skill_runtime.set_enabled(skill_id, sub == "on")
-            if not ok:
-                self._write_error(f"Skill not found: {skill_id}")
-            else:
-                if sub == "off":
-                    self._loaded_skill_ids = [item for item in self._loaded_skill_ids if item != skill_id]
-                    self._save_active_session()
-                self._write_info(f"Skill {skill_id} {'enabled' if sub == 'on' else 'disabled'}")
-            return True
-
-        if sub == "unload-all":
-            self._loaded_skill_ids = []
-            self._save_active_session()
-            self._write_info("Unloaded all session skills")
-            return True
-
-        if sub == "unload":
-            if len(parts) < 2:
-                return self._write_usage("/skill-unload <id>")
-            if self._unload_skill_from_session(parts[1]):
-                self._write_info(f"Unloaded skill {parts[1]}")
-            return True
-
-        if sub == "info":
-            if len(parts) < 2:
-                return self._write_usage("/skill-info <id>")
-            skill = self.agent.skill_runtime.get_skill(parts[1])
-            if not skill:
-                self._write_error(f"Skill not found: {parts[1]}")
-                return True
-            self._write_section_heading(skill.name)
-            self._write(f"  [#a1a1aa]{esc(skill.description)}[/#a1a1aa]")
-            enabled, color = self.agent.skill_runtime.skill_status_label(skill)
-            self._write_detail_line("id", skill.id)
-            self._write_detail_line("version", skill.version)
-            self._write_detail_line("status", f"[{color}]{enabled}[/{color}]", value_markup=True)
-            self._write_detail_line("provenance", self.agent.skill_runtime.skill_provenance_label(skill))
-            self._write_detail_line("source", self.agent.skill_runtime.skill_source_label(skill) or "unknown")
-            self._write_detail_line("execution_allowed", str(bool(getattr(skill, "execution_allowed", True))).lower())
-            self._write_detail_line("adapter", getattr(skill, "adapter", "agentskills"))
-            self._write_detail_line("availability_code", skill.availability_code or "ready")
-            self._write_detail_line("availability", skill.availability_reason or "ready")
-            self._write_detail_line("tools", ", ".join(self.agent.skill_runtime._reported_skill_tools(skill)) or "none")
-            self._write_detail_line("user_invocable", str(skill.user_invocable).lower())
-            self._write_detail_line("model_invocable", str((not skill.disable_model_invocation)).lower())
-            scripts = ", ".join(self.agent.skill_runtime._reported_skill_scripts(skill)) or "none"
-            entrypoints = ", ".join(entry.name for entry in self.agent.skill_runtime._reported_skill_entrypoints(skill)) or "none"
-            self._write_detail_line("scripts", scripts)
-            self._write_detail_line("entrypoints", entrypoints)
-            self._write_detail_line("validation_errors", "; ".join(getattr(skill, "validation_errors", []) or []) or "none")
-            self._write("")
-            return True
-
-        return self._write_usage("/skill-on <id> | /skill-off <id> | /skill-unload <id> | /skill-unload-all | /skill-reload | /skill-info <id>")
+        return cmd_tui_skill(self, arg)
 
     def _cmd_memory(self, arg: str) -> bool:
-        sub = arg.strip().lower()
-        if sub == "stats":
-            stats = self.agent.skill_runtime.memory.stats()
-            self._write_section_heading("Memory Stats")
-            self._write_detail_line("count", str(stats["count"]))
-            self._write_detail_line("mode", str(stats.get("mode_label", "")))
-            self._write_detail_line("allow_model_download", str(stats.get("allow_model_download", False)).lower())
-            self._write_detail_line("encoder_status", str(stats.get("encoder_status", "")))
-            self._write_detail_line("encoder_source", str(stats.get("encoder_source", "")))
-            if stats.get("encoder_detail"):
-                self._write_detail_line("encoder_detail", str(stats.get("encoder_detail", "")))
-            self._write_detail_line("model", str(stats["model_name"]))
-            self._write_detail_line("recommended_model", str(stats.get("recommended_model_name", "")))
-            self._write_detail_line("dimension", str(stats["dimension"]))
-            self._write_detail_line("by_type", json.dumps(stats["by_type"]))
-            self._write("")
-            return True
-        return self._write_usage("/memory-stats")
+        return cmd_tui_memory(self, arg)
 
     def _cmd_context(self, arg: str) -> bool:
-        if arg.strip():
-            return self._write_usage("/context")
-        used = self._context_tokens()
-        total = self._context_window_tokens()
-        percent = context_usage_percent(used, total)
-        self._write_section_heading("Context")
-        self._write_detail_line("usage", "—" if percent is None else f"{percent}%")
-        if used is None or total is None:
-            token_line = f"{'—' if used is None else used} / {'—' if total is None else total}"
-        else:
-            token_line = f"{used} / {total}"
-        self._write_detail_line("tokens", token_line)
-        self._write("")
-        return True
+        return cmd_tui_context(self, arg)
 
     def _cmd_doctor(self) -> None:
-        report = self.agent.doctor_report()
-        self._write_section_heading("Doctor")
-        agent = report.get("agent", {})
-        workspace = report.get("workspace", {})
-        memory = report.get("memory", {})
-        search = report.get("search", {})
-        self._write_detail_line("endpoint_ready", str(agent.get("ready", False)).lower())
-        if agent.get("endpoint_policy_error"):
-            self._write_detail_line("endpoint_policy", str(agent.get("endpoint_policy_error")))
-        self._write_detail_line("workspace", str(workspace.get("path", "")))
-        self._write_detail_line("workspace_writable", str(workspace.get("writable", False)).lower())
-        self._write_detail_line("memory_mode", str(memory.get("mode", "")))
-        self._write_detail_line("memory_allow_model_download", str(memory.get("allow_model_download", False)).lower())
-        self._write_detail_line("memory_encoder_status", str(memory.get("encoder_status", "")))
-        self._write_detail_line("memory_encoder_source", str(memory.get("encoder_source", "")))
-        if memory.get("encoder_detail"):
-            self._write_detail_line("memory_encoder_detail", str(memory.get("encoder_detail", "")))
-        self._write_detail_line("memory_model", str(memory.get("model_name", "")))
-        self._write_detail_line("recommended_model", str(memory.get("recommended_model_name", "")))
-        self._write_detail_line("search_provider", str(search.get("provider", "")))
-        self._write_detail_line("search_ready", str(search.get("ready", False)).lower())
-        if search.get("reason"):
-            self._write_detail_line("search_reason", str(search.get("reason")))
-        self._write_section_heading("Skills")
-        for skill in report.get("skills", []):
-            line = (
-                f"  [bold {ACCENT_COLOR}]{esc(str(skill.get('id', '')))}[/bold {ACCENT_COLOR}] "
-                f"[#a1a1aa]({esc(str(skill.get('provenance', '')))} · {esc(str(skill.get('availability_code', 'ready')))})[/#a1a1aa] "
-                f"[#a1a1aa]{esc(str(skill.get('status', 'unknown')))}[/#a1a1aa]"
-            )
-            self._write(line)
-            reason = str(skill.get("availability_reason", "")).strip()
-            if reason and reason != "ready":
-                self._write(f"    [#a1a1aa]{esc(reason)}[/#a1a1aa]")
-            capabilities: List[str] = []
-            capabilities.append(f"execution={'yes' if skill.get('execution_allowed', True) else 'no'}")
-            capabilities.append(f"adapter={skill.get('adapter', 'agentskills')}")
-            if skill.get("tools"):
-                capabilities.append(f"tools={len(skill.get('tools', []))}")
-            if skill.get("scripts"):
-                capabilities.append(f"scripts={len(skill.get('scripts', []))}")
-            if skill.get("entrypoints"):
-                capabilities.append(f"entrypoints={len(skill.get('entrypoints', []))}")
-            capabilities.append(f"user={'yes' if skill.get('user_invocable', True) else 'no'}")
-            capabilities.append(f"model={'yes' if skill.get('model_invocable', True) else 'no'}")
-            self._write(f"    [#71717a]{esc(' · '.join(capabilities))}[/#71717a]")
-            validation_errors = [str(item) for item in skill.get("validation_errors", []) if str(item).strip()]
-            if validation_errors:
-                self._write(f"    [#f59e0b]validation:[/#f59e0b] [#a1a1aa]{esc(validation_errors[0])}[/#a1a1aa]")
-        self._write("")
+        cmd_tui_doctor(self, accent_color=ACCENT_COLOR)
 
     def _cmd_report(self, arg: str) -> bool:
-        path = arg.strip() or "alphanus-support-report.json"
-        payload = self.agent.build_support_bundle(self.conv_tree.to_dict())
-        try:
-            Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception as exc:
-            self._write_error(f"Report save failed: {exc}")
-            return True
-        self._write_info(f"Saved support bundle to {path}")
-        return True
+        return cmd_tui_report(self, arg)
 
     def _cmd_workspace(self, arg: str) -> bool:
-        sub = arg.strip().lower()
-        if sub == "tree":
-            tree = self.agent.skill_runtime.workspace.workspace_tree()
-            self._write_section_heading("Workspace Tree")
-            self._write_muted_lines(tree.splitlines())
-            self._write("")
-            return True
-        return self._write_usage("/workspace-tree")
+        return cmd_tui_workspace(self, arg)
 
     def _cmd_code(self, arg: str) -> bool:
-        target = arg.strip().lower() or "last"
-        if not self._code_blocks:
-            self._write_error("No code blocks available yet")
-            return True
-        if target == "last":
-            self._open_code_block(len(self._code_blocks))
-            return True
-        try:
-            index = int(target)
-        except ValueError:
-            return self._write_usage("/code [n|last]")
-        self._open_code_block(index)
-        return True
+        return cmd_tui_code(self, arg)
