@@ -86,7 +86,7 @@ def build_content(text: str, attachments: List[Tuple[str, str]]):
     if not attachments:
         return text
 
-    parts = []
+    image_parts = []
     prefix = ""
     summary_items: List[str] = []
     for path, kind in attachments:
@@ -94,7 +94,7 @@ def build_content(text: str, attachments: List[Tuple[str, str]]):
         summary_items.append(f"{name} ({kind})")
         if kind == "image":
             data, mime = encode_image(path)
-            parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
+            image_parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
         elif kind == "text":
             body = read_text_file(path)
             ext = Path(path).suffix.lstrip(".")
@@ -102,5 +102,6 @@ def build_content(text: str, attachments: List[Tuple[str, str]]):
             prefix += f"[File: {name}]\n{fence}\n\n"
 
     summary = f"[Attachments: {', '.join(summary_items)}]\n\n" if summary_items else ""
-    parts.append({"type": "text", "text": summary + prefix + text})
+    parts = [{"type": "text", "text": summary + prefix + text}]
+    parts.extend(image_parts)
     return parts

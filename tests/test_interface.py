@@ -1086,6 +1086,18 @@ def test_update_context_usage_accepts_llamacpp_prompt_eval_count() -> None:
     assert updates == ["topbar"]
 
 
+def test_update_context_usage_replaces_previous_turn_value() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._last_model_context_tokens = 768
+    updates: list[str] = []
+    tui._update_topbar = lambda: updates.append("topbar")
+
+    tui._update_context_usage_from_payload({"prompt_tokens": 256})
+
+    assert tui._last_model_context_tokens == 256
+    assert updates == ["topbar"]
+
+
 def test_apply_model_status_refresh_updates_visible_status_and_hot_swap_state() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._status_runtime = StatusRuntimeState(

@@ -4,6 +4,7 @@ import importlib.util
 import urllib.error
 from pathlib import Path
 
+from core.attachments import build_content
 from core.memory import VectorMemory
 from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
@@ -118,6 +119,18 @@ def test_open_url_preserves_browser_failure_message_in_runtime(mocker, tmp_path:
     assert out["error"]["code"] == "E_IO"
     assert out["error"]["message"] == "Unable to open browser in this environment"
     assert out["data"] == {"url": "https://example.com"}
+
+
+def test_build_content_places_user_text_before_image_parts(tmp_path: Path) -> None:
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(b"not-a-real-png")
+
+    content = build_content("describe the image", [(str(image_path), "image")])
+
+    assert isinstance(content, list)
+    assert content[0]["type"] == "text"
+    assert content[0]["text"].endswith("describe the image")
+    assert content[1]["type"] == "image_url"
 
 
 def test_open_url_accepts_file_urls_in_runtime(mocker, tmp_path: Path):

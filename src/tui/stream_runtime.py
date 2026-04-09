@@ -236,6 +236,7 @@ def on_agent_event(app: Any, event: Dict[str, Any]) -> None:
                     lambda markup, _indent=0: app._write_assistant_bar_line(markup),
                     app._write_code_block,
                     app._clear_partial_preview,
+                    retain_partial=True,
                 )
                 if stream_id
                 else False
@@ -268,7 +269,8 @@ def on_agent_event(app: Any, event: Dict[str, Any]) -> None:
                 lambda markup, _indent=0: app._write_assistant_bar_line(markup),
                 app._write_code_block,
             )
-        app._clear_partial_preview()
+        if name not in app._live_preview.draft_preview_tools or not result.get("ok"):
+            app._clear_partial_preview()
         if not app._show_tool_result_line(name, bool(result.get("ok"))):
             return
         detail = app._take_pending_tool_detail(name)
@@ -338,63 +340,89 @@ def drain_events(app: Any) -> None:
 
 
 def finish_turn_stream(app: Any, turn_id: str, result: AgentTurnResult) -> None:
-    drain_events(app)
-    app._set_partial_renderable(None, visible=False)
+    finalization_error = ""
+    try:
+        drain_events(app)
+        app._set_partial_renderable(None, visible=False)
 
-    app._live_preview.close_all(
-        lambda markup, _indent=0: app._write_assistant_bar_line(markup),
-        app._write_code_block,
-        app._clear_partial_preview,
-    )
+        app._live_preview.close_all(
+            lambda markup, _indent=0: app._write_assistant_bar_line(markup),
+            app._write_code_block,
+            app._clear_partial_preview,
+        )
 
-    if app._buf_r and not app._content_open:
-        close_reasoning_section(app)
-    elif app._reasoning_open and not app._content_open:
-        close_reasoning_section(app)
+        if app._buf_r and not app._content_open:
+            close_reasoning_section(app)
+        elif app._reasoning_open and not app._content_open:
+            close_reasoning_section(app)
 
-    flush_content_buffer(app, include_partial=True)
+        flush_content_buffer(app, include_partial=True)
 
-    reply = result.content if result.content else app._reply_acc
-    if result.status == "done" and not app._content_open and reply.strip():
-        app._render_static_markdown(reply)
+        reply = result.content if result.content else app._reply_acc
+        if result.status == "done" and not app._content_open and reply.strip():
+            app._render_static_markdown(reply)
 
-    if turn_id in app.conv_tree.nodes:
-        for msg in result.skill_exchanges:
-            app.conv_tree.append_skill_exchange(turn_id, msg)
+        if turn_id in app.conv_tree.nodes:
+            for msg in result.skill_exchanges:
+                app.conv_tree.append_skill_exchange(turn_id, msg)
 
-    if result.status == "done":
-        app.conv_tree.complete_turn(turn_id, reply)
-    elif result.status == "cancelled":
-        app.conv_tree.cancel_turn(turn_id, reply)
-    else:
-        app.conv_tree.fail_turn(turn_id, reply)
-    usage = result.journal.get("model_usage", {}) if isinstance(result.journal, dict) else {}
-    if isinstance(usage, dict):
-        app._update_context_usage_from_payload(usage)
-    loaded_skill_ids = result.journal.get("loaded_skill_ids", []) if isinstance(result.journal, dict) else []
-    if isinstance(loaded_skill_ids, list):
-        app._loaded_skill_ids = [
-            skill.id
-            for skill in app.agent.skill_runtime.skills_by_ids(
-                [str(item).strip() for item in loaded_skill_ids if str(item).strip()]
-            )
-        ]
+        if result.status == "done":
+            app.conv_tree.complete_turn(turn_id, reply)
+        elif result.status == "cancelled":
+            app.conv_tree.cancel_turn(turn_id, reply)
+        else:
+            app.conv_tree.fail_turn(turn_id, reply)
+        usage = result.journal.get("model_usage", {}) if isinstance(result.journal, dict) else {}
+        if isinstance(usage, dict):
+            app._update_context_usage_from_payload(usage)
+        loaded_skill_ids = result.journal.get("loaded_skill_ids", []) if isinstance(result.journal, dict) else []
+        if isinstance(loaded_skill_ids, list):
+            app._loaded_skill_ids = [
+                skill.id
+                for skill in app.agent.skill_runtime.skills_by_ids(
+                    [str(item).strip() for item in loaded_skill_ids if str(item).strip()]
+                )
+            ]
 
-    if result.status != "done":
-        if result.error and result.error != app._last_stream_error_text:
-            app._write_error(result.error)
-        if result.status == "cancelled":
-            app._write("[bold red]  ✖ interrupted[/bold red]")
+        if result.status != "done":
+            if result.error and result.error != app._last_stream_error_text:
+                app._write_error(result.error)
+            if result.status == "cancelled":
+                app._write("[bold red]  ✖ interrupted[/bold red]")
 
-    app._save_active_session()
-    app._write("")
-    app._maybe_scroll_end()
-    app.streaming = False
-    app._live_preview.reset()
-    app._active_turn_id = None
-    app._esc_pending = False
-    app._auto_follow_stream = True
-    app._update_status1()
-    app._update_status2()
-    app._update_sidebar()
-    app._update_topbar()
+        app._save_active_session()
+        app._write("")
+        app._maybe_scroll_end()
+    except Exception as exc:
+        finalization_error = str(exc).strip() or exc.__class__.__name__
+    finally:
+        try:
+            app._set_partial_renderable(None, visible=False)
+        except Exception:
+            pass
+        app.streaming = False
+        app._live_preview.reset()
+        app._active_turn_id = None
+        app._esc_pending = False
+        app._auto_follow_stream = True
+        try:
+            app._update_status1()
+        except Exception:
+            pass
+        try:
+            app._update_status2()
+        except Exception:
+            pass
+        try:
+            app._update_sidebar()
+        except Exception:
+            pass
+        try:
+            app._update_topbar()
+        except Exception:
+            pass
+        if finalization_error:
+            try:
+                app._write_error(f"Stream finalization failed: {finalization_error}")
+            except Exception:
+                pass

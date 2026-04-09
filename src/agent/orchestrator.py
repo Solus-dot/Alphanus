@@ -165,6 +165,85 @@ class TurnOrchestrator:
         return classification, selected
 
     @staticmethod
+    def _message_contains_vision_content(message: Dict[str, Any]) -> bool:
+        content = message.get("content")
+        if not isinstance(content, list):
+            return False
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type", "")).strip().lower()
+            if item_type in {"image", "image_url", "video"}:
+                return True
+            if "image" in item or "image_url" in item or "video" in item:
+                return True
+        return False
+
+    @classmethod
+    def _latest_user_message_contains_vision_content(cls, messages: List[Dict[str, Any]]) -> bool:
+        for message in reversed(messages):
+            if str(message.get("role", "")).strip().lower() != "user":
+                continue
+            return cls._message_contains_vision_content(message)
+        return False
+
+    @staticmethod
+    def _latest_user_message(messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        for message in reversed(messages):
+            if str(message.get("role", "")).strip().lower() == "user":
+                return message
+        return None
+
+    @staticmethod
+    def _leading_system_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        kept: List[Dict[str, Any]] = []
+        for message in messages:
+            if str(message.get("role", "")).strip().lower() != "system":
+                break
+            kept.append(message)
+        return kept
+
+    @staticmethod
+    def _is_tokenize_failure(exc: Exception) -> bool:
+        return "failed to tokenize prompt" in str(exc or "").strip().lower()
+
+    def _retry_simplified_vision_payload(
+        self,
+        *,
+        model_messages: List[Dict[str, Any]],
+        thinking: bool,
+        stop_event=None,
+        on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+        pass_id: str,
+    ):
+        latest_user = self._latest_user_message(model_messages)
+        if latest_user is None or not self._message_contains_vision_content(latest_user):
+            return None
+        simplified_messages = self._leading_system_messages(model_messages) + [latest_user]
+        payload = self.llm_client.build_payload(simplified_messages, thinking=thinking, tools=None)
+        self.emit(on_event, {"type": "info", "text": "Retrying image request with simplified multimodal payload..."})
+        return self.call_with_retry(payload, stop_event, on_event, pass_id=f"{pass_id}_vision_retry")
+
+    @classmethod
+    def _friendly_vision_request_error(cls, messages: List[Dict[str, Any]], exc: Exception) -> str:
+        if not cls._latest_user_message_contains_vision_content(messages):
+            return str(exc)
+        raw = str(exc or "").strip()
+        lowered = raw.lower()
+        if "failed to tokenize prompt" in lowered:
+            return (
+                "The current model endpoint rejected this image attachment while tokenizing the prompt. "
+                "Use a vision-capable model/template for image inputs, or remove the image attachment."
+            )
+        if "no user query found in messages" in lowered:
+            return (
+                "The current model endpoint rejected this image attachment because its chat template could not "
+                "render the multimodal prompt. Use a vision-capable model/template for image inputs, or remove "
+                "the image attachment."
+            )
+        return raw
+
+    @staticmethod
     def workspace_materialization_count(state: TurnState) -> int:
         return len(state.completion.materialized_paths)
 
@@ -533,20 +612,59 @@ class TurnOrchestrator:
         system_messages = [{"role": "system", "content": system_content}]
         model_messages = self.context_mgr.prune(system_messages + state.dynamic_history, self.context_budget_max_tokens)
         tools = self.skill_runtime.tools_for_turn(state.selected, ctx=state.ctx)
+        if (
+            tools
+            and self._latest_user_message_contains_vision_content(model_messages)
+            and not self.skill_runtime.core_tool_names_for_turn(state.selected, ctx=state.ctx)
+            and not self.skill_runtime.optional_tool_names(state.selected, ctx=state.ctx)
+        ):
+            tools = None
         payload = self.llm_client.build_payload(model_messages, thinking=thinking, tools=tools or None)
 
         try:
             stream_result = self.call_with_retry(payload, stop_event, on_event, pass_id=pass_id)
         except Exception as exc:
-            message = str(exc)
-            self.emit(on_event, {"type": "error", "text": message})
-            return AgentTurnResult(
-                status="error",
-                content="",
-                reasoning=state.full_reasoning,
-                skill_exchanges=state.skill_exchanges,
-                error=message,
-            )
+            if self._latest_user_message_contains_vision_content(model_messages) and self._is_tokenize_failure(exc):
+                try:
+                    stream_result = self._retry_simplified_vision_payload(
+                        model_messages=model_messages,
+                        thinking=thinking,
+                        stop_event=stop_event,
+                        on_event=on_event,
+                        pass_id=pass_id,
+                    )
+                except Exception as retry_exc:
+                    message = self._friendly_vision_request_error(model_messages, retry_exc)
+                    self.emit(on_event, {"type": "error", "text": message})
+                    return AgentTurnResult(
+                        status="error",
+                        content="",
+                        reasoning=state.full_reasoning,
+                        skill_exchanges=state.skill_exchanges,
+                        error=message,
+                    )
+                if stream_result is not None:
+                    pass
+                else:
+                    message = self._friendly_vision_request_error(model_messages, exc)
+                    self.emit(on_event, {"type": "error", "text": message})
+                    return AgentTurnResult(
+                        status="error",
+                        content="",
+                        reasoning=state.full_reasoning,
+                        skill_exchanges=state.skill_exchanges,
+                        error=message,
+                    )
+            else:
+                message = self._friendly_vision_request_error(model_messages, exc)
+                self.emit(on_event, {"type": "error", "text": message})
+                return AgentTurnResult(
+                    status="error",
+                    content="",
+                    reasoning=state.full_reasoning,
+                    skill_exchanges=state.skill_exchanges,
+                    error=message,
+                )
 
         if stream_result.finish_reason == "cancelled":
             return AgentTurnResult(

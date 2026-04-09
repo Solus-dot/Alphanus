@@ -1386,6 +1386,13 @@ class SkillRuntime:
     def core_tool_names(self) -> List[str]:
         return sorted(name for name in self.model_exposed_tool_names() if name in _CORE_TOOL_NAMES)
 
+    def core_tool_names_for_turn(
+        self,
+        selected: List[SkillManifest],
+        ctx: Optional[SkillContext] = None,
+    ) -> List[str]:
+        return sorted(name for name in self.allowed_tool_names(selected, ctx=ctx) if name in _CORE_TOOL_NAMES)
+
     def optional_tool_names(self, selected: List[SkillManifest], ctx: Optional[SkillContext] = None) -> List[str]:
         selected_map = {skill.id: skill for skill in selected}
         allowed: List[str] = []
