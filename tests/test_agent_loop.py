@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from agent.core import Agent
-from agent.types import ModelStatus, TurnClassification
+from agent.types import ModelStatus, TurnClassification, TurnPolicySnapshot
 from core.memory import VectorMemory
 from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
@@ -1762,6 +1762,36 @@ def test_explicit_external_path_adds_prompt_rule_and_skips_local_workspace_rule(
 
     assert result.status == "done"
     assert result.content == "Need confirmation."
+
+
+def test_policy_rules_require_shell_tool_exposure_for_external_path_guidance(runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    rules = agent.prompt_renderer.render_policy_rules(
+        TurnPolicySnapshot(
+            explicit_external_path="/tmp/other-project",
+            prefer_local_workspace_tools=True,
+            shell_tool_exposed=False,
+        )
+    )
+
+    assert "single shell command" not in rules
+    assert "shell_command is still available" not in rules
+    assert "no shell tool is exposed in this turn" in rules.lower()
+
+
+def test_policy_rules_include_shell_guidance_only_when_shell_tool_is_exposed(runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    rules = agent.prompt_renderer.render_policy_rules(
+        TurnPolicySnapshot(
+            explicit_external_path="/tmp/other-project",
+            prefer_local_workspace_tools=True,
+            shell_tool_exposed=True,
+        )
+    )
+
+    assert "use the exposed shell tool" in rules
+    assert "A shell tool is exposed in this turn" in rules
+    assert "shell_command is still available" not in rules
 
 
 def test_explicit_external_path_ignores_urls(runtime: SkillRuntime):

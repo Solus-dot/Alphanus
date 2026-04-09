@@ -93,6 +93,7 @@ class TurnPolicySnapshot:
     forced_action_retry: bool = False
     explicit_external_path: str = ""
     prefer_local_workspace_tools: bool = False
+    shell_tool_exposed: bool = False
 
 
 @dataclass(slots=True)

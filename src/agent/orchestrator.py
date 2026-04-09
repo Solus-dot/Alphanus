@@ -372,6 +372,7 @@ class TurnOrchestrator:
         )
 
     def build_policy_snapshot(self, state: TurnState) -> TurnPolicySnapshot:
+        turn_tool_names = set(self.skill_runtime.allowed_tool_names(state.selected, ctx=state.ctx))
         return TurnPolicySnapshot(
             search_mode=state.search_mode,
             time_sensitive_query=state.time_sensitive_query,
@@ -380,6 +381,7 @@ class TurnOrchestrator:
             forced_action_retry=state.forced_action_retry and not state.completion.tool_counts,
             explicit_external_path=state.explicit_external_path,
             prefer_local_workspace_tools=state.prefer_local_workspace_tools,
+            shell_tool_exposed="shell_command" in turn_tool_names,
         )
 
     def finalize_turn(self, system_content: str, state: TurnState, stop_event, on_event, pass_id: str, extra_rules: str = "") -> AgentTurnResult:

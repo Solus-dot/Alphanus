@@ -138,22 +138,37 @@ class PromptPolicyRenderer:
                 "- Only decline if the required workspace tool is unavailable or policy blocks the action."
             )
         if snapshot.explicit_external_path:
-            blocks.append(
+            block = (
                 "Explicit path rule:\n"
                 f"- The user explicitly named a filesystem path outside the current workspace: {snapshot.explicit_external_path}\n"
                 "- Do not silently substitute the current workspace root for that path.\n"
                 "- Acknowledge the mismatch if you need to reference the current workspace.\n"
                 "- If a tool can safely operate on the explicit path, pass that path directly.\n"
-                "- If the task requires running a command in that other directory, use a single shell command that targets the explicit path instead of assuming the current workspace."
             )
+            if snapshot.shell_tool_exposed:
+                block += (
+                    "- If command execution in that directory is required, use the exposed shell tool with the explicit path.\n"
+                    "- Do not assume commands run from the current workspace when the user named a different path."
+                )
+            else:
+                block += (
+                    "- If command execution in that directory is required, first note that no shell tool is exposed in this turn.\n"
+                    "- Ask to enable or load the needed skill before attempting command execution there."
+                )
+            blocks.append(block)
         if snapshot.prefer_local_workspace_tools:
             block = (
                 "Local workspace tool rule:\n"
                 "- This request is about local workspace files or folders.\n"
                 "- Prefer native workspace tools for local file creation, reading, editing, and folder creation whenever they can directly do the job.\n"
-                "- shell_command is still available, but use it only when workspace tools cannot directly accomplish the task or when shell output itself is the requested result.\n"
                 "- Do not use web_search, fetch_url, open_url, or play_youtube for local workspace file tasks."
             )
-            block += "\n- Do not use shell_command for generic folder creation or local file inspection when workspace tools already cover it."
+            if snapshot.shell_tool_exposed:
+                block += (
+                    "\n- A shell tool is exposed in this turn; use it only when workspace tools cannot directly accomplish the task or when shell output itself is required.\n"
+                    "- Do not use a shell tool for generic folder creation or local file inspection when workspace tools already cover it."
+                )
+            else:
+                block += "\n- No shell tool is exposed in this turn; stay within the available workspace tools."
             blocks.append(block)
         return "\n\n".join(blocks)
