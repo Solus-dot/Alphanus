@@ -444,7 +444,7 @@ class AlphanusTUI(App):
         for key in ("prompt_tokens", "input_tokens", "prompt_eval_count"):
             value = usage.get(key)
             if isinstance(value, (int, float)):
-                self._last_model_context_tokens = int(value)
+                self._last_model_context_tokens = max(0, int(value))
                 break
         self._update_topbar()
 

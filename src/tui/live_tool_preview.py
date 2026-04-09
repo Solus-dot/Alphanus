@@ -178,12 +178,14 @@ class LiveToolPreviewManager:
         write_indented: WriteIndentedFn,
         write_code: WriteCodeFn,
         clear_preview: ClearPreviewFn,
+        *,
+        retain_partial: bool = False,
     ) -> bool:
         state = self._streams.get(stream_id)
         if not state or not state.opened:
             return False
         if not state.closed:
-            self._flush_state_preview(state, write_indented, write_code, clear_preview)
+            self._flush_state_preview(state, write_indented, write_code, clear_preview, retain_partial=retain_partial)
             state.closed = True
         self._streams.pop(stream_id, None)
         return True
@@ -287,6 +289,8 @@ class LiveToolPreviewManager:
         write_indented: WriteIndentedFn,
         write_code: WriteCodeFn,
         clear_preview: ClearPreviewFn,
+        *,
+        retain_partial: bool = False,
     ) -> None:
         tail = state.line_buf
         if tail:
@@ -300,7 +304,8 @@ class LiveToolPreviewManager:
         state.opened = False
         state.preview_lines = []
         state.line_buf = ""
-        clear_preview()
+        if not retain_partial:
+            clear_preview()
 
     @staticmethod
     def _guess_language(filepath: str) -> Optional[str]:

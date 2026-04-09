@@ -85,3 +85,28 @@ def test_live_preview_resets_when_stream_rewinds():
     assert writes == ["[dim]  · file draft: demo.py[/dim]", "[dim]  · file draft: demo.py[/dim]"]
     assert previews[-1] == (["reset"], "python")
 
+
+def test_live_preview_can_leave_partial_visible_after_close():
+    manager = LiveToolPreviewManager()
+    previews = []
+    cleared = []
+
+    manager.update(
+        "s5",
+        "create_file",
+        '{"filepath":"demo.py","content":"print(1)"}',
+        lambda _text: None,
+        lambda lines, language: previews.append((list(lines), language)),
+    )
+
+    streamed = manager.close(
+        "s5",
+        lambda _text, _indent: None,
+        lambda _lines, _language, _indent: None,
+        lambda: cleared.append("cleared"),
+        retain_partial=True,
+    )
+
+    assert streamed is True
+    assert previews == [(["print(1)"], "python")]
+    assert cleared == []
