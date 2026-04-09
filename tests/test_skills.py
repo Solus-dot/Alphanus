@@ -650,7 +650,7 @@ def execute(tool_name, args, env):
     assert out["error"]["code"] == "E_IO"
 
 
-def test_prompt_only_skill_can_be_selected_from_description_metadata(tmp_path: Path):
+def test_select_skills_requires_explicit_session_load(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -728,7 +728,7 @@ def execute(tool_name, args, env):
     assert runtime.select_skills(ctx) == []
 
 
-def test_runtime_select_skills_returns_all_enabled_skills_for_neutral_request(tmp_path: Path):
+def test_select_skills_does_not_auto_load_enabled_skills_for_neutral_request(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -780,7 +780,7 @@ Search the internet.
     assert runtime.select_skills(ctx) == []
 
 
-def test_runtime_select_skills_keeps_search_skill_active_without_guessing(tmp_path: Path):
+def test_select_skills_does_not_auto_load_search_skill_without_explicit_load(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -1118,7 +1118,7 @@ def execute(tool_name, args, env):
     assert listed[0].validation_errors == ["missing required tools: create_file"]
 
 
-def test_command_definition_tool_is_blocked(tmp_path: Path):
+def test_command_definition_manifest_is_rejected(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -1177,15 +1177,8 @@ if __name__ == "__main__":
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("echo-skill")
-    assert skill is not None
-
-    assert "command_tools" in skill.blocked_features
-    assert "command_tools are disabled_pending_safe_runner" in skill.validation_errors
-    assert "command_tools disabled_pending_safe_runner" in skill.validation_warnings
-
-    report = runtime.skill_health_report()
-    assert report[0]["tools"] == []
-    assert report[0]["blocked_features"] == ["command_tools"]
+    assert skill is None
+    assert runtime.list_skills() == []
 
     ctx = SkillContext(
         user_input="echo this",
@@ -1194,7 +1187,7 @@ if __name__ == "__main__":
         workspace_root=str(ws),
         memory_hits=[],
     )
-    out = runtime.execute_tool_call("echo_text", {"text": "hello"}, selected=[skill], ctx=ctx)
+    out = runtime.execute_tool_call("echo_text", {"text": "hello"}, selected=[], ctx=ctx)
     assert out["ok"] is False
     assert out["error"]["code"] == "E_UNSUPPORTED"
 
@@ -1243,7 +1236,7 @@ Loaded on demand
     assert skill.prompt == "Loaded on demand"
 
 
-def test_hooks_file_is_reported_as_disabled(tmp_path: Path):
+def test_hooks_file_is_ignored_for_runtime_surfaces(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -1273,8 +1266,8 @@ Hooked skill.
     )
     skill = runtime.get_skill("hooked-skill")
     assert skill is not None
-    assert "hooks_disabled" in skill.blocked_features
-    assert "hooks.py ignored; hook execution is disabled" in skill.validation_warnings
+    assert skill.validation_errors == []
+    assert runtime._reported_skill_scripts(skill) == []
 
 
 def test_bundled_scripts_without_tool_definitions_use_generic_script_runner(tmp_path: Path):
@@ -1377,6 +1370,16 @@ if __name__ == "__main__":
     assert out["data"]["script"] == "scripts/helper.py"
     assert out["data"]["stdout"] == "hello"
     assert out["data"]["payload"] == {"mode": "demo"}
+
+    legacy = runtime.execute_tool_call(
+        "run_skill",
+        {"script": "helper.py", "args": {"mode": "demo"}},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert legacy["ok"] is False
+    assert legacy["error"]["code"] == "E_VALIDATION"
+    assert "Unexpected arguments: args" in legacy["error"]["message"]
 
 
 def test_generic_script_runner_respects_allowed_tools_policy(tmp_path: Path):
@@ -1632,14 +1635,11 @@ if __name__ == "__main__":
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("meta-skill")
-    assert skill is not None
-
-    assert skill.validation_errors == ["command_tools are disabled_pending_safe_runner"]
-    assert skill.validation_warnings == ["command_tools disabled_pending_safe_runner"]
-    assert set(_tool_names(runtime, [skill])) == _always_available_tool_names()
+    assert skill is None
+    assert runtime.list_skills() == []
 
 
-def test_disabled_command_tool_does_not_invoke_subprocess(tmp_path: Path, monkeypatch):
+def test_unsupported_command_definition_never_invokes_subprocess(tmp_path: Path, monkeypatch):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -1682,7 +1682,7 @@ print("definitely not json")
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("bad-output")
-    assert skill is not None
+    assert skill is None
 
     ctx = SkillContext(
         user_input="bad",
@@ -1700,13 +1700,13 @@ print("definitely not json")
 
     monkeypatch.setattr(skills_module.subprocess, "run", fail_run)
 
-    out = runtime.execute_tool_call("bad_tool", {}, selected=[skill], ctx=ctx)
+    out = runtime.execute_tool_call("bad_tool", {}, selected=[], ctx=ctx)
     assert out["ok"] is False
     assert out["error"]["code"] == "E_UNSUPPORTED"
     assert called is False
 
 
-def test_command_tool_timeout_definition_is_reported_as_blocked(tmp_path: Path):
+def test_command_tool_timeout_definition_manifest_is_rejected(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -1752,13 +1752,8 @@ time.sleep(2)
         memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("slow-skill")
-    assert skill is not None
-
-    assert "command_tools" in skill.blocked_features
-    assert skill.validation_errors == ["command_tools are disabled_pending_safe_runner"]
-    report = runtime.skill_health_report()
-    assert report[0]["tools"] == []
-    assert report[0]["validation_errors"] == ["command_tools are disabled_pending_safe_runner"]
+    assert skill is None
+    assert runtime.list_skills() == []
 
 
 def test_skill_health_report_includes_provenance(tmp_path: Path):
@@ -1786,7 +1781,7 @@ Hello
     )
     report = runtime.skill_health_report()
 
-    assert report[0]["source_tier"] == "bundled"
+    assert report[0]["provenance"] == "repo/skills"
     assert report[0]["availability_code"] == "ready"
 
 
@@ -1840,8 +1835,7 @@ def execute(tool_name, args, env):
 
     skill = runtime.get_skill("repo-helper")
     assert skill is not None
-    assert skill.source_tier == "bundled"
-    assert skill.trust_level == "trusted"
+    assert runtime.skill_provenance_label(skill) == "repo/skills"
     assert skill.execution_allowed is True
     assert skill.available is True
     assert set(_tool_names(runtime, [skill])) == (_always_available_tool_names() | {"echo_text"})
@@ -1877,13 +1871,12 @@ Bundled repo helper.
 
     skill = runtime.get_skill("repo-helper")
     assert skill is not None
-    assert skill.source_tier == "bundled"
-    assert skill.trust_level == "trusted"
+    assert runtime.skill_provenance_label(skill) == "repo/skills"
     assert skill.execution_allowed is True
     assert skill.available is True
     report = runtime.skill_health_report()
     skill_report = next(item for item in report if item["id"] == "repo-helper")
-    assert skill_report["source_tier"] == "bundled"
+    assert skill_report["provenance"] == "repo/skills"
     assert skill_report["execution_allowed"] is True
 
 
@@ -1996,7 +1989,7 @@ Workspace version.
     active = runtime.get_skill("dup-skill")
     assert active is not None
     assert active.description == "bundled"
-    assert active.source_tier == "bundled"
+    assert runtime.skill_provenance_label(active) == "repo/skills"
     assert len(runtime.list_skills()) == 1
 
 
@@ -2366,7 +2359,7 @@ echo {skill_id}
     assert single_view == multi_view
 
 
-def test_tools_for_turn_cache_key_includes_context_fingerprint(tmp_path: Path):
+def test_tools_for_turn_cache_key_ignores_context_fingerprint(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"

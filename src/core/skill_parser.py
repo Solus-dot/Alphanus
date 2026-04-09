@@ -80,15 +80,6 @@ def extract_skill_doc(skill_doc: Path, include_prompt: bool = True) -> Tuple[Dic
 
 
 @dataclass(slots=True)
-class ToolCommandDef:
-    name: str
-    capability: str
-    description: str
-    parameters: Dict[str, Any]
-    command: str
-
-
-@dataclass(slots=True)
 class SkillEntrypointDef:
     name: str
     description: str
@@ -110,36 +101,25 @@ class SkillManifest:
     description: str
     enabled: bool
     requirements: Dict[str, List[str]] = field(default_factory=dict)
-    triggers: Dict[str, List[str]] = field(default_factory=dict)
     prompt: Optional[str] = None
     path: Optional[Path] = None
     doc_path: Optional[Path] = None
-    hooks_path: Optional[Path] = None
-    hooks: Optional[object] = None
     tags: List[str] = field(default_factory=list)
     categories: List[str] = field(default_factory=list)
     produces: List[str] = field(default_factory=list)
     execution_dependencies: Dict[str, List[str]] = field(default_factory=dict)
     allowed_tools: List[str] = field(default_factory=list)
     required_tools: List[str] = field(default_factory=list)
-    command_tools: List[ToolCommandDef] = field(default_factory=list)
     entrypoints: List[SkillEntrypointDef] = field(default_factory=list)
     disable_model_invocation: bool = False
     user_invocable: bool = True
-    argument_hint: str = ""
     format: str = "agentskills"
-    source_tier: str = "bundled"
     available: bool = True
     availability_code: str = "ready"
     availability_reason: str = ""
-    trust_level: str = "trusted"
     execution_allowed: bool = True
     adapter: str = "agentskills"
     validation_errors: List[str] = field(default_factory=list)
-    validation_warnings: List[str] = field(default_factory=list)
-    shadowed_by: str = ""
-    shadowing: List[str] = field(default_factory=list)
-    blocked_features: List[str] = field(default_factory=list)
     frontmatter: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
     bundled_files: List[str] = field(default_factory=list)
@@ -327,42 +307,8 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         or tools_cfg_raw.get("required-tools")
     )
     raw_defs = metadata_tools_raw.get("definitions") or tools_cfg_raw.get("definitions") or []
-    if raw_defs and not isinstance(raw_defs, list):
-        raise ValueError("SKILL.md tools.definitions must be a list")
-    command_tools: List[ToolCommandDef] = []
-    for idx, raw in enumerate(raw_defs):
-        if not isinstance(raw, dict):
-            raise ValueError(f"SKILL.md tools.definitions[{idx}] must be a mapping")
-
-        name = str(raw.get("name", "")).strip()
-        capability = str(raw.get("capability", "")).strip()
-        description = str(raw.get("description", "")).strip()
-        command = str(raw.get("command", "")).strip()
-        parameters = raw.get("parameters")
-        timeout_s = int(raw.get("timeout-s", 30))
-
-        if not name:
-            raise ValueError(f"SKILL.md tools.definitions[{idx}] missing name")
-        if not capability:
-            raise ValueError(f"SKILL.md tools.definitions[{idx}] missing capability")
-        if not description:
-            raise ValueError(f"SKILL.md tools.definitions[{idx}] missing description")
-        if not command:
-            raise ValueError(f"SKILL.md tools.definitions[{idx}] missing command")
-        if not isinstance(parameters, dict):
-            raise ValueError(f"SKILL.md tools.definitions[{idx}] parameters must be a mapping")
-        if timeout_s <= 0:
-            raise ValueError(f"SKILL.md tools.definitions[{idx}] timeout-s must be > 0")
-
-        command_tools.append(
-            ToolCommandDef(
-                name=name,
-                capability=capability,
-                description=description,
-                parameters=parameters,
-                command=command,
-            )
-        )
+    if raw_defs:
+        raise ValueError("SKILL.md tools.definitions is not supported; use tools.py or execution.entrypoints")
     disable_model_invocation = _coerce_bool(
         frontmatter.get(
             "disable-model-invocation",
@@ -377,17 +323,8 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         frontmatter.get("user-invocable", metadata_raw.get("user-invocable")),
         True,
     )
-    argument_hint = str(frontmatter.get("argument-hint") or metadata_raw.get("argument-hint") or "").strip()
-
-    trigger_cfg = metadata_raw.get("triggers", frontmatter.get("triggers", {}))
-    if trigger_cfg is None:
-        trigger_cfg = {}
-    if not isinstance(trigger_cfg, dict):
-        raise ValueError("SKILL.md triggers must be a mapping")
 
     enabled = _coerce_bool(metadata_raw.get("enabled", frontmatter.get("enabled")), True)
-    keywords = _as_str_list(trigger_cfg.get("keywords")) or list(tags)
-    file_ext = _as_str_list(trigger_cfg.get("file_ext"))
 
     return SkillManifest(
         id=skill_id,
@@ -396,22 +333,18 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         description=description,
         enabled=enabled,
         requirements=requirements,
-        triggers={"keywords": keywords, "file_ext": file_ext},
         prompt=prompt,
         path=child,
         doc_path=skill_doc,
-        hooks_path=child / "hooks.py",
         tags=tags,
         categories=categories,
         produces=produces,
         execution_dependencies=execution_dependencies,
         allowed_tools=allowed_tools,
         required_tools=required_tools,
-        command_tools=command_tools,
         entrypoints=entrypoints,
         disable_model_invocation=disable_model_invocation,
         user_invocable=user_invocable,
-        argument_hint=argument_hint,
         format=vendor_flavor,
         adapter=vendor_flavor,
         frontmatter=dict(frontmatter),

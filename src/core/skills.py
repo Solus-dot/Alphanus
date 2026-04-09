@@ -163,7 +163,6 @@ class SkillRuntime:
         self.debug = debug
         self.skills_cfg = {}
         self.tools_cfg = {}
-        self._ignored_skill_runtime_settings: set[str] = set()
         self.python_executable = sys.executable
         self.reload_config(config or {})
         self.generation = 0
@@ -189,11 +188,6 @@ class SkillRuntime:
         self.tools_cfg = self.config.get("tools", {}) if isinstance(self.config.get("tools"), dict) else {}
         self.runtime_config = SkillsRuntimeConfig.from_config(self.config)
         self.python_executable = self.runtime_config.python_executable
-        for warning in self.runtime_config.ignored_settings:
-            if warning in self._ignored_skill_runtime_settings:
-                continue
-            self._ignored_skill_runtime_settings.add(warning)
-            logging.warning(warning)
 
     def _build_proc_env_base(self) -> Dict[str, str]:
         env = os.environ.copy()
@@ -319,8 +313,6 @@ class SkillRuntime:
             return None
         manifest = parse_agentskill_manifest(child, skill_doc, include_prompt=False)
         manifest.bundled_files = self._bundled_files_for_path(child)
-        manifest.source_tier = self._skill_source_tier(manifest)
-        manifest.trust_level = "trusted"
         manifest.execution_allowed = True
         manifest.adapter = str(getattr(manifest, "vendor_flavor", "") or manifest.format or "agentskills")
         return manifest
@@ -354,14 +346,6 @@ class SkillRuntime:
         if text and text not in items:
             items.append(text)
 
-    def _validate_manifest_policy(self, manifest: SkillManifest) -> None:
-        if manifest.command_tools:
-            self._append_unique(manifest.blocked_features, "command_tools")
-            self._append_unique(manifest.validation_warnings, "command_tools disabled_pending_safe_runner")
-        if manifest.hooks_path and manifest.hooks_path.exists():
-            self._append_unique(manifest.blocked_features, "hooks_disabled")
-            self._append_unique(manifest.validation_warnings, "hooks.py ignored; hook execution is disabled")
-
     def _rebuild_skill_index(self) -> None:
         self._skill_index = {}
         for skill in self.enabled_skills():
@@ -371,14 +355,10 @@ class SkillRuntime:
                 "description": skill.description,
                 "tags": list(skill.tags),
                 "categories": list(skill.categories),
-                "keywords": list(skill.triggers.get("keywords", [])),
-                "file_ext": list(skill.triggers.get("file_ext", [])),
                 "tools": list(skill.allowed_tools),
                 "produces": list(skill.produces),
                 "entrypoints": [entry.name for entry in self._skill_entrypoints(skill)],
                 "scripts": self._skill_runnable_scripts(skill),
-                "source_tier": skill.source_tier,
-                "trust_level": skill.trust_level,
                 "execution_allowed": bool(skill.execution_allowed),
                 "adapter": skill.adapter,
                 "user_invocable": bool(skill.user_invocable),
@@ -501,6 +481,7 @@ class SkillRuntime:
                     "stdin": {"type": "string"},
                     "timeout_s": {"type": "integer"},
                 },
+                "additionalProperties": False,
             },
         )
 
@@ -535,14 +516,13 @@ class SkillRuntime:
                         manifest.availability_code,
                         manifest.availability_reason,
                     ) = self._check_skill_availability(manifest)
-                    self._validate_manifest_policy(manifest)
 
                     existing = self.skills.get(manifest.id)
                     if existing is not None:
                         source = self.skill_source_label(existing) or existing.id
                         incoming = self.skill_source_label(manifest) or manifest.id
                         self._append_unique(
-                            existing.validation_warnings,
+                            existing.validation_errors,
                             f"duplicate skill id '{manifest.id}' ignored from {incoming}; using {source}",
                         )
                         continue
@@ -589,21 +569,6 @@ class SkillRuntime:
             return True
         except ValueError:
             return False
-
-    def _skill_source_tier(self, manifest: SkillManifest) -> str:
-        path = manifest.path or manifest.doc_path
-        if not path:
-            return "external/local"
-        try:
-            if self._is_relative_to(path.resolve(), self.skills_dir.resolve()):
-                return "bundled"
-            if self._is_relative_to(path.resolve(), self.workspace.workspace_root.resolve()):
-                return "workspace/local"
-            if self._is_relative_to(path.resolve(), self.workspace.home_root.resolve()):
-                return "user/local"
-        except Exception:
-            pass
-        return "external/local"
 
     def _check_skill_availability(self, manifest: SkillManifest) -> Tuple[bool, str, str]:
         requirements = manifest.requirements if isinstance(manifest.requirements, dict) else {}
@@ -658,9 +623,6 @@ class SkillRuntime:
                 ):
                     local_registered.append(tool_name)
 
-        if manifest.command_tools:
-            self._append_unique(manifest.validation_errors, "command_tools are disabled_pending_safe_runner")
-
         if manifest.required_tools:
             local_set = set(local_registered)
             missing = [name for name in manifest.required_tools if name not in local_set]
@@ -701,9 +663,21 @@ class SkillRuntime:
         except Exception:
             return str(path)
 
-    @staticmethod
-    def skill_provenance_label(skill: SkillManifest) -> str:
-        return str(getattr(skill, "source_tier", "") or "external/local")
+    def skill_provenance_label(self, skill: SkillManifest) -> str:
+        path = skill.path or skill.doc_path
+        if not path:
+            return "unknown"
+        try:
+            resolved = path.resolve()
+            if self._is_relative_to(resolved, self.skills_dir.resolve()):
+                return "repo/skills"
+            if self._is_relative_to(resolved, self.workspace.workspace_root.resolve()):
+                return "workspace"
+            if self._is_relative_to(resolved, self.workspace.home_root.resolve()):
+                return "home"
+            return "external"
+        except Exception:
+            return "external"
 
     @staticmethod
     def skill_status_label(skill: SkillManifest) -> Tuple[str, str]:
@@ -791,11 +765,10 @@ class SkillRuntime:
                 "name": skill.name,
                 "enabled": bool(skill.enabled),
                 "available": bool(skill.available),
-                "trust_level": skill.trust_level,
+                "provenance": self.skill_provenance_label(skill),
                 "execution_allowed": bool(skill.execution_allowed),
                 "adapter": skill.adapter,
                 "status": self.skill_status_label(skill)[0],
-                "source_tier": self.skill_provenance_label(skill),
                 "source": self.skill_source_label(skill),
                 "availability_code": skill.availability_code or "ready",
                 "availability_reason": skill.availability_reason or "ready",
@@ -805,8 +778,6 @@ class SkillRuntime:
                 "user_invocable": bool(skill.user_invocable),
                 "model_invocable": not bool(skill.disable_model_invocation),
                 "validation_errors": list(skill.validation_errors),
-                "validation_warnings": list(skill.validation_warnings),
-                "blocked_features": list(skill.blocked_features),
             }
             for skill in self.list_skills()
         ]
@@ -1075,7 +1046,6 @@ class SkillRuntime:
     def _skill_has_runtime_surface(skill: SkillManifest) -> bool:
         return bool(
             getattr(skill, "allowed_tools", None)
-            or getattr(skill, "command_tools", None)
             or getattr(skill, "entrypoints", None)
             or getattr(skill, "bundled_files", None)
         )
@@ -1560,7 +1530,12 @@ class SkillRuntime:
             properties["script"] = {"type": "string", "enum": script_names}
 
         required = ["skill_id"] if len(executable_skills) > 1 else []
-        return {"type": "object", "properties": properties, "required": required}
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": False,
+        }
 
     def _tool_schemas(
         self,
@@ -1612,11 +1587,6 @@ class SkillRuntime:
         tools = self._tool_schemas(names, selected=selected, ctx=ctx)
         self._tools_schema_cache[cache_key] = tools
         return tools
-
-    def post_response(self, selected: List[SkillManifest], ctx: SkillContext, text: str) -> None:
-        _ = selected
-        _ = ctx
-        _ = text
 
     @staticmethod
     def _schema_type_matches(value: Any, expected: str) -> bool:
@@ -1803,9 +1773,6 @@ class SkillRuntime:
             raise PermissionError(f"Script '{requested_script}' is not available for skill '{skill.id}'")
 
         params = args.get("params")
-        if params is None and args.get("args") is not None:
-            # Backward-compat alias for older tool calls; normalized to `params`.
-            params = args.get("args")
         if params is None:
             params = {}
         if not isinstance(params, dict):
@@ -1815,7 +1782,6 @@ class SkillRuntime:
         out["skill_id"] = skill.id
         out["script"] = chosen
         out["params"] = params
-        out.pop("args", None)
         timeout_s = out.get("timeout_s")
         if timeout_s is None:
             out["timeout_s"] = 30
@@ -1979,8 +1945,6 @@ class SkillRuntime:
         proc_env["ALPHANUS_SKILL_ROOT"] = str(skill.path)
         proc_env["ALPHANUS_SKILL_SCRIPT"] = rel_script
         params_payload = args.get("params")
-        if params_payload is None and isinstance(args.get("args"), dict):
-            params_payload = args.get("args")
         if not isinstance(params_payload, dict):
             params_payload = {}
         proc_env["ALPHANUS_TOOL_ARGS_JSON"] = json.dumps(params_payload, ensure_ascii=False)

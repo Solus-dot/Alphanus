@@ -36,9 +36,7 @@ skills/<skill-id>/
   assets/
 ```
 
-Script candidates are `.py`, `.sh`, `.js`, `.mjs`. `tools.py` and `__init__.py` are never treated as runnable scripts.
-
-`hooks.py` is not executed. If present, runtime reports it as `hooks_disabled`.
+Script candidates are `.py`, `.sh`, `.js`, `.mjs`. `tools.py`, `hooks.py`, and `__init__.py` are never treated as runnable scripts.
 
 ## 3. Required Frontmatter
 
@@ -90,9 +88,6 @@ Parameters:
 - `stdin` (optional script stdin)
 - `timeout_s` (optional timeout override)
 
-Compatibility:
-- legacy `args` is accepted for script payloads and normalized to `params`
-
 ## 6. Runtime Tools
 
 Always available:
@@ -107,12 +102,8 @@ Conditionally available by selected skills:
 
 ## 7. Command Tool Definitions
 
-`tools.definitions` command tools in frontmatter are parsed for compatibility but blocked at runtime:
-- `blocked_features` includes `command_tools`
-- validation warning: `command_tools disabled_pending_safe_runner`
-- no executable tool registration is created for these definitions
-
-Use `tools.py` or `run_skill` entrypoints/scripts instead.
+`tools.definitions` command tools in frontmatter are not supported.
+Use `tools.py` or `execution.entrypoints` for executable behavior.
 
 ## 8. Troubleshooting
 
