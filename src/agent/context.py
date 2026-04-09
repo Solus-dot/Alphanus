@@ -2,6 +2,9 @@ from typing import Any, Dict, List, Optional, Set
 
 
 class ContextWindowManager:
+    _MEDIA_PART_CHAR_COST = 256
+    _STRUCTURED_PART_OVERHEAD = 32
+
     def __init__(self, context_limit: int = 8192, keep_last_n: int = 10, safety_margin: int = 500):
         self.context_limit = int(context_limit)
         self.keep_last_n = int(keep_last_n)
@@ -13,6 +16,19 @@ class ContextWindowManager:
         content = message.get("content", "")
         if isinstance(content, str):
             chars += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    chars += len(str(part))
+                    continue
+                part_type = str(part.get("type", "")).strip().lower()
+                if part_type == "text":
+                    chars += len(str(part.get("text", "")))
+                    continue
+                if part_type in {"image", "image_url", "video"}:
+                    chars += ContextWindowManager._MEDIA_PART_CHAR_COST
+                    continue
+                chars += ContextWindowManager._STRUCTURED_PART_OVERHEAD
         else:
             chars += len(str(content))
         if message.get("tool_calls"):
@@ -54,11 +70,40 @@ class ContextWindowManager:
         return "[user message omitted]"
 
     @classmethod
-    def _compact_user_message(cls, message: Dict, keep_chars: int) -> Dict:
-        text = cls._content_to_user_text(message.get("content"))
+    def _compact_user_content(cls, content: Any, keep_chars: int) -> Any:
+        if isinstance(content, list):
+            compacted_parts: List[Dict[str, Any]] = []
+            remaining_chars = max(0, keep_chars)
+            omitted_text = False
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                part_type = str(part.get("type", "")).strip().lower()
+                if part_type == "text":
+                    text = str(part.get("text", "")).strip()
+                    if not text:
+                        continue
+                    if remaining_chars > 0:
+                        text = cls._truncate_text(text, remaining_chars)
+                        remaining_chars = max(0, remaining_chars - len(text))
+                        compacted_parts.append({"type": "text", "text": text})
+                        continue
+                    if not omitted_text:
+                        compacted_parts.append({"type": "text", "text": "[user message omitted]"})
+                        omitted_text = True
+                    continue
+                compacted_parts.append(dict(part))
+            if compacted_parts:
+                return compacted_parts
+
+        text = cls._content_to_user_text(content)
         if keep_chars > 0:
             text = cls._truncate_text(text, keep_chars)
-        return {"role": "user", "content": text or "[user message omitted]"}
+        return text or "[user message omitted]"
+
+    @classmethod
+    def _compact_user_message(cls, message: Dict, keep_chars: int) -> Dict:
+        return {"role": "user", "content": cls._compact_user_content(message.get("content"), keep_chars)}
 
     @staticmethod
     def _tool_call_ids(message: Dict) -> Set[str]:
@@ -248,9 +293,7 @@ class ContextWindowManager:
                     tool_idx = msg_idx
                     break
             if tool_idx is None:
-                total_estimated -= estimates.pop(1)
-                out.pop(1)
-                continue
+                break
 
             tool_call_id = str(out[tool_idx].get("tool_call_id") or "").strip()
             assistant_idx = None
@@ -292,9 +335,7 @@ class ContextWindowManager:
             if cls.estimate_tokens(minimal) <= max_prompt_tokens:
                 return minimal
 
-            compact_user["content"] = cls._truncate_text(str(compact_user.get("content", "")), 16)
-            minimal = [out[0], compact_user]
-            return minimal
+            return [out[0], cls._compact_user_message(out[last_user], keep_chars=16)]
         return out
 
     def prune(self, messages: List[Dict], max_tokens: int) -> List[Dict]:
