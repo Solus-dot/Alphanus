@@ -634,35 +634,6 @@ class AlphanusTUI(App):
             self._ui_timing = timing
         return timing
 
-    def _stream_state(self) -> StreamRuntimeState:
-        state = getattr(self, "_stream_runtime", None)
-        if state is None:
-            state = StreamRuntimeState()
-            self._stream_runtime = state
-        return state
-
-    def _status_state(self) -> StatusRuntimeState:
-        state = getattr(self, "_status_runtime", None)
-        if state is None:
-            initial_status = ModelStatus()
-            agent = getattr(self, "agent", None)
-            if agent is not None and hasattr(agent, "get_model_status"):
-                try:
-                    initial_status = agent.get_model_status()
-                except Exception:
-                    initial_status = ModelStatus()
-            state = StatusRuntimeState(
-                model_status=initial_status,
-                model_name=initial_status.model_name if initial_status.state != "offline" else None,
-                model_context_window=(
-                    initial_status.context_window
-                    if isinstance(initial_status.context_window, int) and initial_status.context_window > 0
-                    else None
-                ),
-            )
-            self._status_runtime = state
-        return state
-
     def on_mount(self) -> None:
         self.thinking = bool(self.agent.config.get("agent", {}).get("enable_thinking", True))
         self.set_interval(0.1, self._tick)
@@ -828,7 +799,7 @@ class AlphanusTUI(App):
         return self._last_model_context_tokens
 
     def _context_window_tokens(self) -> Optional[int]:
-        return self._status_state().model_context_window
+        return self._status_runtime.model_context_window
 
     def _reset_context_usage(self) -> None:
         self._last_model_context_tokens = None
@@ -1458,12 +1429,12 @@ class AlphanusTUI(App):
         )
 
     def _defer_live_preview_partial(self, lines: List[str], language: Optional[str]) -> None:
-        state = self._stream_state()
+        state = self._stream_runtime
         state.deferred_live_preview = (list(lines), language)
         state.partial_dirty = False
 
     def _clear_partial_preview(self) -> None:
-        state = self._stream_state()
+        state = self._stream_runtime
         state.deferred_live_preview = None
         state.partial_dirty = False
         self._set_partial_renderable(None)
@@ -1590,7 +1561,7 @@ class AlphanusTUI(App):
 
     def _update_status1(self) -> None:
         text = status_right_markup(
-            model_name=self._status_state().model_name,
+            model_name=self._status_runtime.model_name,
             branch_armed=bool(self.conv_tree._pending_branch),
             branch_label=self.conv_tree._pending_branch_label,
             thinking=self.thinking,
@@ -1604,17 +1575,17 @@ class AlphanusTUI(App):
         self._update_topbar()
 
     def _current_model_refresh_interval(self) -> float:
-        return self._status_state().current_model_refresh_interval(self._timing_config())
+        return self._status_runtime.current_model_refresh_interval(self._timing_config())
 
     def _should_startup_readiness_poll(self) -> bool:
-        return self._status_state().should_startup_readiness_poll(
+        return self._status_runtime.should_startup_readiness_poll(
             is_local_endpoint=self.agent.llm_client._is_local_endpoint(self.agent.models_endpoint)
         )
 
     def _maybe_start_startup_readiness_poll(self) -> None:
         if not self._should_startup_readiness_poll():
             return
-        state = self._status_state()
+        state = self._status_runtime
         state.startup_readiness_inflight = True
         self._startup_readiness_worker()
 
@@ -1625,13 +1596,13 @@ class AlphanusTUI(App):
         self.call_from_thread(self._finish_startup_readiness_poll, status)
 
     def _finish_startup_readiness_poll(self, status: ModelStatus) -> None:
-        state = self._status_state()
+        state = self._status_runtime
         state.startup_readiness_inflight = False
         self._apply_model_status_refresh(status)
 
     def _maybe_refresh_model_status(self, *, force: bool = False) -> None:
         now = time.monotonic()
-        state = self._status_state()
+        state = self._status_runtime
         if not state.should_refresh(self._timing_config(), force=force, now=now):
             return
         state.mark_refresh_started(now=now)
@@ -1643,7 +1614,7 @@ class AlphanusTUI(App):
         self.call_from_thread(self._apply_model_status_refresh, status)
 
     def _apply_model_status_refresh(self, status: ModelStatus) -> None:
-        state = self._status_state()
+        state = self._status_runtime
         state.apply_model_status(status, self._timing_config())
         self._update_status1()
         self._update_topbar()
@@ -1681,7 +1652,7 @@ class AlphanusTUI(App):
                 context_tokens=self._context_tokens(),
                 context_window=self._context_window_tokens(),
                 width=width,
-                endpoint_state=self._status_state().model_status.state,
+                endpoint_state=self._status_runtime.model_status.state,
             )
         )
 
@@ -2213,7 +2184,7 @@ class AlphanusTUI(App):
         stop_event: threading.Event,
     ) -> None:
         def on_event(event: Dict[str, Any]) -> None:
-            self._stream_state().event_queue.put(event)
+            self._stream_runtime.event_queue.put(event)
             if event.get("type") in {"tool_phase_started", "tool_call", "tool_result", "error", "info", "pass_end", "usage"}:
                 self.call_from_thread(self._drain_stream_event_queue)
 
@@ -2261,7 +2232,7 @@ class AlphanusTUI(App):
         return True
 
     def _refresh_deferred_partial(self) -> None:
-        stream_state = self._stream_state()
+        stream_state = self._stream_runtime
         if stream_state.deferred_live_preview is not None:
             lines, language = stream_state.deferred_live_preview
             stream_state.deferred_live_preview = None
@@ -2304,7 +2275,7 @@ class AlphanusTUI(App):
         if update_partial:
             self._update_partial_content()
         else:
-            self._stream_state().partial_dirty = True
+            self._stream_runtime.partial_dirty = True
 
     def _handle_content_token(self, token: str, *, update_partial: bool = True) -> None:
         if not self._content_open:
@@ -2316,7 +2287,7 @@ class AlphanusTUI(App):
         self._flush_content_buffer(include_partial=False, update_partial=update_partial)
 
     def _drain_stream_event_queue(self) -> None:
-        stream_state = self._stream_state()
+        stream_state = self._stream_runtime
         if stream_state.drain_active:
             return
 
@@ -2346,7 +2317,7 @@ class AlphanusTUI(App):
 
     def _on_agent_event(self, event: Dict[str, Any]) -> None:
         etype = event.get("type")
-        stream_drain_active = bool(self._stream_state().drain_active)
+        stream_drain_active = bool(self._stream_runtime.drain_active)
 
         if etype == "reasoning_token":
             token = event.get("text", "")
@@ -2354,7 +2325,7 @@ class AlphanusTUI(App):
                 self._reasoning_open = True
             self._buf_r += token
             if stream_drain_active:
-                self._stream_state().partial_dirty = True
+                self._stream_runtime.partial_dirty = True
             else:
                 display = self._visible_reasoning_text(self._buf_r)
                 if display:

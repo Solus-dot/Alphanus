@@ -1011,27 +1011,13 @@ class SkillRuntime:
             return []
         return self._skill_entrypoints(skill)
 
-    @staticmethod
-    def _skill_allows_generic_script_runner(skill: SkillManifest) -> bool:
-        return (
-            not skill.allowed_tools
-            or _RUN_SKILL_TOOL_NAME in skill.allowed_tools
-        )
-
-    @staticmethod
-    def _skill_allows_generic_entrypoint_runner(skill: SkillManifest) -> bool:
-        return (
-            not skill.allowed_tools
-            or _RUN_SKILL_TOOL_NAME in skill.allowed_tools
-        )
-
     def _exposed_relevant_skill_scripts(self, skill: SkillManifest, ctx: Optional[SkillContext]) -> List[str]:
-        if not self._skill_allows_generic_script_runner(skill):
+        if skill.allowed_tools and _RUN_SKILL_TOOL_NAME not in skill.allowed_tools:
             return []
         return self._reported_skill_scripts(skill)
 
     def _exposed_relevant_skill_entrypoints(self, skill: SkillManifest, ctx: Optional[SkillContext]) -> List[SkillEntrypointDef]:
-        if not self._skill_allows_generic_entrypoint_runner(skill):
+        if skill.allowed_tools and _RUN_SKILL_TOOL_NAME not in skill.allowed_tools:
             return []
         return self._reported_skill_entrypoints(skill)
 
@@ -1040,14 +1026,6 @@ class SkillRuntime:
         return sorted(
             [skill for skill in loaded if not skill.disable_model_invocation],
             key=lambda skill: skill.id,
-        )
-
-    @staticmethod
-    def _skill_has_runtime_surface(skill: SkillManifest) -> bool:
-        return bool(
-            getattr(skill, "allowed_tools", None)
-            or getattr(skill, "entrypoints", None)
-            or getattr(skill, "bundled_files", None)
         )
 
     def tool_registration(self, tool_name: str) -> Optional[RegisteredTool]:
@@ -1101,11 +1079,6 @@ class SkillRuntime:
         rendered = "\n".join(lines)
         self._skill_cards_cache[key] = rendered
         return rendered
-
-    def _skill_runtime_note(self, skill: SkillManifest, ctx: SkillContext) -> str:
-        _ = ctx
-        _ = skill
-        return ""
 
     def compose_skill_block(
         self,
@@ -1466,15 +1439,10 @@ class SkillRuntime:
     ) -> List[str]:
         return self._tool_names_for_turn(selected, ctx=ctx)
 
-    def _tool_schema_context_fingerprint(self, ctx: Optional[SkillContext]) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
-        _ = ctx
-        return ((), ())
-
     def _tool_schema_cache_key(
         self,
         names: List[str],
         selected: List[SkillManifest],
-        ctx: Optional[SkillContext],
     ) -> Tuple[Any, ...]:
         selected_ids = tuple(
             str(getattr(skill, "id", "")).strip()
@@ -1487,7 +1455,6 @@ class SkillRuntime:
             selected_ids,
             tuple(names),
             active_skill_ids,
-            self._tool_schema_context_fingerprint(ctx),
         )
 
     def _dynamic_run_skill_schema(self, selected: List[SkillManifest], ctx: Optional[SkillContext]) -> Dict[str, Any]:
@@ -1580,7 +1547,7 @@ class SkillRuntime:
         ctx: Optional[SkillContext] = None,
     ) -> List[Dict[str, Any]]:
         names = self.allowed_tool_names(selected, ctx=ctx)
-        cache_key = self._tool_schema_cache_key(names, selected, ctx)
+        cache_key = self._tool_schema_cache_key(names, selected)
         cached = self._tools_schema_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1698,26 +1665,6 @@ class SkillRuntime:
         if reg.name == _RUN_SKILL_TOOL_NAME:
             validated = self._validate_run_skill_args(validated, selected, ctx)
         return validated
-
-    def _resolve_active_skill(
-        self,
-        requested_skill_id: str,
-        selected: List[SkillManifest],
-        tool_name: str,
-        *,
-        predicate: Optional[Callable[[SkillManifest], bool]] = None,
-    ) -> SkillManifest:
-        candidates = [skill for skill in selected if skill.path and (predicate(skill) if predicate else True)]
-        if not candidates:
-            raise PermissionError(f"{tool_name} requires an active skill")
-        if requested_skill_id:
-            skill = next((skill for skill in candidates if skill.id == requested_skill_id), None)
-            if skill is None:
-                raise PermissionError(f"Skill '{requested_skill_id}' is not active for this turn")
-            return skill
-        if len(candidates) == 1:
-            return candidates[0]
-        raise ValueError(f"{tool_name} requires skill_id when multiple active skills are available")
 
     def _validate_run_skill_args(
         self,
