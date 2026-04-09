@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import io
 import threading
 import time
 import urllib.error
@@ -207,6 +208,256 @@ def test_agent_records_model_usage_from_stream(mocker, runtime: SkillRuntime):
     assert result.status == "done"
     assert result.journal["model_usage"]["prompt_tokens"] == 321
     assert result.journal["model_usage"]["completion_tokens"] == 12
+
+
+def test_image_turn_without_selected_skill_tools_omits_tool_schemas(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+            "enable_structured_classification": True,
+        }
+    }
+    agent = Agent(cfg, runtime)
+    requests = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+
+        body = json.loads(req.data.decode("utf-8"))
+        requests.append(body)
+        if len(requests) == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"{\\"time_sensitive\\":false,\\"requires_workspace_action\\":false,\\"prefer_local_workspace_tools\\":false,\\"followup_kind\\":\\"new_request\\"}"}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"I see an image."}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "[Attachments: image.png (image)]\n\nWhat do you see?"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,ZmFrZQ=="}},
+                ],
+            }
+        ],
+        user_input="What do you see?",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert len(requests) == 1
+    assert "tools" not in requests[0]
+
+
+def test_image_turn_keeps_model_exposed_core_tools_for_workspace_actions(
+    mocker,
+    runtime: SkillRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+            "enable_structured_classification": True,
+        }
+    }
+    agent = Agent(cfg, runtime)
+    requests = []
+
+    monkeypatch.setattr(
+        runtime,
+        "model_exposed_tool_names",
+        lambda: [
+            "create_file",
+            "request_user_input",
+            "skill_manage",
+            "skill_view",
+            "skills_list",
+        ],
+    )
+    runtime._tools_schema_cache.clear()
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+
+        body = json.loads(req.data.decode("utf-8"))
+        requests.append(body)
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"Saved the summary."}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "[Attachments: screenshot.png (image)]\n\nLook at this screenshot and save a summary to notes.md",
+                    },
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,ZmFrZQ=="}},
+                ],
+            }
+        ],
+        user_input="Look at this screenshot and save a summary to notes.md",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert len(requests) == 1
+    assert {tool["function"]["name"] for tool in requests[0]["tools"]} >= {"create_file"}
+
+
+def test_image_turn_reports_clear_error_when_backend_rejects_multimodal_prompt(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+            "enable_structured_classification": True,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        raise urllib.error.HTTPError(
+            req.full_url,
+            400,
+            "Bad Request",
+            hdrs=None,
+            fp=io.BytesIO(b'{"error":{"code":400,"message":"Failed to tokenize prompt","type":"invalid_request_error"}}'),
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "[Attachments: image.png (image)]\n\nWhat do you see?"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,ZmFrZQ=="}},
+                ],
+            }
+        ],
+        user_input="What do you see?",
+        thinking=True,
+    )
+
+    assert result.status == "error"
+    assert result.error == (
+        "The current model endpoint rejected this image attachment while tokenizing the prompt. "
+        "Use a vision-capable model/template for image inputs, or remove the image attachment."
+    )
+
+
+def test_image_turn_retries_with_latest_user_only_after_tokenize_failure(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+            "enable_structured_classification": True,
+        }
+    }
+    agent = Agent(cfg, runtime)
+    requests = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        body = json.loads(req.data.decode("utf-8"))
+        requests.append(body)
+        if len(requests) == 1:
+            raise urllib.error.HTTPError(
+                req.full_url,
+                400,
+                "Bad Request",
+                hdrs=None,
+                fp=io.BytesIO(b'{"error":{"code":400,"message":"Failed to tokenize prompt","type":"invalid_request_error"}}'),
+            )
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"I see a status bar screenshot."}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "[Attachments: image.png (image)]\n\nWhat do you see?"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,ZmFrZQ=="}},
+                ],
+            }
+        ],
+        user_input="What do you see?",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    assert len(requests) == 2
+    assert requests[0]["messages"][0]["role"] == "system"
+    assert requests[1]["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "[Attachments: image.png (image)]\n\nWhat do you see?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,ZmFrZQ=="}},
+            ],
+        }
+    ]
 
 
 def test_agent_run_turn_exercises_structured_classification_path(mocker, runtime: SkillRuntime, monkeypatch: pytest.MonkeyPatch):
