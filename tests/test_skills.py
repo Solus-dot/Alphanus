@@ -331,6 +331,75 @@ def execute(tool_name, args, env):
     }
 
 
+def test_core_tool_names_for_turn_include_model_exposed_core_tools_without_selected_skill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "workspace-ops").mkdir(parents=True)
+
+    (skills / "workspace-ops" / "SKILL.md").write_text(
+        """
+---
+name: workspace-ops
+description: workspace core tools
+version: 1.0.0
+tools:
+  allowed-tools:
+    - create_file
+---
+Workspace core.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "workspace-ops" / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "create_file": {
+    "capability": "workspace_write",
+    "description": "Create file",
+    "parameters": {
+      "type": "object",
+      "properties": {"filepath": {"type": "string"}, "content": {"type": "string"}},
+      "required": ["filepath", "content"]
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    return {"ok": True, "data": {"filepath": args.get("filepath", "")}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    ctx = SkillContext(
+        user_input="save a summary to notes.md",
+        branch_labels=[],
+        attachments=["image.png"],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    monkeypatch.setattr(
+        runtime,
+        "model_exposed_tool_names",
+        lambda: sorted(_always_available_tool_names() | {"create_file"}),
+    )
+    runtime._tools_schema_cache.clear()
+
+    assert runtime.optional_tool_names([], ctx=ctx) == []
+    assert runtime.core_tool_names_for_turn([], ctx=ctx) == ["create_file"]
+
+
 def test_tools_for_turn_includes_generic_script_runner_for_selected_script_skill(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
