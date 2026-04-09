@@ -342,6 +342,18 @@ def test_image_turn_keeps_model_exposed_core_tools_for_workspace_actions(
     assert {tool["function"]["name"] for tool in requests[0]["tools"]} >= {"create_file"}
 
 
+def test_leading_system_messages_stop_at_first_non_system(runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    messages = [
+        {"role": "system", "content": "base prompt"},
+        {"role": "system", "content": "policy rules"},
+        {"role": "user", "content": "What do you see?"},
+        {"role": "system", "content": "ignored trailing system"},
+    ]
+
+    assert agent.orchestrator._leading_system_messages(messages) == messages[:2]
+
+
 def test_image_turn_reports_clear_error_when_backend_rejects_multimodal_prompt(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {

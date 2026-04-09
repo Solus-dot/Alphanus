@@ -195,6 +195,15 @@ class TurnOrchestrator:
         return None
 
     @staticmethod
+    def _leading_system_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        kept: List[Dict[str, Any]] = []
+        for message in messages:
+            if str(message.get("role", "")).strip().lower() != "system":
+                break
+            kept.append(message)
+        return kept
+
+    @staticmethod
     def _is_tokenize_failure(exc: Exception) -> bool:
         return "failed to tokenize prompt" in str(exc or "").strip().lower()
 
