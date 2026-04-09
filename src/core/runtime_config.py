@@ -190,24 +190,14 @@ class ProviderConfig:
 @dataclass(slots=True)
 class SkillsRuntimeConfig:
     python_executable: str = sys.executable
-    ignored_settings: List[str] = field(default_factory=list)
 
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> SkillsRuntimeConfig:
         skills_cfg = _section(config, "skills")
-        load_cfg = _section(skills_cfg, "load")
-        ignored: List[str] = []
-        if _coerce_string_list(load_cfg.get("extra_dirs")):
-            ignored.append("skills.load.extra_dirs is ignored; skill discovery is root-only")
-        if not _coerce_bool(load_cfg.get("upward_scan"), True):
-            ignored.append("skills.load.upward_scan is ignored; skill discovery is root-only")
-        if not _coerce_bool(load_cfg.get("watch"), True):
-            ignored.append("skills.load.watch is ignored; skill discovery is root-only")
         configured_python = _coerce_string(
-            load_cfg.get("python_executable") or skills_cfg.get("python_executable"),
+            skills_cfg.get("python_executable"),
             sys.executable,
         )
         return cls(
             python_executable=configured_python or sys.executable,
-            ignored_settings=ignored,
         )

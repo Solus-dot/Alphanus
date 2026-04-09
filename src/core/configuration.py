@@ -81,12 +81,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "skills": {
         "strict_capability_policy": False,
-        "load": {
-            "extra_dirs": [],
-            "watch": True,
-            "upward_scan": True,
-            "python_executable": "",
-        },
+        "python_executable": "",
     },
     "agents": {
         "enable_skill_agents": True,
@@ -625,33 +620,13 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         path="skills.strict_capability_policy",
         warnings=warnings,
     )
-    load_cfg = skills_cfg.get("load", {}) if isinstance(skills_cfg.get("load"), dict) else {}
-    extra_dirs = load_cfg.get("extra_dirs", [])
-    if isinstance(extra_dirs, str):
-        extra_dirs = [extra_dirs]
-    if not isinstance(extra_dirs, list):
-        extra_dirs = []
-        _warn(warnings, "skills.load.extra_dirs: expected list, using default")
-    load_cfg["extra_dirs"] = [str(item).strip() for item in extra_dirs if str(item).strip()]
-    load_cfg["watch"] = _coerce_bool(
-        load_cfg.get("watch"),
-        bool(DEFAULT_CONFIG["skills"]["load"]["watch"]),
-        path="skills.load.watch",
+    skills_cfg["python_executable"] = _coerce_string(
+        skills_cfg.get("python_executable"),
+        str(DEFAULT_CONFIG["skills"]["python_executable"]),
+        path="skills.python_executable",
         warnings=warnings,
     )
-    load_cfg["upward_scan"] = _coerce_bool(
-        load_cfg.get("upward_scan"),
-        bool(DEFAULT_CONFIG["skills"]["load"]["upward_scan"]),
-        path="skills.load.upward_scan",
-        warnings=warnings,
-    )
-    load_cfg["python_executable"] = _coerce_string(
-        load_cfg.get("python_executable"),
-        str(DEFAULT_CONFIG["skills"]["load"]["python_executable"]),
-        path="skills.load.python_executable",
-        warnings=warnings,
-    )
-    skills_cfg["load"] = load_cfg
+    skills_cfg.pop("load", None)
     merged["skills"] = skills_cfg
 
     agents_cfg = merged.get("agents", {}) if isinstance(merged.get("agents"), dict) else {}

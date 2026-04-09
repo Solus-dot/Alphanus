@@ -164,7 +164,7 @@ def test_normalize_config_preserves_new_runtime_boundary_fields() -> None:
             "per_turn_retries": "2",
             "retry_backoff_s": "0.75",
         },
-        "skills": {"load": {"python_executable": "/usr/bin/python3"}},
+        "skills": {"python_executable": "/usr/bin/python3"},
         "tui": {"timing": {"stream_drain_interval_s": "0.02", "shell_confirm_timeout_s": "90"}},
     }
 
@@ -174,7 +174,7 @@ def test_normalize_config_preserves_new_runtime_boundary_fields() -> None:
     assert normalized["agent"]["connect_timeout_s"] == 2.5
     assert normalized["agent"]["per_turn_retries"] == 2
     assert normalized["agent"]["retry_backoff_s"] == 0.75
-    assert normalized["skills"]["load"]["python_executable"] == "/usr/bin/python3"
+    assert normalized["skills"]["python_executable"] == "/usr/bin/python3"
     assert normalized["tui"]["timing"]["stream_drain_interval_s"] == 0.02
     assert normalized["tui"]["timing"]["shell_confirm_timeout_s"] == 90.0
 
@@ -184,7 +184,7 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
         {
             "schema_version": "1.0.0",
             "agent": {"connect_timeout_s": 3, "per_turn_retries": 2},
-            "skills": {"load": {"extra_dirs": ["~/skills"], "python_executable": "/usr/bin/python3"}},
+            "skills": {"python_executable": "/usr/bin/python3"},
             "tui": {"chat_log_max_lines": 1234, "timing": {"model_refresh_interval_s": 9}},
         }
     )
@@ -197,6 +197,5 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
     assert provider.per_turn_retries == 2
     assert provider.auth_header == "Authorization: Bearer demo"
     assert skills.python_executable == "/usr/bin/python3"
-    assert any("skills.load.extra_dirs is ignored" in msg for msg in skills.ignored_settings)
     assert ui.chat_log_max_lines == 1234
     assert ui.timing.model_refresh_interval_s == 9.0

@@ -31,14 +31,7 @@
   },
   "skills": {
     "strict_capability_policy": false,
-    "load": {
-      "extra_dirs": [],
-      "watch": true,
-      "upward_scan": true
-    },
-    "compat": {
-      "vendor_extensions": "major"
-    }
+    "python_executable": ""
   },
   "agents": {
     "enable_skill_agents": true
