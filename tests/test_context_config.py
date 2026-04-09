@@ -142,3 +142,50 @@ def test_prune_keeps_at_least_one_user_message_when_tool_bundle_is_large():
 
     pruned = mgr.prune(messages, max_tokens=200)
     assert any(msg.get("role") == "user" for msg in pruned)
+
+
+def test_prune_preserves_latest_multimodal_user_message_under_hard_budget():
+    mgr = ContextWindowManager(context_limit=8192, keep_last_n=10, safety_margin=500)
+    messages = [{"role": "system", "content": "x" * 7771}]
+
+    for idx in range(12):
+        messages.append({"role": "assistant", "content": "y" * 400})
+
+    messages.append(
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "[Attachments: image.png (image)]\n\nWhat's this?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + ("A" * 20000)}},
+            ],
+        }
+    )
+
+    pruned = mgr.prune(messages, max_tokens=2048)
+
+    assert len(pruned) >= 2
+    assert pruned[-1]["role"] == "user"
+    assert isinstance(pruned[-1]["content"], list)
+    assert any(part.get("type") == "image_url" for part in pruned[-1]["content"])
+
+
+def test_prune_preserves_multimodal_structure_in_final_hard_fallback():
+    mgr = ContextWindowManager(context_limit=120, keep_last_n=1, safety_margin=0)
+    messages = [
+        {"role": "system", "content": "x" * 1000},
+        {"role": "assistant", "content": "y" * 500},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "[Attachments: image.png (image)]\n\nWhat's this image?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + ("A" * 20000)}},
+            ],
+        },
+    ]
+
+    pruned = mgr.prune(messages, max_tokens=40)
+
+    assert len(pruned) == 2
+    assert pruned[-1]["role"] == "user"
+    assert isinstance(pruned[-1]["content"], list)
+    assert any(part.get("type") == "image_url" for part in pruned[-1]["content"])
