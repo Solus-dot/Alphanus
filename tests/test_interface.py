@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import queue
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +17,8 @@ from tui.live_tool_preview import LiveToolPreviewManager
 from tui.commands import active_command_query, active_command_span, command_entries_for_query, popup_command_query
 from tui.interface import AlphanusTUI, ChatInput
 from tui.popups import SessionManagerModal
+from tui.status_runtime import StatusRuntimeState
+from tui.stream_runtime import StreamRuntimeState
 from tui.transcript import ScrollAnchor, TranscriptEntry, TranscriptView
 
 
@@ -987,10 +988,7 @@ def test_drain_stream_event_queue_renders_reasoning_once_per_tick() -> None:
     partial_updates: list[object] = []
     scrolls: list[str] = []
 
-    tui._stream_event_queue = queue.SimpleQueue()
-    tui._stream_drain_active = False
-    tui._stream_partial_dirty = False
-    tui._deferred_live_preview = None
+    tui._stream_runtime = StreamRuntimeState()
     tui._reasoning_open = False
     tui._content_open = False
     tui._buf_r = ""
@@ -1003,8 +1001,8 @@ def test_drain_stream_event_queue_renders_reasoning_once_per_tick() -> None:
     tui._update_partial_content = lambda: partial_updates.append("content")
     tui._maybe_scroll_end = lambda *args, **kwargs: scrolls.append("scroll")
 
-    tui._stream_event_queue.put({"type": "reasoning_token", "text": "hel"})
-    tui._stream_event_queue.put({"type": "reasoning_token", "text": "lo"})
+    tui._stream_runtime.event_queue.put({"type": "reasoning_token", "text": "hel"})
+    tui._stream_runtime.event_queue.put({"type": "reasoning_token", "text": "lo"})
 
     tui._drain_stream_event_queue()
 
@@ -1090,16 +1088,18 @@ def test_update_context_usage_accepts_llamacpp_prompt_eval_count() -> None:
 
 def test_apply_model_status_refresh_updates_visible_status_and_hot_swap_state() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
-    tui._model_refresh_inflight = True
-    tui._model_refresh_fast_until = 0.0
-    tui._model_status = ModelStatus(
-        state="online",
+    tui._status_runtime = StatusRuntimeState(
+        model_status=ModelStatus(
+            state="online",
+            model_name="qwen-3",
+            context_window=8192,
+            endpoint="http://127.0.0.1:8080/v1/models",
+        ),
         model_name="qwen-3",
-        context_window=8192,
-        endpoint="http://127.0.0.1:8080/v1/models",
+        model_context_window=8192,
+        refresh_inflight=True,
+        refresh_fast_until=0.0,
     )
-    tui._model_name = "qwen-3"
-    tui._model_context_window = 8192
     updates: list[str] = []
     tui._update_status1 = lambda: updates.append("status")
     tui._update_topbar = lambda: updates.append("topbar")
@@ -1115,42 +1115,44 @@ def test_apply_model_status_refresh_updates_visible_status_and_hot_swap_state() 
         )
     )
 
-    assert tui._model_refresh_inflight is False
-    assert tui._model_status.model_name == "qwen-4"
-    assert tui._model_name == "qwen-4"
-    assert tui._model_context_window == 16384
-    assert tui._model_refresh_fast_until > 0.0
+    state = tui._status_runtime
+    assert state.refresh_inflight is False
+    assert state.model_status.model_name == "qwen-4"
+    assert state.model_name == "qwen-4"
+    assert state.model_context_window == 16384
+    assert state.refresh_fast_until > 0.0
     assert updates == ["status", "topbar"]
 
 
 def test_current_model_refresh_interval_is_adaptive() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
-    tui._model_refresh_interval_s = 5.0
-    tui._model_refresh_fast_until = 0.0
-    tui._model_status = ModelStatus(state="online")
+    tui._ui_timing = SimpleNamespace(model_refresh_interval_s=5.0, model_refresh_fast_interval_s=2.0, model_refresh_fast_window_s=6.0)
+    tui._status_runtime = StatusRuntimeState(model_status=ModelStatus(state="online"), refresh_fast_until=0.0)
 
     assert tui._current_model_refresh_interval() == 5.0
 
-    tui._model_status = ModelStatus(state="offline")
+    tui._status_runtime.model_status = ModelStatus(state="offline")
     assert tui._current_model_refresh_interval() == 2.0
 
-    tui._model_status = ModelStatus(state="online")
-    tui._model_refresh_fast_until = time.monotonic() + 5.0
+    tui._status_runtime.model_status = ModelStatus(state="online")
+    tui._status_runtime.refresh_fast_until = time.monotonic() + 5.0
     assert tui._current_model_refresh_interval() == 2.0
 
 
 def test_apply_model_status_refresh_clears_model_name_when_offline() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
-    tui._model_refresh_inflight = True
-    tui._model_refresh_fast_until = 0.0
-    tui._model_status = ModelStatus(
-        state="online",
+    tui._status_runtime = StatusRuntimeState(
+        model_status=ModelStatus(
+            state="online",
+            model_name="qwen-3",
+            context_window=8192,
+            endpoint="http://127.0.0.1:8080/v1/models",
+        ),
         model_name="qwen-3",
-        context_window=8192,
-        endpoint="http://127.0.0.1:8080/v1/models",
+        model_context_window=8192,
+        refresh_inflight=True,
+        refresh_fast_until=0.0,
     )
-    tui._model_name = "qwen-3"
-    tui._model_context_window = 8192
     updates: list[str] = []
     tui._update_status1 = lambda: updates.append("status")
     tui._update_topbar = lambda: updates.append("topbar")
@@ -1165,28 +1167,29 @@ def test_apply_model_status_refresh_clears_model_name_when_offline() -> None:
         )
     )
 
-    assert tui._model_status.state == "offline"
-    assert tui._model_name is None
-    assert tui._model_context_window == 8192
-    assert tui._model_refresh_fast_until > 0.0
+    state = tui._status_runtime
+    assert state.model_status.state == "offline"
+    assert state.model_name is None
+    assert state.model_context_window == 8192
+    assert state.refresh_fast_until > 0.0
     assert updates == ["status", "topbar"]
 
 
 def test_should_startup_readiness_poll_only_for_cold_local_model() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
-    tui._startup_readiness_inflight = False
+    tui._status_runtime = StatusRuntimeState(startup_readiness_inflight=False)
     tui.agent = SimpleNamespace(
         models_endpoint="http://127.0.0.1:8080/v1/models",
         llm_client=SimpleNamespace(_is_local_endpoint=lambda endpoint: endpoint.startswith("http://127.0.0.1")),
     )
-    tui._model_status = ModelStatus(state="offline", endpoint="http://127.0.0.1:8080/v1/models", last_success_at=0.0)
+    tui._status_runtime.model_status = ModelStatus(state="offline", endpoint="http://127.0.0.1:8080/v1/models", last_success_at=0.0)
 
     assert tui._should_startup_readiness_poll() is True
 
-    tui._model_status = ModelStatus(state="online", endpoint="http://127.0.0.1:8080/v1/models", last_success_at=1.0)
+    tui._status_runtime.model_status = ModelStatus(state="online", endpoint="http://127.0.0.1:8080/v1/models", last_success_at=1.0)
     assert tui._should_startup_readiness_poll() is False
 
-    tui._model_status = ModelStatus(state="offline", endpoint="https://example.com/v1/models", last_success_at=0.0)
+    tui._status_runtime.model_status = ModelStatus(state="offline", endpoint="https://example.com/v1/models", last_success_at=0.0)
     tui.agent = SimpleNamespace(
         models_endpoint="https://example.com/v1/models",
         llm_client=SimpleNamespace(_is_local_endpoint=lambda _endpoint: False),
@@ -1794,12 +1797,9 @@ def test_cmd_skills_shows_validation_summary() -> None:
         description="Home helper",
         user_invocable=True,
         disable_model_invocation=False,
-        trust_level="untrusted",
         execution_allowed=False,
         adapter="claude",
-        blocked_features=["untrusted_root", "scripts"],
         validation_errors=["untrusted skill roots are metadata-only; executable surfaces are blocked"],
-        shadowed_by="",
         available=False,
         availability_code="untrusted",
         availability_reason="untrusted skill roots are metadata-only",
@@ -1847,11 +1847,10 @@ def test_cmd_doctor_shows_skill_policy_details() -> None:
         "skills": [
             {
                 "id": "dup-skill",
-                "source_tier": "bundled",
+                "provenance": "repo/skills",
                 "availability_code": "shadowed",
                 "availability_reason": "shadowed by dup-skill (workspace/.claude/skills/dup-skill)",
                 "status": "shadowed",
-                "trust_level": "trusted",
                 "execution_allowed": False,
                 "adapter": "agentskills",
                 "tools": [],
@@ -1859,9 +1858,7 @@ def test_cmd_doctor_shows_skill_policy_details() -> None:
                 "entrypoints": [],
                 "user_invocable": True,
                 "model_invocable": True,
-                "blocked_features": ["command_tools"],
-                "validation_errors": ["command_tools are disabled_pending_safe_runner"],
-                "shadowed_by": "dup-skill",
+                "validation_errors": ["SKILL.md tools.definitions is not supported; use tools.py or execution.entrypoints"],
             }
         ],
     }

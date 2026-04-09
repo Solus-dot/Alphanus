@@ -560,7 +560,16 @@ class AlphanusTUI(App):
         self._last_status_left = ""
         self._last_status_right = ""
         self._auto_follow_stream = True
-        self._status_runtime = StatusRuntimeState(model_status=self.agent.get_model_status())
+        initial_status = self.agent.get_model_status()
+        self._status_runtime = StatusRuntimeState(
+            model_status=initial_status,
+            model_name=initial_status.model_name if initial_status.state != "offline" else None,
+            model_context_window=(
+                initial_status.context_window
+                if isinstance(initial_status.context_window, int) and initial_status.context_window > 0
+                else None
+            ),
+        )
 
         self._esc_pending = False
         self._esc_ts = 0.0
@@ -629,53 +638,30 @@ class AlphanusTUI(App):
         state = getattr(self, "_stream_runtime", None)
         if state is None:
             state = StreamRuntimeState()
-            legacy_queue = getattr(self, "_stream_event_queue", None)
-            if legacy_queue is not None:
-                state.event_queue = legacy_queue
-            state.drain_active = bool(getattr(self, "_stream_drain_active", False))
-            state.partial_dirty = bool(getattr(self, "_stream_partial_dirty", False))
-            state.deferred_live_preview = getattr(self, "_deferred_live_preview", None)
             self._stream_runtime = state
         return state
 
     def _status_state(self) -> StatusRuntimeState:
         state = getattr(self, "_status_runtime", None)
         if state is None:
+            initial_status = ModelStatus()
+            agent = getattr(self, "agent", None)
+            if agent is not None and hasattr(agent, "get_model_status"):
+                try:
+                    initial_status = agent.get_model_status()
+                except Exception:
+                    initial_status = ModelStatus()
             state = StatusRuntimeState(
-                model_status=getattr(self, "_model_status", ModelStatus()),
-                model_name=getattr(self, "_model_name", None),
-                model_context_window=getattr(self, "_model_context_window", None),
-                refresh_inflight=bool(getattr(self, "_model_refresh_inflight", False)),
-                last_model_refresh=float(getattr(self, "_last_model_refresh", 0.0)),
-                refresh_fast_until=float(getattr(self, "_model_refresh_fast_until", 0.0)),
-                startup_readiness_inflight=bool(getattr(self, "_startup_readiness_inflight", False)),
+                model_status=initial_status,
+                model_name=initial_status.model_name if initial_status.state != "offline" else None,
+                model_context_window=(
+                    initial_status.context_window
+                    if isinstance(initial_status.context_window, int) and initial_status.context_window > 0
+                    else None
+                ),
             )
             self._status_runtime = state
-        if hasattr(self, "_model_status"):
-            state.model_status = getattr(self, "_model_status")
-        if hasattr(self, "_model_name"):
-            state.model_name = getattr(self, "_model_name")
-        if hasattr(self, "_model_context_window"):
-            state.model_context_window = getattr(self, "_model_context_window")
-        if hasattr(self, "_model_refresh_inflight"):
-            state.refresh_inflight = bool(getattr(self, "_model_refresh_inflight"))
-        if hasattr(self, "_last_model_refresh"):
-            state.last_model_refresh = float(getattr(self, "_last_model_refresh"))
-        if hasattr(self, "_model_refresh_fast_until"):
-            state.refresh_fast_until = float(getattr(self, "_model_refresh_fast_until"))
-        if hasattr(self, "_startup_readiness_inflight"):
-            state.startup_readiness_inflight = bool(getattr(self, "_startup_readiness_inflight"))
-        self._sync_legacy_status_fields(state)
         return state
-
-    def _sync_legacy_status_fields(self, state: StatusRuntimeState) -> None:
-        self._model_status = state.model_status
-        self._model_name = state.model_name
-        self._model_context_window = state.model_context_window
-        self._model_refresh_inflight = state.refresh_inflight
-        self._last_model_refresh = state.last_model_refresh
-        self._model_refresh_fast_until = state.refresh_fast_until
-        self._startup_readiness_inflight = state.startup_readiness_inflight
 
     def on_mount(self) -> None:
         self.thinking = bool(self.agent.config.get("agent", {}).get("enable_thinking", True))
@@ -1630,7 +1616,6 @@ class AlphanusTUI(App):
             return
         state = self._status_state()
         state.startup_readiness_inflight = True
-        self._sync_legacy_status_fields(state)
         self._startup_readiness_worker()
 
     @work(thread=True, exclusive=True)
@@ -1642,7 +1627,6 @@ class AlphanusTUI(App):
     def _finish_startup_readiness_poll(self, status: ModelStatus) -> None:
         state = self._status_state()
         state.startup_readiness_inflight = False
-        self._sync_legacy_status_fields(state)
         self._apply_model_status_refresh(status)
 
     def _maybe_refresh_model_status(self, *, force: bool = False) -> None:
@@ -1651,7 +1635,6 @@ class AlphanusTUI(App):
         if not state.should_refresh(self._timing_config(), force=force, now=now):
             return
         state.mark_refresh_started(now=now)
-        self._sync_legacy_status_fields(state)
         self._refresh_model_status_worker()
 
     @work(thread=True, exclusive=True)
@@ -1662,7 +1645,6 @@ class AlphanusTUI(App):
     def _apply_model_status_refresh(self, status: ModelStatus) -> None:
         state = self._status_state()
         state.apply_model_status(status, self._timing_config())
-        self._sync_legacy_status_fields(state)
         self._update_status1()
         self._update_topbar()
 
@@ -2050,7 +2032,16 @@ class AlphanusTUI(App):
         self.thinking = bool(merged.get("agent", {}).get("enable_thinking", self.thinking))
         self._ui_config = UiRuntimeConfig.from_config(merged)
         self._ui_timing = self._ui_config.timing
-        self._status_runtime = StatusRuntimeState(model_status=self.agent.get_model_status())
+        refreshed_status = self.agent.get_model_status()
+        self._status_runtime = StatusRuntimeState(
+            model_status=refreshed_status,
+            model_name=refreshed_status.model_name if refreshed_status.state != "offline" else None,
+            model_context_window=(
+                refreshed_status.context_window
+                if isinstance(refreshed_status.context_window, int) and refreshed_status.context_window > 0
+                else None
+            ),
+        )
         self._update_topbar()
         self._apply_tui_config()
         self._maybe_refresh_model_status(force=True)
@@ -2840,8 +2831,6 @@ class AlphanusTUI(App):
                 return True
             self._write_section_heading(skill.name)
             self._write(f"  [#a1a1aa]{esc(skill.description)}[/#a1a1aa]")
-            keywords = ", ".join(skill.triggers.get("keywords", [])) or "none"
-            file_ext = ", ".join(skill.triggers.get("file_ext", [])) or "none"
             enabled, color = self.agent.skill_runtime.skill_status_label(skill)
             self._write_detail_line("id", skill.id)
             self._write_detail_line("version", skill.version)
@@ -2852,18 +2841,14 @@ class AlphanusTUI(App):
             self._write_detail_line("adapter", getattr(skill, "adapter", "agentskills"))
             self._write_detail_line("availability_code", skill.availability_code or "ready")
             self._write_detail_line("availability", skill.availability_reason or "ready")
-            self._write_detail_line("keywords", keywords)
-            self._write_detail_line("file_ext", file_ext)
             self._write_detail_line("tools", ", ".join(self.agent.skill_runtime._reported_skill_tools(skill)) or "none")
             self._write_detail_line("user_invocable", str(skill.user_invocable).lower())
             self._write_detail_line("model_invocable", str((not skill.disable_model_invocation)).lower())
-            self._write_detail_line("argument_hint", skill.argument_hint or "none")
             scripts = ", ".join(self.agent.skill_runtime._reported_skill_scripts(skill)) or "none"
             entrypoints = ", ".join(entry.name for entry in self.agent.skill_runtime._reported_skill_entrypoints(skill)) or "none"
             self._write_detail_line("scripts", scripts)
             self._write_detail_line("entrypoints", entrypoints)
             self._write_detail_line("validation_errors", "; ".join(getattr(skill, "validation_errors", []) or []) or "none")
-            self._write_detail_line("validation_warnings", "; ".join(getattr(skill, "validation_warnings", []) or []) or "none")
             self._write("")
             return True
 
@@ -2933,7 +2918,7 @@ class AlphanusTUI(App):
         for skill in report.get("skills", []):
             line = (
                 f"  [bold {ACCENT_COLOR}]{esc(str(skill.get('id', '')))}[/bold {ACCENT_COLOR}] "
-                f"[#a1a1aa]({esc(str(skill.get('source_tier', '')))} · {esc(str(skill.get('availability_code', 'ready')))})[/#a1a1aa] "
+                f"[#a1a1aa]({esc(str(skill.get('provenance', '')))} · {esc(str(skill.get('availability_code', 'ready')))})[/#a1a1aa] "
                 f"[#a1a1aa]{esc(str(skill.get('status', 'unknown')))}[/#a1a1aa]"
             )
             self._write(line)
