@@ -834,8 +834,8 @@ class AlphanusTUI(App):
     def _remember_code_block(self, code: str, language: Optional[str]) -> int:
         return tui_remember_code_block(self, code, language)
 
-    def _write_code_block(self, lines: List[str], language: Optional[str]) -> None:
-        tui_write_code_block(self, lines, language)
+    def _write_code_block(self, lines: List[str], language: Optional[str], content_indent: int = 2) -> None:
+        tui_write_code_block(self, lines, language, content_indent)
 
     def _render_static_markdown(self, text: str) -> None:
         tui_render_static_markdown(self, text)

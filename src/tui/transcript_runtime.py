@@ -316,13 +316,21 @@ def remember_code_block(app: Any, code: str, language: Optional[str]) -> int:
     return len(app._code_blocks)
 
 
-def write_code_block(app: Any, lines: List[str], language: Optional[str]) -> None:
+def write_code_block(
+    app: Any,
+    lines: List[str],
+    language: Optional[str],
+    content_indent: int = 2,
+) -> None:
     code = "\n".join(lines)
     block_index = app._remember_code_block(code, language)
-    app._write_assistant_bar_renderable(app._code_panel_renderable(code, language))
+    app._write_assistant_bar_renderable(
+        app._code_panel_renderable(code, language),
+        content_indent=max(0, int(content_indent)),
+    )
     app._write_assistant_bar_line(
         f"[dim]code block {block_index} · /code {block_index} to open copyable view[/dim]",
-        content_indent=2,
+        content_indent=max(0, int(content_indent)),
     )
 
 
