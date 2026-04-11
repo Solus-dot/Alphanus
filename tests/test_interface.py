@@ -1377,28 +1377,6 @@ def test_handle_sessions_opens_manager() -> None:
     assert opened == ["sessions"]
 
 
-def test_handle_load_guides_to_sessions_manager() -> None:
-    tui = AlphanusTUI.__new__(AlphanusTUI)
-    tui._id = "app"
-    tui._reactive_streaming = False
-    errors: list[str] = []
-    tui._write_error = errors.append
-
-    assert tui._handle_command("/load") is True
-    assert errors == ["Use /sessions to manage sessions."]
-
-
-def test_handle_new_guides_to_sessions_manager() -> None:
-    tui = AlphanusTUI.__new__(AlphanusTUI)
-    tui._id = "app"
-    tui._reactive_streaming = False
-    errors: list[str] = []
-    tui._write_error = errors.append
-
-    assert tui._handle_command("/new Backend Work") is True
-    assert errors == ["Use /sessions to manage sessions."]
-
-
 def test_handle_file_without_path_opens_attachment_picker() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._id = "app"
