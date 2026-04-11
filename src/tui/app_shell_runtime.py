@@ -105,7 +105,7 @@ def compose_shell(app: Any, *, chat_input_cls: Any, transcript_view_cls: Any):
                     with Horizontal(id="composer-shell"):
                         yield chat_input_cls(id="chat-input", placeholder="Type a message…")
                         with Horizontal(id="input-accessories"):
-                            yield Button("+ File", id="attach-file")
+                            yield Button("+ File (Ctrl+F)", id="attach-file")
                 with Horizontal(id="status-bar"):
                     yield Static("", id="status-left")
                     yield Static("", id="status-right")

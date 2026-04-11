@@ -16,7 +16,7 @@ from agent.types import ModelStatus
 from tui.live_tool_preview import LiveToolPreviewManager
 from tui.commands import active_command_query, active_command_span, command_entries_for_query, popup_command_query
 from tui.interface import AlphanusTUI, ChatInput
-from tui.popups import SessionManagerModal
+from tui.popups import SelectionPickerModal, SessionManagerModal
 from tui.status_runtime import StatusRuntimeState
 from tui.stream_runtime import StreamRuntimeState
 from tui.transcript import ScrollAnchor, TranscriptEntry, TranscriptView
@@ -248,11 +248,18 @@ def test_active_command_span_covers_command_token() -> None:
 def test_chat_input_binds_new_shortcuts_locally() -> None:
     bindings = {binding.key: binding.action for binding in ChatInput.BINDINGS}
 
+    assert bindings["ctrl+f"] == "open_file_picker"
     assert bindings["ctrl+g"] == "focus_input"
     assert bindings["ctrl+p"] == "open_command_palette"
     assert bindings["f1"] == "show_keymap"
     assert bindings["f2"] == "toggle_details"
     assert bindings["f3"] == "toggle_thinking"
+
+
+def test_app_bindings_include_open_file_picker_shortcut() -> None:
+    bindings = {binding.key: binding.action for binding in AlphanusTUI.BINDINGS}
+
+    assert bindings["ctrl+f"] == "open_file_picker"
 
 
 def test_on_resize_rebuilds_idle_viewport_and_updates_chrome(tmp_path: Path) -> None:
@@ -1303,6 +1310,7 @@ def test_show_keymap_writes_expected_sections() -> None:
     assert "SECTION:Keymap" in lines
     assert any("F1 / ?" in line for line in lines)
     assert any("Ctrl+P / /" in line for line in lines)
+    assert any("Ctrl+F" in line for line in lines)
     assert any("Tab / Shift+Tab" in line for line in lines)
     assert any("SECTION:Tree" == line for line in lines)
     assert any("SECTION:Slash Palette" == line for line in lines)
@@ -1800,6 +1808,21 @@ def test_session_manager_row_selection_does_not_auto_open() -> None:
 
     assert dismissed == []
     assert syncs == ["sync"]
+
+
+def test_session_manager_modal_numeric_bindings_are_available() -> None:
+    bindings = {binding.key: binding.action for binding in SessionManagerModal.BINDINGS}
+
+    assert bindings["1"] == "open_selected"
+    assert bindings["2"] == "delete_selected"
+    assert bindings["3"] == "create_new"
+
+
+def test_selection_picker_modal_numeric_bindings_are_available() -> None:
+    bindings = {binding.key: binding.action for binding in SelectionPickerModal.BINDINGS}
+
+    assert bindings["1"] == "confirm"
+    assert bindings["2"] == "cancel"
 
 
 def test_cmd_skills_shows_validation_summary() -> None:

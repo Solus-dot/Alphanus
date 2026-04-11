@@ -277,6 +277,11 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
         padding: 0 0 1 0;
     }
 
+    #session-modal-hint {
+        color: #71717a;
+        padding: 0 0 1 0;
+    }
+
     #session-modal-list-label,
     #session-modal-new-label {
         color: #6366f1;
@@ -344,6 +349,9 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
     BINDINGS = [
         Binding("escape", "cancel", show=False),
         Binding("enter", "open_selected", show=False),
+        Binding("1", "open_selected", show=False),
+        Binding("2", "delete_selected", show=False),
+        Binding("3", "create_new", show=False),
     ]
 
     def __init__(self, sessions: list[SessionSummary], active_session_id: str) -> None:
@@ -356,6 +364,7 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
         with Vertical(id="session-modal"):
             yield Static("SESSIONS", id="session-modal-kicker")
             yield Static("Open, create, or delete sessions from one place.", id="session-modal-subtitle")
+            yield Static("Shortcuts: 1. Open · 2. Delete · 3. New", id="session-modal-hint")
             if self._sessions:
                 yield Static("Saved Sessions", id="session-modal-list-label")
                 yield OptionList(*self._session_options(), id="session-modal-list")
@@ -366,9 +375,9 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
                 id="session-modal-name",
             )
             with Horizontal(id="session-modal-footer"):
-                yield Button("Open Selected", id="session-open", variant="primary", disabled=not self._sessions)
-                yield Button("Delete Selected", id="session-delete", variant="default", disabled=not self._sessions)
-                yield Button("New Session", id="session-new", variant="success")
+                yield Button("1. Open Selected", id="session-open", variant="primary", disabled=not self._sessions)
+                yield Button("2. Delete Selected", id="session-delete", variant="default", disabled=not self._sessions)
+                yield Button("3. New Session", id="session-new", variant="success")
 
     def _session_options(self) -> list[Option]:
         options: list[Option] = []
@@ -426,12 +435,11 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
         if not self._sessions:
             return
         button = self.query_one("#session-delete", Button)
-        button.label = (
-            "Confirm Delete"
-            if self._pending_delete_session_id and self._pending_delete_session_id == self._selected_session_id()
-            else "Delete Selected"
+        confirming = bool(
+            self._pending_delete_session_id and self._pending_delete_session_id == self._selected_session_id()
         )
-        button.variant = "error" if button.label == "Confirm Delete" else "default"
+        button.label = "2. Confirm Delete" if confirming else "2. Delete Selected"
+        button.variant = "error" if confirming else "default"
 
     def action_open_selected(self) -> None:
         session_id = self._selected_session_id()
@@ -449,6 +457,11 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
             return
         self.dismiss({"action": "delete", "session_id": session_id})
 
+    def action_create_new(self) -> None:
+        self._clear_delete_confirmation()
+        name = self.query_one("#session-modal-name", Input).value.strip()
+        self.dismiss({"action": "create", "title": name})
+
     @on(Button.Pressed, "#session-open")
     def _open_button(self) -> None:
         self._clear_delete_confirmation()
@@ -460,9 +473,7 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
 
     @on(Button.Pressed, "#session-new")
     def _new_button(self) -> None:
-        self._clear_delete_confirmation()
-        name = self.query_one("#session-modal-name", Input).value.strip()
-        self.dismiss({"action": "create", "title": name})
+        self.action_create_new()
 
     @on(Input.Submitted, "#session-modal-name")
     def _new_name_submitted(self, event: Input.Submitted) -> None:
@@ -515,6 +526,11 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
 
     #picker-modal-subtitle {
         color: #a1a1aa;
+        padding: 0 0 1 0;
+    }
+
+    #picker-modal-hint {
+        color: #71717a;
         padding: 0 0 1 0;
     }
 
@@ -574,6 +590,8 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
     BINDINGS = [
         Binding("escape", "cancel", show=False),
         Binding("enter", "confirm", show=False),
+        Binding("1", "confirm", show=False),
+        Binding("2", "cancel", show=False),
     ]
 
     def __init__(
@@ -597,14 +615,15 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
             yield Static("FILE SELECTOR", id="picker-modal-kicker")
             yield Static(self._title, id="picker-modal-title")
             yield Static(self._subtitle, id="picker-modal-subtitle")
+            yield Static(f"Shortcuts: 1. {self._confirm_label} · 2. Cancel", id="picker-modal-hint")
             if self._items:
                 yield Static("Available Files", id="picker-modal-list-label")
                 yield OptionList(*[Option(item.prompt, id=item.id) for item in self._items], id="picker-modal-list")
             else:
                 yield Static(self._empty_text, id="picker-modal-empty")
             with Horizontal(id="picker-modal-footer"):
-                yield Button(self._confirm_label, id="picker-confirm", variant="primary", disabled=not self._items)
-                yield Button("Cancel", id="picker-cancel")
+                yield Button(f"1. {self._confirm_label}", id="picker-confirm", variant="primary", disabled=not self._items)
+                yield Button("2. Cancel", id="picker-cancel")
 
     def on_mount(self) -> None:
         if self._items:

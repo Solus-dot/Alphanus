@@ -148,4 +148,6 @@ def status_left_markup(
         return "[dim]j/k move[/dim]   [#6366f1]enter open[/#6366f1]   [dim][/] sib[/dim]   [dim]g/G ends[/dim]"
     if focus_panel == "chat":
         return "[dim]pgup/dn scroll[/dim]   [dim]tab panel[/dim]" if width >= 110 else "[dim]tab panel[/dim]"
-    return "[dim]esc clear[/dim]   [dim]tab panel[/dim]" if width >= 110 else "[dim]esc clear[/dim]"
+    if width >= 110:
+        return "[dim]esc clear[/dim]   [dim]ctrl+f file[/dim]   [dim]tab panel[/dim]"
+    return "[dim]esc clear[/dim]   [dim]ctrl+f[/dim]"

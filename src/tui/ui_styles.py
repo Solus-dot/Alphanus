@@ -318,6 +318,6 @@ ALPHANUS_TUI_CSS = """
         color: #6366f1;
         border: none;
         text-style: bold;
-        padding: 0 1;
+        padding: 0 0;
     }
     """

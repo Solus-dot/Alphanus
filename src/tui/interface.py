@@ -201,6 +201,7 @@ class ChatInput(Input):
         Binding("ctrl+h", "delete_left", show=False),
         Binding("ctrl+u", "clear_all", show=False),
         Binding("ctrl+k", "kill_to_end", show=False),
+        Binding("ctrl+f", "open_file_picker", show=False),
         Binding("ctrl+g", "focus_input", show=False),
         Binding("ctrl+p", "open_command_palette", show=False),
         Binding("f1", "show_keymap", show=False),
@@ -224,6 +225,9 @@ class ChatInput(Input):
 
     def action_open_command_palette(self) -> None:
         self._invoke_app_action("action_open_command_palette")
+
+    def action_open_file_picker(self) -> None:
+        self._invoke_app_action("action_open_file_picker")
 
     def action_show_keymap(self) -> None:
         self._invoke_app_action("action_show_keymap")
@@ -249,6 +253,7 @@ class AlphanusTUI(App):
         Binding("f3", "toggle_thinking", show=False),
         Binding("pageup", "scroll_up", show=False),
         Binding("pagedown", "scroll_down", show=False),
+        Binding("ctrl+f", "open_file_picker", show=False),
         Binding("ctrl+g", "focus_input", show=False),
         Binding("ctrl+p", "open_command_palette", show=False),
         Binding("tab", "focus_next_panel", show=False),
@@ -578,6 +583,7 @@ class AlphanusTUI(App):
                 [
                     ("F1 / ?", "Show keyboard shortcuts"),
                     ("Ctrl+P / /", "Open slash command palette"),
+                    ("Ctrl+F", "Open file picker"),
                     ("Ctrl+G", "Focus composer"),
                     ("Tab / Shift+Tab", "Cycle active panels"),
                     ("Ctrl+H / Ctrl+L", "Focus transcript or tree"),
@@ -646,6 +652,13 @@ class AlphanusTUI(App):
             chat_input.value = "/"
             chat_input.cursor_position = len(chat_input.value)
         self._refresh_command_popup(chat_input.value)
+
+    def action_open_file_picker(self) -> None:
+        if self.streaming or self._await_shell_confirm:
+            return
+        self._hide_command_popup()
+        self._set_focused_panel("input")
+        self._open_attachment_picker(".")
 
     def _apply_tree_compaction_policy(self, tree: ConvTree) -> ConvTree:
         tree.set_compaction_policy(

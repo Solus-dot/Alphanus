@@ -145,6 +145,21 @@ def test_status_helpers_compact_at_small_width() -> None:
     assert "enter" in status_left
 
 
+def test_status_left_input_focus_includes_file_shortcut_hint() -> None:
+    status_left = status_left_markup(
+        await_shell_confirm=False,
+        streaming=False,
+        spinner_frame="x",
+        stop_requested=False,
+        esc_pending=False,
+        auto_follow_stream=True,
+        focus_panel="input",
+        width=180,
+    )
+
+    assert "ctrl+f file" in status_left
+
+
 def test_status_right_markup_includes_model_label_and_value() -> None:
     status_right = status_right_markup(
         model_name="Meta-Llama-3.1-8B-Instruct-Q4_K_M",
