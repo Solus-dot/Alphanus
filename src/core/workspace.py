@@ -8,6 +8,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -51,6 +52,7 @@ SAFE_CHECK_RUNNERS = {
     "tox",
     "nox",
 }
+PYTHON_MODULE_CHECK_RUNNERS = {"pytest", "ruff", "mypy", "pyright", "tox", "nox"}
 READ_ONLY_SHELL_COMMANDS = {
     "ls",
     "pwd",
@@ -737,6 +739,14 @@ class WorkspaceManager:
                 raise PermissionError("run_checks only allows 'uv run' with approved verification runners")
         elif executable not in SAFE_CHECK_RUNNERS:
             raise PermissionError("run_checks only supports approved verification runners")
+
+        # Prefer explicit executable paths, and fall back to `python -m` for
+        # Python-native runners when the entrypoint is not on PATH.
+        resolved = shutil.which(executable)
+        if resolved:
+            argv[0] = resolved
+        elif executable in PYTHON_MODULE_CHECK_RUNNERS:
+            argv = [sys.executable, "-m", executable, *argv[1:]]
 
         cwd = self._resolve_workspace_subpath(path)
         if cwd.is_file():
