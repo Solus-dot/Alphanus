@@ -123,7 +123,18 @@ def open_attachment_picker(app: Any, relative_dir: str = ".", root_id: str = "wo
     clean_dir = relative_dir or "."
     root_path = attachment_root_path(app, root_id)
     title = f"Attach File · {attachment_root_label(root_id)}"
-    subtitle = root_relative_label(root_path / clean_dir, root_path)
+    current_dir = root_relative_label(root_path / clean_dir, root_path)
+    if root_id == "home":
+        if current_dir in {".", ""}:
+            current_dir = "~/"
+        else:
+            current_dir = f"~/{current_dir}"
+    else:
+        if current_dir in {".", ""}:
+            current_dir = "workspace root"
+        else:
+            current_dir = f"./{current_dir}"
+    subtitle = f"Current directory: {current_dir}"
     items = attachment_picker_items(app, clean_dir, root_id=root_id, accent_color=accent_color)
     app.push_screen(
         SelectionPickerModal(

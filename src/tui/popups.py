@@ -269,13 +269,7 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
 
     #session-modal-kicker {
         color: #71717a;
-        padding: 0 0 1 0;
-    }
-
-    #session-modal-title {
-        color: #e4e4e7;
-        text-style: bold;
-        padding: 0 0 1 0;
+        padding: 0;
     }
 
     #session-modal-subtitle {
@@ -360,8 +354,7 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="session-modal"):
-            yield Static("SESSION MANAGER", id="session-modal-kicker")
-            yield Static("Sessions", id="session-modal-title")
+            yield Static("SESSIONS", id="session-modal-kicker")
             yield Static("Open, create, or delete sessions from one place.", id="session-modal-subtitle")
             if self._sessions:
                 yield Static("Saved Sessions", id="session-modal-list-label")
@@ -501,12 +494,17 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
     }
 
     #picker-modal {
-        width: 72;
+        width: 68;
         max-width: 92%;
         height: auto;
-        background: #000000;
-        border: panel #52525b;
-        padding: 1 2;
+        background: #09090b;
+        border: solid #52525b;
+        padding: 0 1 1 2;
+    }
+
+    #picker-modal-kicker {
+        color: #71717a;
+        padding: 0 0 1 0;
     }
 
     #picker-modal-title {
@@ -520,13 +518,19 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
         padding: 0 0 1 0;
     }
 
+    #picker-modal-list-label {
+        color: #6366f1;
+        padding: 0 0 1 0;
+    }
+
     #picker-modal-list {
         width: 1fr;
         height: auto;
-        max-height: 12;
+        max-height: 10;
         background: #000000;
         border: solid #52525b;
         margin: 0 0 1 0;
+        padding: 0;
     }
 
     #picker-modal-list > .option-list--option-highlighted {
@@ -540,22 +544,30 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
     }
 
     #picker-modal-footer {
+        width: 1fr;
         height: auto;
-        align-horizontal: right;
-        padding: 1 0 0 0;
+        align-horizontal: left;
+        padding: 0;
     }
 
-    #picker-confirm {
-        background: #6366f1;
-        color: #ffffff;
+    #picker-confirm,
+    #picker-cancel {
+        width: 1fr;
+        min-width: 0;
         border: none;
+        content-align: center middle;
         margin-right: 1;
     }
 
+    #picker-confirm {
+        background: #1a1730;
+        color: #c7d2fe;
+    }
+
     #picker-cancel {
-        background: #000000;
-        color: #e4e4e7;
-        border: none;
+        background: #23252a;
+        color: #d4d4d8;
+        margin-right: 0;
     }
     """
 
@@ -582,9 +594,11 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker-modal"):
+            yield Static("FILE SELECTOR", id="picker-modal-kicker")
             yield Static(self._title, id="picker-modal-title")
             yield Static(self._subtitle, id="picker-modal-subtitle")
             if self._items:
+                yield Static("Available Files", id="picker-modal-list-label")
                 yield OptionList(*[Option(item.prompt, id=item.id) for item in self._items], id="picker-modal-list")
             else:
                 yield Static(self._empty_text, id="picker-modal-empty")
