@@ -297,7 +297,6 @@ def test_image_turn_keeps_model_exposed_core_tools_for_workspace_actions(
         lambda: [
             "create_file",
             "request_user_input",
-            "skill_manage",
             "skill_view",
             "skills_list",
         ],

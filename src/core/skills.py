@@ -11,7 +11,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,12 +41,10 @@ _RUN_SKILL_TOOL_NAME = "run_skill"
 _REQUEST_USER_INPUT_TOOL_NAME = "request_user_input"
 _SKILLS_LIST_TOOL_NAME = "skills_list"
 _SKILL_VIEW_TOOL_NAME = "skill_view"
-_SKILL_MANAGE_TOOL_NAME = "skill_manage"
 _ALWAYS_AVAILABLE_TOOL_NAMES = frozenset(
     {
         _SKILLS_LIST_TOOL_NAME,
         _SKILL_VIEW_TOOL_NAME,
-        _SKILL_MANAGE_TOOL_NAME,
         _REQUEST_USER_INPUT_TOOL_NAME,
     }
 )
@@ -421,31 +418,6 @@ class SkillRuntime:
                     "file_path": {"type": "string"},
                 },
                 "required": ["name"],
-            },
-        )
-        self._tool_registry[_SKILL_MANAGE_TOOL_NAME] = RegisteredTool(
-            name=_SKILL_MANAGE_TOOL_NAME,
-            skill_id="__runtime__",
-            tool_scope="core",
-            capability="skill_manager",
-            description="Create, patch, edit, delete, or manage files for skills under the repo skills/ root.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["create", "patch", "edit", "delete", "write_file", "remove_file"],
-                    },
-                    "name": {"type": "string"},
-                    "content": {"type": "string"},
-                    "category": {"type": "string"},
-                    "file_path": {"type": "string"},
-                    "file_content": {"type": "string"},
-                    "old_string": {"type": "string"},
-                    "new_string": {"type": "string"},
-                    "replace_all": {"type": "boolean"},
-                },
-                "required": ["action", "name"],
             },
         )
         self._tool_registry[_REQUEST_USER_INPUT_TOOL_NAME] = RegisteredTool(
@@ -1221,136 +1193,6 @@ class SkillRuntime:
             "loaded_skill_ids": list(ctx.loaded_skill_ids),
         }
 
-    def _validate_skill_doc_text(self, skill_name: str, content: str) -> None:
-        with tempfile.TemporaryDirectory(prefix="alphanus-skill-validate-") as tmpdir:
-            root = Path(tmpdir) / skill_name
-            root.mkdir(parents=True, exist_ok=True)
-            doc = root / SKILL_DOC
-            doc.write_text(content, encoding="utf-8")
-            parse_agentskill_manifest(root, doc, include_prompt=False)
-
-    def _validate_supporting_file_path(self, relpath: str) -> Path:
-        candidate = Path(str(relpath or "").strip())
-        if not str(candidate).strip():
-            raise ValueError("file_path is required")
-        if candidate.is_absolute() or ".." in candidate.parts:
-            raise PermissionError("file_path must stay inside the skill directory")
-        if len(candidate.parts) < 2 or candidate.parts[0] not in {"references", "templates", "scripts", "assets"}:
-            raise PermissionError("file_path must be under references/, templates/, scripts/, or assets/")
-        return candidate
-
-    def _resolve_user_skill_create_dir(self, name: str, category: str = "") -> Path:
-        root = self.user_skill_root()
-        base = root
-        raw_category = str(category or "").strip()
-        if raw_category:
-            category_path = Path(raw_category)
-            if category_path.is_absolute():
-                raise PermissionError("category must stay inside the skill root")
-            base = (root / category_path).resolve()
-        target = (base / name).resolve()
-        if not self._is_relative_to(target, root):
-            raise PermissionError("category must stay inside the skill root")
-        return target
-
-    def _resolve_user_skill_dir(self, name: str) -> Path:
-        skill = self.get_skill(name)
-        if skill and skill.path and self._is_relative_to(skill.path.resolve(), self.skills_dir.resolve()):
-            return skill.path.resolve()
-        return (self.user_skill_root() / name).resolve()
-
-    def skill_manage(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        action = str(args.get("action", "")).strip().lower()
-        name = str(args.get("name", "")).strip()
-        if not name:
-            raise ValueError("Missing required argument: name")
-        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", name):
-            raise ValueError("Skill name must be lowercase letters, numbers, hyphens, or underscores")
-        root = self.user_skill_root()
-        skill_dir = self._resolve_user_skill_dir(name)
-        skill_doc = skill_dir / SKILL_DOC
-
-        if action == "create":
-            content = str(args.get("content", ""))
-            if not content.strip():
-                raise ValueError("content is required for create")
-            category = str(args.get("category", "")).strip()
-            target_dir = self._resolve_user_skill_create_dir(name, category)
-            target_doc = target_dir / SKILL_DOC
-            self._validate_skill_doc_text(name, content)
-            target_dir.mkdir(parents=True, exist_ok=True)
-            target_doc.write_text(content, encoding="utf-8")
-            self.load_skills()
-            return {"action": action, "name": name, "path": str(target_doc)}
-
-        if action == "edit":
-            if not skill_doc.exists():
-                raise FileNotFoundError(f"Skill '{name}' not found")
-            content = str(args.get("content", ""))
-            if not content.strip():
-                raise ValueError("content is required for edit")
-            self._validate_skill_doc_text(name, content)
-            skill_doc.write_text(content, encoding="utf-8")
-            self.load_skills()
-            return {"action": action, "name": name, "path": str(skill_doc)}
-
-        if action == "patch":
-            target = skill_doc
-            relpath = str(args.get("file_path", "")).strip()
-            if relpath:
-                target = skill_dir / self._validate_supporting_file_path(relpath)
-            if not target.exists():
-                raise FileNotFoundError(f"Target file not found for patch: {target.name}")
-            old_string = str(args.get("old_string", ""))
-            new_string = str(args.get("new_string", ""))
-            if not old_string:
-                raise ValueError("old_string is required for patch")
-            replace_all = bool(args.get("replace_all", False))
-            existing = target.read_text(encoding="utf-8")
-            count = existing.count(old_string)
-            if count == 0:
-                raise ValueError("old_string not found in target file")
-            if count > 1 and not replace_all:
-                raise ValueError("old_string matches multiple locations; set replace_all=true")
-            updated = existing.replace(old_string, new_string) if replace_all else existing.replace(old_string, new_string, 1)
-            if target.name == SKILL_DOC:
-                self._validate_skill_doc_text(name, updated)
-            target.write_text(updated, encoding="utf-8")
-            self.load_skills()
-            return {"action": action, "name": name, "path": str(target)}
-
-        if action == "delete":
-            if not skill_dir.exists():
-                raise FileNotFoundError(f"Skill '{name}' not found")
-            shutil.rmtree(skill_dir)
-            self.load_skills()
-            return {"action": action, "name": name, "deleted": True}
-
-        if action == "write_file":
-            if not skill_dir.exists():
-                raise FileNotFoundError(f"Skill '{name}' not found")
-            relpath = self._validate_supporting_file_path(str(args.get("file_path", "")))
-            target = skill_dir / relpath
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(str(args.get("file_content", "")), encoding="utf-8")
-            self.load_skills()
-            return {"action": action, "name": name, "path": str(target)}
-
-        if action == "remove_file":
-            if not skill_dir.exists():
-                raise FileNotFoundError(f"Skill '{name}' not found")
-            relpath = self._validate_supporting_file_path(str(args.get("file_path", "")))
-            target = (skill_dir / relpath).resolve()
-            if not self._is_relative_to(target, skill_dir.resolve()):
-                raise PermissionError("file_path escapes skill directory")
-            if not target.exists() or not target.is_file():
-                raise FileNotFoundError(f"Skill file not found: {relpath}")
-            target.unlink()
-            self.load_skills()
-            return {"action": action, "name": name, "path": str(target), "deleted": True}
-
-        raise ValueError(f"Unknown action '{action}'")
-
     @staticmethod
     def _safe_prompt_snippet(body: str, allowed: int) -> str:
         if allowed <= 0 or not body:
@@ -1800,14 +1642,6 @@ class SkillRuntime:
             return self.skills_list()
         if reg.name == _SKILL_VIEW_TOOL_NAME:
             return self.skill_view(str(args.get("name", "")).strip(), str(args.get("file_path", "")).strip(), ctx)
-        if reg.name == _SKILL_MANAGE_TOOL_NAME:
-            result = self.skill_manage(args)
-            ctx.loaded_skill_ids = [
-                skill.id for skill in self.skills_by_ids(list(getattr(ctx, "loaded_skill_ids", []) or []))
-            ]
-            if isinstance(result, dict):
-                result.setdefault("loaded_skill_ids", list(ctx.loaded_skill_ids))
-            return result
         if reg.name == _REQUEST_USER_INPUT_TOOL_NAME:
             if not env.request_user_input:
                 raise PermissionError("User input runtime is unavailable")

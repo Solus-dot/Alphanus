@@ -839,7 +839,7 @@ class TurnOrchestrator:
             state.dynamic_history.append(tool_message)
             state.skill_exchanges.append(tool_message)
             self.record_tool_effects(state, call, result)
-            if call.name in {"skill_view", "skill_manage"} and result.get("ok"):
+            if call.name == "skill_view" and result.get("ok"):
                 state.selected = self.skill_runtime.select_skills(state.ctx)
                 self.refresh_search_tools_enabled(state)
 

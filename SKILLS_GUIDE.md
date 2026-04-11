@@ -93,7 +93,6 @@ Parameters:
 Always available:
 - `skills_list`
 - `skill_view`
-- `skill_manage`
 - `request_user_input` (unless `runtime.ask_user_tool=false`)
 
 Conditionally available by selected skills:

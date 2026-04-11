@@ -14,7 +14,7 @@ def _tool_names(runtime: SkillRuntime, selected, ctx: SkillContext | None = None
 
 
 def _always_available_tool_names() -> set[str]:
-    return {"request_user_input", "skill_manage", "skill_view", "skills_list"}
+    return {"request_user_input", "skill_view", "skills_list"}
 
 
 def test_skill_load_select_and_execute(tmp_path: Path):
@@ -188,33 +188,6 @@ def execute(tool_name, args, env):
     assert out["error"]["code"] == "E_UNSUPPORTED"
 
 
-def test_skill_manage_create_rejects_category_path_escape(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-
-    content = """
----
-name: demo
-description: traversal test
-version: 1.0.0
----
-Hello
-""".strip()
-
-    with pytest.raises(PermissionError):
-        runtime.skill_manage({"action": "create", "name": "demo", "category": "../../Desktop", "content": content})
-
-    assert not (home / "Desktop" / "demo" / "SKILL.md").exists()
-
-
 def test_tools_for_turn_requires_selected_skill_for_native_tools(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
@@ -324,7 +297,6 @@ def execute(tool_name, args, env):
         "create_file",
         "read_file",
         "request_user_input",
-        "skill_manage",
         "skill_view",
         "skills_list",
         "web_search",
