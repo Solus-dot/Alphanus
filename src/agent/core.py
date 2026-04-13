@@ -27,7 +27,11 @@ class Agent:
         self.context_mgr = ContextWindowManager()
         self.llm_client = LLMClient(config, debug=debug, telemetry=self.telemetry)
         self.classifier = TurnClassifier(config, skill_runtime, self.llm_client, telemetry=self.telemetry)
-        self.prompt_renderer = PromptPolicyRenderer(self.system_prompt, self.skill_runtime)
+        self.prompt_renderer = PromptPolicyRenderer(
+            self.system_prompt,
+            self.skill_runtime,
+            context_limit=self.context_mgr.context_limit,
+        )
         self.orchestrator = TurnOrchestrator(
             skill_runtime=self.skill_runtime,
             context_mgr=self.context_mgr,
@@ -84,7 +88,11 @@ class Agent:
         self.system_prompt = build_system_prompt(self.skill_runtime.workspace.workspace_root)
         self.llm_client.reload_config(config)
         self.classifier.reload_config(config)
-        self.prompt_renderer = PromptPolicyRenderer(self.system_prompt, self.skill_runtime)
+        self.prompt_renderer = PromptPolicyRenderer(
+            self.system_prompt,
+            self.skill_runtime,
+            context_limit=self.context_mgr.context_limit,
+        )
         self.orchestrator = TurnOrchestrator(
             skill_runtime=self.skill_runtime,
             context_mgr=self.context_mgr,

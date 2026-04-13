@@ -100,9 +100,10 @@ class OutputSanitizer:
 
 
 class PromptPolicyRenderer:
-    def __init__(self, system_prompt: str, skill_runtime: SkillRuntime) -> None:
+    def __init__(self, system_prompt: str, skill_runtime: SkillRuntime, context_limit: int = 8192) -> None:
         self.system_prompt = system_prompt
         self.skill_runtime = skill_runtime
+        self.context_limit = max(1, int(context_limit))
 
     def compose_system_content(self, selected: List[Any], ctx: SkillContext) -> str:
         parts = [self.system_prompt]
@@ -113,7 +114,7 @@ class PromptPolicyRenderer:
             skill_block = self.skill_runtime.compose_skill_block(
                 selected,
                 ctx,
-                context_limit=8192,
+                context_limit=self.context_limit,
             )
             if skill_block:
                 parts.append("Loaded skill guidance:\n" + skill_block)

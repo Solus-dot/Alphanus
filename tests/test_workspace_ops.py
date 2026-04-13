@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import io
+import json
 from pathlib import Path
+import subprocess
 
 from core.memory import VectorMemory
 from core.skills import SkillContext, SkillRuntime
@@ -463,6 +466,87 @@ def test_workspace_ops_search_code_skips_blocked_home_descendants(tmp_path: Path
     assert search["data"]["results"][0]["filepath"].endswith("notes.txt")
     assert ".ssh" not in search["data"]["results"][0]["filepath"]
     assert ".env" not in search["data"]["results"][0]["filepath"]
+
+
+def test_workspace_search_code_uses_direct_rg_without_prelisting_workspace_files(tmp_path: Path, monkeypatch):
+    manager = WorkspaceManager(str(tmp_path / "ws"), home_root=str(tmp_path / "home"))
+    (manager.workspace_root / "src").mkdir(parents=True)
+    (manager.workspace_root / "src" / "app.py").write_text("def greet(name):\n    return f'hello {name}'\n", encoding="utf-8")
+    monkeypatch.setattr(manager, "_iter_searchable_files", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not pre-list files")))
+    monkeypatch.setattr("core.workspace.shutil.which", lambda name: "/usr/bin/rg" if name == "rg" else None)
+
+    match_event = {
+        "type": "match",
+        "data": {
+            "path": {"text": "src/app.py"},
+            "lines": {"text": "def greet(name):\n"},
+            "line_number": 1,
+            "submatches": [{"match": {"text": "greet("}, "start": 4, "end": 10}],
+        },
+    }
+
+    class FakePopen:
+        def __init__(self, *args, **kwargs):
+            self.stdout = io.StringIO(json.dumps(match_event) + "\n")
+            self.stderr = io.StringIO("")
+            self.returncode = 0
+
+        def terminate(self):
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+
+    result = manager.search_code("greet(", path="src", glob="*.py")
+
+    assert result["backend"] == "rg"
+    assert result["count"] == 1
+    assert result["results"][0]["filepath"].endswith("src/app.py")
+
+
+def test_workspace_search_code_tolerates_rg_io_exit_with_partial_results(tmp_path: Path, monkeypatch):
+    manager = WorkspaceManager(str(tmp_path / "ws"), home_root=str(tmp_path / "home"))
+    (manager.workspace_root / "src").mkdir(parents=True)
+    (manager.workspace_root / "src" / "app.py").write_text("def greet(name):\n    return f'hello {name}'\n", encoding="utf-8")
+    monkeypatch.setattr("core.workspace.shutil.which", lambda name: "/usr/bin/rg" if name == "rg" else None)
+
+    match_event = {
+        "type": "match",
+        "data": {
+            "path": {"text": "src/app.py"},
+            "lines": {"text": "def greet(name):\n"},
+            "line_number": 1,
+            "submatches": [{"match": {"text": "greet("}, "start": 4, "end": 10}],
+        },
+    }
+
+    class FakePopen:
+        def __init__(self, *args, **kwargs):
+            self.stdout = io.StringIO(json.dumps(match_event) + "\n")
+            self.stderr = io.StringIO("permission denied\n")
+            self.returncode = 2
+
+        def terminate(self):
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+
+    result = manager.search_code("greet(", path="src", glob="*.py")
+
+    assert result["backend"] == "rg"
+    assert result["count"] == 1
+    assert result["results"][0]["filepath"].endswith("src/app.py")
 
 
 def test_workspace_ops_run_checks_rejects_non_verification_commands(tmp_path: Path):

@@ -19,6 +19,10 @@ def test_get_app_paths_falls_back_to_user_dir_outside_checkout(tmp_path: Path, m
     outside = tmp_path / "outside"
     home.mkdir()
     outside.mkdir()
+    (outside / "src").mkdir()
+    (outside / "skills").mkdir()
+    (outside / "config").mkdir()
+    (outside / "pyproject.toml").write_text("[project]\nname='not-alphanus'\n", encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.chdir(outside)
 

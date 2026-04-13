@@ -994,11 +994,21 @@ class SkillRuntime:
         return self._reported_skill_entrypoints(skill)
 
     def select_skills(self, ctx: SkillContext, top_n: int = 3) -> List[SkillManifest]:
-        loaded = self.skills_by_ids(list(getattr(ctx, "loaded_skill_ids", []) or []))
-        return sorted(
-            [skill for skill in loaded if not skill.disable_model_invocation],
-            key=lambda skill: skill.id,
-        )
+        loaded = [skill for skill in self.skills_by_ids(list(getattr(ctx, "loaded_skill_ids", []) or [])) if not skill.disable_model_invocation]
+        if not loaded:
+            return []
+        limit = max(1, int(top_n))
+        if len(loaded) <= 1:
+            return loaded[:limit]
+
+        scored = [
+            (self._skill_selection_score(skill, ctx), idx, skill)
+            for idx, skill in enumerate(loaded)
+        ]
+        if not any(score > 0 for score, _idx, _skill in scored):
+            return loaded[:limit]
+        scored.sort(key=lambda item: (-item[0], item[1], item[2].id))
+        return [skill for _score, _idx, skill in scored[:limit]]
 
     def tool_registration(self, tool_name: str) -> Optional[RegisteredTool]:
         return self._tool_registry.get(str(tool_name).strip())
@@ -1015,21 +1025,20 @@ class SkillRuntime:
         return False
 
     def tool_is_blocked_for_local_workspace(self, tool_name: str) -> bool:
-        normalized_name = str(tool_name).strip().lower()
         reg = self.tool_registration(tool_name)
         if reg is None:
-            return (
-                normalized_name.startswith("fetch_")
-                or normalized_name.startswith("open_")
-                or normalized_name.startswith("play_")
-                or normalized_name.endswith("_search")
+            normalized_name = str(tool_name).strip()
+            return normalized_name not in (
+                _CORE_TOOL_NAMES
+                | _ALWAYS_AVAILABLE_TOOL_NAMES
+                | {_RUN_SKILL_TOOL_NAME, "shell_command"}
             )
         capability = str(reg.capability or "").strip().lower()
-        if capability.startswith("web_"):
-            return True
-        if capability.startswith("utility_open") or capability.startswith("utility_play"):
-            return True
-        return False
+        if capability.startswith(("workspace_", "memory_", "skill_")):
+            return False
+        if capability in {"run_shell_command", "user_input_requester"}:
+            return False
+        return True
 
     def skill_cards_text(self, skills: List[SkillManifest]) -> str:
         key = (tuple(getattr(skill, "id", "") for skill in skills), True)
@@ -1102,17 +1111,82 @@ class SkillRuntime:
             parts = argument_text.split()
         return parts[index] if index < len(parts) else ""
 
+    @staticmethod
+    def _selection_tokens(*values: Any) -> set[str]:
+        tokens: set[str] = set()
+        for value in values:
+            if isinstance(value, (list, tuple, set)):
+                tokens.update(SkillRuntime._selection_tokens(*list(value)))
+                continue
+            text = str(value or "").strip().lower()
+            if not text:
+                continue
+            for token in re.findall(r"[a-z0-9][a-z0-9_-]{1,}", text):
+                tokens.add(token)
+                if "_" in token:
+                    tokens.update(part for part in token.split("_") if len(part) > 1)
+                if "-" in token:
+                    tokens.update(part for part in token.split("-") if len(part) > 1)
+        return tokens
+
+    def _skill_selection_score(self, skill: SkillManifest, ctx: SkillContext) -> int:
+        score = 0
+        explicit_skill_id = str(getattr(ctx, "explicit_skill_id", "")).strip().lower()
+        if explicit_skill_id and skill.id.lower() == explicit_skill_id:
+            score += 1000
+        sticky_ids = {str(item).strip().lower() for item in getattr(ctx, "sticky_skill_ids", []) or [] if str(item).strip()}
+        if skill.id.lower() in sticky_ids:
+            score += 250
+
+        user_tokens = self._selection_tokens(getattr(ctx, "user_input", ""))
+        branch_tokens = self._selection_tokens(getattr(ctx, "branch_labels", []) or [])
+        attachment_tokens = self._selection_tokens(*(Path(item).name for item in (getattr(ctx, "attachments", []) or [])))
+        recent_tokens = self._selection_tokens(getattr(ctx, "recent_routing_hint", ""))
+        skill_tokens = self._selection_tokens(
+            skill.id,
+            skill.name,
+            skill.description,
+            skill.tags,
+            skill.categories,
+            skill.produces,
+            skill.allowed_tools,
+            [entry.name for entry in self._skill_entrypoints(skill)],
+        )
+
+        score += 4 * len(user_tokens & skill_tokens)
+        score += 2 * len(branch_tokens & skill_tokens)
+        score += 2 * len(attachment_tokens & skill_tokens)
+        score += 1 * len(recent_tokens & skill_tokens)
+        return score
+
     def _rebase_vendor_paths(self, text: str, skill: SkillManifest) -> str:
         out = str(text or "")
         skill_root = str(skill.path or "")
         if not skill_root:
             return out
         replacements: Dict[str, str] = {}
+        discovered_roots: List[Path] = []
+        for root in self.skill_roots:
+            try:
+                resolved_root = root.resolve()
+            except OSError:
+                continue
+            if resolved_root not in discovered_roots:
+                discovered_roots.append(resolved_root)
         for candidate in self.list_skills():
             if not candidate.path:
                 continue
-            for prefix in ("~/.codex/skills", "~/.claude/skills", "~/.config/opencode/skills", "~/.agents/skills"):
-                replacements[f"{prefix}/{candidate.id}"] = str(candidate.path)
+            resolved_candidate = candidate.path.resolve()
+            for root in discovered_roots:
+                if not self._is_relative_to(resolved_candidate, root):
+                    continue
+                source = root / candidate.id
+                replacements[str(source)] = str(candidate.path)
+                try:
+                    home_relative = source.relative_to(self.workspace.home_root.resolve())
+                except ValueError:
+                    continue
+                replacements[f"~/{home_relative.as_posix()}"] = str(candidate.path)
         for source, target in sorted(replacements.items(), key=lambda item: -len(item[0])):
             out = out.replace(source, target)
         return out

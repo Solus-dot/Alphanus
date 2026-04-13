@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from agent.core import Agent
+from agent.policies import PromptPolicyRenderer
 from agent.types import ModelStatus, TurnClassification, TurnPolicySnapshot
 from core.memory import VectorMemory
 from core.skills import SkillContext, SkillRuntime
@@ -2956,6 +2957,26 @@ def execute(tool_name, args, env):
     loaded_system_content = agent.prompt_renderer.compose_system_content(selected, ctx)
     assert "hidden-tool" in loaded_system_content
     assert "artifact_forge" in loaded_system_content
+
+
+def test_prompt_policy_renderer_uses_configured_context_limit_for_skill_budget(mocker, runtime: SkillRuntime):
+    skill_runtime = mocker.Mock()
+    skill_runtime.compose_skill_index.return_value = ""
+    skill_runtime.compose_skill_block.return_value = "loaded guidance"
+    renderer = PromptPolicyRenderer("system", skill_runtime, context_limit=4096)
+    selected = [object()]
+    ctx = SkillContext(
+        user_input="hello",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(runtime.workspace.workspace_root),
+        memory_hits=[],
+    )
+
+    rendered = renderer.compose_system_content(selected, ctx)
+
+    assert "loaded guidance" in rendered
+    skill_runtime.compose_skill_block.assert_called_once_with(selected, ctx, context_limit=4096)
 
 
 def test_large_tool_call_args_are_compacted_in_history(runtime: SkillRuntime):

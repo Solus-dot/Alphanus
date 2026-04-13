@@ -36,10 +36,7 @@ def _is_repo_checkout(root: Path) -> bool:
 
 
 def _detect_repo_root() -> Path | None:
-    candidates: list[Path] = []
-    cwd = Path.cwd().resolve()
-    candidates.append(cwd)
-    candidates.extend(path.resolve() for path in Path(__file__).resolve().parents)
+    candidates = [path.resolve() for path in Path(__file__).resolve().parents]
 
     seen: set[str] = set()
     for candidate in candidates:

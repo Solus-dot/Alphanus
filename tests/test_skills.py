@@ -873,6 +873,176 @@ Design well.
     assert runtime.select_skills(ctx) == []
 
 
+def test_select_skills_ranks_loaded_skills_and_honors_top_n(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "search-ops").mkdir(parents=True)
+    (skills / "frontend-design").mkdir(parents=True)
+
+    (skills / "search-ops" / "SKILL.md").write_text(
+        """
+---
+name: search-ops
+description: Search the web for recent information.
+metadata:
+  tags: [web, latest, research]
+---
+Search the internet.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "frontend-design" / "SKILL.md").write_text(
+        """
+---
+name: frontend-design
+description: Create distinctive landing pages and polished web UI.
+metadata:
+  tags: [html, css, design]
+---
+Design well.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={},
+    )
+    ctx = SkillContext(
+        user_input="look up the latest weather news on the web",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+    runtime.skill_view("frontend-design", "", ctx)
+    runtime.skill_view("search-ops", "", ctx)
+
+    selected = runtime.select_skills(ctx, top_n=1)
+
+    assert [skill.id for skill in selected] == ["search-ops"]
+
+
+def test_tool_is_blocked_for_local_workspace_uses_capability_metadata(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "workspace-ops").mkdir(parents=True)
+    (skills / "utilities").mkdir(parents=True)
+
+    (skills / "workspace-ops" / "SKILL.md").write_text(
+        """
+---
+name: workspace-ops
+description: Workspace tools
+tools:
+  allowed-tools:
+    - read_blob
+---
+Read files.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "workspace-ops" / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "read_blob": {
+    "capability": "workspace_read",
+    "description": "Read file",
+    "parameters": {"type": "object", "properties": {}, "required": []}
+  }
+}
+
+def execute(tool_name, args, env):
+    return {"ok": True, "data": {}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "utilities" / "SKILL.md").write_text(
+        """
+---
+name: utilities
+description: Utility tools
+tools:
+  allowed-tools:
+    - open_url
+---
+Utility helpers.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "utilities" / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "open_url": {
+    "capability": "utility_open_url",
+    "description": "Open URL",
+    "parameters": {"type": "object", "properties": {}, "required": []}
+  }
+}
+
+def execute(tool_name, args, env):
+    return {"ok": True, "data": {}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={},
+    )
+
+    assert runtime.tool_is_blocked_for_local_workspace("read_blob") is False
+    assert runtime.tool_is_blocked_for_local_workspace("open_url") is True
+    assert runtime.tool_is_blocked_for_local_workspace("request_user_input") is False
+    assert runtime.tool_is_blocked_for_local_workspace("unknown_tool") is True
+
+
+def test_rebase_vendor_paths_uses_discovered_skill_roots(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = home / ".codex" / "skills"
+    home.mkdir()
+    ws.mkdir(parents=True)
+    (skills / "demo").mkdir(parents=True)
+    (skills / "demo" / "SKILL.md").write_text(
+        """
+---
+name: demo
+description: Demo skill
+---
+Demo.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={},
+    )
+    skill = runtime.get_skill("demo")
+    assert skill is not None
+
+    rebased = runtime._rebase_vendor_paths(
+        "Use ~/.codex/skills/demo/notes.md and ~/.claude/skills/demo/notes.md",
+        skill,
+    )
+
+    assert str(skill.path) in rebased
+    assert "~/.claude/skills/demo/notes.md" in rebased
+
+
 def test_skill_catalog_includes_tools_for_model_routing(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"

@@ -580,6 +580,147 @@ class WorkspaceManager:
                     continue
                 yield candidate
 
+    def _search_result_filepath(self, path_text: str) -> str:
+        raw = str(path_text or "").strip()
+        if not raw:
+            return ""
+        candidate = Path(raw)
+        if candidate.is_absolute():
+            return str(candidate)
+        try:
+            return str((self.workspace_root / candidate).resolve())
+        except OSError:
+            return str(self.workspace_root / candidate)
+
+    def _search_code_with_rg(
+        self,
+        target: Path,
+        *,
+        needle: str,
+        glob: Optional[str],
+        limit: int,
+        case_sensitive: bool,
+        fixed_strings: bool,
+    ) -> Optional[dict[str, Any]]:
+        if not self._is_relative_to(target, self.workspace_root):
+            return None
+        if not target.exists():
+            return {
+                "query": needle,
+                "path": str(target),
+                "glob": glob,
+                "count": 0,
+                "results": [],
+                "truncated": False,
+                "backend": "rg",
+            }
+        if target.is_file() and glob and not fnmatch.fnmatch(target.name, glob):
+            return {
+                "query": needle,
+                "path": str(target),
+                "glob": glob,
+                "count": 0,
+                "results": [],
+                "truncated": False,
+                "backend": "rg",
+            }
+
+        rg_path = shutil.which("rg")
+        if not rg_path:
+            return None
+
+        argv = [
+            rg_path,
+            "--json",
+            "--line-number",
+            "--column",
+            "--hidden",
+            "--glob",
+            "!**/.git/**",
+            "--glob",
+            "!**/.alphanus/**",
+        ]
+        if not case_sensitive:
+            argv.append("-i")
+        if fixed_strings:
+            argv.append("-F")
+        if glob:
+            argv.extend(["--glob", glob])
+        argv.extend([needle, str(target)])
+
+        results: List[dict[str, Any]] = []
+        truncated = False
+        terminated_early = False
+        proc = subprocess.Popen(
+            argv,
+            shell=False,
+            cwd=str(self.workspace_root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                if not line.strip():
+                    continue
+                event = json.loads(line)
+                if event.get("type") != "match":
+                    continue
+                data = event.get("data") or {}
+                path_data = data.get("path") or {}
+                lines_data = data.get("lines") or {}
+                submatches = []
+                for match in data.get("submatches") or []:
+                    text_data = match.get("match") or {}
+                    submatches.append(
+                        {
+                            "match": str(text_data.get("text", "")),
+                            "start": int(match.get("start", 0)),
+                            "end": int(match.get("end", 0)),
+                        }
+                    )
+                results.append(
+                    {
+                        "filepath": self._search_result_filepath(str(path_data.get("text", ""))),
+                        "line_number": int(data.get("line_number", 0)),
+                        "line": str(lines_data.get("text", "")).rstrip("\n"),
+                        "submatches": submatches,
+                    }
+                )
+                if len(results) >= limit:
+                    truncated = True
+                    terminated_early = True
+                    proc.terminate()
+                    break
+            stderr_text = proc.stderr.read() if proc.stderr is not None else ""
+            try:
+                returncode = proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                returncode = proc.wait(timeout=1)
+        finally:
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if proc.stderr is not None:
+                proc.stderr.close()
+
+        if terminated_early:
+            returncode = 0
+        # ripgrep uses exit code 2 for IO errors such as unreadable paths.
+        # Treat that like a partial search result rather than a hard failure.
+        if returncode not in (0, 1, 2):
+            raise RuntimeError(stderr_text.strip() or "rg search failed")
+        return {
+            "query": needle,
+            "path": str(target),
+            "glob": glob,
+            "count": len(results),
+            "results": results,
+            "truncated": truncated,
+            "backend": "rg",
+        }
+
     def search_code(
         self,
         query: str,
@@ -598,83 +739,20 @@ class WorkspaceManager:
 
         target = self._resolve_workspace_subpath(path)
         limit = max(1, int(max_results))
-        searchable_files = list(self._iter_searchable_files(target, glob))
-        rg_path = shutil.which("rg")
-        if rg_path and searchable_files:
-            results: List[dict[str, Any]] = []
-            truncated = False
-            chunk_size = 200
-            for start in range(0, len(searchable_files), chunk_size):
-                chunk = searchable_files[start : start + chunk_size]
-                argv = [
-                    rg_path,
-                    "--json",
-                    "--line-number",
-                    "--column",
-                    "--hidden",
-                ]
-                if not case_sensitive:
-                    argv.append("-i")
-                if fixed_strings:
-                    argv.append("-F")
-                argv.append(needle)
-                argv.extend(str(item) for item in chunk)
-                proc = subprocess.run(
-                    argv,
-                    shell=False,
-                    cwd=str(self.workspace_root),
-                    capture_output=True,
-                    text=True,
-                )
-                if proc.returncode not in (0, 1):
-                    raise RuntimeError(proc.stderr.strip() or "rg search failed")
-
-                for line in proc.stdout.splitlines():
-                    if not line.strip():
-                        continue
-                    event = json.loads(line)
-                    if event.get("type") != "match":
-                        continue
-                    data = event.get("data") or {}
-                    path_data = data.get("path") or {}
-                    lines_data = data.get("lines") or {}
-                    submatches = []
-                    for match in data.get("submatches") or []:
-                        text_data = match.get("match") or {}
-                        submatches.append(
-                            {
-                                "match": str(text_data.get("text", "")),
-                                "start": int(match.get("start", 0)),
-                                "end": int(match.get("end", 0)),
-                            }
-                        )
-                    results.append(
-                        {
-                            "filepath": str(path_data.get("text", "")),
-                            "line_number": int(data.get("line_number", 0)),
-                            "line": str(lines_data.get("text", "")).rstrip("\n"),
-                            "submatches": submatches,
-                        }
-                    )
-                    if len(results) >= limit:
-                        truncated = True
-                        break
-                if truncated:
-                    break
-
-            return {
-                "query": needle,
-                "path": str(target),
-                "glob": glob,
-                "count": len(results),
-                "results": results,
-                "truncated": truncated,
-                "backend": "rg",
-            }
+        rg_result = self._search_code_with_rg(
+            target,
+            needle=needle,
+            glob=glob,
+            limit=limit,
+            case_sensitive=case_sensitive,
+            fixed_strings=fixed_strings,
+        )
+        if rg_result is not None:
+            return rg_result
 
         pattern = needle if case_sensitive else needle.lower()
         results = []
-        for file_path in searchable_files:
+        for file_path in self._iter_searchable_files(target, glob):
             try:
                 content = file_path.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
