@@ -201,6 +201,8 @@ class ChatInput(Input):
         Binding("ctrl+h", "delete_left", show=False),
         Binding("ctrl+u", "clear_all", show=False),
         Binding("ctrl+k", "kill_to_end", show=False),
+        Binding("ctrl+backspace", "remove_last_attachment", show=False),
+        Binding("ctrl+shift+backspace", "clear_attachments", show=False),
         Binding("ctrl+f", "open_file_picker", show=False),
         Binding("ctrl+g", "focus_input", show=False),
         Binding("ctrl+p", "open_command_palette", show=False),
@@ -229,6 +231,12 @@ class ChatInput(Input):
     def action_open_file_picker(self) -> None:
         self._invoke_app_action("action_open_file_picker")
 
+    def action_remove_last_attachment(self) -> None:
+        self._invoke_app_action("action_remove_last_attachment")
+
+    def action_clear_attachments(self) -> None:
+        self._invoke_app_action("action_clear_attachments")
+
     def action_show_keymap(self) -> None:
         self._invoke_app_action("action_show_keymap")
 
@@ -253,6 +261,8 @@ class AlphanusTUI(App):
         Binding("f3", "toggle_thinking", show=False),
         Binding("pageup", "scroll_up", show=False),
         Binding("pagedown", "scroll_down", show=False),
+        Binding("ctrl+backspace", "remove_last_attachment", show=False),
+        Binding("ctrl+shift+backspace", "clear_attachments", show=False),
         Binding("ctrl+f", "open_file_picker", show=False),
         Binding("ctrl+g", "focus_input", show=False),
         Binding("ctrl+p", "open_command_palette", show=False),
@@ -607,8 +617,12 @@ class AlphanusTUI(App):
                 [
                     ("Enter", "Send message"),
                     ("Esc", "Clear input or stop stream"),
+                    ("Backspace (empty)", "Remove last attachment"),
+                    ("Ctrl+Backspace", "Remove last attachment"),
+                    ("Ctrl+Shift+Backspace", "Clear attachments"),
                     ("Ctrl+U", "Clear the full draft"),
                     ("Ctrl+K", "Delete to end of line"),
+                    ("/detach [n|last|all]", "Remove pending attachments"),
                 ],
             ),
             (
@@ -660,6 +674,27 @@ class AlphanusTUI(App):
         self._set_focused_panel("input")
         self._open_attachment_picker(".")
 
+    def action_remove_last_attachment(self) -> None:
+        if self.streaming or self._await_shell_confirm:
+            return
+        if not self.pending:
+            return
+        removed_path, _removed_kind = self.pending.pop()
+        self._update_pending_attachments()
+        self._update_status1()
+        self._write_info(f"Removed attachment: {Path(removed_path).name}")
+
+    def action_clear_attachments(self) -> None:
+        if self.streaming or self._await_shell_confirm:
+            return
+        if not self.pending:
+            return
+        count = len(self.pending)
+        self.pending.clear()
+        self._update_pending_attachments()
+        self._update_status1()
+        self._write_info(f"Cleared {count} attachment{'s' if count != 1 else ''}.")
+
     def _apply_tree_compaction_policy(self, tree: ConvTree) -> ConvTree:
         tree.set_compaction_policy(
             enabled=self._tree_compaction_enabled,
@@ -685,6 +720,18 @@ class AlphanusTUI(App):
                 self._accept_command_selection()
                 event.stop()
                 return
+        if (
+            chat_input.has_focus
+            and not self.streaming
+            and not self._await_shell_confirm
+            and not self._command_popup_active()
+            and event.key.lower() == "backspace"
+            and not chat_input.value
+            and self.pending
+        ):
+            self.action_remove_last_attachment()
+            event.stop()
+            return
         if not self._await_shell_confirm:
             return
         key = event.key.lower()

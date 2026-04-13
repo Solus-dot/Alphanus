@@ -554,8 +554,8 @@ def pending_attachment_markup(app: Any) -> str:
         return ""
     chips: List[str] = []
     visible = app.pending[:3]
-    for path, _kind in visible:
-        chips.append(f"[#f4f4f5 on #1a1730] {esc(os.path.basename(path))} [/#f4f4f5 on #1a1730]")
+    for index, (path, _kind) in enumerate(visible, start=1):
+        chips.append(f"[#f4f4f5 on #1a1730] {index}. {esc(os.path.basename(path))} [/#f4f4f5 on #1a1730]")
     overflow = len(app.pending) - len(visible)
     if overflow > 0:
         chips.append(f"[#a1a1aa on #1a1730] +{overflow} more [/#a1a1aa on #1a1730]")

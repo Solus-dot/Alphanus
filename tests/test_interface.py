@@ -102,6 +102,7 @@ def test_command_entries_no_longer_expose_load_or_new_sessions_commands() -> Non
     prompts = [entry.prompt for entry in command_entries_for_query("/")]
 
     assert "/sessions" in prompts
+    assert "/detach [n|last|all]" in prompts
     assert "/load" not in prompts
     assert not any(prompt.startswith("/new") for prompt in prompts)
 
@@ -248,6 +249,8 @@ def test_active_command_span_covers_command_token() -> None:
 def test_chat_input_binds_new_shortcuts_locally() -> None:
     bindings = {binding.key: binding.action for binding in ChatInput.BINDINGS}
 
+    assert bindings["ctrl+backspace"] == "remove_last_attachment"
+    assert bindings["ctrl+shift+backspace"] == "clear_attachments"
     assert bindings["ctrl+f"] == "open_file_picker"
     assert bindings["ctrl+g"] == "focus_input"
     assert bindings["ctrl+p"] == "open_command_palette"
@@ -259,6 +262,8 @@ def test_chat_input_binds_new_shortcuts_locally() -> None:
 def test_app_bindings_include_open_file_picker_shortcut() -> None:
     bindings = {binding.key: binding.action for binding in AlphanusTUI.BINDINGS}
 
+    assert bindings["ctrl+backspace"] == "remove_last_attachment"
+    assert bindings["ctrl+shift+backspace"] == "clear_attachments"
     assert bindings["ctrl+f"] == "open_file_picker"
 
 
@@ -1311,6 +1316,10 @@ def test_show_keymap_writes_expected_sections() -> None:
     assert any("F1 / ?" in line for line in lines)
     assert any("Ctrl+P / /" in line for line in lines)
     assert any("Ctrl+F" in line for line in lines)
+    assert any("Backspace (empty)" in line for line in lines)
+    assert any("Ctrl+Backspace" in line for line in lines)
+    assert any("Ctrl+Shift+Backspace" in line for line in lines)
+    assert any("/detach [n|last|all]" in line for line in lines)
     assert any("Tab / Shift+Tab" in line for line in lines)
     assert any("SECTION:Tree" == line for line in lines)
     assert any("SECTION:Slash Palette" == line for line in lines)
@@ -1386,6 +1395,140 @@ def test_handle_file_without_path_opens_attachment_picker() -> None:
 
     assert tui._handle_command("/file") is True
     assert opened == ["."]
+
+
+def test_handle_detach_last_removes_most_recent_attachment() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    tui.pending = [("/tmp/one.txt", "text"), ("/tmp/two.txt", "text")]
+    actions: list[str] = []
+    tui._write_command_action = lambda text, **_kwargs: actions.append(text)
+    tui._update_pending_attachments = lambda: None
+    tui._update_status1 = lambda: None
+
+    assert tui._handle_command("/detach last") is True
+    assert tui.pending == [("/tmp/one.txt", "text")]
+    assert actions == ["Removed attachment 'two.txt'"]
+
+
+def test_handle_detach_all_clears_pending_attachments() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    tui.pending = [("/tmp/one.txt", "text"), ("/tmp/two.txt", "text")]
+    actions: list[str] = []
+    tui._write_command_action = lambda text, **_kwargs: actions.append(text)
+    tui._update_pending_attachments = lambda: None
+    tui._update_status1 = lambda: None
+
+    assert tui._handle_command("/detach all") is True
+    assert tui.pending == []
+    assert actions == ["Removed 2 attachments"]
+
+
+def test_handle_detach_without_args_lists_pending_attachments() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    tui.pending = [("/tmp/one.txt", "text"), ("/tmp/two.txt", "text")]
+    lines: list[str] = []
+    infos: list[str] = []
+    tui._write_section_heading = lambda text: lines.append(f"SECTION:{text}")
+    tui._write_muted_lines = lambda rows: lines.extend(rows)
+    tui._write_info = infos.append
+
+    assert tui._handle_command("/detach") is True
+    assert "SECTION:Pending Attachments" in lines
+    assert "1. one.txt" in lines
+    assert "2. two.txt" in lines
+    assert infos == ["Use /detach <n|last|all> to remove attachments."]
+
+
+def test_handle_detach_rejects_zero_index() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    tui.pending = [("/tmp/one.txt", "text"), ("/tmp/two.txt", "text")]
+    errors: list[str] = []
+    tui._write_error = errors.append
+
+    assert tui._handle_command("/detach 0") is True
+    assert tui.pending == [("/tmp/one.txt", "text"), ("/tmp/two.txt", "text")]
+    assert errors == ["/detach index must be 1 or greater."]
+
+
+def test_on_key_empty_backspace_removes_last_attachment() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui.pending = [("/tmp/one.txt", "text"), ("/tmp/two.txt", "text")]
+    tui._reactive_streaming = False
+    tui._await_shell_confirm = False
+    tui._command_popup_active = lambda: False
+    infos: list[str] = []
+    updates: list[str] = []
+    tui._write_info = infos.append
+    tui._update_pending_attachments = lambda: updates.append("attachments")
+    tui._update_status1 = lambda: updates.append("status1")
+
+    chat_input = SimpleNamespace(has_focus=True, value="")
+    tui.query_one = lambda selector, _type=None: chat_input if selector is ChatInput else None
+
+    stopped: list[str] = []
+    event = SimpleNamespace(key="backspace", stop=lambda: stopped.append("stop"))
+
+    tui.on_key(event)
+
+    assert tui.pending == [("/tmp/one.txt", "text")]
+    assert updates == ["attachments", "status1"]
+    assert infos == ["Removed attachment: two.txt"]
+    assert stopped == ["stop"]
+
+
+def test_action_remove_last_attachment_keeps_typed_draft_text() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    tui._await_shell_confirm = False
+    tui.pending = [("/tmp/one.txt", "text"), ("/tmp/two.txt", "text")]
+    updates: list[str] = []
+    infos: list[str] = []
+    tui._update_pending_attachments = lambda: updates.append("attachments")
+    tui._update_status1 = lambda: updates.append("status1")
+    tui._write_info = infos.append
+
+    chat_input = SimpleNamespace(has_focus=True, value="draft in progress")
+    tui.query_one = lambda selector, _type=None: chat_input if selector is ChatInput else None
+
+    tui.action_remove_last_attachment()
+
+    assert chat_input.value == "draft in progress"
+    assert tui.pending == [("/tmp/one.txt", "text")]
+    assert updates == ["attachments", "status1"]
+    assert infos == ["Removed attachment: two.txt"]
+
+
+def test_action_clear_attachments_keeps_typed_draft_text() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    tui._await_shell_confirm = False
+    tui.pending = [("/tmp/one.txt", "text"), ("/tmp/two.txt", "text")]
+    updates: list[str] = []
+    infos: list[str] = []
+    tui._update_pending_attachments = lambda: updates.append("attachments")
+    tui._update_status1 = lambda: updates.append("status1")
+    tui._write_info = infos.append
+
+    chat_input = SimpleNamespace(has_focus=True, value="draft in progress")
+    tui.query_one = lambda selector, _type=None: chat_input if selector is ChatInput else None
+
+    tui.action_clear_attachments()
+
+    assert chat_input.value == "draft in progress"
+    assert tui.pending == []
+    assert updates == ["attachments", "status1"]
+    assert infos == ["Cleared 2 attachments."]
 
 
 def test_handle_file_resolves_workspace_relative_path(tmp_path: Path) -> None:
