@@ -404,6 +404,59 @@ def test_image_turn_reports_clear_error_when_backend_rejects_multimodal_prompt(m
     )
 
 
+def test_image_turn_reports_mmproj_hint_when_backend_has_no_image_support(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+            "enable_structured_classification": True,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        raise urllib.error.HTTPError(
+            req.full_url,
+            500,
+            "Internal Server Error",
+            hdrs=None,
+            fp=io.BytesIO(
+                b'{"error":{"code":500,"message":"image input is not supported - hint: if this is unexpected, you may need to provide the mmproj","type":"server_error"}}'
+            ),
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "[Attachments: image.png (image)]\\n\\nWhat do you see?"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,ZmFrZQ=="}},
+                ],
+            }
+        ],
+        user_input="What do you see?",
+        thinking=True,
+    )
+
+    assert result.status == "error"
+    assert result.error == (
+        "The current model endpoint does not support image inputs. If you are using llama.cpp, start the "
+        "server with a vision-capable model and matching --mmproj file. Otherwise remove the image "
+        "attachment or switch to a vision-capable endpoint."
+    )
+
+
 def test_image_turn_retries_with_latest_user_only_after_tokenize_failure(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {

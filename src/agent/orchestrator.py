@@ -241,6 +241,12 @@ class TurnOrchestrator:
                 "render the multimodal prompt. Use a vision-capable model/template for image inputs, or remove "
                 "the image attachment."
             )
+        if "image input is not supported" in lowered or "mmproj" in lowered:
+            return (
+                "The current model endpoint does not support image inputs. If you are using llama.cpp, start the "
+                "server with a vision-capable model and matching --mmproj file. Otherwise remove the image "
+                "attachment or switch to a vision-capable endpoint."
+            )
         return raw
 
     @staticmethod
