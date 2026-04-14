@@ -5,6 +5,24 @@ import time
 from typing import Any, Dict, Optional
 
 
+def _clear_chat_input_draft(chat_input: Any) -> None:
+    clear_draft = getattr(chat_input, "clear_draft", None)
+    if callable(clear_draft):
+        clear_draft()
+    else:
+        chat_input.value = ""
+
+
+def _expanded_chat_input_text(chat_input: Any, value: str) -> str:
+    sync_placeholders = getattr(chat_input, "sync_paste_placeholders", None)
+    if callable(sync_placeholders):
+        sync_placeholders(value)
+    expand = getattr(chat_input, "expanded_value", None)
+    if callable(expand):
+        return str(expand(value))
+    return value
+
+
 def on_session_manager_close(app: Any, result: Optional[Dict[str, str]]) -> None:
     action = str((result or {}).get("action") or "").strip()
     if not action:
@@ -91,14 +109,15 @@ def finish_shell_confirm(app: Any, approved: bool) -> None:
 
 
 def on_input_submitted(app: Any, event: Any, *, chat_input_cls: Any) -> None:
-    text = event.value.strip()
+    chat_input = app.query_one(chat_input_cls)
+    text = _expanded_chat_input_text(chat_input, event.value).strip()
     if not text:
-        app.query_one(chat_input_cls).value = ""
+        _clear_chat_input_draft(chat_input)
         return
     if app._should_accept_popup_on_enter(text):
         app._accept_command_selection()
         return
-    app.query_one(chat_input_cls).value = ""
+    _clear_chat_input_draft(chat_input)
     app._hide_command_popup()
     handled = app._handle_command(text)
     if handled:
@@ -118,7 +137,7 @@ def action_handle_esc(app: Any, *, chat_input_cls: Any) -> None:
         app._hide_command_popup()
         return
     if not app.streaming:
-        app.query_one(chat_input_cls).value = ""
+        _clear_chat_input_draft(app.query_one(chat_input_cls))
         return
     now_value = time.monotonic()
     if not app._esc_pending:

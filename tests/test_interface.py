@@ -259,6 +259,161 @@ def test_chat_input_binds_new_shortcuts_locally() -> None:
     assert bindings["f3"] == "toggle_thinking"
 
 
+@pytest.mark.anyio
+async def test_chat_input_long_insert_without_paste_is_not_compacted(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    tui._open_startup_session_manager = lambda: None
+    tui._maybe_refresh_model_status = lambda force=False: None
+
+    async with tui.run_test() as pilot:
+        chat_input = tui.query_one(ChatInput)
+        long_text = "A" * 130
+        chat_input.insert_text_at_cursor(long_text)
+        await pilot.pause()
+
+        assert chat_input.value == long_text
+        assert chat_input.expanded_value() == long_text
+
+
+@pytest.mark.anyio
+async def test_chat_input_expands_only_tracked_placeholder_ranges(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    tui._open_startup_session_manager = lambda: None
+    tui._maybe_refresh_model_status = lambda force=False: None
+
+    async with tui.run_test() as pilot:
+        chat_input = tui.query_one(ChatInput)
+        marker_literal = "[Pasted 130 chars]"
+        pasted_text = "A" * 130
+        stopped: list[str] = []
+        prevented: list[str] = []
+
+        chat_input.value = marker_literal
+        chat_input.cursor_position = len(chat_input.value)
+        await pilot.pause()
+        chat_input.sync_paste_placeholders(chat_input.value)
+        chat_input.on_paste(
+            SimpleNamespace(
+                text=pasted_text,
+                stop=lambda: stopped.append("stop"),
+                prevent_default=lambda: prevented.append("prevent_default"),
+            ),
+        )
+        await pilot.pause()
+
+        assert prevented == ["prevent_default"]
+        assert stopped == ["stop"]
+        assert chat_input.value == marker_literal + marker_literal
+        assert len(chat_input._compact_paste_chunks) == 1
+        assert chat_input.expanded_value() == marker_literal + pasted_text
+
+
+@pytest.mark.anyio
+async def test_chat_input_drops_compacted_chunk_after_marker_edit(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    tui._open_startup_session_manager = lambda: None
+    tui._maybe_refresh_model_status = lambda force=False: None
+
+    async with tui.run_test() as pilot:
+        chat_input = tui.query_one(ChatInput)
+        pasted_text = "A" * 130
+
+        chat_input.on_paste(SimpleNamespace(text=pasted_text, stop=lambda: None))
+        await pilot.pause()
+        chat_input.value = chat_input.value.replace("chars]", "charsX]", 1)
+        chat_input.sync_paste_placeholders(chat_input.value)
+
+        assert chat_input.expanded_value() == chat_input.value
+
+
+@pytest.mark.anyio
+async def test_chat_input_backspace_deletes_entire_compacted_placeholder_token(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    tui._open_startup_session_manager = lambda: None
+    tui._maybe_refresh_model_status = lambda force=False: None
+
+    async with tui.run_test() as pilot:
+        chat_input = tui.query_one(ChatInput)
+        pasted_text = "line one\\nline two\\nline three\\n" + ("A" * 140)
+        chat_input.on_paste(
+            SimpleNamespace(
+                text=pasted_text,
+                stop=lambda: None,
+                prevent_default=lambda: None,
+            )
+        )
+        await pilot.pause()
+
+        assert chat_input.value.startswith("[Pasted ")
+        assert len(chat_input._compact_paste_chunks) == 1
+
+        marker_len = len(chat_input.value)
+        chat_input.cursor_position = marker_len // 2
+        chat_input.action_delete_left()
+        await pilot.pause()
+
+        assert chat_input.value == ""
+        assert chat_input.expanded_value() == ""
+        assert chat_input._compact_paste_chunks == []
+
+
+@pytest.mark.anyio
+async def test_chat_input_highlights_paste_placeholder_tokens(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    tui._open_startup_session_manager = lambda: None
+    tui._maybe_refresh_model_status = lambda force=False: None
+
+    async with tui.run_test() as pilot:
+        chat_input = tui.query_one(ChatInput)
+        pasted_text = "A" * 130
+        chat_input.on_paste(
+            SimpleNamespace(
+                text=pasted_text,
+                stop=lambda: None,
+                prevent_default=lambda: None,
+            )
+        )
+        await pilot.pause()
+
+        highlighted = chat_input.highlighter(Text(chat_input.value))
+        assert any(span.style == ChatInput.PASTE_TOKEN_STYLE for span in highlighted.spans)
+
+
+@pytest.mark.anyio
+async def test_chat_input_does_not_highlight_literal_placeholder_text(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    tui._open_startup_session_manager = lambda: None
+    tui._maybe_refresh_model_status = lambda force=False: None
+
+    async with tui.run_test() as pilot:
+        chat_input = tui.query_one(ChatInput)
+        chat_input.value = "[Pasted 130 chars]"
+        await pilot.pause()
+
+        highlighted = chat_input.highlighter(Text(chat_input.value))
+        assert not any(span.style == ChatInput.PASTE_TOKEN_STYLE for span in highlighted.spans)
+
+
+@pytest.mark.anyio
+async def test_chat_input_literal_placeholder_backspace_deletes_single_character(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    tui._open_startup_session_manager = lambda: None
+    tui._maybe_refresh_model_status = lambda force=False: None
+
+    async with tui.run_test() as pilot:
+        chat_input = tui.query_one(ChatInput)
+        original = "[Pasted 130 chars]"
+        chat_input.value = original
+        cursor = len(original) // 2
+        chat_input.cursor_position = cursor
+        await pilot.pause()
+
+        chat_input.action_delete_left()
+        await pilot.pause()
+
+        assert chat_input.value == f"{original[:cursor - 1]}{original[cursor:]}"
+
+
 def test_app_bindings_include_open_file_picker_shortcut() -> None:
     bindings = {binding.key: binding.action for binding in AlphanusTUI.BINDINGS}
 
