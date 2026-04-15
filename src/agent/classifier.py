@@ -5,39 +5,40 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
+from core.message_types import ChatMessage, JSONValue, MessageContentPart
 from core.skills import SkillContext, SkillRuntime
 
 from agent.llm_client import LLMClient
 from agent.telemetry import TelemetryEmitter
-from agent.types import TurnClassification
+from core.types import JsonObject, TurnClassification
 
 
 class TurnClassifier:
-    def __init__(self, config: Dict[str, Any], skill_runtime: SkillRuntime, llm_client: LLMClient, telemetry: Optional[TelemetryEmitter] = None) -> None:
+    def __init__(self, config: dict[str, object], skill_runtime: SkillRuntime, llm_client: LLMClient, telemetry: Optional[TelemetryEmitter] = None) -> None:
         self.config = config
         self.skill_runtime = skill_runtime
         self.llm_client = llm_client
         self.telemetry = telemetry or TelemetryEmitter()
         self.call_with_retry = llm_client.call_with_retry
 
-    def reload_config(self, config: Dict[str, Any]) -> None:
+    def reload_config(self, config: dict[str, object]) -> None:
         self.config = config
 
     @staticmethod
-    def message_text(value: Any) -> str:
+    def message_text(value: JSONValue | list[MessageContentPart]) -> str:
         if isinstance(value, str):
             return value.strip()
         if isinstance(value, list):
-            parts: List[str] = []
+            parts: list[str] = []
             for item in value:
                 if isinstance(item, dict) and item.get("type") == "text":
                     parts.append(str(item.get("text", "")).strip())
             return "\n".join(part for part in parts if part).strip()
         return str(value or "").strip()
 
-    def recent_routing_context(self, history_messages: List[Dict[str, Any]]) -> tuple[str, List[str]]:
+    def recent_routing_context(self, history_messages: list[ChatMessage]) -> tuple[str, list[str]]:
         if not history_messages:
             return "", []
         last_user_index = -1
@@ -49,10 +50,10 @@ class TurnClassifier:
             return "", []
         recent = history_messages[last_user_index:]
         recent_user = self.message_text(recent[0].get("content", ""))
-        tool_names: List[str] = []
+        tool_names: list[str] = []
         assistant_text = ""
         seen_tools = set()
-        sticky_skill_ids: List[str] = []
+        sticky_skill_ids: list[str] = []
         seen_skills = set()
         registry = getattr(self.skill_runtime, "_tool_registry", {})
         for msg in recent[1:]:
@@ -83,7 +84,7 @@ class TurnClassifier:
                     seen_skills.add(reg.skill_id)
                 try:
                     payload = json.loads(self.message_text(msg.get("content", "")) or "{}")
-                except Exception as exc:
+                except json.JSONDecodeError as exc:
                     logging.debug("Failed to parse tool result content as JSON: %s", exc)
                     payload = {}
                 data = payload.get("data") if isinstance(payload, dict) else {}
@@ -91,7 +92,7 @@ class TurnClassifier:
                 if loaded_skill_id and loaded_skill_id not in seen_skills:
                     sticky_skill_ids.append(loaded_skill_id)
                     seen_skills.add(loaded_skill_id)
-        parts: List[str] = []
+        parts: list[str] = []
         if recent_user:
             parts.append(f"previous user request: {recent_user}")
         if assistant_text:
@@ -108,8 +109,8 @@ class TurnClassifier:
         user_input: str,
         branch_labels: List[str],
         attachments: List[str],
-        history_messages: Optional[List[Dict[str, Any]]] = None,
-        loaded_skill_ids: Optional[List[str]] = None,
+        history_messages: Optional[list[ChatMessage]] = None,
+        loaded_skill_ids: Optional[list[str]] = None,
     ) -> SkillContext:
         hits = self.skill_runtime.memory.search(user_input, top_k=3, min_score=0.45)
         recent_hint, sticky_skill_ids = self.recent_routing_context(history_messages or [])
@@ -161,20 +162,20 @@ class TurnClassifier:
         return bool(self.llm_client.enable_structured_classification)
 
     @staticmethod
-    def _parse_json_object(content: str) -> Dict[str, Any]:
+    def _parse_json_object(content: str) -> dict[str, JSONValue]:
         stripped = str(content or "").strip()
         if not stripped:
             return {}
         try:
             payload = json.loads(stripped)
             return payload if isinstance(payload, dict) else {}
-        except Exception:
+        except json.JSONDecodeError:
             match = re.search(r"\{.*\}", stripped, flags=re.DOTALL)
             if not match:
                 return {}
             try:
                 payload = json.loads(match.group(0))
-            except Exception:
+            except json.JSONDecodeError:
                 return {}
             return payload if isinstance(payload, dict) else {}
 
@@ -237,7 +238,7 @@ class TurnClassifier:
         )
 
     @staticmethod
-    def _evidence_shows_blocked_or_unavailable_tool(evidence: Dict[str, Any]) -> bool:
+    def _evidence_shows_blocked_or_unavailable_tool(evidence: dict[str, JSONValue]) -> bool:
         recent_tools = evidence.get("recent_tools")
         if not isinstance(recent_tools, list):
             return False
@@ -287,7 +288,7 @@ class TurnClassifier:
         current_user_input: str,
         recent_routing_hint: str,
         assistant_reply: str,
-        evidence: Dict[str, Any],
+        evidence: JsonObject,
         pass_id: str,
         stop_event=None,
     ) -> str:
@@ -328,7 +329,7 @@ class TurnClassifier:
         return fallback
 
     @staticmethod
-    def _fallback_workspace_action_outcome(assistant_reply: str, evidence: Dict[str, Any]) -> str:
+    def _fallback_workspace_action_outcome(assistant_reply: str, evidence: JsonObject) -> str:
         if bool(evidence.get("has_successful_mutation")):
             return "completed_with_evidence"
         lowered = TurnClassifier._normalized_text(assistant_reply)

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, Dict, List, Optional
+from typing import Callable, Optional
 
+from core.message_types import ChatMessage
 from core.runtime_config import ProviderConfig
 from core.streaming import stream_chat_completions as _stream_chat_completions
 
 from agent.provider import OpenAICompatibleProvider
 from agent.telemetry import TelemetryEmitter
-from agent.types import ModelStatus, StreamPassResult
+from core.types import JsonObject, ModelStatus, StreamPassResult
 
 stream_chat_completions = _stream_chat_completions
 
@@ -17,7 +18,7 @@ class LLMClient:
     ONLINE_STATUS_TTL_S = OpenAICompatibleProvider.ONLINE_STATUS_TTL_S
     OFFLINE_STATUS_TTL_S = OpenAICompatibleProvider.OFFLINE_STATUS_TTL_S
 
-    def __init__(self, config: Dict[str, Any], debug: bool = False, telemetry: Optional[TelemetryEmitter] = None) -> None:
+    def __init__(self, config: JsonObject, debug: bool = False, telemetry: Optional[TelemetryEmitter] = None) -> None:
         self.debug = debug
         self.telemetry = telemetry or TelemetryEmitter()
         self.auth_header = (
@@ -27,7 +28,7 @@ class LLMClient:
         )
         self.reload_config(config)
 
-    def reload_config(self, config: Dict[str, Any]) -> None:
+    def reload_config(self, config: JsonObject) -> None:
         self.config = config
         agent_cfg = config.get("agent", {}) if isinstance(config.get("agent"), dict) else {}
         self.provider_config = ProviderConfig.from_config(config, auth_header=self.auth_header)
@@ -73,18 +74,18 @@ class LLMClient:
         return OpenAICompatibleProvider.sleep_with_stop(duration_s, stop_event)
 
     @staticmethod
-    def extract_model_name(payload: Any) -> Optional[str]:
+    def extract_model_name(payload: object) -> Optional[str]:
         return OpenAICompatibleProvider.extract_model_name(payload)
 
     @staticmethod
-    def extract_model_context_window(payload: Any) -> Optional[int]:
+    def extract_model_context_window(payload: object) -> Optional[int]:
         return OpenAICompatibleProvider.extract_model_context_window(payload)
 
     @staticmethod
     def props_endpoint_from_models_endpoint(models_endpoint: str) -> str:
         return OpenAICompatibleProvider.props_endpoint_from_models_endpoint(models_endpoint)
 
-    def fetch_json(self, url: str, timeout_s: Optional[float] = None) -> Any:
+    def fetch_json(self, url: str, timeout_s: Optional[float] = None) -> object:
         return self.provider.fetch_json(url, timeout_s=timeout_s)
 
     def get_model_status(self) -> ModelStatus:
@@ -109,7 +110,7 @@ class LLMClient:
     def ensure_ready(
         self,
         stop_event=None,
-        on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_event: Optional[Callable[[JsonObject], None]] = None,
         timeout_s: Optional[float] = None,
     ) -> Optional[bool]:
         return self.provider.check_ready(stop_event=stop_event, on_event=on_event, timeout_s=timeout_s)
@@ -140,14 +141,14 @@ class LLMClient:
 
     def build_payload(
         self,
-        model_messages: List[Dict[str, Any]],
+        model_messages: list[ChatMessage],
         thinking: bool,
-        tools: Optional[List[Dict[str, Any]]] = None,
+        tools: Optional[list[JsonObject]] = None,
         *,
         max_tokens_override: Optional[int] = None,
         model_override: str = "",
-    ) -> Dict[str, Any]:
-        payload: Dict[str, Any] = {
+    ) -> JsonObject:
+        payload: JsonObject = {
             "messages": model_messages,
             "stream": True,
             "stream_options": {"include_usage": True},
@@ -163,7 +164,7 @@ class LLMClient:
             payload["model"] = model_override.strip()
         return payload
 
-    def call_with_retry(self, payload: Dict[str, Any], stop_event, on_event, pass_id: str) -> StreamPassResult:
+    def call_with_retry(self, payload: JsonObject, stop_event, on_event, pass_id: str) -> StreamPassResult:
         attempt = 0
         while True:
             try:
@@ -199,7 +200,7 @@ class LLMClient:
                 raise
 
     @staticmethod
-    def _emit(on_event: Optional[Callable[[Dict[str, Any]], None]], event: Dict[str, Any]) -> None:
+    def _emit(on_event: Optional[Callable[[JsonObject], None]], event: JsonObject) -> None:
         OpenAICompatibleProvider._emit(on_event, event)
 
     @staticmethod

@@ -4,8 +4,9 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Callable, Optional
 
+from core.message_types import ChatMessage, JSONValue, MessageContentPart
 from agent.classifier import TurnClassifier
 from agent.context import ContextWindowManager
 from agent.llm_client import LLMClient
@@ -13,13 +14,13 @@ from agent.orchestrator import TurnOrchestrator, request_user_input_passthrough
 from agent.policies import PromptPolicyRenderer
 from agent.prompts import build_system_prompt
 from agent.telemetry import TelemetryEmitter
-from agent.types import AgentTurnResult, ModelStatus
 from core.configuration import validate_endpoint_policy
+from core.types import AgentTurnResult, JsonObject, ModelStatus, ShellConfirmationFn
 from core.skills import SkillRuntime
 
 
 class Agent:
-    def __init__(self, config: Dict[str, Any], skill_runtime: SkillRuntime, debug: bool = False) -> None:
+    def __init__(self, config: JsonObject, skill_runtime: SkillRuntime, debug: bool = False) -> None:
         self.skill_runtime = skill_runtime
         self.debug = debug
         self.telemetry = TelemetryEmitter()
@@ -74,7 +75,7 @@ class Agent:
     def auth_header(self) -> Optional[str]:
         return self.llm_client.auth_header
 
-    def reload_config(self, config: Dict[str, Any]) -> None:
+    def reload_config(self, config: JsonObject) -> None:
         self.config = config
         self.skill_runtime.reload_config(config)
         self.skill_runtime._proc_env_base = self.skill_runtime._build_proc_env_base()
@@ -117,7 +118,7 @@ class Agent:
         self.allow_cross_host = self.llm_client.allow_cross_host
         self.readiness_timeout_s = self.llm_client.readiness_timeout_s
 
-    def ensure_ready(self, stop_event=None, on_event: Optional[Callable[[Dict[str, Any]], None]] = None, timeout_s: Optional[float] = None) -> Optional[bool]:
+    def ensure_ready(self, stop_event=None, on_event: Optional[Callable[[JsonObject], None]] = None, timeout_s: Optional[float] = None) -> Optional[bool]:
         return self.llm_client.ensure_ready(stop_event=stop_event, on_event=on_event, timeout_s=timeout_s)
 
     def fetch_model_metadata(self, timeout_s: Optional[float] = None) -> tuple[Optional[str], Optional[int]]:
@@ -151,7 +152,7 @@ class Agent:
             return str(exc)
         return None
 
-    def doctor_report(self) -> Dict[str, Any]:
+    def doctor_report(self) -> dict[str, object]:
         endpoint_error = self._validate_endpoints()
         workspace_root = Path(self.skill_runtime.workspace.workspace_root)
         memory_stats = self.skill_runtime.memory.stats()
@@ -193,7 +194,7 @@ class Agent:
             "skills": self.skill_runtime.skill_health_report(),
         }
 
-    def build_support_bundle(self, tree_payload: Dict[str, Any]) -> Dict[str, Any]:
+    def build_support_bundle(self, tree_payload: dict[str, object]) -> dict[str, object]:
         return {
             "schema_version": "1.0.0",
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -205,11 +206,11 @@ class Agent:
         return self.classifier.reload_skills()
 
     @staticmethod
-    def _extract_model_name(payload: Any) -> Optional[str]:
+    def _extract_model_name(payload: object) -> Optional[str]:
         return LLMClient.extract_model_name(payload)
 
     @staticmethod
-    def _extract_model_context_window(payload: Any) -> Optional[int]:
+    def _extract_model_context_window(payload: object) -> Optional[int]:
         return LLMClient.extract_model_context_window(payload)
 
     def _build_skill_context(
@@ -217,8 +218,8 @@ class Agent:
         user_input: str,
         branch_labels: List[str],
         attachments: List[str],
-        history_messages: Optional[List[Dict[str, Any]]] = None,
-        loaded_skill_ids: Optional[List[str]] = None,
+        history_messages: Optional[list[ChatMessage]] = None,
+        loaded_skill_ids: Optional[list[str]] = None,
     ):
         return self.classifier.build_skill_context(user_input, branch_labels, attachments, history_messages, loaded_skill_ids)
 
@@ -240,7 +241,7 @@ class Agent:
         classification = self._classify_turn(ctx)
         return classification.prefer_local_workspace_tools
 
-    def _call_with_retry(self, payload: Dict[str, Any], stop_event, on_event, pass_id: str):
+    def _call_with_retry(self, payload: JsonObject, stop_event, on_event, pass_id: str):
         return self.llm_client.call_with_retry(payload, stop_event, on_event, pass_id)
 
     def _build_turn_state(self, ctx, selected, history_messages, user_input):
@@ -256,20 +257,20 @@ class Agent:
     def _needs_fetch_evidence(self, state) -> bool:
         return self.orchestrator.needs_fetch_evidence(state)
 
-    def _tool_call_args_for_history(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def _tool_call_args_for_history(self, args: dict[str, object]) -> dict[str, object]:
         return self.orchestrator.tool_call_args_for_history(args)
 
     def run_turn(
         self,
-        history_messages: List[Dict[str, Any]],
+        history_messages: list[ChatMessage],
         user_input: str,
         thinking: bool,
         branch_labels: Optional[List[str]] = None,
         attachments: Optional[List[str]] = None,
         loaded_skill_ids: Optional[List[str]] = None,
         stop_event=None,
-        on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
-        confirm_shell: Optional[Callable[[str], bool]] = None,
+        on_event: Optional[Callable[[JsonObject], None]] = None,
+        confirm_shell: Optional[ShellConfirmationFn] = None,
     ) -> AgentTurnResult:
         endpoint_err = self._validate_endpoints()
         if endpoint_err:

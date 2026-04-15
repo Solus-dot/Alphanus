@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from core.skills import SkillContext, SkillRuntime
+from core.skill_parser import SkillManifest
 
-from agent.types import TurnPolicySnapshot
+from core.types import TurnPolicySnapshot
 
 
 def search_rule(*lines: str) -> str:
@@ -105,7 +106,7 @@ class PromptPolicyRenderer:
         self.skill_runtime = skill_runtime
         self.context_limit = max(1, int(context_limit))
 
-    def compose_system_content(self, selected: List[Any], ctx: SkillContext) -> str:
+    def compose_system_content(self, selected: List[SkillManifest], ctx: SkillContext) -> str:
         parts = [self.system_prompt]
         skill_index = self.skill_runtime.compose_skill_index()
         if skill_index:

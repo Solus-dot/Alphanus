@@ -12,7 +12,7 @@ import pytest
 
 from agent.core import Agent
 from agent.policies import PromptPolicyRenderer
-from agent.types import ModelStatus, TurnClassification, TurnPolicySnapshot
+from core.types import ModelStatus, TurnClassification, TurnPolicySnapshot
 from core.memory import VectorMemory
 from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager

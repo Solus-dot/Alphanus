@@ -6,13 +6,26 @@ import threading
 import urllib.parse
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Optional
 
+from core.message_types import ChatMessage, JSONValue
 from agent.classifier import TurnClassifier
 from agent.llm_client import LLMClient
 from agent.policies import OutputSanitizer, PromptPolicyRenderer, search_rule
 from agent.telemetry import TelemetryEmitter
-from agent.types import AgentTurnResult, CompletionEvidence, ToolCall, ToolExecutionRecord, TurnPolicySnapshot, TurnState, TurnTelemetry
+from core.skill_parser import SkillManifest
+from core.types import (
+    AgentTurnResult,
+    CompletionEvidence,
+    JsonObject,
+    ShellConfirmationFn,
+    ToolCall,
+    ToolExecutionRecord,
+    TurnPolicySnapshot,
+    TurnState,
+    TurnTelemetry,
+    UserInputRequestFn,
+)
 from core.skills import SkillRuntime
 
 
@@ -38,7 +51,7 @@ class TurnOrchestrator:
         self.select_skills = self._default_select_skills
         self.reload_config(llm_client.config)
 
-    def reload_config(self, config: Dict[str, Any]) -> None:
+    def reload_config(self, config: JsonObject) -> None:
         self.config = config
         agent_cfg = config.get("agent", {}) if isinstance(config.get("agent"), dict) else {}
         self.max_action_depth = int(agent_cfg.get("max_action_depth", 10))
@@ -63,7 +76,7 @@ class TurnOrchestrator:
         self.sanitizer = OutputSanitizer(self.max_reasoning_chars)
 
     @staticmethod
-    def emit(on_event: Optional[Callable[[Dict[str, Any]], None]], event: Dict[str, Any]) -> None:
+    def emit(on_event: Optional[Callable[[JsonObject], None]], event: JsonObject) -> None:
         if not on_event:
             return
         try:
@@ -73,7 +86,7 @@ class TurnOrchestrator:
             return
 
     @staticmethod
-    def safe_json_dumps(value: Any) -> str:
+    def safe_json_dumps(value: object) -> str:
         return json.dumps(value, ensure_ascii=False, default=str)
 
     @staticmethod
@@ -84,7 +97,7 @@ class TurnOrchestrator:
         remaining = len(text) - limit
         return f"{clipped}\n...[truncated {remaining} chars]"
 
-    def compact_jsonish(self, value: Any, depth: int = 0) -> Any:
+    def compact_jsonish(self, value: object, depth: int = 0) -> object:
         if depth >= 4:
             return "[truncated]"
         if isinstance(value, str):
@@ -97,7 +110,7 @@ class TurnOrchestrator:
             return out
         if isinstance(value, dict):
             max_keys = 120
-            out: Dict[str, Any] = {}
+            out: dict[str, object] = {}
             items = list(value.items())
             for key, item in items[:max_keys]:
                 out[str(key)] = self.compact_jsonish(item, depth + 1)
@@ -106,23 +119,23 @@ class TurnOrchestrator:
             return out
         return value
 
-    def compact_tool_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+    def compact_tool_result(self, result: JsonObject) -> JsonObject:
         if self.max_tool_result_chars <= 0:
             return result
         compacted = self.compact_jsonish(result)
         return compacted if isinstance(compacted, dict) else {"value": compacted}
 
-    def tool_result_for_history(self, tool_name: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    def tool_result_for_history(self, tool_name: str, result: JsonObject) -> JsonObject:
         if not self.compact_tool_results_in_history:
             return result
         if self.compact_tool_result_tools and tool_name not in self.compact_tool_result_tools:
             return result
         return self.compact_tool_result(result)
 
-    def tool_call_args_for_history(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def tool_call_args_for_history(self, args: JsonObject) -> JsonObject:
         if not isinstance(args, dict):
             return {}
-        out: Dict[str, Any] = {}
+        out: dict[str, object] = {}
         for key, value in args.items():
             if isinstance(value, str):
                 if len(value) <= 1200:
@@ -136,7 +149,7 @@ class TurnOrchestrator:
                 out[key] = self.compact_jsonish(value)
         return out
 
-    def build_turn_state(self, ctx, selected: List[Any], history_messages: List[Dict[str, Any]], classification) -> TurnState:
+    def build_turn_state(self, ctx, selected: list[SkillManifest], history_messages: list[ChatMessage], classification) -> TurnState:
         state = TurnState(
             ctx=ctx,
             selected=selected,
@@ -165,7 +178,7 @@ class TurnOrchestrator:
         return classification, selected
 
     @staticmethod
-    def _message_contains_vision_content(message: Dict[str, Any]) -> bool:
+    def _message_contains_vision_content(message: ChatMessage) -> bool:
         content = message.get("content")
         if not isinstance(content, list):
             return False
@@ -180,7 +193,7 @@ class TurnOrchestrator:
         return False
 
     @classmethod
-    def _latest_user_message_contains_vision_content(cls, messages: List[Dict[str, Any]]) -> bool:
+    def _latest_user_message_contains_vision_content(cls, messages: list[ChatMessage]) -> bool:
         for message in reversed(messages):
             if str(message.get("role", "")).strip().lower() != "user":
                 continue
@@ -188,15 +201,15 @@ class TurnOrchestrator:
         return False
 
     @staticmethod
-    def _latest_user_message(messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    def _latest_user_message(messages: list[ChatMessage]) -> Optional[ChatMessage]:
         for message in reversed(messages):
             if str(message.get("role", "")).strip().lower() == "user":
                 return message
         return None
 
     @staticmethod
-    def _leading_system_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        kept: List[Dict[str, Any]] = []
+    def _leading_system_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
+        kept: list[ChatMessage] = []
         for message in messages:
             if str(message.get("role", "")).strip().lower() != "system":
                 break
@@ -210,10 +223,10 @@ class TurnOrchestrator:
     def _retry_simplified_vision_payload(
         self,
         *,
-        model_messages: List[Dict[str, Any]],
+        model_messages: list[ChatMessage],
         thinking: bool,
         stop_event=None,
-        on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_event: Optional[Callable[[JsonObject], None]] = None,
         pass_id: str,
     ):
         latest_user = self._latest_user_message(model_messages)
@@ -225,7 +238,7 @@ class TurnOrchestrator:
         return self.call_with_retry(payload, stop_event, on_event, pass_id=f"{pass_id}_vision_retry")
 
     @classmethod
-    def _friendly_vision_request_error(cls, messages: List[Dict[str, Any]], exc: Exception) -> str:
+    def _friendly_vision_request_error(cls, messages: list[ChatMessage], exc: Exception) -> str:
         if not cls._latest_user_message_contains_vision_content(messages):
             return str(exc)
         raw = str(exc or "").strip()
@@ -276,7 +289,7 @@ class TurnOrchestrator:
         return len(state.completion.readback_paths)
 
     @staticmethod
-    def tool_result_paths(name: str, payload: Dict[str, Any]) -> List[str]:
+    def tool_result_paths(name: str, payload: dict[str, object]) -> list[str]:
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, dict):
             return []
@@ -316,7 +329,7 @@ class TurnOrchestrator:
             )
         return f"Tool budget exceeded for {call.name} ({limit})"
 
-    def record_tool_effects(self, state: TurnState, call: ToolCall, result: Dict[str, Any], *, policy_blocked: bool = False) -> None:
+    def record_tool_effects(self, state: TurnState, call: ToolCall, result: dict[str, object], *, policy_blocked: bool = False) -> None:
         state.completion.tool_counts[call.name] = state.completion.tool_counts.get(call.name, 0) + 1
         record = ToolExecutionRecord(name=call.name, args=dict(call.arguments), result=result, policy_blocked=policy_blocked)
         state.evidence.append(record)
@@ -357,7 +370,7 @@ class TurnOrchestrator:
     def needs_fetch_evidence(state: TurnState) -> bool:
         return state.search_mode and state.time_sensitive_query and not state.completion.search_has_fetch_content
 
-    def workspace_action_evidence(self, state: TurnState) -> Dict[str, Any]:
+    def workspace_action_evidence(self, state: TurnState) -> JsonObject:
         successful_mutating_tools: List[str] = []
         policy_blocked_tools: List[str] = []
         recent_tools: List[Dict[str, Any]] = []
@@ -415,7 +428,7 @@ class TurnOrchestrator:
             journal=result.journal,
         )
 
-    def build_turn_journal(self, state: TurnState, result: AgentTurnResult) -> Dict[str, Any]:
+    def build_turn_journal(self, state: TurnState, result: AgentTurnResult) -> JsonObject:
         return {
             "status": result.status,
             "error": result.error or "",
@@ -626,7 +639,7 @@ class TurnOrchestrator:
 
     def prepare_turn(
         self,
-        history_messages: List[Dict[str, Any]],
+        history_messages: list[ChatMessage],
         user_input: str,
         *,
         branch_labels: Optional[List[str]] = None,
@@ -646,7 +659,7 @@ class TurnOrchestrator:
         thinking: bool,
         *,
         stop_event=None,
-        on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_event: Optional[Callable[[JsonObject], None]] = None,
     ) -> AgentTurnResult | tuple[str, str, Any]:
         self.refresh_search_tools_enabled(state)
         state.pass_index += 1
@@ -700,9 +713,7 @@ class TurnOrchestrator:
                         skill_exchanges=state.skill_exchanges,
                         error=message,
                     )
-                if stream_result is not None:
-                    pass
-                else:
+                if stream_result is None:
                     message = self._friendly_vision_request_error(model_messages, exc)
                     self.emit(on_event, {"type": "error", "text": message})
                     return AgentTurnResult(
@@ -755,9 +766,9 @@ class TurnOrchestrator:
         pass_id: str,
         stream_result,
         stop_event=None,
-        on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
-        confirm_shell: Optional[Callable[[str], bool]] = None,
-        request_user_input: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        on_event: Optional[Callable[[JsonObject], None]] = None,
+        confirm_shell: Optional[ShellConfirmationFn] = None,
+        request_user_input: Optional[UserInputRequestFn] = None,
     ) -> tuple[str, Optional[AgentTurnResult]]:
         if not stream_result.tool_calls:
             return (
@@ -1003,7 +1014,7 @@ class TurnOrchestrator:
         pass_id: str,
         stream_result,
         stop_event=None,
-        on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_event: Optional[Callable[[JsonObject], None]] = None,
     ) -> tuple[str, Optional[AgentTurnResult]]:
         raw_final = stream_result.content
         final = self.sanitizer.sanitize_final_content(raw_final)
@@ -1107,7 +1118,7 @@ class TurnOrchestrator:
 
     def run_turn(
         self,
-        history_messages: List[Dict[str, Any]],
+        history_messages: list[ChatMessage],
         user_input: str,
         thinking: bool,
         *,
@@ -1115,9 +1126,9 @@ class TurnOrchestrator:
         attachments: Optional[List[str]] = None,
         loaded_skill_ids: Optional[List[str]] = None,
         stop_event=None,
-        on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
-        confirm_shell: Optional[Callable[[str], bool]] = None,
-        request_user_input: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        on_event: Optional[Callable[[JsonObject], None]] = None,
+        confirm_shell: Optional[ShellConfirmationFn] = None,
+        request_user_input: Optional[UserInputRequestFn] = None,
     ) -> AgentTurnResult:
         state = self.prepare_turn(
             history_messages,
@@ -1179,7 +1190,7 @@ class TurnOrchestrator:
             return finish(final_phase_result)
 
 
-def request_user_input_passthrough(args: Dict[str, Any]) -> Dict[str, Any]:
+def request_user_input_passthrough(args: JsonObject) -> JsonObject:
     question = str(args.get("question", "")).strip()
     if not question:
         raise ValueError("Missing required argument: question")
@@ -1191,7 +1202,3 @@ def request_user_input_passthrough(args: Dict[str, Any]) -> Dict[str, Any]:
         "header": str(args.get("header", "")).strip(),
         "awaiting_user_input": True,
     }
-
-
-def new_stop_event():
-    return threading.Event()
