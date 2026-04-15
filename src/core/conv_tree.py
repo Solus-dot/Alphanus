@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Optional
+
+from core.message_types import ChatMessage, JSONValue, MessageContentPart, ToolCallDelta
 
 SCHEMA_VERSION = "1.0.0"
 _COMPACTED_MARKER = "\n...[compacted]"
@@ -15,13 +17,13 @@ def _major(version: str) -> int:
 @dataclass
 class Turn:
     id: str
-    user_content: Any
+    user_content: JSONValue | list[MessageContentPart]
     assistant_content: Optional[str]
     parent: Optional[str]
-    children: List[str]
+    children: list[str]
     label: str = ""
     branch_root: bool = False
-    skill_exchanges: List[dict] = field(default_factory=list)
+    skill_exchanges: list[ChatMessage] = field(default_factory=list)
     assistant_state: str = "pending"
 
     @staticmethod
@@ -38,7 +40,7 @@ class Turn:
         the original `user_content` used for model context.
         """
         lines = text.splitlines()
-        kept: List[str] = []
+        kept: list[str] = []
         i = 0
         while i < len(lines):
             line = lines[i]
@@ -64,7 +66,7 @@ class Turn:
 
     def user_text(self) -> str:
         if isinstance(self.user_content, list):
-            chunks: List[str] = []
+            chunks: list[str] = []
             for part in self.user_content:
                 if part.get("type") == "text":
                     chunks.append(part.get("text", ""))
@@ -95,7 +97,7 @@ class Turn:
             return text
         return text[:max_len] + "…"
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, object]:
         return {
             "id": self.id,
             "user_content": self.user_content,
@@ -109,7 +111,7 @@ class Turn:
         }
 
     @staticmethod
-    def from_dict(data: dict) -> "Turn":
+    def from_dict(data: dict[str, object]) -> "Turn":
         assistant_content = data.get("assistant_content")
         assistant_state = str(data.get("assistant_state") or "").strip()
         if not assistant_state:
@@ -141,7 +143,7 @@ class ConvTree:
         inactive_tool_argument_char_limit: int = 5000,
         inactive_tool_content_char_limit: int = 8000,
     ) -> None:
-        self.nodes: Dict[str, Turn] = {
+        self.nodes: dict[str, Turn] = {
             "root": Turn(
                 id="root",
                 user_content="",
@@ -159,9 +161,9 @@ class ConvTree:
         self._inactive_tool_content_char_limit = max(0, int(inactive_tool_content_char_limit))
         self._history_version = 0
         self._active_path_cache_id = ""
-        self._active_path_cache: List[Turn] = []
+        self._active_path_cache: list[Turn] = []
         self._history_messages_cache_key: tuple[str, int] | None = None
-        self._history_messages_cache: List[dict] = []
+        self._history_messages_cache: list[ChatMessage] = []
 
     def _invalidate_active_path_cache(self) -> None:
         self._active_path_cache_id = ""
@@ -210,8 +212,8 @@ class ConvTree:
         self._pending_branch = False
         self._pending_branch_label = ""
 
-    def path_to(self, node_id: str) -> List[Turn]:
-        path: List[Turn] = []
+    def path_to(self, node_id: str) -> list[Turn]:
+        path: list[Turn] = []
         cursor: Optional[str] = node_id
         while cursor is not None:
             node = self.nodes[cursor]
@@ -221,7 +223,7 @@ class ConvTree:
         return path
 
     @property
-    def active_path(self) -> List[Turn]:
+    def active_path(self) -> list[Turn]:
         if self._active_path_cache_id != self.current_id:
             self._active_path_cache = self.path_to(self.current_id)
             self._active_path_cache_id = self.current_id
@@ -230,7 +232,7 @@ class ConvTree:
     def turn_count(self) -> int:
         return max(0, len(self.active_path) - 1)
 
-    def add_turn(self, user_content: Any) -> Turn:
+    def add_turn(self, user_content: JSONValue | list[MessageContentPart]) -> Turn:
         is_branch = self._pending_branch
         label = self._pending_branch_label
         self.clear_pending_branch()
@@ -276,16 +278,16 @@ class ConvTree:
         self.compact_inactive_branches()
         self._mark_history_changed()
 
-    def append_skill_exchange(self, turn_id: str, message: dict) -> None:
+    def append_skill_exchange(self, turn_id: str, message: ChatMessage) -> None:
         if turn_id in self.nodes:
             self.nodes[turn_id].skill_exchanges.append(message)
             self._mark_history_changed()
 
-    def history_messages(self) -> List[dict]:
+    def history_messages(self) -> list[ChatMessage]:
         cache_key = (self.current_id, self._history_version)
         if self._history_messages_cache_key == cache_key:
             return list(self._history_messages_cache)
-        messages: List[dict] = []
+        messages: list[ChatMessage] = []
         for turn in self.active_path:
             if turn.id == "root":
                 continue
@@ -317,7 +319,7 @@ class ConvTree:
         self._mark_structure_changed()
         return self.current
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, object]:
         return {
             "schema_version": SCHEMA_VERSION,
             "current_id": self.current_id,
@@ -327,7 +329,7 @@ class ConvTree:
         }
 
     @staticmethod
-    def from_dict(data: dict) -> "ConvTree":
+    def from_dict(data: dict[str, object]) -> "ConvTree":
         version = data.get("schema_version", "1.0.0")
         if _major(version) != _major(SCHEMA_VERSION):
             raise ValueError(
@@ -362,14 +364,14 @@ class ConvTree:
         keep = max(0, limit - len(_COMPACTED_MARKER))
         return text[:keep] + _COMPACTED_MARKER
 
-    def _compact_skill_message(self, message: dict) -> dict:
+    def _compact_skill_message(self, message: ChatMessage) -> ChatMessage:
         compacted = dict(message)
         role = str(compacted.get("role", ""))
 
         if role == "assistant":
             tool_calls = compacted.get("tool_calls")
             if isinstance(tool_calls, list):
-                compacted_calls = []
+                compacted_calls: list[ToolCallDelta | dict[str, object] | object] = []
                 for call in tool_calls:
                     if not isinstance(call, dict):
                         compacted_calls.append(call)

@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Literal, Optional
 
+from core.message_types import ChatMessage, JSONValue, ToolCallDelta, ToolCallUpdate
+from core.skill_parser import SkillManifest
 from core.skills import SkillContext
 
 
@@ -14,7 +16,7 @@ class ToolCall:
     index: int
     id: str
     name: str
-    arguments: Dict[str, Any]
+    arguments: dict[str, JSONValue]
 
 
 @dataclass(slots=True)
@@ -22,13 +24,16 @@ class StreamPassResult:
     finish_reason: str
     content: str = ""
     reasoning: str = ""
-    tool_calls: List[ToolCall] = field(default_factory=list)
-    usage: Dict[str, int] = field(default_factory=dict)
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    usage: dict[str, int] = field(default_factory=dict)
+
+
+ModelStatusState = Literal["unknown", "online", "offline"]
 
 
 @dataclass(slots=True)
 class ModelStatus:
-    state: str = "unknown"
+    state: ModelStatusState = "unknown"
     model_name: Optional[str] = None
     context_window: Optional[int] = None
     last_checked_at: float = 0.0
@@ -60,16 +65,16 @@ class AgentTurnResult:
     status: str
     content: str
     reasoning: str
-    skill_exchanges: List[Dict[str, Any]]
+    skill_exchanges: list[ChatMessage]
     error: Optional[str] = None
-    journal: Dict[str, Any] = field(default_factory=dict)
+    journal: dict[str, JSONValue] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
 class ToolExecutionRecord:
     name: str
-    args: Dict[str, Any]
-    result: Dict[str, Any]
+    args: dict[str, JSONValue]
+    result: dict[str, JSONValue]
     policy_blocked: bool = False
 
 
@@ -98,9 +103,9 @@ class TurnPolicySnapshot:
 
 @dataclass(slots=True)
 class CompletionEvidence:
-    tool_counts: Dict[str, int] = field(default_factory=dict)
-    materialized_paths: List[str] = field(default_factory=list)
-    readback_paths: List[str] = field(default_factory=list)
+    tool_counts: dict[str, int] = field(default_factory=dict)
+    materialized_paths: list[str] = field(default_factory=list)
+    readback_paths: list[str] = field(default_factory=list)
     fetched_urls: set[str] = field(default_factory=set)
     blocked_fetch_domains: set[str] = field(default_factory=set)
     search_failure_count: int = 0
@@ -113,27 +118,27 @@ class TurnTelemetry:
     turn_id: str
     started_at: float = field(default_factory=time.time)
     pass_index: int = 0
-    model_usage: Dict[str, int] = field(default_factory=dict)
+    model_usage: dict[str, int] = field(default_factory=dict)
     classification_source: str = ""
 
 
 @dataclass(slots=True)
 class TurnState:
     ctx: SkillContext
-    selected: List[Any]
-    dynamic_history: List[Dict[str, Any]]
-    skill_exchanges: List[Dict[str, Any]]
+    selected: list[SkillManifest]
+    dynamic_history: list[ChatMessage]
+    skill_exchanges: list[ChatMessage]
     classification: TurnClassification
     completion: CompletionEvidence
     telemetry: TurnTelemetry
     search_tools_enabled: bool = False
-    evidence: List[ToolExecutionRecord] = field(default_factory=list)
+    evidence: list[ToolExecutionRecord] = field(default_factory=list)
     full_reasoning: str = ""
     pass_index: int = 0
     action_depth: int = 0
     forced_search_retry: bool = False
     forced_action_retry: bool = False
-    tool_budgets: Dict[str, int] = field(default_factory=dict)
+    tool_budgets: dict[str, int] = field(default_factory=dict)
 
     @property
     def search_mode(self) -> bool:
@@ -160,7 +165,7 @@ class TurnState:
         return self.classification.explicit_external_path
 
     @property
-    def tool_counts(self) -> Dict[str, int]:
+    def tool_counts(self) -> dict[str, int]:
         return self.completion.tool_counts
 
     @property
@@ -180,59 +185,70 @@ class TurnState:
         self.completion.search_has_fetch_content = bool(value)
 
 
+@dataclass(slots=True)
+class _ToolCallState:
+    stream_id: str
+    call_id: str
+    call_type: str
+    name: str
+    arguments: str
+
+
 class ToolCallAccumulator:
     def __init__(self, pass_id: str) -> None:
         self._pass_id = pass_id
-        self._items: Dict[int, Dict[str, Any]] = {}
+        self._items: dict[int, _ToolCallState] = {}
 
-    def ingest(self, deltas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        updates: List[Dict[str, Any]] = []
+    def ingest(self, deltas: list[ToolCallDelta]) -> list[ToolCallUpdate]:
+        updates: list[ToolCallUpdate] = []
         for delta in deltas:
             index = int(delta.get("index", 0))
             item = self._items.setdefault(
                 index,
-                {
-                    "stream_id": f"{self._pass_id}_call_{index}",
-                    "id": "",
-                    "type": "function",
-                    "function": {"name": "", "arguments": ""},
-                },
+                _ToolCallState(
+                    stream_id=f"{self._pass_id}_call_{index}",
+                    call_id="",
+                    call_type="function",
+                    name="",
+                    arguments="",
+                ),
             )
             if delta.get("id"):
-                item["id"] = delta["id"]
+                item.call_id = str(delta["id"])
             if delta.get("type"):
-                item["type"] = delta["type"]
-            fn_delta = delta.get("function", {})
-            if fn_delta.get("name"):
-                item["function"]["name"] += fn_delta["name"]
-            if fn_delta.get("arguments"):
-                item["function"]["arguments"] += fn_delta["arguments"]
+                item.call_type = str(delta["type"])
+            fn_delta = delta.get("function") or {}
+            if isinstance(fn_delta, dict):
+                if fn_delta.get("name"):
+                    item.name += str(fn_delta["name"])
+                if fn_delta.get("arguments"):
+                    item.arguments += str(fn_delta["arguments"])
             updates.append(
                 {
                     "index": index,
-                    "stream_id": item.get("stream_id", f"{self._pass_id}_call_{index}"),
-                    "id": item.get("id", ""),
-                    "name": item["function"].get("name", "").strip(),
-                    "raw_arguments": item["function"].get("arguments", ""),
+                    "stream_id": item.stream_id,
+                    "id": item.call_id,
+                    "name": item.name.strip(),
+                    "raw_arguments": item.arguments,
                 }
             )
         return updates
 
-    def finalize(self) -> List[ToolCall]:
-        calls: List[ToolCall] = []
+    def finalize(self) -> list[ToolCall]:
+        calls: list[ToolCall] = []
         for index in sorted(self._items):
             item = self._items[index]
-            raw_args = item["function"].get("arguments", "")
+            raw_args = item.arguments
             try:
                 args = json.loads(raw_args) if raw_args.strip() else {}
             except json.JSONDecodeError:
                 args = {"_raw": raw_args}
             calls.append(
                 ToolCall(
-                    stream_id=item.get("stream_id", f"{self._pass_id}_call_{index}"),
+                    stream_id=item.stream_id,
                     index=index,
-                    id=item.get("id") or f"call_{index}",
-                    name=item["function"].get("name", "").strip(),
+                    id=item.call_id or f"call_{index}",
+                    name=item.name.strip(),
                     arguments=args,
                 )
             )
