@@ -2,12 +2,47 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, List
+from typing import Any
 
 from rich.markup import escape as esc
 
 from tui.status import context_usage_percent
 from tui.tree_render import render_tree_rows
+
+
+def _normalized_validation_errors(values: Any) -> list[str]:
+    return [item for item in (str(value).strip() for value in (values or [])) if item]
+
+
+def _skill_capability_summary(
+    *,
+    execution_allowed: bool,
+    adapter: Any,
+    tools: Any,
+    scripts: Any,
+    entrypoints: Any,
+    user_invocable: bool,
+    model_invocable: bool,
+) -> str:
+    parts = [
+        f"execution={'yes' if execution_allowed else 'no'}",
+        f"adapter={adapter}",
+        f"user={'yes' if user_invocable else 'no'}",
+        f"model={'yes' if model_invocable else 'no'}",
+    ]
+    if tools:
+        parts.append(f"tools={len(tools)}")
+    if scripts:
+        parts.append(f"scripts={len(scripts)}")
+    if entrypoints:
+        parts.append(f"entrypoints={len(entrypoints)}")
+    return " · ".join(parts)
+
+
+def _write_validation_error(app: Any, validation_errors: Any) -> None:
+    errors = _normalized_validation_errors(validation_errors)
+    if errors:
+        app._write(f"    [#f59e0b]validation:[/#f59e0b] [#a1a1aa]{esc(errors[0])}[/#a1a1aa]")
 
 
 def cmd_help(app: Any, *, help_sections, accent_color: str) -> None:
@@ -51,28 +86,23 @@ def cmd_skills(app: Any, *, accent_color: str) -> None:
         if source:
             source_bits += f" · {source}"
         app._write(f"    [#71717a]{esc(source_bits)}[/#71717a]")
-        flags = [
-            f"execution={'yes' if getattr(skill, 'execution_allowed', True) else 'no'}",
-            f"adapter={getattr(skill, 'adapter', 'agentskills')}",
-            f"user={'yes' if skill.user_invocable else 'no'}",
-            f"model={'no' if skill.disable_model_invocation else 'yes'}",
-        ]
         tools = app.agent.skill_runtime._reported_skill_tools(skill)
-        if tools:
-            flags.append(f"tools={len(tools)}")
         scripts = app.agent.skill_runtime._reported_skill_scripts(skill)
-        if scripts:
-            flags.append(f"scripts={len(scripts)}")
         entrypoints = app.agent.skill_runtime._reported_skill_entrypoints(skill)
-        if entrypoints:
-            flags.append(f"entrypoints={len(entrypoints)}")
-        app._write(f"    [#71717a]{esc(' · '.join(flags))}[/#71717a]")
+        capabilities = _skill_capability_summary(
+            execution_allowed=getattr(skill, "execution_allowed", True),
+            adapter=getattr(skill, "adapter", "agentskills"),
+            tools=tools,
+            scripts=scripts,
+            entrypoints=entrypoints,
+            user_invocable=skill.user_invocable,
+            model_invocable=not skill.disable_model_invocation,
+        )
+        app._write(f"    [#71717a]{esc(capabilities)}[/#71717a]")
         if not skill.available and skill.availability_reason:
             code = esc(skill.availability_code or "blocked")
             app._write(f"    [bold {accent_color}]blocked ({code}):[/bold {accent_color}] [#a1a1aa]{esc(skill.availability_reason)}[/#a1a1aa]")
-        validation_errors = list(getattr(skill, "validation_errors", []) or [])
-        if validation_errors:
-            app._write(f"    [#f59e0b]validation:[/#f59e0b] [#a1a1aa]{esc(validation_errors[0])}[/#a1a1aa]")
+        _write_validation_error(app, getattr(skill, "validation_errors", []))
     app._write("")
 
 
@@ -241,21 +271,17 @@ def cmd_doctor(app: Any, *, accent_color: str) -> None:
         reason = str(skill.get("availability_reason", "")).strip()
         if reason and reason != "ready":
             app._write(f"    [#a1a1aa]{esc(reason)}[/#a1a1aa]")
-        capabilities: List[str] = []
-        capabilities.append(f"execution={'yes' if skill.get('execution_allowed', True) else 'no'}")
-        capabilities.append(f"adapter={skill.get('adapter', 'agentskills')}")
-        if skill.get("tools"):
-            capabilities.append(f"tools={len(skill.get('tools', []))}")
-        if skill.get("scripts"):
-            capabilities.append(f"scripts={len(skill.get('scripts', []))}")
-        if skill.get("entrypoints"):
-            capabilities.append(f"entrypoints={len(skill.get('entrypoints', []))}")
-        capabilities.append(f"user={'yes' if skill.get('user_invocable', True) else 'no'}")
-        capabilities.append(f"model={'yes' if skill.get('model_invocable', True) else 'no'}")
-        app._write(f"    [#71717a]{esc(' · '.join(capabilities))}[/#71717a]")
-        validation_errors = [str(item) for item in skill.get("validation_errors", []) if str(item).strip()]
-        if validation_errors:
-            app._write(f"    [#f59e0b]validation:[/#f59e0b] [#a1a1aa]{esc(validation_errors[0])}[/#a1a1aa]")
+        capabilities = _skill_capability_summary(
+            execution_allowed=skill.get("execution_allowed", True),
+            adapter=skill.get("adapter", "agentskills"),
+            tools=skill.get("tools", []),
+            scripts=skill.get("scripts", []),
+            entrypoints=skill.get("entrypoints", []),
+            user_invocable=skill.get("user_invocable", True),
+            model_invocable=skill.get("model_invocable", True),
+        )
+        app._write(f"    [#71717a]{esc(capabilities)}[/#71717a]")
+        _write_validation_error(app, skill.get("validation_errors", []))
     app._write("")
 
 
@@ -264,7 +290,7 @@ def cmd_report(app: Any, arg: str) -> bool:
     payload = app.agent.build_support_bundle(app.conv_tree.to_dict())
     try:
         Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception as exc:
+    except OSError as exc:
         app._write_error(f"Report save failed: {exc}")
         return True
     app._write_info(f"Saved support bundle to {path}")

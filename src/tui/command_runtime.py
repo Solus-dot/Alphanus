@@ -39,10 +39,6 @@ def handle_command(app, text: str) -> bool:
         app._write_error("Stop the active response before changing sessions.")
         return True
 
-    if cmd == "/new":
-        app._write_error("Use /sessions to manage sessions.")
-        return True
-
     if cmd == "/rename":
         if not arg:
             return app._write_usage("/rename <name>")
@@ -113,12 +109,8 @@ def handle_command(app, text: str) -> bool:
             session = app._save_active_session(rename_to=arg or None)
             app._update_topbar()
             app._write_command_action(f"Saved session '{session.title}'", icon="✓")
-        except Exception as exc:
+        except OSError as exc:
             app._write_error(f"Save failed: {exc}")
-        return True
-
-    if cmd == "/load":
-        app._write_error("Use /sessions to manage sessions.")
         return True
 
     if cmd == "/clear":
