@@ -1,4 +1,5 @@
 import argparse
+import logging
 import shutil
 from pathlib import Path
 
@@ -30,7 +31,8 @@ def _seed_runtime_skills(runtime_skills_dir: Path, bundled_skills_dir: Path) -> 
     try:
         if runtime_skills_dir.resolve() == bundled_skills_dir.resolve():
             return
-    except Exception:
+    except Exception as exc:
+        logging.debug("failed to compare skills directories during seeding: %s", exc)
         return
     if not bundled_skills_dir.exists():
         return

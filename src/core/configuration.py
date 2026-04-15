@@ -131,7 +131,7 @@ def deep_merge(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
 def _major(version: str) -> int:
     try:
         return int(str(version).strip().split(".", 1)[0])
-    except Exception as exc:  # noqa: BLE001
+    except ValueError as exc:
         raise ValueError(f"Invalid schema_version: {version!r}") from exc
 
 

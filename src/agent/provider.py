@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Protocol
+from typing import Callable, Optional
 
+from core.message_types import ChatMessage, JSONValue
 from core.runtime_config import ProviderConfig
 from core.streaming import build_ssl_context, should_retry, stream_chat_completions as core_stream_chat_completions
 
 from agent.telemetry import TelemetryEmitter
-from agent.types import ModelStatus, StreamPassResult, ToolCallAccumulator
+from core.types import JsonObject, ModelStatus, StreamPassResult, ToolCallAccumulator
 
 
 @dataclass(slots=True)
@@ -20,32 +22,6 @@ class ProviderCapabilities:
     tool_calls: bool = True
     reasoning_tokens: bool = True
     context_window_probe: bool = True
-
-
-class ProviderAdapter(Protocol):
-    def reload_config(self, config: ProviderConfig) -> None: ...
-
-    def check_ready(
-        self,
-        stop_event=None,
-        on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
-        timeout_s: Optional[float] = None,
-    ) -> Optional[bool]: ...
-
-    def list_models(self, timeout_s: Optional[float] = None) -> Any: ...
-
-    def stream_completion(
-        self,
-        payload: Dict[str, Any],
-        stop_event,
-        on_event: Optional[Callable[[Dict[str, Any]], None]],
-        pass_id: str,
-    ) -> StreamPassResult: ...
-
-    def complete(self, payload: Dict[str, Any], timeout_s: Optional[float] = None) -> Dict[str, Any]: ...
-
-    def capabilities(self) -> ProviderCapabilities: ...
-
 
 class OpenAICompatibleProvider:
     ONLINE_STATUS_TTL_S = 5.0
@@ -57,7 +33,7 @@ class OpenAICompatibleProvider:
         *,
         telemetry: Optional[TelemetryEmitter] = None,
         debug: bool = False,
-        stream_chat_completions_fn: Optional[Callable[..., Any]] = None,
+        stream_chat_completions_fn: Optional[Callable[..., object]] = None,
     ) -> None:
         self.debug = debug
         self.telemetry = telemetry or TelemetryEmitter()
@@ -88,8 +64,8 @@ class OpenAICompatibleProvider:
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities()
 
-    def headers(self) -> Dict[str, str]:
-        headers = {}
+    def headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {}
         if self.auth_header and ":" in self.auth_header:
             key, value = self.auth_header.split(":", 1)
             headers[key.strip()] = value.strip()
@@ -111,12 +87,12 @@ class OpenAICompatibleProvider:
         return not OpenAICompatibleProvider.stop_requested(stop_event)
 
     @staticmethod
-    def extract_model_name(payload: Any) -> Optional[str]:
-        def candidate(value: Any) -> Optional[str]:
+    def extract_model_name(payload: object) -> Optional[str]:
+        def candidate(value: object) -> Optional[str]:
             text = str(value or "").strip()
             return text or None
 
-        def from_item(item: Any) -> Optional[str]:
+        def from_item(item: object) -> Optional[str]:
             if isinstance(item, dict):
                 for key in ("id", "name", "model"):
                     picked = candidate(item.get(key))
@@ -145,7 +121,7 @@ class OpenAICompatibleProvider:
         return None
 
     @staticmethod
-    def extract_model_context_window(payload: Any) -> Optional[int]:
+    def extract_model_context_window(payload: object) -> Optional[int]:
         context_keys = (
             "context_length",
             "context_window",
@@ -158,7 +134,7 @@ class OpenAICompatibleProvider:
         )
         visited: set[int] = set()
 
-        def candidate_int(value: Any) -> Optional[int]:
+        def candidate_int(value: object) -> Optional[int]:
             if isinstance(value, bool):
                 return None
             if isinstance(value, int):
@@ -169,12 +145,12 @@ class OpenAICompatibleProvider:
             if isinstance(value, str):
                 try:
                     parsed = int(value.strip())
-                except Exception:
+                except ValueError:
                     return None
                 return parsed if parsed > 0 else None
             return None
 
-        def from_item(item: Any) -> Optional[int]:
+        def from_item(item: object) -> Optional[int]:
             if isinstance(item, dict):
                 marker = id(item)
                 if marker in visited:
@@ -245,7 +221,7 @@ class OpenAICompatibleProvider:
             path = "/slots"
         return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
 
-    def fetch_json(self, url: str, timeout_s: Optional[float] = None) -> Any:
+    def fetch_json(self, url: str, timeout_s: Optional[float] = None) -> object:
         request = urllib.request.Request(url, headers=self.headers(), method="GET")
         timeout = self.connect_timeout_s if timeout_s is None else max(0.1, float(timeout_s))
         with urllib.request.urlopen(request, timeout=timeout, context=self.ssl_context) as response:
@@ -254,7 +230,7 @@ class OpenAICompatibleProvider:
                 return {}
             return json.loads(raw)
 
-    def list_models(self, timeout_s: Optional[float] = None) -> Any:
+    def list_models(self, timeout_s: Optional[float] = None) -> object:
         return self.fetch_json(self.models_endpoint, timeout_s=timeout_s)
 
     def get_model_status(self) -> ModelStatus:
@@ -382,7 +358,7 @@ class OpenAICompatibleProvider:
     def check_ready(
         self,
         stop_event=None,
-        on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_event: Optional[Callable[[JsonObject], None]] = None,
         timeout_s: Optional[float] = None,
     ) -> Optional[bool]:
         timeout = self.readiness_timeout_s if timeout_s is None else max(0.0, float(timeout_s))
@@ -446,7 +422,7 @@ class OpenAICompatibleProvider:
     def _is_transport_failure(exc: Exception) -> bool:
         return getattr(exc, "status_code", None) is None
 
-    def complete(self, payload: Dict[str, Any], timeout_s: Optional[float] = None) -> Dict[str, Any]:
+    def complete(self, payload: dict[str, object], timeout_s: Optional[float] = None) -> dict[str, object]:
         request = urllib.request.Request(
             self.model_endpoint,
             headers={"Content-Type": "application/json", **self.headers()},
@@ -460,18 +436,18 @@ class OpenAICompatibleProvider:
 
     def stream_completion(
         self,
-        payload: Dict[str, Any],
+        payload: dict[str, object],
         stop_event,
-        on_event: Optional[Callable[[Dict[str, Any]], None]],
+        on_event: Optional[Callable[[JsonObject], None]],
         pass_id: str,
     ) -> StreamPassResult:
         return self._stream_one_pass(payload, stop_event, on_event, pass_id)
 
     def _stream_one_pass(
         self,
-        payload: Dict[str, Any],
+        payload: dict[str, object],
         stop_event,
-        on_event: Optional[Callable[[Dict[str, Any]], None]],
+        on_event: Optional[Callable[[JsonObject], None]],
         pass_id: str,
     ) -> StreamPassResult:
         content_parts: List[str] = []
@@ -566,7 +542,7 @@ class OpenAICompatibleProvider:
             usage=usage,
         )
 
-    def call_with_retry(self, payload: Dict[str, Any], stop_event, on_event, pass_id: str) -> StreamPassResult:
+    def call_with_retry(self, payload: dict[str, object], stop_event, on_event, pass_id: str) -> StreamPassResult:
         attempt = 0
         while True:
             try:
@@ -602,13 +578,13 @@ class OpenAICompatibleProvider:
                 raise
 
     @staticmethod
-    def _emit(on_event: Optional[Callable[[Dict[str, Any]], None]], event: Dict[str, Any]) -> None:
+    def _emit(on_event: Optional[Callable[[JsonObject], None]], event: JsonObject) -> None:
         if not on_event:
             return
         try:
             on_event(event)
-        except Exception:
-            return
+        except Exception as exc:
+            logging.debug("event callback failed: %s", exc)
 
     @staticmethod
     def _contains_tool_markup(text: str) -> bool:

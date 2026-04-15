@@ -90,5 +90,5 @@ class TelemetryEmitter:
                 event_name,
                 extra={"event_name": event_name, "event_payload": payload},
             )
-        except Exception:
-            return
+        except Exception as exc:
+            logging.debug("telemetry emit failed for event '%s': %s", event_name, exc)

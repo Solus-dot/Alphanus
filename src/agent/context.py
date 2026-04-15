@@ -1,4 +1,8 @@
-from typing import Any, Dict, List, Optional, Set
+from __future__ import annotations
+
+from typing import Optional, Set
+
+from core.message_types import ChatMessage, JSONValue, MessageContentPart, ToolCallDelta
 
 
 class ContextWindowManager:
@@ -11,7 +15,7 @@ class ContextWindowManager:
         self.safety_margin = int(safety_margin)
 
     @staticmethod
-    def _estimate_message_chars(message: Dict) -> int:
+    def _estimate_message_chars(message: ChatMessage) -> int:
         chars = len(message.get("role", "")) + 4
         content = message.get("content", "")
         if isinstance(content, str):
@@ -40,18 +44,18 @@ class ContextWindowManager:
         return max(1, chars // 4)
 
     @classmethod
-    def estimate_tokens(cls, messages: List[Dict]) -> int:
+    def estimate_tokens(cls, messages: list[ChatMessage]) -> int:
         return cls._chars_to_tokens(sum(cls._estimate_message_chars(message) for message in messages))
 
     @staticmethod
-    def _last_role_index(messages: List[Dict], role: str) -> Optional[int]:
+    def _last_role_index(messages: list[ChatMessage], role: str) -> Optional[int]:
         for idx in range(len(messages) - 1, -1, -1):
             if messages[idx].get("role") == role:
                 return idx
         return None
 
     @staticmethod
-    def _content_to_user_text(content: Any) -> str:
+    def _content_to_user_text(content: JSONValue | list[MessageContentPart]) -> str:
         if isinstance(content, str):
             text = content.strip()
             return text if text else "[user message omitted]"
@@ -70,9 +74,13 @@ class ContextWindowManager:
         return "[user message omitted]"
 
     @classmethod
-    def _compact_user_content(cls, content: Any, keep_chars: int) -> Any:
+    def _compact_user_content(
+        cls,
+        content: JSONValue | list[MessageContentPart],
+        keep_chars: int,
+    ) -> JSONValue | list[MessageContentPart]:
         if isinstance(content, list):
-            compacted_parts: List[Dict[str, Any]] = []
+            compacted_parts: list[MessageContentPart] = []
             remaining_chars = max(0, keep_chars)
             omitted_text = False
             for part in content:
@@ -102,11 +110,11 @@ class ContextWindowManager:
         return text or "[user message omitted]"
 
     @classmethod
-    def _compact_user_message(cls, message: Dict, keep_chars: int) -> Dict:
+    def _compact_user_message(cls, message: ChatMessage, keep_chars: int) -> ChatMessage:
         return {"role": "user", "content": cls._compact_user_content(message.get("content"), keep_chars)}
 
     @staticmethod
-    def _tool_call_ids(message: Dict) -> Set[str]:
+    def _tool_call_ids(message: ChatMessage) -> Set[str]:
         raw_calls = message.get("tool_calls") or []
         if not isinstance(raw_calls, list):
             return set()
@@ -121,7 +129,7 @@ class ContextWindowManager:
     @classmethod
     def _find_matching_assistant_idx(
         cls,
-        messages: List[Dict],
+        messages: list[ChatMessage],
         upto_idx: int,
         tool_call_id: str,
     ) -> Optional[int]:
@@ -136,7 +144,7 @@ class ContextWindowManager:
         return None
 
     @classmethod
-    def _expand_tool_dependencies(cls, messages: List[Dict], kept: Set[int]) -> Set[int]:
+    def _expand_tool_dependencies(cls, messages: list[ChatMessage], kept: Set[int]) -> Set[int]:
         changed = True
         while changed:
             changed = False
@@ -166,16 +174,16 @@ class ContextWindowManager:
         return value[:head] + suffix
 
     @classmethod
-    def _compress_messages_to_budget(cls, messages: List[Dict], max_prompt_tokens: int) -> List[Dict]:
+    def _compress_messages_to_budget(cls, messages: list[ChatMessage], max_prompt_tokens: int) -> list[ChatMessage]:
         if max_prompt_tokens <= 0:
             return messages[:1]
 
-        out: List[Dict] = []
+        out: list[ChatMessage] = []
         for message in messages:
             copied = dict(message)
             raw_tool_calls = copied.get("tool_calls")
             if isinstance(raw_tool_calls, list):
-                copied_calls = []
+                copied_calls: list[dict[str, object]] = []
                 for call in raw_tool_calls:
                     if not isinstance(call, dict):
                         copied_calls.append(call)
@@ -338,7 +346,7 @@ class ContextWindowManager:
             return [out[0], cls._compact_user_message(out[last_user], keep_chars=16)]
         return out
 
-    def prune(self, messages: List[Dict], max_tokens: int) -> List[Dict]:
+    def prune(self, messages: list[ChatMessage], max_tokens: int) -> list[ChatMessage]:
         if len(messages) <= 2:
             return messages
 
@@ -367,8 +375,7 @@ class ContextWindowManager:
         selected = [body[idx] for idx in sorted(kept_indices)]
         selected_total = head_estimate + sum(body_estimates[idx] for idx in kept_indices)
 
-        # Keep a single system message at index 0 to avoid server-side template
-        # failures on backends that require exactly one leading system role.
+        # Ensure exactly one system message at head to satisfy backend template expectations.
         pruned = head + selected
         if self._chars_to_tokens(selected_total) + max_tokens <= budget:
             return pruned
