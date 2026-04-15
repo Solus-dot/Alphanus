@@ -1764,6 +1764,9 @@ class SkillRuntime:
             return _err("E_TIMEOUT", str(exc), int((time.perf_counter() - start) * 1000))
         except ToolProtocolError as exc:
             return _err("E_PROTOCOL", str(exc), int((time.perf_counter() - start) * 1000))
+        except RuntimeError as exc:
+            message = str(exc).strip() or "Action failed"
+            return _err("E_IO", message, int((time.perf_counter() - start) * 1000))
         except Exception as exc:
             message = str(exc) if self.debug else "Action failed"
             return _err("E_IO", message, int((time.perf_counter() - start) * 1000))

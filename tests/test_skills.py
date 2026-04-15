@@ -691,6 +691,72 @@ def execute(tool_name, args, env):
     assert out["error"]["code"] == "E_IO"
 
 
+def test_runtimeerror_tool_message_is_preserved_without_debug(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "faulty-skill").mkdir(parents=True)
+
+    (skills / "faulty-skill" / "SKILL.md").write_text(
+        """
+---
+name: faulty-skill
+description: tool that raises runtime errors
+version: 1.0.0
+tools:
+  allowed-tools:
+    - faulty_tool
+---
+faulty
+""".strip(),
+        encoding="utf-8",
+    )
+
+    (skills / "faulty-skill" / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "faulty_tool": {
+    "capability": "web_search",
+    "description": "Always fails",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  }
+}
+
+def execute(tool_name, args, env):
+    raise RuntimeError("Tavily API key not configured")
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        debug=False,
+    )
+    skill = runtime.get_skill("faulty-skill")
+    assert skill is not None
+
+    ctx = SkillContext(
+        user_input="run faulty tool",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+    out = runtime.execute_tool_call("faulty_tool", {}, selected=[skill], ctx=ctx)
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_IO"
+    assert out["error"]["message"] == "Tavily API key not configured"
+
+
 def test_select_skills_requires_explicit_session_load(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
