@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict
+from typing import Dict
 
 from core.skills import ToolExecutionEnv
 
@@ -82,8 +82,8 @@ def _normalize_whitespace(value: str) -> str:
     return " ".join(value.strip().split()).lower()
 
 
-def _rank_hits(hits: list[Dict[str, Any]], top_k: int) -> list[Dict[str, Any]]:
-    ranked: dict[int, Dict[str, Any]] = {}
+def _rank_hits(hits: list[dict[str, object]], top_k: int) -> list[dict[str, object]]:
+    ranked: dict[int, dict[str, object]] = {}
     for hit in hits:
         try:
             memory_id = int(hit.get("id", 0))
@@ -122,7 +122,7 @@ def _find_exact_text_ids(memory, text: str, memory_type: str | None) -> list[int
     return out
 
 
-def _ids_from_replace_query(memory, args: Dict[str, Any], text: str) -> list[int]:
+def _ids_from_replace_query(memory, args: dict[str, object], text: str) -> list[int]:
     query = str(args.get("replace_query") or "").strip()
     if not query:
         return []
@@ -144,13 +144,13 @@ def _ids_from_replace_query(memory, args: Dict[str, Any], text: str) -> list[int
     return out
 
 
-def _store_memory(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+def _store_memory(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     memory = env.memory
     text = " ".join(str(args["text"]).split()).strip()
     if not text:
         raise ValueError("Memory text must not be empty")
     memory_type = str(args.get("memory_type") or "conversation").strip() or "conversation"
-    metadata: Dict[str, Any] = dict(args.get("metadata") or {})
+    metadata: dict[str, object] = dict(args.get("metadata") or {})
     forgotten_ids: list[int] = []
     replace_existing = bool(args.get("replace_existing", True))
 
@@ -176,7 +176,7 @@ def _store_memory(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]
     )
     memory.flush()
 
-    meta: Dict[str, Any] = {}
+    meta: dict[str, object] = {}
     if forgotten_ids:
         meta["forgotten_ids"] = forgotten_ids
         if args.get("replace_query"):
@@ -187,7 +187,7 @@ def _store_memory(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]
     return {"ok": True, "data": item, "error": None, "meta": meta}
 
 
-def _recall_memory(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+def _recall_memory(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     top_k = int(args.get("top_k", 5))
     min_score = args.get("min_score")
     threshold = 0.18 if min_score is None else float(min_score)
@@ -208,11 +208,11 @@ def _recall_memory(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any
     return {"hits": hits}
 
 
-def _list_memories(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+def _list_memories(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     return {"memories": env.memory.list_recent(count=int(args.get("count", 5)))}
 
 
-def _forget_memory(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+def _forget_memory(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     deleted = env.memory.forget(int(args["memory_id"]))
     if not deleted:
         raise FileNotFoundError("Memory id not found")
@@ -220,11 +220,11 @@ def _forget_memory(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any
     return {"deleted": True}
 
 
-def _get_memory_stats(_args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+def _get_memory_stats(_args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     return env.memory.stats()
 
 
-def _export_memories(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+def _export_memories(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     workspace_root = Path(env.workspace.workspace_root)
     requested = str(args.get("filepath") or "").strip()
     if requested:
@@ -235,7 +235,7 @@ def _export_memories(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, A
     return {"filepath": out}
 
 
-def execute(tool_name: str, args: Dict[str, Any], env: ToolExecutionEnv):
+def execute(tool_name: str, args: dict[str, object], env: ToolExecutionEnv):
     if tool_name == "store_memory":
         return _store_memory(args, env)
     if tool_name == "recall_memory":

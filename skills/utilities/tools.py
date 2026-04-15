@@ -8,7 +8,6 @@ import urllib.parse
 import urllib.request
 import webbrowser
 from pathlib import Path
-from typing import Any, Dict
 
 from core.skills import ToolExecutionEnv
 
@@ -61,15 +60,15 @@ def _is_under(path: Path, root: Path) -> bool:
     return path.is_relative_to(root)
 
 
-def _ok(data: Dict[str, Any]) -> Dict[str, Any]:
+def _ok(data: dict[str, object]) -> dict[str, object]:
     return {"ok": True, "data": data, "error": None, "meta": {}}
 
 
-def _err(code: str, message: str, data: Dict[str, Any] | None = None) -> Dict[str, Any]:
+def _err(code: str, message: str, data: dict[str, object] | None = None) -> dict[str, object]:
     return {"ok": False, "data": data, "error": {"code": code, "message": message}, "meta": {}}
 
 
-def _get_weather(args: Dict[str, Any]) -> Dict[str, Any]:
+def _get_weather(args: dict[str, object]) -> dict[str, object]:
     city = str(args["city"]).strip()
     query = urllib.parse.quote(city)
     url = f"https://wttr.in/{query}?format=j1"
@@ -95,7 +94,7 @@ def _get_weather(args: Dict[str, Any]) -> Dict[str, Any]:
     )
 
 
-def _search_home_files(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+def _search_home_files(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     query = str(args["query"]).lower()
     home_root = Path(os.path.expanduser(str(env.workspace.home_root))).resolve()
     directory = str(args.get("directory") or str(home_root))
@@ -117,7 +116,7 @@ def _search_home_files(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str,
     return _ok({"matches": matches})
 
 
-def _open_url(args: Dict[str, Any]) -> Dict[str, Any]:
+def _open_url(args: dict[str, object]) -> dict[str, object]:
     url = str(args["url"]).strip()
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in {"http", "https", "file"}:
@@ -157,7 +156,7 @@ def _resolve_first_video_url(search_url: str) -> tuple[str, str, bool]:
     return f"https://www.youtube.com/watch?v={video_id}&autoplay=1", video_id, True
 
 
-def _play_youtube(args: Dict[str, Any]) -> Dict[str, Any]:
+def _play_youtube(args: dict[str, object]) -> dict[str, object]:
     topic = str(args["topic"]).strip()
     search_url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(topic)
     url, video_id, resolved = _resolve_first_video_url(search_url)
@@ -178,7 +177,7 @@ def _play_youtube(args: Dict[str, Any]) -> Dict[str, Any]:
     )
 
 
-def execute(tool_name: str, args: Dict[str, Any], env: ToolExecutionEnv):
+def execute(tool_name: str, args: dict[str, object], env: ToolExecutionEnv):
     if tool_name == "get_weather":
         return _get_weather(args)
     if tool_name == "search_home_files":

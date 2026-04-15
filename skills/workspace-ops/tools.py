@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import difflib
 from pathlib import Path
-from typing import Any, Dict
+from typing import Dict
 
 from core.skills import ToolExecutionEnv
 
@@ -166,7 +166,7 @@ def _changed_line_count(before: str, after: str) -> int:
     return changed
 
 
-def _path_info(path_str: str) -> Dict[str, Any]:
+def _path_info(path_str: str) -> dict[str, object]:
     path = Path(path_str)
     return {
         "filepath": path_str,
@@ -174,7 +174,7 @@ def _path_info(path_str: str) -> Dict[str, Any]:
     }
 
 
-def _create_file(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+def _create_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     content = str(args["content"])
     path_str = env.workspace.create_file(str(args["filepath"]), content)
     data = _path_info(path_str)
@@ -188,14 +188,14 @@ def _create_file(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     return data
 
 
-def _create_directory(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+def _create_directory(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     path_str = env.workspace.create_directory(str(args["path"]))
     data = _path_info(path_str)
     data.update({"created": True, "kind": "directory"})
     return data
 
 
-def _edit_file(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+def _edit_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     filepath = str(args["filepath"])
     before = env.workspace.read_file(filepath)
     if "content" in args:
@@ -255,7 +255,7 @@ def _edit_file(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     return data
 
 
-def _read_file(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+def _read_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     filepath = str(args["filepath"])
     content = env.workspace.read_file(filepath)
     data = _path_info(filepath)
@@ -269,20 +269,20 @@ def _read_file(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     return data
 
 
-def _read_files(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+def _read_files(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     max_chars = int(args.get("max_chars_per_file", 20000))
     paths = [str(item) for item in args.get("paths") or []]
     files = env.workspace.read_files(paths, max_chars_per_file=max_chars)
     return {"files": files, "count": len(files), "max_chars_per_file": max_chars}
 
 
-def _list_files(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+def _list_files(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     path = str(args.get("path", "."))
     names = env.workspace.list_files(path)
     return {"path": path, "files": names, "count": len(names)}
 
 
-def _search_code(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+def _search_code(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     return env.workspace.search_code(
         str(args["query"]),
         path=str(args.get("path", ".")),
@@ -293,7 +293,7 @@ def _search_code(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     )
 
 
-def _delete_path(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+def _delete_path(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     path = str(args["path"])
     recursive = bool(args.get("recursive", False))
     target = env.workspace._resolve_read_path(path)
@@ -322,7 +322,7 @@ def _delete_path(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     return data
 
 
-def _move_path(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+def _move_path(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     source_path = str(args["source_path"])
     destination_path = str(args["destination_path"])
     overwrite = bool(args.get("overwrite", False))
@@ -343,13 +343,13 @@ def _move_path(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     return data
 
 
-def _workspace_tree(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+def _workspace_tree(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     max_depth = max(1, int(args.get("max_depth", 3)))
     tree = env.workspace.workspace_tree(max_depth=max_depth)
     return {"tree": tree, "max_depth": max_depth}
 
 
-def _run_checks(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
+def _run_checks(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     return env.workspace.run_checks(
         str(args["command"]),
         args=[str(item) for item in args.get("args") or []],
@@ -358,7 +358,7 @@ def _run_checks(args: Dict[str, Any], env: ToolExecutionEnv) -> Dict[str, Any]:
     )
 
 
-def execute(tool_name: str, args: Dict[str, Any], env: ToolExecutionEnv):
+def execute(tool_name: str, args: dict[str, object], env: ToolExecutionEnv):
     if tool_name == "create_directory":
         return _create_directory(args, env)
     if tool_name == "create_file":

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any, Dict
-
 from core.skills import ToolExecutionEnv
 
 TOOL_SPECS = {
@@ -17,7 +15,7 @@ TOOL_SPECS = {
 }
 
 
-def execute(tool_name: str, args: Dict[str, Any], env: ToolExecutionEnv):
+def execute(tool_name: str, args: dict[str, object], env: ToolExecutionEnv):
     if tool_name != "shell_command":
         raise ValueError(f"Unsupported tool: {tool_name}")
 
