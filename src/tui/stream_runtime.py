@@ -175,6 +175,14 @@ def on_agent_event(app: Any, event: Dict[str, Any]) -> None:
     etype = event.get("type")
     stream_drain_active = bool(_state(app).drain_active)
 
+    stop_event = getattr(app, "_stop_event", None)
+    if (
+        stop_event is not None
+        and stop_event.is_set()
+        and etype in {"reasoning_token", "content_token", "tool_phase_started", "tool_call_delta"}
+    ):
+        return
+
     if etype == "reasoning_token":
         token = event.get("text", "")
         if not app._reasoning_open:

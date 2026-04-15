@@ -450,6 +450,10 @@ class OpenAICompatibleProvider:
         on_event: Optional[Callable[[JsonObject], None]],
         pass_id: str,
     ) -> StreamPassResult:
+        if self.stop_requested(stop_event):
+            self.telemetry.emit("chat_pass_cancelled", pass_id=pass_id)
+            return StreamPassResult(finish_reason="cancelled")
+
         content_parts: List[str] = []
         reasoning_parts: List[str] = []
         finish_reason = "stop"
@@ -495,6 +499,14 @@ class OpenAICompatibleProvider:
             if content:
                 content_parts.append(content)
                 if self._contains_tool_markup(content):
+                    if not suppress_content_stream:
+                        self._emit(
+                            on_event,
+                            {
+                                "type": "info",
+                                "text": "Model emitted tool markup; generating a clean final response...",
+                            },
+                        )
                     suppress_content_stream = True
                 if not suppress_content_stream:
                     self._emit(on_event, {"type": "content_token", "text": content})
@@ -545,6 +557,8 @@ class OpenAICompatibleProvider:
     def call_with_retry(self, payload: dict[str, object], stop_event, on_event, pass_id: str) -> StreamPassResult:
         attempt = 0
         while True:
+            if self.stop_requested(stop_event):
+                return StreamPassResult(finish_reason="cancelled")
             try:
                 status = self._status_allows_immediate_send()
                 if status.state == "offline":

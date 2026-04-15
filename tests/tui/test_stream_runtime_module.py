@@ -101,6 +101,46 @@ def test_drain_events_processes_usage_event() -> None:
     assert app._stream_runtime.drain_active is False
 
 
+def test_drain_events_ignores_content_events_after_stop_requested() -> None:
+    app = _App()
+    app._stop_event = SimpleNamespace(is_set=lambda: True)
+    handled: list[str] = []
+    app._handle_content_token = lambda token, update_partial=True: handled.append(token)
+    app._stream_runtime.event_queue = queue.SimpleQueue()
+    app._stream_runtime.event_queue.put({"type": "content_token", "text": "still streaming"})
+
+    drain_events(app)
+
+    assert handled == []
+
+
+def test_drain_events_keeps_tool_result_events_after_stop_requested() -> None:
+    app = _App()
+    app._stop_event = SimpleNamespace(is_set=lambda: True)
+    app._reasoning_open = False
+    app._show_tool_details = True
+    events: list[str] = []
+    app._live_preview = SimpleNamespace(
+        write_result_preview=lambda *_args, **_kwargs: events.append("preview"),
+        draft_preview_tools=set(),
+    )
+    app._write_assistant_bar_line = lambda _markup="": None
+    app._write_code_block = lambda _lines, _language, _indent=2: None
+    app._clear_partial_preview = lambda: events.append("clear")
+    app._show_tool_result_line = lambda name, ok: events.append(f"line:{name}:{ok}") or True
+    app._take_pending_tool_detail = lambda _name: ""
+    app._write_tool_lifecycle_block = lambda name, ok, detail="": events.append(f"lifecycle:{name}:{ok}")
+    app._stream_runtime.event_queue = queue.SimpleQueue()
+    app._stream_runtime.event_queue.put(
+        {"type": "tool_result", "name": "create_file", "result": {"ok": True, "data": {}, "error": None, "meta": {}}}
+    )
+
+    drain_events(app)
+
+    assert "line:create_file:True" in events
+    assert "lifecycle:create_file:True" in events
+
+
 def test_finish_turn_stream_restores_ui_even_when_finalization_raises() -> None:
     events: list[str] = []
 

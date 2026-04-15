@@ -85,6 +85,9 @@ class TurnOrchestrator:
             logging.debug("Event emission failed: %s", exc)
             return
 
+    def _is_stop_requested(self, stop_event) -> bool:
+        return self.llm_client.stop_requested(stop_event)
+
     @staticmethod
     def safe_json_dumps(value: object) -> str:
         return json.dumps(value, ensure_ascii=False, default=str)
@@ -484,6 +487,20 @@ class TurnOrchestrator:
 
     def finalize_turn(self, system_content: str, state: TurnState, stop_event, on_event, pass_id: str, extra_rules: str = "") -> AgentTurnResult:
         def finalize_once(extra: str, suffix: str):
+            if self._is_stop_requested(stop_event):
+                return AgentTurnResult(
+                    status="cancelled",
+                    content="",
+                    reasoning=state.full_reasoning,
+                    skill_exchanges=state.skill_exchanges,
+                )
+            phase_message = {
+                "final": "Finalizing response...",
+                "repair": "Repairing final response...",
+                "repair2": "Retrying final response cleanup...",
+            }.get(suffix, "Finalizing response...")
+            self.emit(on_event, {"type": "info", "text": phase_message})
+
             finalize_system = (
                 system_content
                 + "\n\nFinalization rule:\n"
@@ -498,7 +515,7 @@ class TurnOrchestrator:
             finalize_messages = self.context_mgr.prune(finalize_messages, self.context_budget_max_tokens)
             finalize_payload = self.llm_client.build_payload(finalize_messages, thinking=False, tools=None)
             try:
-                return self.call_with_retry(finalize_payload, stop_event, None, pass_id=f"{pass_id}_{suffix}")
+                return self.call_with_retry(finalize_payload, stop_event, on_event, pass_id=f"{pass_id}_{suffix}")
             except Exception as exc:
                 message = str(exc)
                 self.emit(on_event, {"type": "error", "text": message})
@@ -770,6 +787,16 @@ class TurnOrchestrator:
         confirm_shell: Optional[ShellConfirmationFn] = None,
         request_user_input: Optional[UserInputRequestFn] = None,
     ) -> tuple[str, Optional[AgentTurnResult]]:
+        if self._is_stop_requested(stop_event):
+            return (
+                "result",
+                AgentTurnResult(
+                    status="cancelled",
+                    content="",
+                    reasoning=state.full_reasoning,
+                    skill_exchanges=state.skill_exchanges,
+                ),
+            )
         if not stream_result.tool_calls:
             return (
                 "result",
@@ -831,6 +858,16 @@ class TurnOrchestrator:
             )
 
         for call in stream_result.tool_calls:
+            if self._is_stop_requested(stop_event):
+                return (
+                    "result",
+                    AgentTurnResult(
+                        status="cancelled",
+                        content="",
+                        reasoning=state.full_reasoning,
+                        skill_exchanges=state.skill_exchanges,
+                    ),
+                )
             self.emit(on_event, {"type": "tool_call", "stream_id": call.stream_id, "name": call.name, "arguments": call.arguments, "id": call.id})
 
             force_finalize_reason = self.tool_budget_reason(state, call)
@@ -868,6 +905,23 @@ class TurnOrchestrator:
                 state.dynamic_history.append(tool_message)
                 state.skill_exchanges.append(tool_message)
                 self.record_tool_effects(state, call, result, policy_blocked=True)
+                if self._is_stop_requested(stop_event):
+                    self.emit(
+                        on_event,
+                        {
+                            "type": "info",
+                            "text": f"Cancellation requested after completed tool '{call.name}'. Stopping turn.",
+                        },
+                    )
+                    return (
+                        "result",
+                        AgentTurnResult(
+                            status="cancelled",
+                            content="",
+                            reasoning=state.full_reasoning,
+                            skill_exchanges=state.skill_exchanges,
+                        ),
+                    )
                 continue
 
             if state.search_mode and call.name == "fetch_url":
@@ -907,6 +961,23 @@ class TurnOrchestrator:
             state.dynamic_history.append(tool_message)
             state.skill_exchanges.append(tool_message)
             self.record_tool_effects(state, call, result)
+            if self._is_stop_requested(stop_event):
+                self.emit(
+                    on_event,
+                    {
+                        "type": "info",
+                        "text": f"Cancellation requested after completed tool '{call.name}'. Stopping turn.",
+                    },
+                )
+                return (
+                    "result",
+                    AgentTurnResult(
+                        status="cancelled",
+                        content="",
+                        reasoning=state.full_reasoning,
+                        skill_exchanges=state.skill_exchanges,
+                    ),
+                )
             if call.name == "skill_view" and result.get("ok"):
                 state.selected = self.skill_runtime.select_skills(state.ctx)
                 self.refresh_search_tools_enabled(state)
@@ -1016,6 +1087,16 @@ class TurnOrchestrator:
         stop_event=None,
         on_event: Optional[Callable[[JsonObject], None]] = None,
     ) -> tuple[str, Optional[AgentTurnResult]]:
+        if self._is_stop_requested(stop_event):
+            return (
+                "result",
+                AgentTurnResult(
+                    status="cancelled",
+                    content="",
+                    reasoning=state.full_reasoning,
+                    skill_exchanges=state.skill_exchanges,
+                ),
+            )
         raw_final = stream_result.content
         final = self.sanitizer.sanitize_final_content(raw_final)
         if self.sanitizer.contains_tool_markup(raw_final):
@@ -1148,6 +1229,15 @@ class TurnOrchestrator:
             return finish(result)
 
         while True:
+            if self._is_stop_requested(stop_event):
+                return finish(
+                    AgentTurnResult(
+                        status="cancelled",
+                        content="",
+                        reasoning=state.full_reasoning,
+                        skill_exchanges=state.skill_exchanges,
+                    )
+                )
             model_phase = self.run_model_pass(state, thinking, stop_event=stop_event, on_event=on_event)
             if isinstance(model_phase, AgentTurnResult):
                 return finish(model_phase)

@@ -145,6 +145,10 @@ def action_handle_esc(app: Any, *, chat_input_cls: Any) -> None:
         app._esc_ts = now_value
         app._update_status2()
     else:
-        app._stop_event.set()
+        if app._stop_event is not None and not app._stop_event.is_set():
+            app._stop_event.set()
+            write_info = getattr(app, "_write_info", None)
+            if callable(write_info):
+                write_info("Interrupt requested. Stopping current turn...")
         app._esc_pending = False
         app._update_status2()

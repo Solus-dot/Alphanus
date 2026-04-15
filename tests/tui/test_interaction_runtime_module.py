@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 from tui.interaction_runtime import action_handle_esc, on_input_submitted
@@ -88,3 +89,27 @@ def test_action_handle_esc_clears_chat_input_via_clear_draft() -> None:
 
     assert chat_input.clear_calls == 1
     assert chat_input.value == ""
+
+
+def test_action_handle_esc_streaming_second_press_sets_stop_event_and_emits_info() -> None:
+    chat_input = _ChatInput(expanded_text="")
+    infos: list[str] = []
+    stop_event = threading.Event()
+    app = SimpleNamespace(
+        _await_shell_confirm=False,
+        _command_popup_active=lambda: False,
+        _hide_command_popup=lambda: None,
+        streaming=True,
+        _esc_pending=True,
+        _esc_ts=0.0,
+        _stop_event=stop_event,
+        _write_info=infos.append,
+        _update_status2=lambda: None,
+        query_one=lambda _chat_input_cls: chat_input,
+    )
+
+    action_handle_esc(app, chat_input_cls=object)
+
+    assert stop_event.is_set()
+    assert app._esc_pending is False
+    assert infos == ["Interrupt requested. Stopping current turn..."]

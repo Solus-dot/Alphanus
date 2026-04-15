@@ -167,6 +167,8 @@ class LLMClient:
     def call_with_retry(self, payload: JsonObject, stop_event, on_event, pass_id: str) -> StreamPassResult:
         attempt = 0
         while True:
+            if self.stop_requested(stop_event):
+                return StreamPassResult(finish_reason="cancelled")
             try:
                 status = self._status_allows_immediate_send()
                 if status.state == "offline":

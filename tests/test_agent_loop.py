@@ -3464,6 +3464,56 @@ def test_agent_can_cancel_while_waiting_for_readiness(mocker, runtime: SkillRunt
     assert result.status == "cancelled"
 
 
+def test_cancel_after_tool_completion_preserves_tool_result_exchange(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+    stop_event = threading.Event()
+    chat_reqs = []
+
+    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
+        stop_event.set()
+        return {"ok": True, "data": {"filepath": "a.txt"}, "error": None, "meta": {}}
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
+        chat_reqs.append(req)
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\"a.txt\\", \\"content\\": \\"hello\\"}"}}]}}]}',
+                'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(runtime, "execute_tool_call", side_effect=fake_execute_tool_call)
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "write a file"}],
+        user_input="write a file",
+        thinking=True,
+        stop_event=stop_event,
+    )
+
+    assert result.status == "cancelled"
+    assert len(chat_reqs) == 1
+    assert any(msg.get("role") == "tool" and msg.get("name") == "create_file" for msg in result.skill_exchanges)
+
+
 def test_doctor_report_uses_env_auth_header(mocker, runtime: SkillRuntime, monkeypatch):
     monkeypatch.setenv("ALPHANUS_AUTH_HEADER", "Authorization: Bearer test")
     cfg = {
