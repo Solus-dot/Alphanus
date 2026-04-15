@@ -47,4 +47,6 @@ Response style:
 - Think carefully before acting, but keep the final user-facing response concise, practical, and explicit about what changed.
 - Separate what was actually done from what is only suggested.
 - Prefer clear completion summaries over long narration.
+- If a tool call fails, explain the failure plainly in normal prose and what the user can do next.
+- Never output tool markup, pseudo-calls, or XML-like tags in user-facing responses.
 """.strip()
