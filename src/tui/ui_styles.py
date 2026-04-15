@@ -36,20 +36,20 @@ ALPHANUS_TUI_CSS = """
     #main-area {
         height: 1fr;
         layout: horizontal;
-        background: #09090b;
+        background: #000000;
     }
 
     #chat-column {
         width: 1fr;
         height: 1fr;
         layout: vertical;
-        background: #09090b;
+        background: #000000;
     }
 
     #chat-scroll {
         width: 1fr;
         height: 1fr;
-        background: #09090b;
+        background: #000000;
         overflow-x: hidden;
         scrollbar-size: 1 1;
         scrollbar-color: #52525b #000000;
@@ -68,7 +68,7 @@ ALPHANUS_TUI_CSS = """
     #chat-log {
         width: 1fr;
         height: auto;
-        background: #09090b;
+        background: #000000;
         padding: 0 3 0 1;
         overflow-x: hidden;
         scrollbar-size: 0 0;
@@ -77,7 +77,7 @@ ALPHANUS_TUI_CSS = """
     #partial {
         width: 1fr;
         height: auto;
-        background: #09090b;
+        background: #000000;
         display: none;
         padding: 0 3 0 1;
         overflow-x: hidden;
@@ -96,10 +96,11 @@ ALPHANUS_TUI_CSS = """
 
     #sidebar-footer-sep {
         position: absolute;
+        width: 1fr;
         height: 1;
         background: #000000;
+        border-top: solid #5a5a66;
         color: #5a5a66;
-        content-align: left middle;
         padding: 0 0;
     }
 
@@ -182,9 +183,9 @@ ALPHANUS_TUI_CSS = """
     #footer {
         width: 1fr;
         height: 7;
-        background: #09090b;
+        background: #000000;
         layout: vertical;
-        padding: 0 3 0 3;
+        padding: 0 0 0 3;
     }
 
     #command-popup {
@@ -240,10 +241,11 @@ ALPHANUS_TUI_CSS = """
     }
 
     #footer-sep {
+        width: 1fr;
         height: 1;
         background: #000000;
+        border-top: solid #5a5a66;
         color: #5a5a66;
-        content-align: left middle;
         padding: 0 0;
     }
 
@@ -260,7 +262,7 @@ ALPHANUS_TUI_CSS = """
         height: 1;
         layout: horizontal;
         padding: 0 0;
-        background: #09090b;
+        background: #000000;
     }
 
     #status-left {
@@ -278,7 +280,7 @@ ALPHANUS_TUI_CSS = """
     #input-row {
         height: 4;
         layout: vertical;
-        background: #09090b;
+        background: #000000;
         padding: 0 0 0 0;
         min-height: 4;
     }

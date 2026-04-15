@@ -1272,13 +1272,10 @@ class AlphanusTUI(App):
         try:
             separator = self.query_one("#footer-sep", Static)
             separator_region = getattr(separator, "region", None)
-            width = int(getattr(separator_region, "width", 0) or 0)
-            if width <= 0:
-                width = int(getattr(separator.size, "width", 0) or 0)
-            if width <= 0:
+            separator_y = int(getattr(separator_region, "y", 0) or 0)
+            if separator_y <= 0:
                 self.call_after_refresh(self._update_footer_separator)
                 return
-            separator.update("─" * max(1, width))
         except (NoMatches, AttributeError):
             return
 
@@ -1286,23 +1283,19 @@ class AlphanusTUI(App):
             sidebar = self.query_one("#sidebar", Vertical)
             sidebar_sep = self.query_one("#sidebar-footer-sep", Static)
             if not bool(getattr(sidebar, "display", True)):
-                sidebar_sep.update("")
+                sidebar_sep.display = False
                 return
+            sidebar_sep.display = True
 
             sidebar_region = getattr(sidebar, "region", None)
-            sidebar_width = int(getattr(sidebar_region, "width", 0) or 0)
-            if sidebar_width <= 0:
-                sidebar_width = int(getattr(sidebar.size, "width", 0) or 0)
-            separator_y = int(getattr(separator_region, "y", 0) or 0)
             sidebar_y = int(getattr(sidebar_region, "y", 0) or 0)
 
-            if sidebar_width <= 0 or separator_y <= 0:
+            if sidebar_y <= 0 or separator_y <= 0:
                 self.call_after_refresh(self._update_footer_separator)
                 return
 
             target_y = max(0, separator_y - sidebar_y)
             sidebar_sep.styles.offset = (0, target_y)
-            sidebar_sep.update("─" * max(1, sidebar_width))
         except (NoMatches, AttributeError):
             return
 

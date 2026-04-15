@@ -39,10 +39,25 @@ def refresh_command_popup(app: Any, value: str, *, chat_input_cls: Any) -> None:
     option_height = option_rows + 1
     popup_height = option_height + 5
     separator = app.query_one("#footer-sep", Static)
+    input_region = getattr(chat_input, "region", None)
+    input_size = getattr(chat_input, "size", None)
+    input_width = int(getattr(input_region, "width", 0) or 0)
+    if input_width <= 0:
+        input_width = int(getattr(input_size, "width", 0) or 0)
+    input_x = int(getattr(input_region, "x", 0) or 0)
+    if input_x <= 0:
+        input_x = 1
+    sep_region = getattr(separator, "region", None)
+    separator_y = int(getattr(sep_region, "y", 0) or 0)
+    if separator_y <= 0:
+        input_y = int(getattr(input_region, "y", 0) or 0)
+        input_height = int(getattr(input_region, "height", 0) or 0)
+        separator_y = max(1, input_y + input_height)
+
     popup.display = True
     popup.styles.height = popup_height
-    popup.styles.width = max(44, min(72, max(chat_input.region.width, 44)))
-    popup.offset = (max(1, int(chat_input.region.x)), max(1, int(separator.region.y) - popup_height))
+    popup.styles.width = max(44, min(72, max(input_width, 44)))
+    popup.offset = (max(1, input_x), max(1, separator_y - popup_height))
     options.styles.height = option_height
     rendered = [
         Option(
