@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import ipaddress
 from datetime import datetime, timezone
 from html import unescape
 from typing import Any, Dict, List
@@ -55,6 +57,10 @@ _BLOCK_CAPTURE_RE = re.compile(r"<(?:p|li|blockquote|h[1-6]|td|th)[^>]*>(.*?)</(
 _TAVILY_ENDPOINT = "https://api.tavily.com/search"
 _BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 _ALLOWED_FETCH_CONTENT_TYPES = ("text/html", "text/plain", "application/json", "application/xml", "text/xml")
+_RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
+_REDIRECT_HTTP_STATUS = {301, 302, 303, 307, 308}
+_PRIVATE_HOST_SUFFIXES = (".local", ".internal", ".lan", ".home.arpa")
+_PRIVATE_HOST_LITERALS = {"localhost", "localhost.localdomain", "0.0.0.0", "::", "::1"}
 _TRUSTED_SOURCE_HINTS = (
     ".gov",
     ".mil",
@@ -74,11 +80,23 @@ _DATE_FORMATS = (
 )
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler())
+
+
 def _request(url: str, *, data: bytes | None = None, headers: Dict[str, str] | None = None) -> urllib.request.Request:
     merged = {"User-Agent": _USER_AGENT}
     if headers:
         merged.update(headers)
     return urllib.request.Request(url, data=data, headers=merged)
+
+
+def _open_no_redirect(req: urllib.request.Request, *, timeout_s: float):
+    return _NO_REDIRECT_OPENER.open(req, timeout=timeout_s)
 
 
 def _decode_response(resp) -> tuple[str, str]:
@@ -261,11 +279,83 @@ def _provider_name(env: ToolExecutionEnv) -> str:
     return str(search_cfg.get("provider", "tavily")).strip().lower() or "tavily"
 
 
+def _search_cfg(env: ToolExecutionEnv) -> Dict[str, Any]:
+    if not isinstance(getattr(env, "config", None), dict):
+        return {}
+    cfg = env.config.get("search")
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _cfg_float(search_cfg: Dict[str, Any], key: str, default: float, *, minimum: float = 0.0) -> float:
+    raw = search_cfg.get(key, default)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, value)
+
+
+def _cfg_int(search_cfg: Dict[str, Any], key: str, default: int, *, minimum: int = 0) -> int:
+    raw = search_cfg.get(key, default)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, value)
+
+
+def _cfg_bool(search_cfg: Dict[str, Any], key: str, default: bool) -> bool:
+    raw = search_cfg.get(key, default)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        lowered = raw.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return bool(raw)
+
+
+def _request_timeout_s(env: ToolExecutionEnv) -> float:
+    return _cfg_float(_search_cfg(env), "request_timeout_s", 20.0, minimum=1.0)
+
+
+def _request_retries(env: ToolExecutionEnv) -> int:
+    return _cfg_int(_search_cfg(env), "request_retries", 1, minimum=0)
+
+
+def _request_retry_backoff_s(env: ToolExecutionEnv) -> float:
+    return _cfg_float(_search_cfg(env), "request_retry_backoff_s", 0.5, minimum=0.0)
+
+
+def _fetch_max_redirects(env: ToolExecutionEnv) -> int:
+    return _cfg_int(_search_cfg(env), "fetch_max_redirects", 5, minimum=0)
+
+
+def _merge_providers_enabled(env: ToolExecutionEnv) -> bool:
+    return _cfg_bool(_search_cfg(env), "merge_providers", True)
+
+
+def _per_provider_limit(limit: int, env: ToolExecutionEnv) -> int:
+    cfg = _search_cfg(env)
+    requested = _cfg_int(cfg, "per_provider_limit", limit, minimum=1)
+    return max(1, min(requested, 10))
+
+
 def _provider_order(env: ToolExecutionEnv) -> List[str]:
     primary = _provider_name(env)
     if primary == "brave":
         return ["brave", "tavily"]
     return ["tavily", "brave"]
+
+
+def _provider_configured(provider: str) -> bool:
+    if provider == "tavily":
+        return bool(os.environ.get("TAVILY_API_KEY", "").strip())
+    if provider == "brave":
+        return bool(os.environ.get("BRAVE_SEARCH_API_KEY", "").strip())
+    return False
 
 
 def _api_key(env_var: str, missing_message: str) -> str:
@@ -313,6 +403,7 @@ def _normalize_result_item(item: dict, *, provider: str, provider_rank: int, que
         "freshness_score": freshness_score,
         "query_match_score": query_match_score,
         "selection_reason": _selection_reason(source_type, query_match_score, freshness_score),
+        "provider": provider,
         "_score": round(score, 4),
     }
 
@@ -322,6 +413,118 @@ def _provider_payload(raw_results: list[dict], limit: int, *, provider: str, pro
     if not results:
         raise RuntimeError(f"{provider.title()} returned no usable results")
     return {"results": results, "provider": provider, "search_engine": provider}
+
+
+def _result_score(item: Dict[str, Any]) -> float:
+    trust_score = float(item.get("trust_score", 0.0) or 0.0)
+    query_match_score = float(item.get("query_match_score", 0.0) or 0.0)
+    freshness_score = float(item.get("freshness_score", 0.0) or 0.0)
+    provider_rank = int(item.get("provider_rank", 0) or 0)
+    source_type = str(item.get("source_type", "") or "")
+    return (
+        (trust_score * 0.5)
+        + (query_match_score * 0.35)
+        + (freshness_score * 0.1)
+        + _ranking_bonus(source_type)
+        + max(0.0, 0.05 - provider_rank * 0.02)
+    )
+
+
+def _merge_search_payloads(payloads: List[Dict[str, Any]], limit: int) -> Dict[str, Any]:
+    deduped: Dict[str, Dict[str, Any]] = {}
+    for payload in payloads:
+        for item in payload.get("results", []):
+            if not isinstance(item, dict):
+                continue
+            record = dict(item)
+            key = str(record.get("canonical_url") or record.get("url") or "").strip()
+            if not key:
+                continue
+            score = _result_score(record)
+            record["_score"] = score
+            existing = deduped.get(key)
+            if existing is None or score > float(existing.get("_score", -1.0)):
+                deduped[key] = record
+
+    ranked = sorted(
+        deduped.values(),
+        key=lambda item: (
+            -float(item.get("_score", 0.0)),
+            -float(item.get("trust_score", 0.0)),
+            str(item.get("domain", "")),
+            str(item.get("title", "")),
+        ),
+    )
+    trimmed = ranked[:limit]
+    for index, item in enumerate(trimmed, start=1):
+        item["rank"] = index
+        item.pop("_score", None)
+
+    providers_used: List[str] = []
+    for payload in payloads:
+        provider = str(payload.get("provider", "")).strip().lower()
+        if provider and provider not in providers_used:
+            providers_used.append(provider)
+
+    query = str(payloads[0].get("query", "")).strip() if payloads else ""
+    return {
+        "query": query,
+        "provider": "multi",
+        "search_engine": "multi",
+        "providers_used": providers_used,
+        "results": trimmed,
+    }
+
+
+def _retryable_error(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return int(getattr(exc, "code", 0) or 0) in _RETRYABLE_HTTP_STATUS
+    if isinstance(exc, urllib.error.URLError):
+        reason = getattr(exc, "reason", "")
+        if isinstance(reason, (TimeoutError, ConnectionResetError)):
+            return True
+        text = str(reason).lower()
+        return any(token in text for token in ("timed out", "temporarily", "reset"))
+    if isinstance(exc, TimeoutError):
+        return True
+    return False
+
+
+def _request_json(
+    req: urllib.request.Request,
+    *,
+    provider_name: str,
+    timeout_s: float,
+    retries: int,
+    retry_backoff_s: float,
+) -> Dict[str, Any]:
+    attempt = 0
+    while True:
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                content_type, body = _decode_response(resp)
+        except urllib.error.HTTPError as exc:
+            if _retryable_error(exc) and attempt < retries:
+                attempt += 1
+                if retry_backoff_s > 0:
+                    time.sleep(retry_backoff_s * attempt)
+                continue
+            raise RuntimeError(f"{provider_name} returned HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            if _retryable_error(exc) and attempt < retries:
+                attempt += 1
+                if retry_backoff_s > 0:
+                    time.sleep(retry_backoff_s * attempt)
+                continue
+            raise RuntimeError(f"{provider_name} unreachable: {exc.reason}") from exc
+
+        if "json" not in content_type.lower():
+            raise RuntimeError(f"{provider_name} returned a non-JSON response")
+
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{provider_name} returned invalid JSON") from exc
 
 
 def _normalize_results(raw_results: list[dict], limit: int, *, provider: str, provider_rank: int, query: str) -> list[dict]:
@@ -347,7 +550,15 @@ def _normalize_results(raw_results: list[dict], limit: int, *, provider: str, pr
     return trimmed
 
 
-def _search_with_tavily(query: str, limit: int, *, provider_rank: int = 0) -> Dict[str, Any]:
+def _search_with_tavily(
+    query: str,
+    limit: int,
+    *,
+    provider_rank: int = 0,
+    timeout_s: float = 20.0,
+    retries: int = 1,
+    retry_backoff_s: float = 0.5,
+) -> Dict[str, Any]:
     key = _tavily_api_key()
     lowered = query.lower()
     is_newsish = any(token in lowered for token in ("latest", "today", "recent", "current", "news", "update"))
@@ -367,21 +578,13 @@ def _search_with_tavily(query: str, limit: int, *, provider_rank: int = 0) -> Di
             "Content-Type": "application/json",
         },
     )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            content_type, body = _decode_response(resp)
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"Tavily returned HTTP {exc.code}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Tavily unreachable: {exc.reason}") from exc
-
-    if "json" not in content_type.lower():
-        raise RuntimeError("Tavily returned a non-JSON response")
-
-    try:
-        payload = json.loads(body)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("Tavily returned invalid JSON") from exc
+    payload = _request_json(
+        req,
+        provider_name="Tavily",
+        timeout_s=timeout_s,
+        retries=retries,
+        retry_backoff_s=retry_backoff_s,
+    )
 
     raw_results = payload.get("results")
     if not isinstance(raw_results, list):
@@ -392,7 +595,15 @@ def _search_with_tavily(query: str, limit: int, *, provider_rank: int = 0) -> Di
     return payload
 
 
-def _search_with_brave(query: str, limit: int, *, provider_rank: int = 0) -> Dict[str, Any]:
+def _search_with_brave(
+    query: str,
+    limit: int,
+    *,
+    provider_rank: int = 0,
+    timeout_s: float = 20.0,
+    retries: int = 1,
+    retry_backoff_s: float = 0.5,
+) -> Dict[str, Any]:
     key = _brave_api_key()
     params = urllib.parse.urlencode(
         {
@@ -410,21 +621,13 @@ def _search_with_brave(query: str, limit: int, *, provider_rank: int = 0) -> Dic
             "X-Subscription-Token": key,
         },
     )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            content_type, body = _decode_response(resp)
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"Brave returned HTTP {exc.code}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Brave unreachable: {exc.reason}") from exc
-
-    if "json" not in content_type.lower():
-        raise RuntimeError("Brave returned a non-JSON response")
-
-    try:
-        payload = json.loads(body)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("Brave returned invalid JSON") from exc
+    payload = _request_json(
+        req,
+        provider_name="Brave",
+        timeout_s=timeout_s,
+        retries=retries,
+        retry_backoff_s=retry_backoff_s,
+    )
 
     web = payload.get("web", {})
     raw_results = web.get("results")
@@ -439,18 +642,121 @@ def _search_with_brave(query: str, limit: int, *, provider_rank: int = 0) -> Dic
 def _search(query: str, limit: int, env: ToolExecutionEnv) -> Dict[str, Any]:
     errors: List[str] = []
     provider_chain: List[Dict[str, Any]] = []
+    successful_payloads: List[Dict[str, Any]] = []
+    merge_providers = _merge_providers_enabled(env)
+    timeout_s = _request_timeout_s(env)
+    retries = _request_retries(env)
+    retry_backoff_s = _request_retry_backoff_s(env)
+    provider_limit = _per_provider_limit(limit, env)
+
     for provider_rank, provider in enumerate(_provider_order(env)):
+        if not _provider_configured(provider):
+            if successful_payloads:
+                continue
+            message = (
+                "Tavily API key not configured"
+                if provider == "tavily"
+                else "Brave Search API key not configured"
+            )
+            provider_chain.append({"provider": provider, "status": "error", "error": message})
+            errors.append(message)
+            continue
+
         try:
-            payload = _search_with_tavily(query, limit, provider_rank=provider_rank) if provider == "tavily" else _search_with_brave(query, limit, provider_rank=provider_rank)
-            payload["provider_chain"] = provider_chain + [{"provider": provider, "status": "ok"}]
-            return payload
+            payload = (
+                _search_with_tavily(
+                    query,
+                    provider_limit,
+                    provider_rank=provider_rank,
+                    timeout_s=timeout_s,
+                    retries=retries,
+                    retry_backoff_s=retry_backoff_s,
+                )
+                if provider == "tavily"
+                else _search_with_brave(
+                    query,
+                    provider_limit,
+                    provider_rank=provider_rank,
+                    timeout_s=timeout_s,
+                    retries=retries,
+                    retry_backoff_s=retry_backoff_s,
+                )
+            )
+            provider_chain.append({"provider": provider, "status": "ok"})
+            successful_payloads.append(payload)
+            if not merge_providers:
+                payload["provider_chain"] = provider_chain
+                return payload
         except RuntimeError as exc:
             provider_chain.append({"provider": provider, "status": "error", "error": str(exc)})
             errors.append(str(exc))
             continue
+
+    if successful_payloads:
+        if len(successful_payloads) == 1:
+            payload = successful_payloads[0]
+            if len(payload.get("results", [])) > limit:
+                payload["results"] = payload["results"][:limit]
+                for index, item in enumerate(payload["results"], start=1):
+                    item["rank"] = index
+            payload["provider_chain"] = provider_chain
+            return payload
+        merged = _merge_search_payloads(successful_payloads, limit)
+        merged["provider_chain"] = provider_chain
+        return merged
+
     if errors:
         raise RuntimeError(errors[0])
     raise RuntimeError("No usable search provider available")
+
+
+def _is_private_or_local_host(host: str) -> bool:
+    text = str(host or "").strip().lower().strip("[]")
+    if not text:
+        return True
+    if text in _PRIVATE_HOST_LITERALS:
+        return True
+    if any(text.endswith(suffix) for suffix in _PRIVATE_HOST_SUFFIXES):
+        return True
+
+    try:
+        addr = ipaddress.ip_address(text)
+    except ValueError:
+        addr = None
+    if addr is not None:
+        return bool(
+            addr.is_private
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_multicast
+            or addr.is_reserved
+            or addr.is_unspecified
+        )
+
+    try:
+        infos = socket.getaddrinfo(text, None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror:
+        return False
+
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            continue
+        ip_text = str(sockaddr[0]).strip().lower().strip("[]")
+        try:
+            ip = ipaddress.ip_address(ip_text)
+        except ValueError:
+            continue
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            return True
+    return False
 
 
 def _meta_attr_map(raw_attrs: str) -> Dict[str, str]:
@@ -518,18 +824,73 @@ def _best_passages(text: str, limit: int = 3) -> List[str]:
     return candidates[:limit]
 
 
-def _fetch(url: str, max_chars: int) -> Dict[str, Any]:
+def _fetch(
+    url: str,
+    max_chars: int,
+    *,
+    timeout_s: float = 20.0,
+    retries: int = 1,
+    retry_backoff_s: float = 0.5,
+    max_redirects: int = 5,
+) -> Dict[str, Any]:
     if not (url.startswith("http://") or url.startswith("https://")):
         raise ValueError("URL must start with http:// or https://")
 
-    try:
-        with urllib.request.urlopen(_request(url), timeout=20) as resp:
-            final_url = resp.geturl()
-            content_type, payload = _decode_response(resp)
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"Page fetch returned HTTP {exc.code}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Page fetch failed: {exc.reason}") from exc
+    parsed_url = urllib.parse.urlparse(url)
+    host = (parsed_url.hostname or "").strip()
+    if _is_private_or_local_host(host):
+        raise RuntimeError("Refusing to fetch private or local network URL")
+
+    attempt = 0
+    redirect_count = 0
+    current_url = url
+    while True:
+        try:
+            with _open_no_redirect(_request(current_url), timeout_s=timeout_s) as resp:
+                final_url = resp.geturl() or current_url
+                content_type, payload = _decode_response(resp)
+            break
+        except urllib.error.HTTPError as exc:
+            status = int(getattr(exc, "code", 0) or 0)
+            if status in _REDIRECT_HTTP_STATUS:
+                location = ""
+                if exc.headers is not None:
+                    location = str(exc.headers.get("Location", "") or "").strip()
+                if not location:
+                    raise RuntimeError("Page fetch redirect missing Location header") from exc
+                if redirect_count >= max_redirects:
+                    raise RuntimeError("Page fetch exceeded redirect limit") from exc
+
+                next_url = urllib.parse.urljoin(current_url, location)
+                parsed_next = urllib.parse.urlparse(next_url)
+                if parsed_next.scheme not in {"http", "https"}:
+                    raise RuntimeError("Refusing to follow non-http redirect URL") from exc
+                next_host = (parsed_next.hostname or "").strip()
+                if _is_private_or_local_host(next_host):
+                    raise RuntimeError("Refusing to fetch private or local network URL") from exc
+
+                current_url = next_url
+                redirect_count += 1
+                attempt = 0
+                continue
+
+            if _retryable_error(exc) and attempt < retries:
+                attempt += 1
+                if retry_backoff_s > 0:
+                    time.sleep(retry_backoff_s * attempt)
+                continue
+            raise RuntimeError(f"Page fetch returned HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            if _retryable_error(exc) and attempt < retries:
+                attempt += 1
+                if retry_backoff_s > 0:
+                    time.sleep(retry_backoff_s * attempt)
+                continue
+            raise RuntimeError(f"Page fetch failed: {exc.reason}") from exc
+
+    final_host = (urllib.parse.urlparse(final_url).hostname or "").strip()
+    if _is_private_or_local_host(final_host):
+        raise RuntimeError("Refusing to fetch private or local network URL")
 
     normalized_content_type = content_type.split(";", 1)[0].strip().lower()
     if normalized_content_type and normalized_content_type not in _ALLOWED_FETCH_CONTENT_TYPES:
@@ -595,5 +956,16 @@ def execute(tool_name: str, args: Dict[str, Any], env: ToolExecutionEnv):
     if tool_name == "fetch_url":
         url = str(args["url"]).strip()
         max_chars = int(args.get("max_chars", 12000) or 12000)
-        return _fetch(url, max(500, min(max_chars, 30000)))
+        timeout_s = _request_timeout_s(env)
+        retries = _request_retries(env)
+        retry_backoff_s = _request_retry_backoff_s(env)
+        max_redirects = _fetch_max_redirects(env)
+        return _fetch(
+            url,
+            max(500, min(max_chars, 30000)),
+            timeout_s=timeout_s,
+            retries=retries,
+            retry_backoff_s=retry_backoff_s,
+            max_redirects=max_redirects,
+        )
     raise ValueError(f"Unsupported tool: {tool_name}")

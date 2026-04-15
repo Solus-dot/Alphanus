@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import urllib.error
 
 import pytest
 
@@ -180,7 +182,7 @@ def test_fetch_url_extracts_title_and_text(mocker):
         def geturl(self):
             return "https://example.com/final"
 
-    mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp(html))
+    mocker.patch.object(module, "_open_no_redirect", return_value=_Resp(html))
     out = module.execute("fetch_url", {"url": "https://example.com/page", "max_chars": 1000}, env=_env())
     assert out["title"] == "Example Page"
     assert out["final_url"] == "https://example.com/final"
@@ -233,6 +235,211 @@ def test_web_search_falls_back_to_secondary_provider(mocker, monkeypatch):
     assert out["provider_chain"][1] == {"provider": "brave", "status": "ok"}
 
 
+def test_web_search_merges_results_from_both_providers_when_configured(mocker, monkeypatch):
+    module = _load_search_module()
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-test-key")
+
+    tavily_payload = {
+        "results": [
+            {
+                "title": "Official update",
+                "url": "https://status.example.com/news?utm_source=feed",
+                "content": "Primary source details.",
+            }
+        ]
+    }
+    brave_payload = {
+        "web": {
+            "results": [
+                {
+                    "title": "Official update mirror",
+                    "url": "https://status.example.com/news",
+                    "description": "Same source without tracking params.",
+                },
+                {
+                    "title": "Independent coverage",
+                    "url": "https://example.org/coverage",
+                    "description": "Secondary source details.",
+                },
+            ]
+        }
+    }
+
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = json.dumps(payload).encode("utf-8")
+            self.headers = _Headers()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return self._payload
+
+    def fake_urlopen(req, timeout=None):
+        if req.full_url == "https://api.tavily.com/search":
+            return _Resp(tavily_payload)
+        if req.full_url.startswith("https://api.search.brave.com/res/v1/web/search?"):
+            return _Resp(brave_payload)
+        raise AssertionError(f"Unexpected URL: {req.full_url}")
+
+    mocker.patch.object(module.urllib.request, "urlopen", side_effect=fake_urlopen)
+    out = module.execute("web_search", {"query": "status update", "limit": 5}, env=_env("tavily"))
+
+    assert out["search_engine"] == "multi"
+    assert out["provider"] == "multi"
+    assert out["providers_used"] == ["tavily", "brave"]
+    assert [item["provider"] for item in out["provider_chain"]] == ["tavily", "brave"]
+    assert all(item["status"] == "ok" for item in out["provider_chain"])
+    assert len(out["results"]) == 2
+    assert {item["canonical_url"] for item in out["results"]} == {
+        "https://status.example.com/news",
+        "https://example.org/coverage",
+    }
+
+
+def test_web_search_retries_retryable_http_error(mocker, monkeypatch):
+    module = _load_search_module()
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
+    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
+    attempts = {"count": 0}
+    payload = {
+        "results": [
+            {
+                "title": "Service update",
+                "url": "https://status.example.com/update",
+                "content": "Recovered.",
+            }
+        ]
+    }
+
+    class _Resp:
+        def __init__(self):
+            self._payload = json.dumps(payload).encode("utf-8")
+            self.headers = _Headers()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return self._payload
+
+    def fake_urlopen(req, timeout=None):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise urllib.error.HTTPError(
+                req.full_url,
+                503,
+                "Service Unavailable",
+                hdrs=None,
+                fp=io.BytesIO(b"{}"),
+            )
+        return _Resp()
+
+    mocker.patch.object(module.urllib.request, "urlopen", side_effect=fake_urlopen)
+    out = module.execute("web_search", {"query": "status update"}, env=_env())
+
+    assert attempts["count"] == 2
+    assert out["results"][0]["url"] == "https://status.example.com/update"
+
+
+def test_fetch_url_blocks_private_network_hosts(mocker):
+    module = _load_search_module()
+    called = {"value": False}
+
+    def fake_open_no_redirect(_req, timeout_s=None):
+        called["value"] = True
+        raise AssertionError("open_no_redirect should not be called for private hosts")
+
+    mocker.patch.object(module, "_open_no_redirect", side_effect=fake_open_no_redirect)
+
+    with pytest.raises(RuntimeError, match="private or local network URL"):
+        module.execute("fetch_url", {"url": "http://127.0.0.1/admin"}, env=_env())
+
+    assert called["value"] is False
+
+
+def test_fetch_url_blocks_redirect_to_private_network_host(mocker):
+    module = _load_search_module()
+    calls: list[str] = []
+
+    def fake_open_no_redirect(req, timeout_s=None):
+        calls.append(req.full_url)
+        raise urllib.error.HTTPError(
+            req.full_url,
+            302,
+            "Found",
+            hdrs={"Location": "http://127.0.0.1/admin"},
+            fp=io.BytesIO(b""),
+        )
+
+    mocker.patch.object(module, "_open_no_redirect", side_effect=fake_open_no_redirect)
+
+    with pytest.raises(RuntimeError, match="private or local network URL"):
+        module.execute("fetch_url", {"url": "https://example.com/start"}, env=_env())
+
+    assert calls == ["https://example.com/start"]
+
+
+def test_fetch_url_follows_safe_redirect_chain(mocker):
+    module = _load_search_module()
+    calls: list[str] = []
+
+    html = """
+    <html>
+      <head><title>Redirected Page</title></head>
+      <body><p>Final redirected content.</p></body>
+    </html>
+    """
+
+    class _Resp:
+        def __init__(self, payload: str, final_url: str):
+            self._payload = payload.encode("utf-8")
+            self.headers = _Headers("text/html; charset=utf-8")
+            self._final_url = final_url
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return self._payload
+
+        def geturl(self):
+            return self._final_url
+
+    def fake_open_no_redirect(req, timeout_s=None):
+        calls.append(req.full_url)
+        if req.full_url == "https://example.com/start":
+            raise urllib.error.HTTPError(
+                req.full_url,
+                302,
+                "Found",
+                hdrs={"Location": "/final"},
+                fp=io.BytesIO(b""),
+            )
+        if req.full_url == "https://example.com/final":
+            return _Resp(html, "https://example.com/final")
+        raise AssertionError(f"Unexpected URL: {req.full_url}")
+
+    mocker.patch.object(module, "_open_no_redirect", side_effect=fake_open_no_redirect)
+
+    out = module.execute("fetch_url", {"url": "https://example.com/start", "max_chars": 1000}, env=_env())
+
+    assert calls == ["https://example.com/start", "https://example.com/final"]
+    assert out["final_url"] == "https://example.com/final"
+    assert "Final redirected content." in out["content"]
+
+
 def test_fetch_url_extracts_metadata_and_headings(mocker):
     module = _load_search_module()
 
@@ -271,7 +478,7 @@ def test_fetch_url_extracts_metadata_and_headings(mocker):
         def geturl(self):
             return "https://example.com/final?utm_source=test"
 
-    mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp(html))
+    mocker.patch.object(module, "_open_no_redirect", return_value=_Resp(html))
     out = module.execute("fetch_url", {"url": "https://example.com/page", "max_chars": 1000}, env=_env())
 
     assert out["description"] == "A useful page for testing."
@@ -314,7 +521,7 @@ def test_fetch_url_preserves_div_and_section_body_text(mocker):
         def geturl(self):
             return "https://example.com/article"
 
-    mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp(html))
+    mocker.patch.object(module, "_open_no_redirect", return_value=_Resp(html))
     out = module.execute("fetch_url", {"url": "https://example.com/article", "max_chars": 1000}, env=_env())
 
     assert "Situation Report" in out["content"]
