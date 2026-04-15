@@ -57,12 +57,18 @@ Rules:
 
 Common fields:
 - `version` / `metadata.version`
+- `format` / `metadata.format` (adapter hint)
 - `tags`, `categories`, `produces`
 - `allowed-tools`, `required-tools`
 - `user-invocable`, `disable-model-invocation`
 - `requirements.os`, `requirements.env`, `requirements.commands`
 - `execution.entrypoints` (structured runnable commands)
 - `execution.dependencies`, `execution.install`, `execution.verify`
+
+Adapter selection details:
+- adapter defaults to `agentskills`
+- adapter can be set directly with `format` or `metadata.format`
+- vendor requirement blocks under `metadata.openclaw`, `metadata.claude`, or `metadata.opencode` can select the adapter and add requirement constraints
 
 ## 5. Executable Surfaces
 
@@ -94,10 +100,10 @@ Always available:
 - `skills_list`
 - `skill_view`
 - `request_user_input` (unless `runtime.ask_user_tool=false`)
+- `run_skill` (exposed when at least one selected skill has entrypoints or runnable scripts)
 
 Conditionally available by selected skills:
 - native tools from `tools.py`
-- `run_skill` when selected skills expose entrypoints or runnable scripts
 
 ## 7. Command Tool Definitions
 

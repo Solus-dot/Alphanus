@@ -202,12 +202,11 @@ Important behavior:
 * `/think`
 * `/clear`
 * `/sessions`
-* `/new [name]`
 * `/rename <name>`
 * `/save [name]`
-* `/load`
 * `/file [path]`
-* `/image [path]`
+* `/image [path]` (alias of `/file`)
+* `/detach [n|last|all]`
 * `/code [n|last]`
 * `/quit`, `/exit`, `/q`
 
