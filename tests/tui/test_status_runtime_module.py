@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 
-from agent.types import ModelStatus
+from core.types import ModelStatus
 from core.runtime_config import UiTimingConfig
 from tui.status_runtime import (
     StatusRuntimeState,

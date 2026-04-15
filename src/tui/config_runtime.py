@@ -18,19 +18,13 @@ def merge_live_config(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str
 def install_stream_drain_timer(app: Any) -> None:
     interval_s = app._timing_config().stream_drain_interval_s
     current_timer = getattr(app, "_stream_drain_timer", None)
-    current_interval = getattr(current_timer, "_alphanus_interval_s", None)
+    current_interval = getattr(app, "_stream_drain_interval_s", getattr(current_timer, "_alphanus_interval_s", None))
     if current_timer is not None and current_interval == interval_s:
         return
     if current_timer is not None and hasattr(current_timer, "stop"):
-        try:
-            current_timer.stop()
-        except Exception:
-            pass
+        current_timer.stop()
     timer = app.set_interval(interval_s, app._drain_stream_event_queue)
-    try:
-        setattr(timer, "_alphanus_interval_s", interval_s)
-    except Exception:
-        pass
+    app._stream_drain_interval_s = interval_s
     app._stream_drain_timer = timer
 
 
@@ -45,10 +39,7 @@ def apply_tui_config(app: Any) -> None:
     app._scroll_interval = app._ui_timing.scroll_interval_s
     install_stream_drain_timer(app)
     app.conv_tree = app._apply_tree_compaction_policy(app.conv_tree)
-    try:
-        app._log().max_lines = app._chat_log_max_lines
-    except Exception:
-        pass
+    app._log().max_lines = app._chat_log_max_lines
     app._update_status1()
     app._update_status2()
     app._update_sidebar()

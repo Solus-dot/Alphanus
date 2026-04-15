@@ -12,7 +12,7 @@ from core.conv_tree import ConvTree
 from core.sessions import ChatSession
 from core.workspace import WorkspaceManager
 from agent.policies import OutputSanitizer
-from agent.types import ModelStatus
+from core.types import ModelStatus
 from tui.live_tool_preview import LiveToolPreviewManager
 from tui.commands import active_command_query, active_command_span, command_entries_for_query, popup_command_query
 from tui.interface import AlphanusTUI, ChatInput
@@ -39,7 +39,10 @@ def _tui_agent_stub(tmp_path: Path) -> SimpleNamespace:
     workspace_root.mkdir()
     return SimpleNamespace(
         config={"tui": {}},
-        skill_runtime=SimpleNamespace(workspace=SimpleNamespace(workspace_root=workspace_root)),
+        skill_runtime=SimpleNamespace(
+            workspace=SimpleNamespace(workspace_root=workspace_root),
+            skills_by_ids=lambda ids: [SimpleNamespace(id=item) for item in ids],
+        ),
         connect_timeout_s=1.0,
         readiness_timeout_s=1.0,
         model_endpoint="http://127.0.0.1:8080/v1/chat/completions",
@@ -427,6 +430,7 @@ def test_on_resize_rebuilds_idle_viewport_and_updates_chrome(tmp_path: Path) -> 
     sidebar = SimpleNamespace(display=False)
     chat_input = SimpleNamespace(disabled=False)
     attach_file = SimpleNamespace(disabled=False)
+    footer_sep = SimpleNamespace(region=SimpleNamespace(width=48))
     calls: list[str] = []
     scheduled: list[object] = []
     tui._focused_panel = "input"
@@ -435,12 +439,14 @@ def test_on_resize_rebuilds_idle_viewport_and_updates_chrome(tmp_path: Path) -> 
             sidebar
             if selector == "#sidebar"
             else chat_input
-            if selector is ChatInput
-            else attach_file
-            if selector == "#attach-file"
-            else None
+                if selector is ChatInput
+                else attach_file
+                if selector == "#attach-file"
+                else footer_sep
+                if selector == "#footer-sep"
+                else None
+            )
         )
-    )
     tui._apply_focus_classes = lambda: calls.append("focus")
     tui._update_topbar = lambda: calls.append("topbar")
     tui._update_status1 = lambda: calls.append("status1")
@@ -469,6 +475,7 @@ def test_on_resize_refreshes_stream_partial_and_unfocuses_hidden_tree(tmp_path: 
     sidebar = SimpleNamespace(display=True)
     chat_input = SimpleNamespace(disabled=False)
     attach_file = SimpleNamespace(disabled=False)
+    footer_sep = SimpleNamespace(region=SimpleNamespace(width=48))
     calls: list[str] = []
     scheduled: list[object] = []
     tui._focused_panel = "tree"
@@ -477,12 +484,14 @@ def test_on_resize_refreshes_stream_partial_and_unfocuses_hidden_tree(tmp_path: 
             sidebar
             if selector == "#sidebar"
             else chat_input
-            if selector is ChatInput
-            else attach_file
-            if selector == "#attach-file"
-            else None
+                if selector is ChatInput
+                else attach_file
+                if selector == "#attach-file"
+                else footer_sep
+                if selector == "#footer-sep"
+                else None
+            )
         )
-    )
     tui._apply_focus_classes = lambda: calls.append("focus")
     tui._update_topbar = lambda: calls.append("topbar")
     tui._update_status1 = lambda: calls.append("status1")
@@ -1496,14 +1505,22 @@ def test_handle_keyboard_shortcuts_command_renders_keymap() -> None:
 def test_handle_save_renames_and_persists_active_session() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tree = ConvTree()
-    saved_calls: list[tuple[str, str, str]] = []
+    saved_calls: list[tuple[str, str, str, list[str]]] = []
     actions: list[str] = []
     errors: list[str] = []
     tui._id = "app"
     tui._reactive_streaming = False
 
-    def save_tree(session_id: str, title: str, saved_tree: ConvTree, *, created_at: str, activate: bool = True) -> ChatSession:
-        saved_calls.append((session_id, title, created_at))
+    def save_tree(
+        session_id: str,
+        title: str,
+        saved_tree: ConvTree,
+        loaded_skill_ids=None,
+        *,
+        created_at: str,
+        activate: bool = True,
+    ) -> ChatSession:
+        saved_calls.append((session_id, title, created_at, list(loaded_skill_ids or [])))
         assert saved_tree is tree
         assert activate is True
         return ChatSession(
@@ -1524,7 +1541,7 @@ def test_handle_save_renames_and_persists_active_session() -> None:
     tui._update_topbar = lambda: None
 
     assert tui._handle_command("/save Backend Work") is True
-    assert saved_calls == [("sess-1", "Backend Work", "2026-03-20T10:00:00+00:00")]
+    assert saved_calls == [("sess-1", "Backend Work", "2026-03-20T10:00:00+00:00", [])]
     assert tui._session_title == "Backend Work"
     assert errors == []
     assert actions == ["Saved session 'Backend Work'"]
@@ -1539,6 +1556,18 @@ def test_handle_sessions_opens_manager() -> None:
 
     assert tui._handle_command("/sessions") is True
     assert opened == ["sessions"]
+
+
+def test_handle_legacy_session_commands_are_rejected_via_unknown_command_path() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    errors: list[str] = []
+    tui._write_error = errors.append
+
+    assert tui._handle_command("/new") is True
+    assert tui._handle_command("/load") is True
+    assert errors == ["Unknown command: /new", "Unknown command: /load"]
 
 
 def test_handle_file_without_path_opens_attachment_picker() -> None:
@@ -1786,8 +1815,17 @@ def test_load_session_from_manager_switches_sessions() -> None:
     loaded_turn = loaded_tree.add_turn("loaded")
     loaded_tree.complete_turn(loaded_turn.id, "done")
 
-    def save_tree(session_id: str, title: str, tree: ConvTree, *, created_at: str, activate: bool = True) -> ChatSession:
+    def save_tree(
+        session_id: str,
+        title: str,
+        tree: ConvTree,
+        loaded_skill_ids=None,
+        *,
+        created_at: str,
+        activate: bool = True,
+    ) -> ChatSession:
         assert tree is current_tree
+        assert list(loaded_skill_ids or []) == []
         return ChatSession(
             id=session_id,
             title=title,
@@ -1897,6 +1935,7 @@ def test_handle_sessions_is_blocked_while_streaming() -> None:
 
 def test_activate_session_state_moves_non_empty_root_session_to_latest_leaf() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui.agent = SimpleNamespace(skill_runtime=SimpleNamespace(skills_by_ids=lambda ids: [SimpleNamespace(id=item) for item in ids]))
     tree = ConvTree()
     first = tree.add_turn("first")
     tree.complete_turn(first.id, "one")
@@ -1921,6 +1960,7 @@ def test_activate_session_state_moves_non_empty_root_session_to_latest_leaf() ->
 
 def test_activate_session_state_preserves_root_when_pending_branch_is_armed() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui.agent = SimpleNamespace(skill_runtime=SimpleNamespace(skills_by_ids=lambda ids: [SimpleNamespace(id=item) for item in ids]))
     tree = ConvTree()
     first = tree.add_turn("first")
     tree.complete_turn(first.id, "one")
@@ -1945,6 +1985,7 @@ def test_activate_session_state_preserves_root_when_pending_branch_is_armed() ->
 
 def test_activate_session_state_uses_newest_leaf_not_rightmost_descendant() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui.agent = SimpleNamespace(skill_runtime=SimpleNamespace(skills_by_ids=lambda ids: [SimpleNamespace(id=item) for item in ids]))
     tree = ConvTree()
     root_turn = tree.add_turn("root turn")
     tree.complete_turn(root_turn.id, "root done")

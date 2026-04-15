@@ -448,21 +448,15 @@ def clear_partial_preview(app: Any) -> None:
 
 def is_near_bottom(app: Any, threshold: float = 1.0) -> bool:
     scroll = app._scroll()
-    try:
-        return (scroll.max_scroll_y - scroll.scroll_y) <= threshold
-    except Exception:
-        return True
+    return (scroll.max_scroll_y - scroll.scroll_y) <= threshold
 
 
 def capture_scroll_anchor(app: Any) -> Optional[ScrollAnchor]:
     scroll = app._scroll()
-    try:
-        return app._log().capture_anchor(
-            float(scroll.scroll_y or 0),
-            partial_line_count=app._cached_partial_line_count(),
-        )
-    except Exception:
-        return None
+    return app._log().capture_anchor(
+        float(scroll.scroll_y or 0),
+        partial_line_count=app._cached_partial_line_count(),
+    )
 
 
 def restore_scroll_anchor(app: Any, anchor: Optional[ScrollAnchor]) -> None:

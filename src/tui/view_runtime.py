@@ -62,7 +62,7 @@ def write_skill_exchanges(app: Any, turn: Turn) -> None:
                 raw_args = call.get("function", {}).get("arguments", "{}")
                 try:
                     args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                except Exception:
+                except json.JSONDecodeError:
                     args = raw_args
                 pending_details.append((name, app._live_preview.compact_tool_args(name, args)))
                 app._live_preview.write_static_preview(
@@ -74,9 +74,12 @@ def write_skill_exchanges(app: Any, turn: Turn) -> None:
                 )
         elif msg.get("role") == "tool":
             name = msg.get("name", "tool")
+            content = msg.get("content", "{}")
             try:
-                payload = json.loads(msg.get("content", "{}"))
-            except Exception:
+                payload = json.loads(content) if isinstance(content, str) else content
+            except json.JSONDecodeError:
+                payload = {"ok": False, "error": {"message": "invalid tool response"}}
+            if not isinstance(payload, dict):
                 payload = {"ok": False, "error": {"message": "invalid tool response"}}
             if payload.get("ok") and app._show_tool_details:
                 app._live_preview.write_result_preview(

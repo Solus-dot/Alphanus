@@ -14,6 +14,7 @@ from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
+from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widgets import Button, Input, OptionList, Static
 
@@ -514,7 +515,7 @@ class AlphanusTUI(App):
             return
         try:
             self._refresh_command_popup(self.query_one(ChatInput).value)
-        except Exception:
+        except NoMatches:
             return
 
     def _redraw_after_resize(self) -> None:
@@ -918,7 +919,7 @@ class AlphanusTUI(App):
         self.query_one(ChatInput).disabled = value
         try:
             self.query_one("#attach-file", Button).disabled = value
-        except Exception:
+        except NoMatches:
             pass
         if value:
             self._hide_command_popup()
@@ -1274,7 +1275,7 @@ class AlphanusTUI(App):
             if width <= 0:
                 width = int(getattr(separator.size, "width", 0) or 0)
             separator.update("─" * max(1, width))
-        except Exception:
+        except (NoMatches, AttributeError):
             return
 
     def _update_pending_attachments(self) -> None:
@@ -1282,7 +1283,7 @@ class AlphanusTUI(App):
             markup = self._pending_attachment_markup()
             bar = self.query_one("#attachment-bar", Static)
             bar.update(markup)
-        except Exception:
+        except (NoMatches, AttributeError):
             return
 
     def _pending_attachment_markup(self) -> str:
@@ -1345,7 +1346,7 @@ class AlphanusTUI(App):
         warnings: List[str] = []
         try:
             raw = load_or_create_global_config(_global_config_path(), warnings=warnings)
-        except Exception as exc:  # noqa: BLE001
+        except (OSError, ValueError) as exc:
             self._write_error(f"Config load failed: {exc}")
             return
         safe = self._config_for_editor(raw if isinstance(raw, dict) else {})
@@ -1374,7 +1375,7 @@ class AlphanusTUI(App):
         try:
             normalized, warnings = normalize_config(parsed)
             validate_endpoint_policy(normalized)
-        except Exception as exc:  # noqa: BLE001
+        except ValueError as exc:
             self._write_error(f"Config save failed: {exc}")
             return
 

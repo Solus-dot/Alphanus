@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import queue
 import re
 import threading
@@ -341,6 +342,14 @@ def drain_events(app: Any) -> None:
 
 def finish_turn_stream(app: Any, turn_id: str, result: AgentTurnResult) -> None:
     finalization_error = ""
+    cleanup_errors: List[str] = []
+
+    def run_cleanup_step(label: str, fn) -> None:
+        try:
+            fn()
+        except Exception as exc:
+            cleanup_errors.append(f"{label}: {exc}")
+
     try:
         drain_events(app)
         app._set_partial_renderable(None, visible=False)
@@ -396,33 +405,23 @@ def finish_turn_stream(app: Any, turn_id: str, result: AgentTurnResult) -> None:
     except Exception as exc:
         finalization_error = str(exc).strip() or exc.__class__.__name__
     finally:
-        try:
-            app._set_partial_renderable(None, visible=False)
-        except Exception:
-            pass
+        run_cleanup_step("clear partial renderable", lambda: app._set_partial_renderable(None, visible=False))
         app.streaming = False
         app._live_preview.reset()
         app._active_turn_id = None
         app._esc_pending = False
         app._auto_follow_stream = True
-        try:
-            app._update_status1()
-        except Exception:
-            pass
-        try:
-            app._update_status2()
-        except Exception:
-            pass
-        try:
-            app._update_sidebar()
-        except Exception:
-            pass
-        try:
-            app._update_topbar()
-        except Exception:
-            pass
-        if finalization_error:
+        run_cleanup_step("update status1", app._update_status1)
+        run_cleanup_step("update status2", app._update_status2)
+        run_cleanup_step("update sidebar", app._update_sidebar)
+        run_cleanup_step("update topbar", app._update_topbar)
+        if finalization_error or cleanup_errors:
+            parts: List[str] = []
+            if finalization_error:
+                parts.append(finalization_error)
+            parts.extend(cleanup_errors)
+            error_text = f"Stream finalization failed: {'; '.join(parts)}"
             try:
-                app._write_error(f"Stream finalization failed: {finalization_error}")
+                app._write_error(error_text)
             except Exception:
-                pass
+                logging.error(error_text)

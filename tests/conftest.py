@@ -30,13 +30,7 @@ class _TestSentenceTransformer:
 
 @pytest.fixture(autouse=True)
 def _disable_model_classification():
-    """Disable model-based classification in all tests by default.
-
-    Tests exercise orchestrator and tool-loop behavior, not classification.
-    Classification should be tested in dedicated classifier tests.
-    Tests that explicitly need model classification can override this by
-    patching _should_model_classify back to its real implementation.
-    """
+    """Disable model-based classification unless a test opts in."""
     with patch(
         "agent.classifier.TurnClassifier._should_model_classify",
         return_value=False,

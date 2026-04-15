@@ -9,19 +9,8 @@ def activate_session_state(app, session: ChatSession) -> None:
     app._session_id = session.id
     app._session_title = session.title
     app._session_created_at = session.created_at
-    agent = getattr(app, "agent", None)
-    runtime = getattr(agent, "skill_runtime", None)
-    if runtime and hasattr(runtime, "skills_by_ids"):
-        app._loaded_skill_ids = [
-            skill.id
-            for skill in runtime.skills_by_ids(list(getattr(session, "loaded_skill_ids", []) or []))
-        ]
-    else:
-        app._loaded_skill_ids = [
-            str(item).strip()
-            for item in (getattr(session, "loaded_skill_ids", []) or [])
-            if str(item).strip()
-        ]
+    runtime = app.agent.skill_runtime
+    app._loaded_skill_ids = [skill.id for skill in runtime.skills_by_ids(list(session.loaded_skill_ids))]
     tree = app._apply_tree_compaction_policy(session.tree)
     if tree.current_id == "root" and tree.nodes["root"].children and not tree._pending_branch:
         for node_id in reversed(list(tree.nodes.keys())):
@@ -35,23 +24,14 @@ def activate_session_state(app, session: ChatSession) -> None:
 def save_active_session(app, rename_to: Optional[str] = None) -> ChatSession:
     title = (rename_to or app._session_title or "").strip() or app._session_title or "Untitled Session"
     loaded_skill_ids = list(getattr(app, "_loaded_skill_ids", []))
-    try:
-        session = app._session_store.save_tree(
-            app._session_id,
-            title,
-            app.conv_tree,
-            loaded_skill_ids=loaded_skill_ids,
-            created_at=app._session_created_at,
-            activate=True,
-        )
-    except TypeError:
-        session = app._session_store.save_tree(
-            app._session_id,
-            title,
-            app.conv_tree,
-            created_at=app._session_created_at,
-            activate=True,
-        )
+    session = app._session_store.save_tree(
+        app._session_id,
+        title,
+        app.conv_tree,
+        loaded_skill_ids=loaded_skill_ids,
+        created_at=app._session_created_at,
+        activate=True,
+    )
     app._session_title = session.title
     app._session_created_at = session.created_at
     return session
@@ -93,7 +73,7 @@ def delete_session_from_manager(app, session_id: str) -> None:
             else:
                 app._switch_to_session(app._session_store.create_session())
         app._open_session_manager()
-    except Exception as exc:
+    except (ValueError, OSError, KeyError) as exc:
         app._write_error(f"Delete failed: {exc}")
 
 

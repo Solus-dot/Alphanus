@@ -36,7 +36,7 @@ def root_relative_label(path: Path, root: Path) -> str:
         relative = path.resolve().relative_to(root)
         text = relative.as_posix()
         return text if text else "."
-    except Exception:
+    except ValueError:
         return path.as_posix()
 
 

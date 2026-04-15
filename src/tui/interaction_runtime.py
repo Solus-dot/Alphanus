@@ -33,7 +33,7 @@ def on_session_manager_close(app: Any, result: Optional[Dict[str, str]]) -> None
             return
         try:
             app._load_session_from_manager(session_id)
-        except Exception as exc:
+        except (ValueError, OSError, KeyError) as exc:
             app._write_error(f"Load failed: {exc}")
         return
     if action == "create":

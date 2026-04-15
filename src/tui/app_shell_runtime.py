@@ -46,6 +46,7 @@ def initialize_shell_state(app: Any, *, agent: Any, debug: bool) -> None:
     app._fence_lang = None
     app._fence_lines = []
     app._stream_drain_timer = None
+    app._stream_drain_interval_s = None
     app._partial_renderable = None
     app._last_partial_render_width = 1
     app._last_partial_line_count = 0
