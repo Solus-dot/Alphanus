@@ -376,7 +376,7 @@ def finish_turn_stream(app: Any, turn_id: str, result: AgentTurnResult) -> None:
         flush_content_buffer(app, include_partial=True)
 
         reply = result.content if result.content else app._reply_acc
-        if result.status == "done" and not app._content_open and reply.strip():
+        if not app._content_open and reply.strip():
             app._render_static_markdown(reply)
 
         if turn_id in app.conv_tree.nodes:
