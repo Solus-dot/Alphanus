@@ -94,6 +94,15 @@ ALPHANUS_TUI_CSS = """
         grid-rows: 3fr 2fr;
     }
 
+    #sidebar-footer-sep {
+        position: absolute;
+        height: 1;
+        background: #000000;
+        color: #5a5a66;
+        content-align: left middle;
+        padding: 0 0;
+    }
+
     #sidebar-tree-section {
         width: 1fr;
         height: 1fr;

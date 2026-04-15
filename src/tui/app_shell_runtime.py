@@ -120,6 +120,7 @@ def compose_shell(app: Any, *, chat_input_cls: Any, transcript_view_cls: Any):
                 yield Static("Inspector", id="sidebar-inspector-header")
                 with ScrollableContainer(id="sidebar-inspector-scroll"):
                     yield Static("", id="sidebar-inspector-content", markup=True)
+            yield Static("", id="sidebar-footer-sep", markup=True)
     with Vertical(id="command-popup"):
         yield Static("commands", id="command-popup-title")
         yield Static("type to filter · tab to insert", id="command-popup-hint")
