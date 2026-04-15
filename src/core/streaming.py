@@ -44,6 +44,8 @@ def should_retry(exc: Exception) -> bool:
             return True
         text = str(reason).lower()
         return any(tok in text for tok in ("timed out", "reset", "temporarily"))
+    if isinstance(exc, TimeoutError):
+        return True
     return False
 
 

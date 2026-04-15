@@ -123,7 +123,6 @@ class SkillManifest:
     frontmatter: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
     bundled_files: List[str] = field(default_factory=list)
-    vendor_flavor: str = "agentskills"
 
 
 def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool = False) -> SkillManifest:
@@ -175,14 +174,14 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
             or requirements_raw.get("bins")
         ),
     }
-    vendor_flavor = str(frontmatter.get("format") or metadata_raw.get("format") or "agentskills").strip() or "agentskills"
+    adapter = str(frontmatter.get("format") or metadata_raw.get("format") or "agentskills").strip() or "agentskills"
     vendor_requires: Dict[str, Any] = {}
     for vendor_key in ("openclaw", "claude", "opencode"):
         candidate = metadata_raw.get(vendor_key)
         if isinstance(candidate, dict):
             vendor_requires = candidate.get("requires") if isinstance(candidate.get("requires"), dict) else {}
             if vendor_requires:
-                vendor_flavor = vendor_key
+                adapter = vendor_key
                 break
     if vendor_requires:
         requirements["os"] = _dedupe(requirements["os"] + _as_str_list(vendor_requires.get("os")))
@@ -345,9 +344,8 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         entrypoints=entrypoints,
         disable_model_invocation=disable_model_invocation,
         user_invocable=user_invocable,
-        format=vendor_flavor,
-        adapter=vendor_flavor,
+        format=adapter,
+        adapter=adapter,
         frontmatter=dict(frontmatter),
         metadata=dict(metadata_raw),
-        vendor_flavor=vendor_flavor,
     )

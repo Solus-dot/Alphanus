@@ -14,6 +14,7 @@ from html import unescape
 from typing import Any, Dict, List
 
 from core.skills import ToolExecutionEnv
+from core.streaming import should_retry
 
 TOOL_SPECS = {
     "web_search": {
@@ -57,7 +58,6 @@ _BLOCK_CAPTURE_RE = re.compile(r"<(?:p|li|blockquote|h[1-6]|td|th)[^>]*>(.*?)</(
 _TAVILY_ENDPOINT = "https://api.tavily.com/search"
 _BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 _ALLOWED_FETCH_CONTENT_TYPES = ("text/html", "text/plain", "application/json", "application/xml", "text/xml")
-_RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
 _REDIRECT_HTTP_STATUS = {301, 302, 303, 307, 308}
 _PRIVATE_HOST_SUFFIXES = (".local", ".internal", ".lan", ".home.arpa")
 _PRIVATE_HOST_LITERALS = {"localhost", "localhost.localdomain", "0.0.0.0", "::", "::1"}
@@ -389,7 +389,6 @@ def _normalize_result_item(item: dict, *, provider: str, provider_rank: int, que
     freshness_score = _freshness_score(published_at)
     score = (trust_score * 0.5) + (query_match_score * 0.35) + (freshness_score * 0.1) + _ranking_bonus(source_type) + max(0.0, 0.05 - provider_rank * 0.02)
     return {
-        "provider": provider,
         "provider_rank": provider_rank,
         "title": title,
         "url": url,
@@ -476,20 +475,6 @@ def _merge_search_payloads(payloads: List[Dict[str, Any]], limit: int) -> Dict[s
     }
 
 
-def _retryable_error(exc: Exception) -> bool:
-    if isinstance(exc, urllib.error.HTTPError):
-        return int(getattr(exc, "code", 0) or 0) in _RETRYABLE_HTTP_STATUS
-    if isinstance(exc, urllib.error.URLError):
-        reason = getattr(exc, "reason", "")
-        if isinstance(reason, (TimeoutError, ConnectionResetError)):
-            return True
-        text = str(reason).lower()
-        return any(token in text for token in ("timed out", "temporarily", "reset"))
-    if isinstance(exc, TimeoutError):
-        return True
-    return False
-
-
 def _request_json(
     req: urllib.request.Request,
     *,
@@ -504,14 +489,14 @@ def _request_json(
             with urllib.request.urlopen(req, timeout=timeout_s) as resp:
                 content_type, body = _decode_response(resp)
         except urllib.error.HTTPError as exc:
-            if _retryable_error(exc) and attempt < retries:
+            if should_retry(exc) and attempt < retries:
                 attempt += 1
                 if retry_backoff_s > 0:
                     time.sleep(retry_backoff_s * attempt)
                 continue
             raise RuntimeError(f"{provider_name} returned HTTP {exc.code}") from exc
         except urllib.error.URLError as exc:
-            if _retryable_error(exc) and attempt < retries:
+            if should_retry(exc) and attempt < retries:
                 attempt += 1
                 if retry_backoff_s > 0:
                     time.sleep(retry_backoff_s * attempt)
@@ -874,14 +859,14 @@ def _fetch(
                 attempt = 0
                 continue
 
-            if _retryable_error(exc) and attempt < retries:
+            if should_retry(exc) and attempt < retries:
                 attempt += 1
                 if retry_backoff_s > 0:
                     time.sleep(retry_backoff_s * attempt)
                 continue
             raise RuntimeError(f"Page fetch returned HTTP {exc.code}") from exc
         except urllib.error.URLError as exc:
-            if _retryable_error(exc) and attempt < retries:
+            if should_retry(exc) and attempt < retries:
                 attempt += 1
                 if retry_backoff_s > 0:
                     time.sleep(retry_backoff_s * attempt)

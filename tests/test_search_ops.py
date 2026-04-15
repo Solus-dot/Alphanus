@@ -104,6 +104,7 @@ def test_web_search_requires_api_key(monkeypatch):
 
 def test_web_search_calls_brave_and_normalizes_results(mocker, monkeypatch):
     module = _load_search_module()
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-test-key")
 
     payload = {

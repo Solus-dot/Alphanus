@@ -14,8 +14,9 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Callable, Optional, TypedDict
 
+from core.message_types import ChatMessage, JSONValue, ShellConfirmationFn, ToolCallDelta, UserInputRequestFn
 from core.memory import VectorMemory
 from core.runtime_config import SkillsRuntimeConfig
 from core.skill_parser import SKILL_DOC, SkillEntrypointDef, SkillManifest, extract_skill_doc, parse_agentskill_manifest
@@ -55,11 +56,11 @@ _SCRIPT_INTERPRETER_BY_EXT = {
     ".mjs": ["node"],
 }
 
-def _ok(data: Any, duration_ms: int) -> Dict[str, Any]:
+def _ok(data: object, duration_ms: int) -> dict[str, object]:
     return {"ok": True, "data": data, "error": None, "meta": {"duration_ms": duration_ms}}
 
 
-def _err(code: str, message: str, duration_ms: int) -> Dict[str, Any]:
+def _err(code: str, message: str, duration_ms: int) -> dict[str, object]:
     return {
         "ok": False,
         "data": None,
@@ -72,7 +73,7 @@ class ToolProtocolError(RuntimeError):
     pass
 
 
-def _recover_tool_args(raw_args: Dict[str, Any]) -> Dict[str, Any]:
+def _recover_tool_args(raw_args: dict[str, object]) -> dict[str, object]:
     if not isinstance(raw_args, dict):
         return {}
     out = dict(raw_args)
@@ -81,7 +82,7 @@ def _recover_tool_args(raw_args: Dict[str, Any]) -> Dict[str, Any]:
         return out
     text = raw.strip()
 
-    parsed: Optional[Dict[str, Any]] = None
+    parsed: Optional[dict[str, object]] = None
     try:
         value = json.loads(text)
         if isinstance(value, dict):
@@ -111,7 +112,7 @@ class SkillContext:
     branch_labels: List[str]
     attachments: List[str]
     workspace_root: str
-    memory_hits: List[Dict[str, Any]]
+    memory_hits: list[dict[str, JSONValue]]
     loaded_skill_ids: List[str] = field(default_factory=list)
     recent_routing_hint: str = ""
     sticky_skill_ids: List[str] = field(default_factory=list)
@@ -123,10 +124,10 @@ class SkillContext:
 class ToolExecutionEnv:
     workspace: WorkspaceManager
     memory: VectorMemory
-    config: Dict[str, Any]
+    config: dict[str, JSONValue]
     debug: bool
-    confirm_shell: Optional[Callable[[str], bool]] = None
-    request_user_input: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
+    confirm_shell: Optional[ShellConfirmationFn] = None
+    request_user_input: Optional[UserInputRequestFn] = None
 
 
 @dataclass(slots=True)
@@ -136,7 +137,7 @@ class RegisteredTool:
     tool_scope: str
     capability: str
     description: str
-    parameters: Dict[str, Any]
+    parameters: dict[str, object]
     module: Optional[object] = None
     module_path: Optional[Path] = None
     module_name: str = ""
@@ -196,7 +197,7 @@ class SkillRuntime:
         env["ALPHANUS_SKILL_PYTHON"] = str(self.python_executable)
         env["ALPHANUS_CONFIG_JSON"] = json.dumps(self.config, ensure_ascii=False)
 
-        # Let skill scripts import project modules without per-script sys.path hacks.
+        # Prepend project src and repo root to PYTHONPATH for skill script imports.
         repo_root = self.skills_dir.parent.resolve()
         src_root = (repo_root / "src").resolve()
         path_entries = [str(src_root)] if src_root.exists() else []
@@ -224,7 +225,7 @@ class SkillRuntime:
         return env
 
     def _discover_skill_roots(self) -> List[Path]:
-        # Temporary simplified model: skills live exclusively in the configured repo root.
+        # Skills are loaded from the configured skills root.
         return [self.skills_dir]
 
     def _discover_skill_dirs(self, root: Path) -> List[Path]:
@@ -311,7 +312,7 @@ class SkillRuntime:
         manifest = parse_agentskill_manifest(child, skill_doc, include_prompt=False)
         manifest.bundled_files = self._bundled_files_for_path(child)
         manifest.execution_allowed = True
-        manifest.adapter = str(getattr(manifest, "vendor_flavor", "") or manifest.format or "agentskills")
+        manifest.adapter = str(manifest.adapter or manifest.format or "agentskills")
         return manifest
 
     def _ensure_skill_prompt(self, manifest: SkillManifest) -> str:
@@ -1734,8 +1735,8 @@ class SkillRuntime:
         args: Dict[str, Any],
         selected: List[SkillManifest],
         ctx: SkillContext,
-        confirm_shell: Optional[Callable[[str], bool]] = None,
-        request_user_input: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        confirm_shell: Optional[ShellConfirmationFn] = None,
+        request_user_input: Optional[UserInputRequestFn] = None,
     ) -> Dict[str, Any]:
         start = time.perf_counter()
         try:
