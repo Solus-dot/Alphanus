@@ -36,6 +36,9 @@ def on_session_manager_close(app: Any, result: Optional[Dict[str, str]]) -> None
         except (ValueError, OSError, KeyError) as exc:
             app._write_error(f"Load failed: {exc}")
         return
+    if action == "new":
+        app._open_session_name_modal()
+        return
     if action == "create":
         session = app._open_new_session(str((result or {}).get("title") or ""))
         app._switch_to_session(session)
@@ -45,6 +48,14 @@ def on_session_manager_close(app: Any, result: Optional[Dict[str, str]]) -> None
         if not session_id:
             return
         app._delete_session_from_manager(session_id)
+
+
+def on_session_name_close(app: Any, result: Optional[Dict[str, str]]) -> None:
+    if not result:
+        return
+    title = str(result.get("title") or "")
+    session = app._open_new_session(title)
+    app._switch_to_session(session)
 
 
 def show_keyboard_shortcuts(app: Any, *, sections) -> None:

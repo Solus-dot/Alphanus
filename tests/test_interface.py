@@ -16,7 +16,7 @@ from core.types import ModelStatus
 from tui.live_tool_preview import LiveToolPreviewManager
 from tui.commands import active_command_query, active_command_span, command_entries_for_query, popup_command_query
 from tui.interface import AlphanusTUI, ChatInput
-from tui.popups import SelectionPickerModal, SessionManagerModal
+from tui.popups import SelectionPickerModal, SessionManagerModal, SessionNameModal
 from tui.status_runtime import StatusRuntimeState
 from tui.stream_runtime import StreamRuntimeState
 from tui.transcript import ScrollAnchor, TranscriptEntry, TranscriptView
@@ -1808,6 +1808,34 @@ def test_session_manager_close_reports_open_failure() -> None:
     assert errors == ["Load failed: broken session file"]
 
 
+def test_session_manager_close_new_opens_session_name_modal() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    opened: list[str] = []
+    tui._open_session_name_modal = lambda: opened.append("opened")
+
+    tui._on_session_manager_close({"action": "new"})
+
+    assert opened == ["opened"]
+
+
+def test_session_name_close_creates_and_switches_session() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    created = ChatSession(
+        id="sess-3",
+        title="Backend Work",
+        created_at="2026-03-20T11:00:00+00:00",
+        updated_at="2026-03-20T11:00:00+00:00",
+        tree=ConvTree(),
+    )
+    switched: list[str] = []
+    tui._open_new_session = lambda title="": created if title == "Backend Work" else None
+    tui._switch_to_session = lambda session: switched.append(session.title)
+
+    tui._on_session_name_close({"action": "create", "title": "Backend Work"})
+
+    assert switched == ["Backend Work"]
+
+
 def test_load_session_from_manager_switches_sessions() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     current_tree = ConvTree()
@@ -2075,14 +2103,41 @@ def test_handle_clear_resets_context_usage_and_refreshes_topbar() -> None:
     assert events == ["log", "partial", "save", "attachments", "status1", "status2", "sidebar", "placeholder", "topbar"]
 
 
-def test_session_manager_name_submit_creates_new_session() -> None:
+def test_session_manager_new_action_opens_name_prompt() -> None:
     modal = SessionManagerModal([], "sess-1")
     dismissed: list[dict[str, str]] = []
     modal.dismiss = lambda payload=None: dismissed.append(payload)
 
-    modal._new_name_submitted(SimpleNamespace(value="Backend Work"))
+    modal.action_create_new()
+
+    assert dismissed == [{"action": "new"}]
+
+
+def test_session_name_modal_create_submits_title() -> None:
+    modal = SessionNameModal()
+    dismissed: list[dict[str, str]] = []
+    modal.dismiss = lambda payload=None: dismissed.append(payload)
+    modal.query_one = lambda *_args, **_kwargs: SimpleNamespace(value="Backend Work")
+
+    modal.action_create()
 
     assert dismissed == [{"action": "create", "title": "Backend Work"}]
+
+
+@pytest.mark.anyio
+async def test_session_name_modal_allows_numeric_names(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    tui._open_startup_session_manager = lambda: None
+    tui._maybe_refresh_model_status = lambda force=False: None
+    dismissed: list[dict[str, str]] = []
+
+    async with tui.run_test() as pilot:
+        tui.push_screen(SessionNameModal(), lambda result: dismissed.append(result or {}))
+        await pilot.pause()
+        await pilot.press("1", "2", "3", "enter")
+        await pilot.pause()
+
+    assert dismissed == [{"action": "create", "title": "123"}]
 
 
 def test_session_manager_delete_requires_confirmation() -> None:
@@ -2127,12 +2182,16 @@ def test_session_manager_row_selection_does_not_auto_open() -> None:
     assert syncs == ["sync"]
 
 
-def test_session_manager_modal_numeric_bindings_are_available() -> None:
+def test_session_manager_modal_bindings_use_enter_and_escape() -> None:
     bindings = {binding.key: binding.action for binding in SessionManagerModal.BINDINGS}
 
-    assert bindings["1"] == "open_selected"
-    assert bindings["2"] == "delete_selected"
-    assert bindings["3"] == "create_new"
+    assert bindings["enter"] == "open_selected"
+    assert bindings["d"] == "delete_selected"
+    assert bindings["n"] == "create_new"
+    assert bindings["escape"] == "cancel"
+    assert "1" not in bindings
+    assert "2" not in bindings
+    assert "3" not in bindings
 
 
 def test_selection_picker_modal_numeric_bindings_are_available() -> None:

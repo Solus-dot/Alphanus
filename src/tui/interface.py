@@ -70,6 +70,7 @@ from tui.interaction_runtime import (
     expire_shell_confirm as expire_tui_shell_confirm,
     finish_shell_confirm as finish_tui_shell_confirm,
     on_input_submitted as on_tui_input_submitted,
+    on_session_name_close as on_tui_session_name_close,
     on_session_manager_close as on_tui_session_manager_close,
     show_keyboard_shortcuts as show_tui_keyboard_shortcuts,
 )
@@ -78,6 +79,7 @@ from tui.popups import (
     ConfigEditorModal,
     PickerItem,
     SelectionPickerModal,
+    SessionNameModal,
     SessionManagerModal,
 )
 from tui.attachment_runtime import (
@@ -562,6 +564,9 @@ class AlphanusTUI(App):
             self._on_session_manager_close,
         )
 
+    def _open_session_name_modal(self) -> None:
+        self.push_screen(SessionNameModal(), self._on_session_name_close)
+
     def _load_session_from_manager(self, session_id: str) -> ChatSession:
         return load_tui_session_from_manager(self, session_id)
 
@@ -579,6 +584,9 @@ class AlphanusTUI(App):
 
     def _on_session_manager_close(self, result: Optional[Dict[str, str]]) -> None:
         on_tui_session_manager_close(self, result)
+
+    def _on_session_name_close(self, result: Optional[Dict[str, str]]) -> None:
+        on_tui_session_name_close(self, result)
 
     def _delete_session_from_manager(self, session_id: str) -> None:
         delete_tui_session_from_manager(self, session_id)

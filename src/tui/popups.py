@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from rich.markup import escape as esc
+from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -264,7 +265,7 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
         height: auto;
         background: #09090b;
         border: solid #52525b;
-        padding: 0 1 1 2;
+        padding: 0 1;
     }
 
     #session-modal-kicker {
@@ -274,18 +275,18 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
 
     #session-modal-subtitle {
         color: #a1a1aa;
-        padding: 0 0 1 0;
+        padding: 0;
     }
 
     #session-modal-hint {
         color: #71717a;
-        padding: 0 0 1 0;
+        padding: 0;
     }
 
     #session-modal-list-label,
-    #session-modal-new-label {
+    #session-modal-action-label {
         color: #6366f1;
-        padding: 0 0 1 0;
+        padding: 0;
     }
 
     #session-modal-list {
@@ -294,7 +295,7 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
         max-height: 10;
         background: #000000;
         border: solid #52525b;
-        margin: 0 0 1 0;
+        margin: 0;
         padding: 0;
     }
 
@@ -303,17 +304,10 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
         background: #1a1730;
     }
 
-    #session-modal-name {
-        width: 1fr;
-        margin: 0 0 1 0;
-        background: #000000;
-        color: #e4e4e7;
-        border: round #63636b;
-    }
-
     #session-modal-footer {
         width: 1fr;
         height: auto;
+        layout: vertical;
         align-horizontal: left;
         padding: 0;
     }
@@ -322,26 +316,26 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
     #session-delete,
     #session-new {
         width: 1fr;
-        min-width: 0;
         border: none;
-        content-align: center middle;
-        margin-right: 1;
+        content-align: left middle;
+        height: 1;
+        padding: 0 1 0 1;
+        margin: 0;
     }
 
     #session-open {
-        background: #1a1730;
+        background: #0f1230;
         color: #c7d2fe;
     }
 
     #session-delete {
-        background: #26181a;
-        color: #f0c4c8;
+        background: #14161b;
+        color: #d4d4d8;
     }
 
     #session-new {
-        background: #15241f;
-        color: #b9ead9;
-        margin-right: 0;
+        background: #14161b;
+        color: #d4d4d8;
     }
 
     """
@@ -349,9 +343,8 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
     BINDINGS = [
         Binding("escape", "cancel", show=False),
         Binding("enter", "open_selected", show=False),
-        Binding("1", "open_selected", show=False),
-        Binding("2", "delete_selected", show=False),
-        Binding("3", "create_new", show=False),
+        Binding("d", "delete_selected", show=False),
+        Binding("n", "create_new", show=False),
     ]
 
     def __init__(self, sessions: list[SessionSummary], active_session_id: str) -> None:
@@ -364,20 +357,18 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
         with Vertical(id="session-modal"):
             yield Static("SESSIONS", id="session-modal-kicker")
             yield Static("Open, create, or delete sessions from one place.", id="session-modal-subtitle")
-            yield Static("Shortcuts: 1. Open · 2. Delete · 3. New", id="session-modal-hint")
+            yield Static(
+                Text("Shortcuts: [Enter] opens selected · [D] deletes selected · [N] creates new · [Esc] closes"),
+                id="session-modal-hint",
+            )
             if self._sessions:
                 yield Static("Saved Sessions", id="session-modal-list-label")
                 yield OptionList(*self._session_options(), id="session-modal-list")
-            yield Static("New Session", id="session-modal-new-label")
-            yield Input(
-                placeholder="Leave blank to use the next session name",
-                value="",
-                id="session-modal-name",
-            )
-            with Horizontal(id="session-modal-footer"):
-                yield Button("1. Open Selected", id="session-open", variant="primary", disabled=not self._sessions)
-                yield Button("2. Delete Selected", id="session-delete", variant="default", disabled=not self._sessions)
-                yield Button("3. New Session", id="session-new", variant="success")
+            yield Static("Actions", id="session-modal-action-label")
+            with Vertical(id="session-modal-footer"):
+                yield Button(Text("Open Selected Session [Enter]"), id="session-open", variant="primary", disabled=not self._sessions)
+                yield Button(Text("Delete Selected Session [D]"), id="session-delete", variant="default", disabled=not self._sessions)
+                yield Button(Text("New Session [N]"), id="session-new", variant="default")
 
     def _session_options(self) -> list[Option]:
         options: list[Option] = []
@@ -410,7 +401,7 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
             options.highlighted = highlighted
             options.focus()
         else:
-            self.query_one("#session-modal-name", Input).focus()
+            self.query_one("#session-new", Button).focus()
         self._sync_delete_button()
 
     def action_cancel(self) -> None:
@@ -438,7 +429,7 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
         confirming = bool(
             self._pending_delete_session_id and self._pending_delete_session_id == self._selected_session_id()
         )
-        button.label = "2. Confirm Delete" if confirming else "2. Delete Selected"
+        button.label = Text("Confirm Delete [D]") if confirming else Text("Delete Selected Session [D]")
         button.variant = "error" if confirming else "default"
 
     def action_open_selected(self) -> None:
@@ -459,8 +450,7 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
 
     def action_create_new(self) -> None:
         self._clear_delete_confirmation()
-        name = self.query_one("#session-modal-name", Input).value.strip()
-        self.dismiss({"action": "create", "title": name})
+        self.dismiss({"action": "new"})
 
     @on(Button.Pressed, "#session-open")
     def _open_button(self) -> None:
@@ -475,11 +465,6 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
     def _new_button(self) -> None:
         self.action_create_new()
 
-    @on(Input.Submitted, "#session-modal-name")
-    def _new_name_submitted(self, event: Input.Submitted) -> None:
-        self._clear_delete_confirmation()
-        self.dismiss({"action": "create", "title": event.value.strip()})
-
     @on(OptionList.OptionSelected, "#session-modal-list")
     def _session_selected(self, _event: OptionList.OptionSelected) -> None:
         self._clear_delete_confirmation()
@@ -490,6 +475,121 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
         self._clear_delete_confirmation()
         self._sync_delete_button()
 
+
+class SessionNameModal(ModalScreen[Optional[Dict[str, str]]]):
+    CSS = """
+    SessionNameModal {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.76);
+    }
+
+    #session-name-modal {
+        width: 58;
+        max-width: 92%;
+        height: auto;
+        background: #09090b;
+        border: solid #52525b;
+        padding: 0 1;
+    }
+
+    #session-name-modal-kicker {
+        color: #71717a;
+        padding: 0;
+    }
+
+    #session-name-modal-title {
+        color: #e4e4e7;
+        text-style: bold;
+        padding: 0;
+    }
+
+    #session-name-modal-subtitle {
+        color: #a1a1aa;
+        padding: 0;
+    }
+
+    #session-name-modal-hint {
+        color: #71717a;
+        padding: 0;
+    }
+
+    #session-name-modal-input {
+        width: 1fr;
+        margin: 0;
+        background: #000000;
+        color: #e4e4e7;
+        border: round #63636b;
+    }
+
+    #session-name-modal-footer {
+        width: 1fr;
+        height: auto;
+        layout: vertical;
+        align-horizontal: left;
+        padding: 0;
+    }
+
+    #session-name-create,
+    #session-name-cancel {
+        width: 1fr;
+        border: none;
+        content-align: left middle;
+        height: 1;
+        padding: 0 1 0 1;
+        margin: 0;
+    }
+
+    #session-name-create {
+        background: #0f1230;
+        color: #c7d2fe;
+    }
+
+    #session-name-cancel {
+        background: #14161b;
+        color: #d4d4d8;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", show=False),
+        Binding("enter", "create", show=False),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="session-name-modal"):
+            yield Static("NEW SESSION", id="session-name-modal-kicker")
+            yield Static("Name your session", id="session-name-modal-title")
+            yield Static(
+                "Leave blank to auto-generate the next session name.",
+                id="session-name-modal-subtitle",
+            )
+            yield Static(Text("Shortcuts: [Enter] creates · [Esc] cancels"), id="session-name-modal-hint")
+            yield Input(placeholder="Session name (optional)", value="", id="session-name-modal-input")
+            with Vertical(id="session-name-modal-footer"):
+                yield Button(Text("Create Session [Enter]"), id="session-name-create", variant="primary")
+                yield Button(Text("Cancel [Esc]"), id="session-name-cancel", variant="default")
+
+    def on_mount(self) -> None:
+        self.query_one("#session-name-modal-input", Input).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_create(self) -> None:
+        title = self.query_one("#session-name-modal-input", Input).value.strip()
+        self.dismiss({"action": "create", "title": title})
+
+    @on(Button.Pressed, "#session-name-create")
+    def _create_button(self) -> None:
+        self.action_create()
+
+    @on(Button.Pressed, "#session-name-cancel")
+    def _cancel_button(self) -> None:
+        self.action_cancel()
+
+    @on(Input.Submitted, "#session-name-modal-input")
+    def _name_submitted(self, _event: Input.Submitted) -> None:
+        self.action_create()
 
 @dataclass(frozen=True)
 class PickerItem:
@@ -510,33 +610,33 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
         height: auto;
         background: #09090b;
         border: solid #52525b;
-        padding: 0 1 1 2;
+        padding: 0 1;
     }
 
     #picker-modal-kicker {
         color: #71717a;
-        padding: 0 0 1 0;
+        padding: 0;
     }
 
     #picker-modal-title {
         color: #e4e4e7;
         text-style: bold;
-        padding: 0 0 1 0;
+        padding: 0;
     }
 
     #picker-modal-subtitle {
         color: #a1a1aa;
-        padding: 0 0 1 0;
+        padding: 0;
     }
 
     #picker-modal-hint {
         color: #71717a;
-        padding: 0 0 1 0;
+        padding: 0;
     }
 
     #picker-modal-list-label {
         color: #6366f1;
-        padding: 0 0 1 0;
+        padding: 0;
     }
 
     #picker-modal-list {
@@ -545,7 +645,7 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
         max-height: 10;
         background: #000000;
         border: solid #52525b;
-        margin: 0 0 1 0;
+        margin: 0;
         padding: 0;
     }
 
@@ -556,12 +656,13 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
 
     #picker-modal-empty {
         color: #a1a1aa;
-        padding: 0 0 1 0;
+        padding: 0;
     }
 
     #picker-modal-footer {
         width: 1fr;
         height: auto;
+        layout: vertical;
         align-horizontal: left;
         padding: 0;
     }
@@ -569,21 +670,21 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
     #picker-confirm,
     #picker-cancel {
         width: 1fr;
-        min-width: 0;
         border: none;
-        content-align: center middle;
-        margin-right: 1;
+        content-align: left middle;
+        height: 1;
+        padding: 0 1 0 1;
+        margin: 0;
     }
 
     #picker-confirm {
-        background: #1a1730;
+        background: #0f1230;
         color: #c7d2fe;
     }
 
     #picker-cancel {
-        background: #23252a;
+        background: #14161b;
         color: #d4d4d8;
-        margin-right: 0;
     }
     """
 
@@ -615,13 +716,16 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
             yield Static("FILE SELECTOR", id="picker-modal-kicker")
             yield Static(self._title, id="picker-modal-title")
             yield Static(self._subtitle, id="picker-modal-subtitle")
-            yield Static(f"Shortcuts: 1. {self._confirm_label} · 2. Cancel", id="picker-modal-hint")
+            yield Static(
+                f"Shortcuts: 1. {self._confirm_label} · 2. Cancel · Enter selects highlighted item",
+                id="picker-modal-hint",
+            )
             if self._items:
                 yield Static("Available Files", id="picker-modal-list-label")
                 yield OptionList(*[Option(item.prompt, id=item.id) for item in self._items], id="picker-modal-list")
             else:
                 yield Static(self._empty_text, id="picker-modal-empty")
-            with Horizontal(id="picker-modal-footer"):
+            with Vertical(id="picker-modal-footer"):
                 yield Button(f"1. {self._confirm_label}", id="picker-confirm", variant="primary", disabled=not self._items)
                 yield Button("2. Cancel", id="picker-cancel")
 
