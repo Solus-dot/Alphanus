@@ -343,6 +343,7 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
     BINDINGS = [
         Binding("escape", "cancel", show=False),
         Binding("enter", "open_selected", show=False),
+        Binding("return", "open_selected", show=False),
         Binding("d", "delete_selected", show=False),
         Binding("n", "create_new", show=False),
     ]
@@ -468,7 +469,7 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
     @on(OptionList.OptionSelected, "#session-modal-list")
     def _session_selected(self, _event: OptionList.OptionSelected) -> None:
         self._clear_delete_confirmation()
-        self._sync_delete_button()
+        self.action_open_selected()
 
     @on(OptionList.OptionHighlighted, "#session-modal-list")
     def _session_highlighted(self, _event: OptionList.OptionHighlighted) -> None:
@@ -553,6 +554,7 @@ class SessionNameModal(ModalScreen[Optional[Dict[str, str]]]):
     BINDINGS = [
         Binding("escape", "cancel", show=False),
         Binding("enter", "create", show=False),
+        Binding("return", "create", show=False),
     ]
 
     def compose(self) -> ComposeResult:

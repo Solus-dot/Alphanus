@@ -2169,23 +2169,25 @@ def test_session_manager_selection_change_clears_delete_confirmation() -> None:
     assert syncs == ["sync", "sync"]
 
 
-def test_session_manager_row_selection_does_not_auto_open() -> None:
+def test_session_manager_row_selection_opens_selected_session() -> None:
     modal = SessionManagerModal([], "sess-1")
     dismissed: list[dict[str, str]] = []
     modal.dismiss = lambda payload=None: dismissed.append(payload)
+    modal._selected_session_id = lambda: "sess-1"
     syncs: list[str] = []
     modal._sync_delete_button = lambda: syncs.append("sync")
 
     modal._session_selected(SimpleNamespace())
 
-    assert dismissed == []
-    assert syncs == ["sync"]
+    assert dismissed == [{"action": "open", "session_id": "sess-1"}]
+    assert syncs == []
 
 
 def test_session_manager_modal_bindings_use_enter_and_escape() -> None:
     bindings = {binding.key: binding.action for binding in SessionManagerModal.BINDINGS}
 
     assert bindings["enter"] == "open_selected"
+    assert bindings["return"] == "open_selected"
     assert bindings["d"] == "delete_selected"
     assert bindings["n"] == "create_new"
     assert bindings["escape"] == "cancel"

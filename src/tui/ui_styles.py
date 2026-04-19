@@ -96,10 +96,11 @@ ALPHANUS_TUI_CSS = """
 
     #sidebar-footer-sep {
         position: absolute;
-        width: 1fr;
+        width: 100%;
         height: 1;
         background: #000000;
         border-top: solid #5a5a66;
+        border-left: solid #5a5a66;
         color: #5a5a66;
         padding: 0 0;
     }
@@ -182,7 +183,7 @@ ALPHANUS_TUI_CSS = """
 
     #footer {
         width: 1fr;
-        height: 7;
+        height: 6;
         background: #000000;
         layout: vertical;
         padding: 0 0 0 3;
@@ -259,9 +260,10 @@ ALPHANUS_TUI_CSS = """
     }
 
     #status-bar {
+        width: 1fr;
         height: 1;
         layout: horizontal;
-        padding: 0 0;
+        padding: 0 1;
         background: #000000;
     }
 
@@ -278,11 +280,12 @@ ALPHANUS_TUI_CSS = """
     }
 
     #input-row {
-        height: 4;
+        width: 1fr;
+        height: 3;
         layout: vertical;
         background: #000000;
         padding: 0 0 0 0;
-        min-height: 4;
+        min-height: 3;
     }
 
     #composer-shell {
@@ -292,7 +295,7 @@ ALPHANUS_TUI_CSS = """
         background: #000000;
         border: round #63636b;
         padding: 0 1;
-        margin: 0 0 1 0;
+        margin: 0 0 0 0;
         align: left middle;
     }
 
