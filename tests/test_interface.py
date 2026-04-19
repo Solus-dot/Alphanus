@@ -520,7 +520,7 @@ def test_config_editor_view_omits_secrets_and_internal_fields() -> None:
     config = {
         "agent": {"auth_header": "Authorization: Bearer secret", "context_budget_max_tokens": 2048},
         "search": {"provider": "tavily", "tavily_api_key": "tvly-secret"},
-        "memory": {"model_name": "BAAI/bge-small-en-v1.5"},
+        "memory": {"min_score_default": 0.3},
         "context": {"context_limit": 8192, "safety_margin": 500, "keep_last_n": 10},
     }
 
@@ -2245,14 +2245,11 @@ def test_cmd_doctor_shows_skill_policy_details() -> None:
         "agent": {"ready": True, "endpoint_policy_error": ""},
         "workspace": {"path": "/tmp/ws", "writable": True},
         "memory": {
-            "mode": "semantic",
-            "backend": "transformer",
-            "allow_model_download": False,
-            "encoder_status": "ready",
-            "encoder_source": "transformer-local",
-            "encoder_detail": "",
-            "model_name": "BAAI/bge-small-en-v1.5",
-            "recommended_model_name": "BAAI/bge-small-en-v1.5",
+            "mode": "lexical",
+            "backend": "lexical",
+            "min_score_default": 0.3,
+            "load_recovery_count": 0,
+            "backup_revisions": 2,
         },
         "search": {"provider": "tavily", "ready": False, "reason": "missing env: TAVILY_API_KEY"},
         "skills": [
