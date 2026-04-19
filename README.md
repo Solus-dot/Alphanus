@@ -23,7 +23,7 @@
 
 Alphanus is an experimental coding assistant for local use.
 
-It combines a terminal UI, a streaming chat-completions loop, persistent semantic memory, explicit skills, and workspace-aware tooling into a system that is meant to be inspectable and hackable rather than hidden behind a hosted product.
+It combines a terminal UI, a streaming chat-completions loop, persistent lexical memory, explicit skills, and workspace-aware tooling into a system that is meant to be inspectable and hackable rather than hidden behind a hosted product.
 
 The current implementation is built around `llama.cpp` and a Textual interface, with support for named sessions, branching conversation history, configurable skills, and controlled workspace or shell operations.
 
@@ -35,7 +35,7 @@ The current implementation is built around `llama.cpp` and a Textual interface, 
 - `llama.cpp` `/v1` API integration with OpenAI-style `tool_calls`
 - Textual UI with live tool previews, code block popups, config editing, and support-bundle export
 - Named autosaved sessions with a branchable conversation tree
-- Persistent semantic memory with automatic re-embedding on model change
+- Persistent lexical memory with score thresholds and storage recovery safeguards
 - Explicit session-loaded skills with enable and disable controls
 - Web search support for time-sensitive answers
 - Workspace-aware tooling with confirmation gates and explicit session-loaded skill execution
@@ -137,10 +137,10 @@ A trimmed example:
     "path": "~/Desktop/Alphanus-Workspace"
   },
   "memory": {
-    "path": "./memories/memory.pkl",
-    "model_name": "BAAI/bge-small-en-v1.5",
-    "eager_load_encoder": false,
-    "allow_model_download": true
+    "min_score_default": 0.3,
+    "recall_min_score_default": 0.18,
+    "replace_min_score_default": 0.72,
+    "backup_revisions": 2
   },
   "context": {
     "keep_last_n": 10
@@ -155,6 +155,7 @@ Important runtime notes:
 
 * `agent.request_timeout_s` is a stream idle timeout, not a total-turn deadline
 * `agent.max_tokens` defaults to `null`, so no explicit `max_tokens` cap is sent unless configured
+* memory persistence is fixed at `<workspace>/.alphanus/memory/` (`events.jsonl` source-of-truth, generated `facts.md`)
 * Internal context budget defaults exist at runtime, but several budget controls are intentionally hidden from the editable config file and TUI editor
 * `search.provider` currently supports `tavily` and `brave`
 * Skills are discovered from the configured repo `skills/` root only
@@ -167,7 +168,7 @@ Important runtime notes:
 Bundled skills include:
 
 * `workspace-ops` — create, read, edit, move, and delete workspace paths; search code; render the workspace tree; and run approved verification commands
-* `memory-rag` — store, recall, forget, inspect, and export semantic memories
+* `memory-rag` — store, recall, forget, inspect, and export lexical memories
 * `search-ops` — web search and page fetch for current information
 * `shell-ops` — confirmed workspace shell commands
 * `utilities` — weather lookup, home file search, URL open, and YouTube helpers
@@ -259,14 +260,15 @@ Session notes:
 
 ## Memory
 
-Memory is semantic and persistent.
+Memory is lexical and persistent.
 
 Notes:
 
-* Recommended embedding model: `BAAI/bge-small-en-v1.5`
-* `memory.allow_model_download` controls whether uncached embedding weights may be downloaded on first use
-* Existing memories are automatically re-embedded when you switch models
-* Retrieval is semantic-only
+* `memory.min_score_default` sets the base lexical threshold for direct memory searches
+* `memory.recall_min_score_default` and `memory.replace_min_score_default` tune skill-level recall and replace-query behavior
+* `memory.backup_revisions` controls how many previous memory snapshots are kept as `.bakN` files
+* storage is fixed at `<workspace>/.alphanus/memory/` (`events.jsonl` is source-of-truth, `facts.md` is regenerated on flush)
+* Retrieval is lexical-only
 * For corrections, prefer `replace_query` or `replace_ids` when calling memory tools
 
 ---
