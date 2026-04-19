@@ -179,6 +179,35 @@ def test_normalize_config_preserves_new_runtime_boundary_fields() -> None:
     assert normalized["tui"]["timing"]["shell_confirm_timeout_s"] == 90.0
 
 
+def test_normalize_config_clamps_memory_robustness_fields() -> None:
+    raw = {
+        "schema_version": "1.0.0",
+        "memory": {
+            "path": "./legacy/memory.pkl",
+            "min_score_default": 2.0,
+            "recall_min_score_default": "-1",
+            "replace_min_score_default": "bad",
+            "backup_revisions": -4,
+            "allow_schema_migration": "false",
+            "model_name": "legacy-model",
+            "allow_model_download": True,
+        },
+    }
+
+    normalized, warnings = normalize_config(raw)
+
+    assert normalized["memory"]["min_score_default"] == 1.0
+    assert normalized["memory"]["recall_min_score_default"] == 0.0
+    assert normalized["memory"]["replace_min_score_default"] == DEFAULT_CONFIG["memory"]["replace_min_score_default"]
+    assert normalized["memory"]["backup_revisions"] == 0
+    assert "path" not in normalized["memory"]
+    assert "allow_schema_migration" not in normalized["memory"]
+    assert "model_name" not in normalized["memory"]
+    assert "allow_model_download" not in normalized["memory"]
+    assert any("memory.path: ignored" in warning for warning in warnings)
+    assert any("legacy memory setting" in warning for warning in warnings)
+
+
 def test_typed_runtime_configs_parse_normalized_config() -> None:
     normalized, _warnings = normalize_config(
         {
