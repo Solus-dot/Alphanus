@@ -1,25 +1,21 @@
+import json
+import math
 import os
-import pickle
+import re
+import shutil
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import numpy as np
-
-RECOMMENDED_EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
-
-
-class MemoryEncoderUnavailableError(ValueError):
-    """Raised when semantic memory operations need embeddings but no encoder is available."""
+MEMORY_STORAGE_SCHEMA_VERSION = "3.0.0"
 
 
 @dataclass(slots=True)
 class MemoryItem:
     id: int
     text: str
-    vector: np.ndarray
     metadata: Dict[str, Any]
     type: str
     timestamp: float
@@ -31,316 +27,204 @@ class VectorMemory:
     def __init__(
         self,
         storage_path: str,
-        model_name: str = RECOMMENDED_EMBEDDING_MODEL_NAME,
         min_score: float = 0.3,
         persist_access_updates: bool = False,
         autosave_interval_s: float = 2.0,
         autosave_every: int = 24,
-        eager_load_encoder: bool = False,
-        allow_model_download: bool = True,
+        backup_revisions: int = 2,
+        **_ignored: Any,
     ) -> None:
         self.storage_path = Path(os.path.expanduser(storage_path)).resolve()
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.model_name = model_name
 
-        self.min_score = float(min_score)
+        self.min_score = self._normalize_threshold(min_score, default=0.3)
         self.persist_access_updates = bool(persist_access_updates)
         self.autosave_interval_s = max(0.0, float(autosave_interval_s))
         self.autosave_every = max(1, int(autosave_every))
-        self.eager_load_encoder = bool(eager_load_encoder)
-        self.allow_model_download = bool(allow_model_download)
+        self.backup_revisions = max(0, int(backup_revisions))
 
         self.memories: List[MemoryItem] = []
         self._next_id = 1
         self._dirty = False
         self._pending_writes = 0
         self._last_save_ts = time.time()
-        self._matrix_cache: Optional[np.ndarray] = None
-        self._norm_cache: Optional[np.ndarray] = None
-        self._type_index_cache: Dict[str, np.ndarray] = {}
-        self._all_index_cache: Optional[np.ndarray] = None
-        self._embedding_space_ready = False
-        self._stored_model_name: Optional[str] = None
-        self._encoder_status = "uninitialized"
-        self._encoder_source = ""
-        self._encoder_detail = ""
-        self._encoder_attempted = False
+        self._load_recovery_count = 0
+        self._load_unsupported_count = 0
 
-        self.encoder = None
-        self.dimension = 384
         self._load()
-        if self.eager_load_encoder:
-            self._ensure_encoder()
 
-    def _invalidate_index_cache(self) -> None:
-        self._matrix_cache = None
-        self._norm_cache = None
-        self._type_index_cache = {}
-        self._all_index_cache = None
+    @property
+    def facts_path(self) -> Path:
+        return self.storage_path.parent / "facts.md"
 
-    def _set_encoder_state(self, status: str, source: str, detail: str = "") -> None:
-        self._encoder_status = status
-        self._encoder_source = source
-        self._encoder_detail = detail.strip()
+    @staticmethod
+    def _normalize_threshold(value: Any, *, default: float) -> float:
+        try:
+            parsed = float(value)
+        except Exception:
+            parsed = float(default)
+        if not math.isfinite(parsed):
+            parsed = float(default)
+        return max(0.0, min(1.0, parsed))
 
-    def _ensure_index_cache(self) -> None:
-        if self._matrix_cache is not None and self._norm_cache is not None and self._all_index_cache is not None:
+    @staticmethod
+    def _tokenize(text: str) -> List[str]:
+        return re.findall(r"[a-z0-9]+", str(text).lower())
+
+    @staticmethod
+    def _contains_phrase(query_tokens: List[str], text_tokens: List[str]) -> bool:
+        if not query_tokens or not text_tokens or len(query_tokens) > len(text_tokens):
+            return False
+        q_len = len(query_tokens)
+        for idx in range(0, len(text_tokens) - q_len + 1):
+            if text_tokens[idx : idx + q_len] == query_tokens:
+                return True
+        return False
+
+    def _score_text(self, query_tokens: List[str], text: str) -> float:
+        if not query_tokens:
+            return 0.0
+        text_tokens = self._tokenize(text)
+        if not text_tokens:
+            return 0.0
+        query_set = set(query_tokens)
+        text_set = set(text_tokens)
+        overlap = len(query_set & text_set) / max(1, len(query_set))
+        phrase_bonus = 0.3 if self._contains_phrase(query_tokens, text_tokens) else 0.0
+        return min(1.0, (0.75 * overlap) + phrase_bonus)
+
+    def _backup_path(self, revision: int) -> Path:
+        return self.storage_path.with_suffix(self.storage_path.suffix + f".bak{revision}")
+
+    def _rotate_backups(self) -> None:
+        if self.backup_revisions <= 0 or not self.storage_path.exists():
             return
+        for idx in range(self.backup_revisions, 1, -1):
+            dest = self._backup_path(idx)
+            src = self._backup_path(idx - 1)
+            if not src.exists():
+                continue
+            if dest.exists():
+                dest.unlink()
+            src.replace(dest)
+        bak1 = self._backup_path(1)
+        if bak1.exists():
+            bak1.unlink()
+        shutil.copy2(self.storage_path, bak1)
 
-        if not self.memories:
-            self._matrix_cache = np.empty((0, self.dimension), dtype=np.float32)
-            self._norm_cache = np.empty((0,), dtype=np.float32)
-            self._all_index_cache = np.empty((0,), dtype=np.int32)
-            self._type_index_cache = {}
-            return
-
-        matrix = np.asarray([item.vector for item in self.memories], dtype=np.float32)
-        self._matrix_cache = matrix
-        self._norm_cache = np.linalg.norm(matrix, axis=1).astype(np.float32, copy=False)
-        self._all_index_cache = np.arange(len(self.memories), dtype=np.int32)
-
-        typed: Dict[str, List[int]] = {}
-        for idx, item in enumerate(self.memories):
-            typed.setdefault(item.type, []).append(idx)
-        self._type_index_cache = {
-            key: np.asarray(indexes, dtype=np.int32) for key, indexes in typed.items()
+    @staticmethod
+    def _item_to_record(item: MemoryItem) -> Dict[str, Any]:
+        return {
+            "schema_version": MEMORY_STORAGE_SCHEMA_VERSION,
+            "id": item.id,
+            "text": item.text,
+            "metadata": item.metadata,
+            "type": item.type,
+            "timestamp": item.timestamp,
+            "access_count": item.access_count,
+            "last_accessed": item.last_accessed,
         }
 
-    def _load_transformer_encoder(self, model_name: str):
-        try:
-            from sentence_transformers import SentenceTransformer  # type: ignore
-        except Exception as exc:
-            self._set_encoder_state(
-                "unavailable",
-                "transformer-import",
-                f"sentence-transformers unavailable: {exc.__class__.__name__}",
-            )
-            return None
-
-        try:
-            model = SentenceTransformer(model_name, local_files_only=True)
-            self._set_encoder_state("ready", "transformer-local", "loaded from local cache")
-            return model
-        except Exception as local_exc:
-            if not self.allow_model_download:
-                self._set_encoder_state(
-                    "unavailable",
-                    "transformer-local",
-                    f"model not cached locally and allow_model_download=false: {local_exc.__class__.__name__}",
-                )
-                return None
-        try:
-            model = SentenceTransformer(model_name, local_files_only=False)
-            self._set_encoder_state("ready", "transformer-download", "loaded with download fallback enabled")
-            return model
-        except Exception as remote_exc:
-            self._set_encoder_state(
-                "unavailable",
-                "transformer-download",
-                f"transformer load failed: {remote_exc.__class__.__name__}",
-            )
-            return None
-
-    def _ensure_encoder(self):
-        if self.encoder is not None:
-            return self.encoder
-        self._encoder_attempted = True
-        encoder = self._load_transformer_encoder(self.model_name)
-        if encoder is not None:
-            self.encoder = encoder
-            self.dimension = int(getattr(self.encoder, "dim", 384))
-            if self._encoder_status == "uninitialized":
-                self._set_encoder_state("ready", "transformer", "semantic transformer encoder")
-        else:
-            self._encoder_attempted = False
-        return self.encoder
-
-    def _require_encoder(self):
-        encoder = self._ensure_encoder()
-        if encoder is None:
-            detail = self._encoder_detail or "sentence-transformers could not be initialized"
-            raise MemoryEncoderUnavailableError(f"Memory embeddings are unavailable: {detail}")
-        return encoder
-
-    def _encode_many(self, texts: List[str]) -> np.ndarray:
-        if not texts:
-            return np.empty((0, self.dimension), dtype=np.float32)
-        encoder = self._require_encoder()
-        emb = encoder.encode(texts, normalize_embeddings=True)
-        matrix = np.asarray(emb, dtype=np.float32)
-        if matrix.ndim == 1:
-            matrix = matrix.reshape(1, -1)
-        if matrix.ndim != 2:
-            raise ValueError("Encoder returned an invalid embedding matrix")
-        self.dimension = int(matrix.shape[1])
-        return matrix
-
-    def _encode(self, text: str) -> np.ndarray:
-        return self._encode_many([text])[0]
-
-    def _memories_have_consistent_dimensions(self) -> bool:
-        if not self.memories:
-            return True
-        expected_dim: Optional[int] = None
-        for item in self.memories:
-            if not isinstance(item.vector, np.ndarray) or item.vector.ndim != 1:
-                return False
-            dim = int(item.vector.shape[0])
-            if expected_dim is None:
-                expected_dim = dim
-                continue
-            if dim != expected_dim:
-                return False
-        return True
-
-    def _stored_backend_matches_current_space(self) -> bool:
-        return self._stored_model_name == self.model_name
-
-    def _needs_reembed(self) -> bool:
-        if not self.memories:
-            return False
-        if not self._memories_have_consistent_dimensions():
-            return True
-        current_dim = int(self.memories[0].vector.shape[0])
-        if current_dim != self.dimension:
-            return True
-        return not self._stored_backend_matches_current_space()
-
-    def _ensure_embedding_space(self) -> None:
-        if self._embedding_space_ready:
-            return
-        self._require_encoder()
-        if not self.memories:
-            self._stored_model_name = self.model_name
-            self._embedding_space_ready = True
-            return
-        if self._needs_reembed():
-            vectors = self._encode_many([item.text for item in self.memories])
-            for item, vector in zip(self.memories, vectors):
-                item.vector = vector
-            self._invalidate_index_cache()
-            self._mark_dirty(force=False)
-        else:
-            self.dimension = int(self.memories[0].vector.shape[0])
-        self._stored_model_name = self.model_name
-        self._embedding_space_ready = True
-
-    def _storage_model_name(self) -> str:
-        if self._embedding_space_ready:
-            return self.model_name
-        return self._stored_model_name or self.model_name
-
-    def _append_to_index_cache(self, item: MemoryItem) -> bool:
-        if self._matrix_cache is None or self._norm_cache is None or self._all_index_cache is None:
-            return False
-        if self._matrix_cache.ndim != 2 or item.vector.ndim != 1:
-            return False
-        if self._matrix_cache.shape[1] != item.vector.shape[0]:
-            return False
-
-        row = item.vector.reshape(1, -1)
-        norm = np.asarray([np.linalg.norm(item.vector)], dtype=np.float32)
-        new_index = np.asarray([len(self.memories) - 1], dtype=np.int32)
-        self._matrix_cache = np.concatenate((self._matrix_cache, row), axis=0)
-        self._norm_cache = np.concatenate((self._norm_cache, norm))
-        self._all_index_cache = np.concatenate((self._all_index_cache, new_index))
-
-        existing = self._type_index_cache.get(item.type)
-        if existing is None:
-            self._type_index_cache[item.type] = new_index
-        else:
-            self._type_index_cache[item.type] = np.concatenate((existing, new_index))
-        return True
-
-    def _remove_from_index_cache(self, memory_idx: int) -> bool:
-        if self._matrix_cache is None or self._norm_cache is None or self._all_index_cache is None:
-            return False
-        if self._matrix_cache.ndim != 2 or memory_idx < 0 or memory_idx >= self._matrix_cache.shape[0]:
-            return False
-
-        self._matrix_cache = np.delete(self._matrix_cache, memory_idx, axis=0)
-        self._norm_cache = np.delete(self._norm_cache, memory_idx)
-        new_len = self._matrix_cache.shape[0]
-        self._all_index_cache = np.arange(new_len, dtype=np.int32)
-
-        updated_types: Dict[str, np.ndarray] = {}
-        for memory_type, indexes in self._type_index_cache.items():
-            if not isinstance(indexes, np.ndarray) or indexes.size == 0:
-                continue
-            kept = indexes[indexes != memory_idx]
-            if kept.size == 0:
-                continue
-            adjusted = kept - (kept > memory_idx).astype(np.int32, copy=False)
-            updated_types[memory_type] = adjusted.astype(np.int32, copy=False)
-        self._type_index_cache = updated_types
-        return True
+    @staticmethod
+    def _record_to_item(record: Dict[str, Any]) -> MemoryItem:
+        metadata = record.get("metadata", {})
+        if not isinstance(metadata, dict):
+            raise ValueError("memory metadata must be an object")
+        return MemoryItem(
+            id=int(record["id"]),
+            text=str(record["text"]),
+            metadata=dict(metadata),
+            type=str(record.get("type", "conversation")),
+            timestamp=float(record.get("timestamp", time.time())),
+            access_count=int(record.get("access_count", 0)),
+            last_accessed=float(record.get("last_accessed", record.get("timestamp", time.time()))),
+        )
 
     def _load(self) -> None:
         if not self.storage_path.exists():
             return
+
+        loaded_by_id: Dict[int, MemoryItem] = {}
+        ordered_ids: List[int] = []
+
         try:
-            with self.storage_path.open("rb") as handle:
-                payload = pickle.load(handle)
-        except (EOFError, pickle.UnpicklingError, AttributeError, ValueError):
-            broken = self.storage_path.with_suffix(self.storage_path.suffix + ".corrupted")
-            self.storage_path.replace(broken)
+            lines = self.storage_path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
             self.memories = []
             self._next_id = 1
+            self._load_recovery_count += 1
             return
 
-        if isinstance(payload, dict):
-            raw_model_name = str(payload.get("model_name", "")).strip()
-            self._stored_model_name = raw_model_name or None
-        raw_memories = payload.get("memories", []) if isinstance(payload, dict) else []
-        loaded: List[MemoryItem] = []
-        for item in raw_memories:
-            loaded.append(
-                MemoryItem(
-                    id=int(item["id"]),
-                    text=str(item["text"]),
-                    vector=np.asarray(item["vector"], dtype=np.float32),
-                    metadata=dict(item.get("metadata", {})),
-                    type=str(item.get("type", "conversation")),
-                    timestamp=float(item.get("timestamp", time.time())),
-                    access_count=int(item.get("access_count", 0)),
-                    last_accessed=float(item.get("last_accessed", item.get("timestamp", time.time()))),
-                )
-            )
+        for line in lines:
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                record = json.loads(text)
+            except json.JSONDecodeError:
+                self._load_recovery_count += 1
+                continue
+            if not isinstance(record, dict):
+                self._load_recovery_count += 1
+                continue
 
-        self.memories = loaded
-        if loaded:
-            self.dimension = int(loaded[0].vector.shape[0])
-        self._next_id = max((m.id for m in loaded), default=0) + 1
+            schema_version = str(record.get("schema_version", "")).strip()
+            if schema_version != MEMORY_STORAGE_SCHEMA_VERSION:
+                self._load_unsupported_count += 1
+                continue
+
+            try:
+                item = self._record_to_item(record)
+            except (KeyError, TypeError, ValueError):
+                self._load_recovery_count += 1
+                continue
+
+            if item.id not in loaded_by_id:
+                ordered_ids.append(item.id)
+            loaded_by_id[item.id] = item
+
+        self.memories = [loaded_by_id[memory_id] for memory_id in ordered_ids if memory_id in loaded_by_id]
+        self._next_id = max((m.id for m in self.memories), default=0) + 1
         self._dirty = False
         self._pending_writes = 0
         self._last_save_ts = time.time()
-        self._embedding_space_ready = False
-        self._invalidate_index_cache()
+
+    def _write_facts(self) -> None:
+        lines = ["# Alphanus Memory Facts", ""]
+        for item in sorted(self.memories, key=lambda m: (m.timestamp, m.id)):
+            lines.append(f"- id: {item.id}")
+            lines.append(f"  type: {item.type}")
+            lines.append(f"  timestamp: {item.timestamp}")
+            lines.append(f"  access_count: {item.access_count}")
+            lines.append(f"  last_accessed: {item.last_accessed}")
+            lines.append(f"  metadata: {json.dumps(item.metadata, sort_keys=True, ensure_ascii=False)}")
+            lines.append(f"  text: {item.text}")
+            lines.append("")
+
+        fd, tmp = tempfile.mkstemp(prefix=self.facts_path.name + ".", dir=str(self.facts_path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write("\n".join(lines))
+            os.replace(tmp, self.facts_path)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
 
     def _save(self) -> None:
-        payload = {
-            "schema_version": "1.0.0",
-            "model_name": self._storage_model_name(),
-            "memories": [
-                {
-                    "id": m.id,
-                    "text": m.text,
-                    "vector": m.vector,
-                    "metadata": m.metadata,
-                    "type": m.type,
-                    "timestamp": m.timestamp,
-                    "access_count": m.access_count,
-                    "last_accessed": m.last_accessed,
-                }
-                for m in self.memories
-            ],
-        }
+        records = [self._item_to_record(item) for item in self.memories]
+        payload = "\n".join(json.dumps(record, sort_keys=True, ensure_ascii=False) for record in records)
+        if payload:
+            payload += "\n"
 
         fd, tmp = tempfile.mkstemp(prefix=self.storage_path.name + ".", dir=str(self.storage_path.parent))
         try:
-            with os.fdopen(fd, "wb") as handle:
-                pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+            # Snapshot the currently committed primary file into backups first,
+            # then atomically promote the new snapshot.
+            self._rotate_backups()
             os.replace(tmp, self.storage_path)
+            self._write_facts()
             self._dirty = False
             self._pending_writes = 0
             self._last_save_ts = time.time()
@@ -362,11 +246,6 @@ class VectorMemory:
 
     def flush(self) -> None:
         if self._dirty:
-            if self.memories:
-                try:
-                    self._ensure_embedding_space()
-                except MemoryEncoderUnavailableError:
-                    pass
             self._save()
 
     def add_memory(
@@ -376,21 +255,14 @@ class VectorMemory:
         metadata: Optional[Dict[str, Any]] = None,
         importance: Optional[float] = None,
     ) -> Dict[str, Any]:
-        if self.memories:
-            self._ensure_embedding_space()
         now = time.time()
         md = dict(metadata or {})
         if importance is not None:
             md["importance"] = float(importance)
-        vector = np.asarray(self._encode(text), dtype=np.float32)
-        if vector.ndim != 1:
-            raise ValueError("Encoder returned an invalid embedding vector")
-        self.dimension = int(vector.shape[0])
 
         item = MemoryItem(
             id=self._next_id,
             text=text,
-            vector=vector,
             metadata=md,
             type=memory_type,
             timestamp=now,
@@ -399,10 +271,6 @@ class VectorMemory:
         )
         self._next_id += 1
         self.memories.append(item)
-        self._stored_model_name = self.model_name
-        self._embedding_space_ready = True
-        if not self._append_to_index_cache(item):
-            self._invalidate_index_cache()
         self._mark_dirty(force=False)
         return self._to_public(item)
 
@@ -416,56 +284,34 @@ class VectorMemory:
         if not self.memories:
             return []
 
-        self._ensure_embedding_space()
-        threshold = self.min_score if min_score is None else float(min_score)
-        q = self._encode(query)
-        q_norm = float(np.linalg.norm(q))
-        if q_norm == 0:
+        threshold = self.min_score if min_score is None else self._normalize_threshold(min_score, default=self.min_score)
+        query_tokens = self._tokenize(query)
+        if not query_tokens:
             return []
 
-        self._ensure_index_cache()
-        if memory_type:
-            candidate_indexes = self._type_index_cache.get(memory_type)
-        else:
-            candidate_indexes = self._all_index_cache
-        if candidate_indexes is None or candidate_indexes.size == 0 or self._matrix_cache is None or self._norm_cache is None:
+        scored: List[tuple[float, MemoryItem]] = []
+        for item in self.memories:
+            if memory_type and item.type != memory_type:
+                continue
+            score = self._score_text(query_tokens, item.text)
+            if score >= threshold:
+                scored.append((score, item))
+
+        if not scored:
             return []
 
-        matrix = self._matrix_cache[candidate_indexes]
-        vec_norms = self._norm_cache[candidate_indexes]
-        denom = vec_norms * q_norm
-        dots = matrix @ q
-        scores = np.divide(
-            dots,
-            denom,
-            out=np.zeros_like(dots, dtype=np.float32),
-            where=denom > 0,
-        )
-
-        passing = np.flatnonzero(scores >= threshold)
-        if passing.size == 0:
-            return []
-
-        k = max(1, int(top_k))
-        if passing.size > k:
-            passing_scores = scores[passing]
-            top_local = np.argpartition(passing_scores, -k)[-k:]
-            ordered_local = top_local[np.argsort(passing_scores[top_local])[::-1]]
-            selected = passing[ordered_local]
-        else:
-            selected = passing[np.argsort(scores[passing])[::-1]]
+        scored.sort(key=lambda row: (row[0], row[1].timestamp), reverse=True)
+        selected = scored[: max(1, int(top_k))]
 
         now = time.time()
         touched = False
-        out = []
-        for local_idx in selected:
-            item = self.memories[int(candidate_indexes[int(local_idx)])]
-            score = float(scores[int(local_idx)])
+        out: List[Dict[str, Any]] = []
+        for score, item in selected:
             item.access_count += 1
             item.last_accessed = now
             touched = True
             record = self._to_public(item)
-            record["score"] = round(score, 4)
+            record["score"] = round(float(score), 4)
             out.append(record)
 
         if touched and self.persist_access_updates:
@@ -483,42 +329,28 @@ class VectorMemory:
             return False
 
         self.memories.pop(memory_idx)
-        if not self._remove_from_index_cache(memory_idx):
-            self._invalidate_index_cache()
-
-        if not self.memories:
-            self._stored_model_name = self.model_name
-            self._embedding_space_ready = True
-        elif self._embedding_space_ready:
-            self.dimension = int(self.memories[0].vector.shape[0])
-            self._stored_model_name = self.model_name
-        elif self.encoder is not None:
-            self._ensure_embedding_space()
-
         self._mark_dirty(force=False)
         return True
 
-    def stats(self) -> Dict[str, Any]:
-        self._ensure_encoder()
-        if self.memories and self.encoder is not None:
-            self._ensure_embedding_space()
+    def stats(self, probe_encoder: bool = True) -> Dict[str, Any]:
         by_type: Dict[str, int] = {}
-        for m in self.memories:
-            by_type[m.type] = by_type.get(m.type, 0) + 1
+        for item in self.memories:
+            by_type[item.type] = by_type.get(item.type, 0) + 1
 
-        latest = max((m.timestamp for m in self.memories), default=None)
+        latest = max((item.timestamp for item in self.memories), default=None)
         return {
             "count": len(self.memories),
             "by_type": by_type,
             "latest_timestamp": latest,
-            "dimension": self.dimension,
-            "model_name": self.model_name,
-            "allow_model_download": self.allow_model_download,
-            "encoder_status": self._encoder_status,
-            "encoder_source": self._encoder_source,
-            "encoder_detail": self._encoder_detail,
-            "mode_label": "semantic" if self._encoder_status == "ready" else "semantic-unavailable",
-            "recommended_model_name": RECOMMENDED_EMBEDDING_MODEL_NAME,
+            "min_score_default": self.min_score,
+            "backend": "lexical",
+            "mode_label": "lexical",
+            "backup_revisions": self.backup_revisions,
+            "memory_schema_version": MEMORY_STORAGE_SCHEMA_VERSION,
+            "storage_format": "jsonl",
+            "storage_root": str(self.storage_path.parent),
+            "load_recovery_count": self._load_recovery_count,
+            "load_unsupported_count": self._load_unsupported_count,
         }
 
     def export_txt(self, path: str) -> str:
