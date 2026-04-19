@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Dict
 
@@ -82,6 +83,24 @@ def _normalize_whitespace(value: str) -> str:
     return " ".join(value.strip().split()).lower()
 
 
+def _memory_cfg(env: ToolExecutionEnv) -> Dict[str, object]:
+    if not isinstance(getattr(env, "config", None), dict):
+        return {}
+    cfg = env.config.get("memory")
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _cfg_score(cfg: Dict[str, object], key: str, default: float) -> float:
+    raw = cfg.get(key, default)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = default
+    if not math.isfinite(value):
+        value = default
+    return max(0.0, min(1.0, value))
+
+
 def _rank_hits(hits: list[dict[str, object]], top_k: int) -> list[dict[str, object]]:
     ranked: dict[int, dict[str, object]] = {}
     for hit in hits:
@@ -122,12 +141,14 @@ def _find_exact_text_ids(memory, text: str, memory_type: str | None) -> list[int
     return out
 
 
-def _ids_from_replace_query(memory, args: dict[str, object], text: str) -> list[int]:
+def _ids_from_replace_query(memory, args: dict[str, object], text: str, env: ToolExecutionEnv) -> list[int]:
     query = str(args.get("replace_query") or "").strip()
     if not query:
         return []
+    mem_cfg = _memory_cfg(env)
     top_k = int(args.get("replace_top_k", 5))
-    min_score = float(args.get("replace_min_score", 0.72))
+    min_score_default = _cfg_score(mem_cfg, "replace_min_score_default", 0.72)
+    min_score = _cfg_score({"value": args.get("replace_min_score", min_score_default)}, "value", min_score_default)
     hits = memory.search(
         query=query,
         top_k=max(1, top_k),
@@ -157,7 +178,7 @@ def _store_memory(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, o
     ids_to_forget = set()
     if replace_existing:
         ids_to_forget.update(_find_exact_text_ids(memory, text, memory_type))
-        ids_to_forget.update(_ids_from_replace_query(memory, args, text))
+        ids_to_forget.update(_ids_from_replace_query(memory, args, text, env))
     for memory_id in args.get("replace_ids") or []:
         try:
             ids_to_forget.add(int(memory_id))
@@ -188,9 +209,11 @@ def _store_memory(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, o
 
 
 def _recall_memory(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
+    mem_cfg = _memory_cfg(env)
     top_k = int(args.get("top_k", 5))
     min_score = args.get("min_score")
-    threshold = 0.18 if min_score is None else float(min_score)
+    threshold_default = _cfg_score(mem_cfg, "recall_min_score_default", 0.18)
+    threshold = threshold_default if min_score is None else _cfg_score({"value": min_score}, "value", threshold_default)
     memory_type = str(args.get("memory_type") or "").strip() or None
     query = " ".join(str(args["query"]).split()).strip()
     if not query:

@@ -27,7 +27,7 @@ def test_main_does_not_block_on_model_readiness_before_launching_tui(monkeypatch
         "load_or_create_global_config",
         lambda _path, warnings=None: {
             "workspace": {"path": str(tmp_path / "ws")},
-            "memory": {"path": str(tmp_path / "mem.pkl")},
+            "memory": {"backup_revisions": 2},
             "agent": {},
         },
     )
@@ -35,7 +35,15 @@ def test_main_does_not_block_on_model_readiness_before_launching_tui(monkeypatch
     monkeypatch.setattr(alphanus_cli, "validate_endpoint_policy", lambda config: None)
     monkeypatch.setattr(alphanus_cli, "resolve_path", lambda path, _root: path)
     monkeypatch.setattr(alphanus_cli, "WorkspaceManager", lambda workspace_root: SimpleNamespace(workspace_root=workspace_root))
-    monkeypatch.setattr(alphanus_cli, "VectorMemory", lambda **kwargs: SimpleNamespace(model_name="toy", stats=lambda: {"mode_label": "stub", "encoder_status": "ready"}))
+    memory_calls: list[dict[str, object]] = []
+
+    def _memory_stub(**kwargs):
+        memory_calls.append(kwargs)
+        return SimpleNamespace(
+            stats=lambda **_kw: {"mode_label": "lexical", "min_score_default": 0.3},
+        )
+
+    monkeypatch.setattr(alphanus_cli, "VectorMemory", _memory_stub)
     runtime_calls: list[dict[str, object]] = []
 
     def _skill_runtime_stub(**kwargs):
@@ -88,3 +96,5 @@ def test_main_does_not_block_on_model_readiness_before_launching_tui(monkeypatch
     assert app_calls == ["init", "run"]
     assert runtime_calls
     assert runtime_calls[0]["skills_dir"] == str(tmp_path / "skills")
+    assert memory_calls
+    assert memory_calls[0]["storage_path"] == str((tmp_path / "ws" / ".alphanus" / "memory" / "events.jsonl").resolve())

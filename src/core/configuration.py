@@ -8,8 +8,6 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 from urllib.parse import urlparse
 
-from core.memory import RECOMMENDED_EMBEDDING_MODEL_NAME
-
 SCHEMA_VERSION = "1.0.0"
 MAX_CONFIG_BYTES = 512 * 1024
 
@@ -65,10 +63,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "path": "~/Desktop/Alphanus-Workspace",
     },
     "memory": {
-        "path": "./memories/memory.pkl",
-        "model_name": RECOMMENDED_EMBEDDING_MODEL_NAME,
-        "eager_load_encoder": False,
-        "allow_model_download": True,
+        "min_score_default": 0.3,
+        "recall_min_score_default": 0.18,
+        "replace_min_score_default": 0.72,
+        "backup_revisions": 2,
     },
     "context": {
         "context_limit": 8192,
@@ -539,32 +537,55 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
     merged["workspace"] = workspace_cfg
 
     memory_cfg = merged.get("memory", {}) if isinstance(merged.get("memory"), dict) else {}
-    memory_cfg["path"] = _coerce_string(
-        memory_cfg.get("path"),
-        str(DEFAULT_CONFIG["memory"]["path"]),
-        path="memory.path",
+    memory_cfg["min_score_default"] = _coerce_float(
+        memory_cfg.get("min_score_default"),
+        float(DEFAULT_CONFIG["memory"]["min_score_default"]),
+        path="memory.min_score_default",
         warnings=warnings,
-        allow_empty=False,
+        minimum=0.0,
+        maximum=1.0,
     )
-    memory_cfg["model_name"] = _coerce_string(
-        memory_cfg.get("model_name"),
-        str(DEFAULT_CONFIG["memory"]["model_name"]),
-        path="memory.model_name",
+    memory_cfg["recall_min_score_default"] = _coerce_float(
+        memory_cfg.get("recall_min_score_default"),
+        float(DEFAULT_CONFIG["memory"]["recall_min_score_default"]),
+        path="memory.recall_min_score_default",
         warnings=warnings,
-        allow_empty=False,
+        minimum=0.0,
+        maximum=1.0,
     )
-    memory_cfg["eager_load_encoder"] = _coerce_bool(
-        memory_cfg.get("eager_load_encoder"),
-        bool(DEFAULT_CONFIG["memory"]["eager_load_encoder"]),
-        path="memory.eager_load_encoder",
+    memory_cfg["replace_min_score_default"] = _coerce_float(
+        memory_cfg.get("replace_min_score_default"),
+        float(DEFAULT_CONFIG["memory"]["replace_min_score_default"]),
+        path="memory.replace_min_score_default",
         warnings=warnings,
+        minimum=0.0,
+        maximum=1.0,
     )
-    memory_cfg["allow_model_download"] = _coerce_bool(
-        memory_cfg.get("allow_model_download"),
-        bool(DEFAULT_CONFIG["memory"]["allow_model_download"]),
-        path="memory.allow_model_download",
+    memory_cfg["backup_revisions"] = _coerce_int(
+        memory_cfg.get("backup_revisions"),
+        int(DEFAULT_CONFIG["memory"]["backup_revisions"]),
+        path="memory.backup_revisions",
         warnings=warnings,
+        minimum=0,
+        maximum=20,
     )
+    legacy_memory_keys = [
+        "path",
+        "allow_schema_migration",
+        "model_name",
+        "eager_load_encoder",
+        "allow_model_download",
+        "encoder_retry_attempts",
+        "encoder_retry_backoff_s",
+        "encoder_init_timeout_s",
+    ]
+    for key in legacy_memory_keys:
+        if key in memory_cfg:
+            memory_cfg.pop(key, None)
+            if key == "path":
+                _warn(warnings, "memory.path: ignored; storage is fixed at <workspace>/.alphanus/memory/events.jsonl")
+            else:
+                _warn(warnings, f"memory.{key}: removed legacy memory setting")
     merged["memory"] = memory_cfg
 
     context_cfg = merged.get("context", {}) if isinstance(merged.get("context"), dict) else {}

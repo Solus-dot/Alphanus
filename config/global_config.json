@@ -17,10 +17,10 @@
     "path": "~/Desktop/Alphanus-Workspace"
   },
   "memory": {
-    "path": "./memories/memory.pkl",
-    "model_name": "BAAI/bge-small-en-v1.5",
-    "eager_load_encoder": false,
-    "allow_model_download": true
+    "min_score_default": 0.3,
+    "recall_min_score_default": 0.18,
+    "replace_min_score_default": 0.72,
+    "backup_revisions": 2
   },
   "context": {
     "keep_last_n": 10

@@ -3,29 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-import numpy as np
 import pytest
 
 from core.memory import VectorMemory
 from core.workspace import WorkspaceManager
-
-
-class _TestSentenceTransformer:
-    dim = 48
-
-    def encode(self, texts, normalize_embeddings: bool = True) -> np.ndarray:
-        vectors = []
-        for text in texts:
-            vec = np.zeros(self.dim, dtype=np.float32)
-            for token in text.lower().split():
-                idx = sum(token.encode("utf-8")) % self.dim
-                vec[idx] += 1.0
-            if normalize_embeddings:
-                norm = np.linalg.norm(vec)
-                if norm > 0:
-                    vec /= norm
-            vectors.append(vec)
-        return np.asarray(vectors, dtype=np.float32)
 
 
 @pytest.fixture(autouse=True)
@@ -36,17 +17,6 @@ def _disable_model_classification():
         return_value=False,
     ):
         yield
-
-
-@pytest.fixture(autouse=True)
-def _stub_memory_transformer_loader(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(
-        VectorMemory,
-        "_load_transformer_encoder",
-        lambda self, _model_name: _TestSentenceTransformer(),
-        raising=True,
-    )
-    yield
 
 
 @pytest.fixture
