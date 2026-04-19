@@ -13,7 +13,7 @@ from core.configuration import (
     resolve_path,
     validate_endpoint_policy,
 )
-from core.memory import RECOMMENDED_EMBEDDING_MODEL_NAME, VectorMemory
+from core.memory import VectorMemory
 from core.skills import SkillRuntime
 from core.workspace import WorkspaceManager
 from tui.interface import AlphanusTUI
@@ -80,15 +80,14 @@ def main() -> int:
         logger.warning(f"config: {warning}")
 
     workspace_root = resolve_path(config["workspace"]["path"], app_paths.app_root)
-    memory_path = resolve_path(config["memory"]["path"], app_paths.app_root)
 
     workspace = WorkspaceManager(workspace_root=workspace_root)
+    memory_path = str((Path(workspace.workspace_root).resolve() / ".alphanus" / "memory" / "events.jsonl").resolve())
     memory_cfg = config.get("memory", {})
     memory = VectorMemory(
         storage_path=memory_path,
-        model_name=str(memory_cfg.get("model_name", RECOMMENDED_EMBEDDING_MODEL_NAME)),
-        eager_load_encoder=bool(memory_cfg.get("eager_load_encoder", False)),
-        allow_model_download=bool(memory_cfg.get("allow_model_download", True)),
+        min_score=float(memory_cfg.get("min_score_default", 0.3)),
+        backup_revisions=int(memory_cfg.get("backup_revisions", 2)),
     )
     runtime_skills_dir = _resolve_runtime_skills_dir(app_paths)
     _seed_runtime_skills(runtime_skills_dir, Path(app_paths.bundled_skills_dir))
@@ -106,10 +105,9 @@ def main() -> int:
 
     if not config.get("agent", {}).get("tls_verify", True):
         logger.warning("TLS verification is disabled (agent.tls_verify=false)")
-    memory_stats = memory.stats()
-    logger.info(f"[info] memory mode: {memory_stats['mode_label']} ({memory.model_name})")
-    if memory_stats.get("encoder_status") != "ready" and memory_stats.get("encoder_detail"):
-        logger.warning(f"memory encoder unavailable: {memory_stats['encoder_detail']}")
+    memory_stats = memory.stats(probe_encoder=False)
+    logger.info(f"[info] memory mode: {memory_stats.get('mode_label', 'lexical')}")
+    logger.info(f"[info] memory min_score_default: {memory_stats.get('min_score_default', 0.3)}")
     logger.info("use /doctor inside the TUI for readiness and health diagnostics.")
 
     logger.info("startup skips blocking model handshake; TUI status will refresh asynchronously.")
