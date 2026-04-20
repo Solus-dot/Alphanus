@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from textual.containers import Horizontal, ScrollableContainer, Vertical
@@ -24,7 +25,15 @@ def initialize_shell_state(app: Any, *, agent: Any, debug: bool) -> None:
     app._inactive_tool_argument_char_limit = app._ui_config.inactive_tool_argument_char_limit
     app._inactive_tool_content_char_limit = app._ui_config.inactive_tool_content_char_limit
 
-    app._session_store = SessionStore(app.agent.skill_runtime.workspace.workspace_root)
+    runtime_cfg = app.agent.config.get("runtime", {}) if isinstance(app.agent.config, dict) else {}
+    configured_state_root = str(runtime_cfg.get("state_root", "")).strip() if isinstance(runtime_cfg, dict) else ""
+    if not configured_state_root:
+        raise ValueError("runtime.state_root is required in normalized runtime config")
+    state_root = Path(configured_state_root).expanduser().resolve()
+    app._session_store = SessionStore(
+        state_root,
+        storage_dir=state_root / "sessions",
+    )
     app._session_id = ""
     app._session_title = ""
     app._session_created_at = ""

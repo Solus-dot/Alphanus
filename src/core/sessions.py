@@ -13,7 +13,7 @@ from core.conv_tree import ConvTree
 
 MANIFEST_SCHEMA_VERSION = "1.0.0"
 SESSION_SCHEMA_VERSION = "1.0.0"
-DEFAULT_SESSIONS_DIRNAME = ".alphanus/sessions"
+DEFAULT_SESSIONS_DIRNAME = "sessions"
 
 
 def _major(version: str) -> int:

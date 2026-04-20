@@ -14,16 +14,17 @@ APP_ROOT_ENV_VAR = "ALPHANUS_APP_ROOT"
 @dataclass(frozen=True)
 class AppPaths:
     app_root: Path
+    state_root: Path
     bundled_skills_dir: Path
     repo_root: Path | None
 
     @property
     def config_path(self) -> Path:
-        return self.app_root / "config" / "global_config.json"
+        return self.state_root / "config" / "global_config.json"
 
     @property
     def dotenv_path(self) -> Path:
-        return self.app_root / ".env"
+        return self.state_root / ".env"
 
 
 def _is_repo_checkout(root: Path) -> bool:
@@ -58,18 +59,25 @@ def default_workspace_root(home_root: Path | None = None) -> Path:
     return (home / "Desktop" / DEFAULT_WORKSPACE_DIRNAME).resolve()
 
 
-def _installed_app_root() -> Path:
+def default_state_root(home_root: Path | None = None) -> Path:
+    home = (home_root or Path.home()).resolve()
+    return (home / DEFAULT_APP_DIRNAME).resolve()
+
+
+def _installed_state_root() -> Path:
     override = os.environ.get(APP_ROOT_ENV_VAR, "").strip()
     if override:
         return Path(os.path.expanduser(override)).resolve()
-    return (default_workspace_root() / DEFAULT_APP_DIRNAME).resolve()
+    return default_state_root()
 
 
 def get_app_paths() -> AppPaths:
     repo_root = _detect_repo_root()
-    app_root = repo_root if repo_root is not None else _installed_app_root()
+    state_root = _installed_state_root()
+    app_root = repo_root if repo_root is not None else state_root
     return AppPaths(
         app_root=app_root,
+        state_root=state_root,
         bundled_skills_dir=_bundled_skills_dir(),
         repo_root=repo_root,
     )
