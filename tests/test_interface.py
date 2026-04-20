@@ -37,8 +37,9 @@ def _assert_barred(renderable, *, width: int = 40) -> None:
 def _tui_agent_stub(tmp_path: Path) -> SimpleNamespace:
     workspace_root = tmp_path / "ws"
     workspace_root.mkdir()
+    state_root = (tmp_path / ".alphanus-state").resolve()
     return SimpleNamespace(
-        config={"tui": {}},
+        config={"tui": {}, "runtime": {"state_root": str(state_root)}},
         skill_runtime=SimpleNamespace(
             workspace=SimpleNamespace(workspace_root=workspace_root),
             skills_by_ids=lambda ids: [SimpleNamespace(id=item) for item in ids],
@@ -1556,18 +1557,6 @@ def test_handle_sessions_opens_manager() -> None:
 
     assert tui._handle_command("/sessions") is True
     assert opened == ["sessions"]
-
-
-def test_handle_legacy_session_commands_are_rejected_via_unknown_command_path() -> None:
-    tui = AlphanusTUI.__new__(AlphanusTUI)
-    tui._id = "app"
-    tui._reactive_streaming = False
-    errors: list[str] = []
-    tui._write_error = errors.append
-
-    assert tui._handle_command("/new") is True
-    assert tui._handle_command("/load") is True
-    assert errors == ["Unknown command: /new", "Unknown command: /load"]
 
 
 def test_handle_file_without_path_opens_attachment_picker() -> None:

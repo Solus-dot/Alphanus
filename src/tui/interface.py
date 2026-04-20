@@ -24,7 +24,7 @@ from alphanus_paths import get_app_paths
 from core.attachments import build_content, classify_attachment
 from core.configuration import (
     config_for_editor_view,
-    load_or_create_global_config,
+    load_global_config,
     normalize_config,
     validate_endpoint_policy,
 )
@@ -1374,7 +1374,7 @@ class AlphanusTUI(App):
     def _open_config_editor(self) -> None:
         warnings: List[str] = []
         try:
-            raw = load_or_create_global_config(_global_config_path(), warnings=warnings)
+            raw = load_global_config(_global_config_path(), warnings=warnings)
         except (OSError, ValueError) as exc:
             self._write_error(f"Config load failed: {exc}")
             return

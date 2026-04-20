@@ -536,9 +536,10 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
     )
     merged["workspace"] = workspace_cfg
 
-    memory_cfg = merged.get("memory", {}) if isinstance(merged.get("memory"), dict) else {}
+    raw_memory_cfg = merged.get("memory", {}) if isinstance(merged.get("memory"), dict) else {}
+    memory_cfg: Dict[str, Any] = {}
     memory_cfg["min_score_default"] = _coerce_float(
-        memory_cfg.get("min_score_default"),
+        raw_memory_cfg.get("min_score_default"),
         float(DEFAULT_CONFIG["memory"]["min_score_default"]),
         path="memory.min_score_default",
         warnings=warnings,
@@ -546,7 +547,7 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         maximum=1.0,
     )
     memory_cfg["recall_min_score_default"] = _coerce_float(
-        memory_cfg.get("recall_min_score_default"),
+        raw_memory_cfg.get("recall_min_score_default"),
         float(DEFAULT_CONFIG["memory"]["recall_min_score_default"]),
         path="memory.recall_min_score_default",
         warnings=warnings,
@@ -554,7 +555,7 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         maximum=1.0,
     )
     memory_cfg["replace_min_score_default"] = _coerce_float(
-        memory_cfg.get("replace_min_score_default"),
+        raw_memory_cfg.get("replace_min_score_default"),
         float(DEFAULT_CONFIG["memory"]["replace_min_score_default"]),
         path="memory.replace_min_score_default",
         warnings=warnings,
@@ -562,30 +563,13 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         maximum=1.0,
     )
     memory_cfg["backup_revisions"] = _coerce_int(
-        memory_cfg.get("backup_revisions"),
+        raw_memory_cfg.get("backup_revisions"),
         int(DEFAULT_CONFIG["memory"]["backup_revisions"]),
         path="memory.backup_revisions",
         warnings=warnings,
         minimum=0,
         maximum=20,
     )
-    legacy_memory_keys = [
-        "path",
-        "allow_schema_migration",
-        "model_name",
-        "eager_load_encoder",
-        "allow_model_download",
-        "encoder_retry_attempts",
-        "encoder_retry_backoff_s",
-        "encoder_init_timeout_s",
-    ]
-    for key in legacy_memory_keys:
-        if key in memory_cfg:
-            memory_cfg.pop(key, None)
-            if key == "path":
-                _warn(warnings, "memory.path: ignored; storage is fixed at <workspace>/.alphanus/memory/events.jsonl")
-            else:
-                _warn(warnings, f"memory.{key}: removed legacy memory setting")
     merged["memory"] = memory_cfg
 
     context_cfg = merged.get("context", {}) if isinstance(merged.get("context"), dict) else {}
@@ -841,11 +825,9 @@ def validate_endpoint_policy(config: Dict[str, Any]) -> None:
         raise ValueError("agent.model_endpoint and agent.models_endpoint must share host")
 
 
-def load_or_create_global_config(path: Path, *, warnings: List[str] | None = None) -> Dict[str, Any]:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _load_existing_global_config(path: Path, *, warnings: List[str] | None = None) -> Dict[str, Any]:
     if not path.exists():
-        path.write_text(json.dumps(config_for_editor_view(DEFAULT_CONFIG), indent=2) + "\n", encoding="utf-8")
-        return copy.deepcopy(DEFAULT_CONFIG)
+        raise FileNotFoundError(f"Global config not found at {path}")
 
     size = path.stat().st_size
     if size > MAX_CONFIG_BYTES:
@@ -870,6 +852,10 @@ def load_or_create_global_config(path: Path, *, warnings: List[str] | None = Non
     if warnings is not None:
         warnings.extend(local_warnings)
     return normalized
+
+
+def load_global_config(path: Path, *, warnings: List[str] | None = None) -> Dict[str, Any]:
+    return _load_existing_global_config(path, warnings=warnings)
 
 
 def load_dotenv(path: Path) -> None:

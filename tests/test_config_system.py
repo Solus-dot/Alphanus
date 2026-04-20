@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import json
 from pathlib import Path
 
 import pytest
@@ -9,7 +8,7 @@ import pytest
 from core.configuration import (
     DEFAULT_CONFIG,
     load_dotenv,
-    load_or_create_global_config,
+    load_global_config,
     normalize_config,
     validate_endpoint_policy,
 )
@@ -62,16 +61,16 @@ def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
     assert normalized["search"]["provider"] == DEFAULT_CONFIG["search"]["provider"]
     assert normalized["tui"]["chat_log_max_lines"] == 100
 
-def test_load_or_create_global_config_reports_and_rejects_bad_json(tmp_path: Path) -> None:
+def test_load_global_config_reports_and_rejects_bad_json(tmp_path: Path) -> None:
     cfg = tmp_path / "config" / "global_config.json"
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text("{broken-json", encoding="utf-8")
 
     with pytest.raises(ValueError, match="Invalid global config JSON"):
-        load_or_create_global_config(cfg)
+        load_global_config(cfg)
 
 
-def test_load_or_create_global_config_scrubs_secret_fields_on_disk(tmp_path: Path) -> None:
+def test_load_global_config_scrubs_secret_fields_on_disk(tmp_path: Path) -> None:
     cfg = tmp_path / "config" / "global_config.json"
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text(
@@ -80,7 +79,7 @@ def test_load_or_create_global_config_scrubs_secret_fields_on_disk(tmp_path: Pat
     )
 
     warnings: list[str] = []
-    loaded = load_or_create_global_config(cfg, warnings=warnings)
+    loaded = load_global_config(cfg, warnings=warnings)
     disk = cfg.read_text(encoding="utf-8")
 
     assert "tavily_api_key" not in loaded["search"]
@@ -88,18 +87,11 @@ def test_load_or_create_global_config_scrubs_secret_fields_on_disk(tmp_path: Pat
     assert any("on disk" in warning for warning in warnings)
 
 
-def test_load_or_create_global_config_hides_internal_context_budget_fields_on_disk(tmp_path: Path) -> None:
+def test_load_global_config_fails_for_missing_file(tmp_path: Path) -> None:
     cfg = tmp_path / "config" / "global_config.json"
 
-    loaded = load_or_create_global_config(cfg)
-    written = json.loads(cfg.read_text(encoding="utf-8"))
-
-    assert loaded["agent"]["context_budget_max_tokens"] == DEFAULT_CONFIG["agent"]["context_budget_max_tokens"]
-    assert loaded["context"]["context_limit"] == DEFAULT_CONFIG["context"]["context_limit"]
-    assert loaded["context"]["safety_margin"] == DEFAULT_CONFIG["context"]["safety_margin"]
-    assert "context_budget_max_tokens" not in written["agent"]
-    assert "context_limit" not in written["context"]
-    assert "safety_margin" not in written["context"]
+    with pytest.raises(FileNotFoundError, match="Global config not found"):
+        load_global_config(cfg)
 
 
 def test_load_dotenv_supports_export_and_ignores_invalid_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -204,8 +196,6 @@ def test_normalize_config_clamps_memory_robustness_fields() -> None:
     assert "allow_schema_migration" not in normalized["memory"]
     assert "model_name" not in normalized["memory"]
     assert "allow_model_download" not in normalized["memory"]
-    assert any("memory.path: ignored" in warning for warning in warnings)
-    assert any("legacy memory setting" in warning for warning in warnings)
 
 
 def test_typed_runtime_configs_parse_normalized_config() -> None:
