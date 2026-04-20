@@ -87,6 +87,8 @@ Set any required environment variables:
 Run Alphanus:
 
 ```bash
+uv run alphanus init
+uv run alphanus doctor
 uv run alphanus
 ```
 
@@ -95,13 +97,60 @@ Useful flags:
 ```bash
 uv run alphanus --debug
 uv run alphanus --dangerously-skip-permissions
+uv run alphanus doctor --json --debug
+uv run alphanus run --debug
 ```
 
 Notes:
 
-* `.env` at the repo root is loaded automatically on startup without overriding already-set environment variables
-* Startup performs a `/v1/models` readiness handshake before the first turn
+* `.env` is loaded from `~/.alphanus/.env` without overriding already-set environment variables
+* `uv run alphanus` requires `~/.alphanus/config/global_config.json`; if missing, run `uv run alphanus init`
+* `uv run alphanus doctor` validates config, env, endpoint reachability, and workspace permissions
 * `uv run main.py` still works in a repo checkout, but `uv run alphanus` is the primary entrypoint
+
+---
+
+## Initialize the New System
+
+The runtime now separates app state from your workspace files.
+
+State lives in:
+
+* `~/.alphanus/config/global_config.json` (config)
+* `~/.alphanus/.env` (environment secrets)
+* `~/.alphanus/sessions/` (sessions)
+* `~/.alphanus/memory/` (memory)
+
+Workspace files remain at `workspace.path` (default `~/Desktop/Alphanus-Workspace`).
+
+Interactive setup:
+
+```bash
+uv run alphanus init
+```
+
+Non-interactive setup:
+
+```bash
+uv run alphanus init --non-interactive \
+  --workspace-path ~/Desktop/Alphanus-Workspace \
+  --model-endpoint http://127.0.0.1:8080/v1/chat/completions \
+  --models-endpoint http://127.0.0.1:8080/v1/models \
+  --search-provider tavily
+```
+
+Validate then launch:
+
+```bash
+uv run alphanus doctor
+uv run alphanus
+```
+
+Machine-readable doctor output:
+
+```bash
+uv run alphanus doctor --json
+```
 
 ---
 
@@ -109,8 +158,7 @@ Notes:
 
 Global config is stored at:
 
-* `config/global_config.json` in a repo checkout
-* `~/.alphanus/config/global_config.json` for an installed package
+* `~/.alphanus/config/global_config.json`
 
 At load and save time, Alphanus:
 
@@ -155,7 +203,9 @@ Important runtime notes:
 
 * `agent.request_timeout_s` is a stream idle timeout, not a total-turn deadline
 * `agent.max_tokens` defaults to `null`, so no explicit `max_tokens` cap is sent unless configured
-* memory persistence is fixed at `<workspace>/.alphanus/memory/` (`events.jsonl` source-of-truth, generated `facts.md`)
+* memory persistence is fixed at `~/.alphanus/memory/` (`events.jsonl` source-of-truth, generated `facts.md`)
+* session persistence is fixed at `~/.alphanus/sessions/`
+* workspace content remains rooted at `workspace.path` (default `~/Desktop/Alphanus-Workspace`)
 * Internal context budget defaults exist at runtime, but several budget controls are intentionally hidden from the editable config file and TUI editor
 * `search.provider` currently supports `tavily` and `brave`
 * Skills are discovered from the configured repo `skills/` root only
@@ -252,7 +302,7 @@ Important behavior:
 Session notes:
 
 * Startup opens a session picker before chat input
-* Sessions are stored under `.alphanus/sessions/` in the current workspace
+* Sessions are stored under `~/.alphanus/sessions/`
 * The active session is autosaved after each turn
 * Loaded skill IDs are persisted with the session
 
@@ -267,7 +317,7 @@ Notes:
 * `memory.min_score_default` sets the base lexical threshold for direct memory searches
 * `memory.recall_min_score_default` and `memory.replace_min_score_default` tune skill-level recall and replace-query behavior
 * `memory.backup_revisions` controls how many previous memory snapshots are kept as `.bakN` files
-* storage is fixed at `<workspace>/.alphanus/memory/` (`events.jsonl` is source-of-truth, `facts.md` is regenerated on flush)
+* storage is fixed at `~/.alphanus/memory/` (`events.jsonl` is source-of-truth, `facts.md` is regenerated on flush)
 * Retrieval is lexical-only
 * For corrections, prefer `replace_query` or `replace_ids` when calling memory tools
 
