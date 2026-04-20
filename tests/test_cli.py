@@ -220,3 +220,55 @@ def test_doctor_json_output_is_machine_readable(monkeypatch, capsys, tmp_path) -
     assert payload["ok"] is True
     assert payload["config_warnings"] == ["legacy warning"]
     assert payload["agent"]["ready"] is True
+
+
+def test_init_partial_reset_preserves_unselected_sections(monkeypatch, tmp_path) -> None:
+    state_root = tmp_path / ".alphanus"
+    config_path = state_root / "config" / "global_config.json"
+    dotenv_path = state_root / ".env"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("{}", encoding="utf-8")
+
+    existing_config = {
+        "workspace": {"path": str(tmp_path / "custom-workspace")},
+        "agent": {
+            "model_endpoint": "http://custom-host/v1/chat/completions",
+            "models_endpoint": "http://custom-host/v1/models",
+            "tls_verify": False,
+        },
+        "search": {"provider": "brave"},
+    }
+
+    monkeypatch.setattr(
+        alphanus_cli,
+        "get_app_paths",
+        lambda: SimpleNamespace(
+            app_root=tmp_path,
+            state_root=state_root,
+            config_path=config_path,
+            dotenv_path=dotenv_path,
+            bundled_skills_dir=tmp_path / "skills",
+            repo_root=tmp_path,
+        ),
+    )
+    monkeypatch.setattr(alphanus_cli, "load_global_config", lambda _path, warnings=None: existing_config)
+
+    exit_code = alphanus_cli._run_init(
+        SimpleNamespace(
+            section="model",
+            non_interactive=True,
+            reset=True,
+            workspace_path="",
+            model_endpoint="",
+            models_endpoint="",
+            search_provider="",
+        )
+    )
+
+    assert exit_code == 0
+    stored = json.loads(config_path.read_text(encoding="utf-8"))
+    assert stored["workspace"]["path"] == str(tmp_path / "custom-workspace")
+    assert stored["search"]["provider"] == "brave"
+    assert stored["agent"]["tls_verify"] is False
+    assert stored["agent"]["model_endpoint"] == alphanus_cli.DEFAULT_CONFIG["agent"]["model_endpoint"]
+    assert stored["agent"]["models_endpoint"] == alphanus_cli.DEFAULT_CONFIG["agent"]["models_endpoint"]

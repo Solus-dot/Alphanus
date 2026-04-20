@@ -2,7 +2,9 @@ import argparse
 import copy
 import json
 import logging
+import os
 import shutil
+import sys
 from pathlib import Path
 from typing import Any, Dict
 
@@ -23,6 +25,67 @@ from core.memory import VectorMemory
 from core.skills import SkillRuntime
 from core.workspace import WorkspaceManager
 from tui.interface import AlphanusTUI
+
+
+INIT_SECTIONS = ("all", "workspace", "model", "search")
+
+
+class _CliTheme:
+    def __init__(self) -> None:
+        term = os.environ.get("TERM", "").lower()
+        self.enabled = bool(getattr(sys.stdout, "isatty", lambda: False)()) and os.environ.get("NO_COLOR") is None and term != "dumb"
+        self.indigo = (99, 102, 241)  # #6366f1
+        self.muted_gray = (161, 161, 170)  # #a1a1aa
+        self.foreground = (228, 228, 231)  # #e4e4e7
+        self.ok_green = (16, 185, 129)  # #10b981
+        self.warn_amber = (245, 158, 11)  # #f59e0b
+        self.error_rose = (244, 63, 94)  # #f43f5e
+
+    def _fmt(self, text: str, code: str) -> str:
+        if not self.enabled:
+            return text
+        return f"\033[{code}m{text}\033[0m"
+
+    def _fg(self, text: str, rgb: tuple[int, int, int], *, bold: bool = False, dim: bool = False) -> str:
+        parts = []
+        if bold:
+            parts.append("1")
+        if dim:
+            parts.append("2")
+        parts.append(f"38;2;{rgb[0]};{rgb[1]};{rgb[2]}")
+        return self._fmt(text, ";".join(parts))
+
+    def brand(self, text: str) -> str:
+        if not self.enabled:
+            return text
+        return self._fmt(text, "1;38;2;99;102;241;48;2;26;23;48")
+
+    def heading(self, text: str) -> str:
+        return self._fg(text, self.indigo, bold=True)
+
+    def accent(self, text: str) -> str:
+        return self._fg(text, self.indigo, bold=True)
+
+    def muted(self, text: str) -> str:
+        return self._fg(text, self.muted_gray, dim=True)
+
+    def ok(self, text: str) -> str:
+        return self._fg(text, self.ok_green, bold=True)
+
+    def warn(self, text: str) -> str:
+        return self._fg(text, self.warn_amber, bold=True)
+
+    def error(self, text: str) -> str:
+        return self._fg(text, self.error_rose, bold=True)
+
+    def label(self, text: str) -> str:
+        return self._fg(text, self.foreground, bold=True)
+
+    def step(self, text: str) -> str:
+        return f"{self.accent('>')} {self.label(text)}"
+
+    def path(self, text: str) -> str:
+        return self._fg(text, (199, 210, 254))
 
 
 def _resolve_runtime_skills_dir(app_paths) -> Path:
@@ -67,7 +130,15 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("run", help="Launch the TUI", parents=[common])
 
     init_parser = subparsers.add_parser("init", help="Initialize ~/.alphanus config and env", parents=[common])
+    init_parser.add_argument(
+        "section",
+        nargs="?",
+        choices=INIT_SECTIONS,
+        default="all",
+        help="Initialize all settings or a specific section",
+    )
     init_parser.add_argument("--non-interactive", action="store_true", help="Use defaults/flags without prompts")
+    init_parser.add_argument("--reset", action="store_true", help="Reset selected section(s) to defaults before applying")
     init_parser.add_argument("--workspace-path", type=str, default="", help="Workspace root path")
     init_parser.add_argument("--model-endpoint", type=str, default="", help="Model chat completions endpoint")
     init_parser.add_argument("--models-endpoint", type=str, default="", help="Model listing endpoint")
@@ -130,9 +201,71 @@ def _build_agent_runtime(app_paths: Any, config: Dict[str, Any], *, debug: bool)
     return workspace, memory, runtime, agent
 
 
-def _prompt_with_default(label: str, default: str) -> str:
-    value = input(f"{label} [{default}]: ").strip()
+def _prompt_with_default(label: str, default: str, *, hint: str = "") -> str:
+    prompt = f"{label} [{default}]"
+    if hint:
+        prompt = f"{prompt}  {hint}"
+    value = input(f"{prompt}: ").strip()
     return value or default
+
+
+def _prompt_yes_no(label: str, *, default: bool = True) -> bool:
+    suffix = "[Y/n]" if default else "[y/N]"
+    raw = input(f"{label} {suffix}: ").strip().lower()
+    if not raw:
+        return default
+    if raw in {"y", "yes"}:
+        return True
+    if raw in {"n", "no"}:
+        return False
+    return default
+
+
+def _prompt_choice(theme: _CliTheme, label: str, options: list[tuple[str, str]], *, default: str) -> str:
+    print(theme.label(label))
+    for idx, (value, description) in enumerate(options, start=1):
+        print(f"  {theme.accent(str(idx) + '.')} {value:<7} {theme.muted(description)}")
+    default_index = next((idx for idx, (value, _desc) in enumerate(options, start=1) if value == default), 1)
+    while True:
+        raw = input(f"Choose provider [{default_index}]: ").strip().lower()
+        if not raw:
+            return default
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= len(options):
+                return options[idx - 1][0]
+        for value, _desc in options:
+            if raw == value:
+                return value
+        print(theme.warn("Invalid choice. Enter option number or provider name."))
+
+
+def _section_selected(section: str, name: str) -> bool:
+    return section == "all" or section == name
+
+
+def _apply_reset_scope(base: Dict[str, Any], *, section: str) -> Dict[str, Any]:
+    if section == "all":
+        return copy.deepcopy(DEFAULT_CONFIG)
+
+    updated = copy.deepcopy(base)
+    default_cfg = copy.deepcopy(DEFAULT_CONFIG)
+
+    if _section_selected(section, "workspace"):
+        updated["workspace"] = copy.deepcopy(default_cfg.get("workspace", {}))
+
+    if _section_selected(section, "model"):
+        current_agent = updated.get("agent", {}) if isinstance(updated.get("agent"), dict) else {}
+        default_agent = default_cfg.get("agent", {}) if isinstance(default_cfg.get("agent"), dict) else {}
+        for key in ("model_endpoint", "models_endpoint"):
+            if key in default_agent:
+                current_agent[key] = copy.deepcopy(default_agent[key])
+        updated["agent"] = current_agent
+
+    if _section_selected(section, "search"):
+        updated["search"] = copy.deepcopy(default_cfg.get("search", {}))
+
+    return updated
 
 
 def _ensure_dotenv_template(dotenv_path: Path) -> None:
@@ -153,6 +286,11 @@ def _ensure_dotenv_template(dotenv_path: Path) -> None:
 
 
 def _run_init(args: argparse.Namespace) -> int:
+    theme = _CliTheme()
+    section = str(getattr(args, "section", "all") or "all").strip().lower()
+    if section not in INIT_SECTIONS:
+        section = "all"
+    reset_requested = bool(getattr(args, "reset", False))
     app_paths = get_app_paths()
     state_root = Path(app_paths.state_root)
     state_root.mkdir(parents=True, exist_ok=True)
@@ -165,44 +303,103 @@ def _run_init(args: argparse.Namespace) -> int:
             base = deep_merge(base, existing)
         except (OSError, ValueError):
             base = copy.deepcopy(DEFAULT_CONFIG)
+    if reset_requested:
+        base = _apply_reset_scope(base, section=section)
+
+    workspace_default = str(base.get("workspace", {}).get("path", DEFAULT_CONFIG["workspace"]["path"]))
+    model_endpoint_default = str(base.get("agent", {}).get("model_endpoint", DEFAULT_CONFIG["agent"]["model_endpoint"]))
+    models_endpoint_default = str(base.get("agent", {}).get("models_endpoint", DEFAULT_CONFIG["agent"]["models_endpoint"]))
+    search_provider_default = str(base.get("search", {}).get("provider", DEFAULT_CONFIG["search"]["provider"]))
+
+    workspace_path = workspace_default
+    model_endpoint = model_endpoint_default
+    models_endpoint = models_endpoint_default
+    search_provider = search_provider_default
 
     if args.non_interactive:
-        workspace_path = args.workspace_path.strip() or str(base.get("workspace", {}).get("path", DEFAULT_CONFIG["workspace"]["path"]))
-        model_endpoint = args.model_endpoint.strip() or str(base.get("agent", {}).get("model_endpoint", DEFAULT_CONFIG["agent"]["model_endpoint"]))
-        models_endpoint = args.models_endpoint.strip() or str(base.get("agent", {}).get("models_endpoint", DEFAULT_CONFIG["agent"]["models_endpoint"]))
-        search_provider = args.search_provider.strip() or str(base.get("search", {}).get("provider", DEFAULT_CONFIG["search"]["provider"]))
+        print(theme.brand(" ALPHANUS INIT "))
+        print(theme.muted(f"Applying non-interactive setup profile ({section})."))
+        if _section_selected(section, "workspace"):
+            workspace_path = args.workspace_path.strip() or workspace_default
+        if _section_selected(section, "model"):
+            model_endpoint = args.model_endpoint.strip() or model_endpoint_default
+            models_endpoint = args.models_endpoint.strip() or models_endpoint_default
+        if _section_selected(section, "search"):
+            search_provider = args.search_provider.strip() or search_provider_default
     else:
-        print("Alphanus setup")
-        print(f"State root: {state_root}")
-        workspace_path = _prompt_with_default(
-            "Workspace path",
-            str(base.get("workspace", {}).get("path", DEFAULT_CONFIG["workspace"]["path"])),
-        )
-        model_endpoint = _prompt_with_default(
-            "Model endpoint",
-            str(base.get("agent", {}).get("model_endpoint", DEFAULT_CONFIG["agent"]["model_endpoint"])),
-        )
-        models_endpoint = _prompt_with_default(
-            "Models endpoint",
-            str(base.get("agent", {}).get("models_endpoint", DEFAULT_CONFIG["agent"]["models_endpoint"])),
-        )
-        search_provider = _prompt_with_default(
-            "Search provider (tavily/brave)",
-            str(base.get("search", {}).get("provider", DEFAULT_CONFIG["search"]["provider"])),
-        ).lower()
+        print(theme.brand(" ALPHANUS SETUP "))
+        print(theme.muted(f"Wizard scope: {section}. Press Enter to keep defaults."))
+        print(theme.muted("We'll configure runtime state, model connectivity, and web search defaults."))
+        print(f"{theme.label('State root:')} {state_root}")
+        print("")
+        if _section_selected(section, "workspace"):
+            print(theme.accent("Step 1/3: Workspace"))
+            workspace_path = _prompt_with_default(
+                "Workspace path",
+                workspace_default,
+                hint=theme.muted("where project files live"),
+            )
+            print("")
+        if _section_selected(section, "model"):
+            print(theme.accent("Step 2/3: Model endpoint"))
+            use_local = _prompt_yes_no(
+                "Use the local OpenAI-compatible endpoint preset (127.0.0.1:8080)?",
+                default=model_endpoint_default == str(DEFAULT_CONFIG["agent"]["model_endpoint"]),
+            )
+            if use_local:
+                model_endpoint = str(DEFAULT_CONFIG["agent"]["model_endpoint"])
+                models_endpoint = str(DEFAULT_CONFIG["agent"]["models_endpoint"])
+                print(theme.muted("Applied local preset for /v1/chat/completions and /v1/models."))
+            else:
+                model_endpoint = _prompt_with_default(
+                    "Model endpoint",
+                    model_endpoint_default,
+                    hint=theme.muted("chat completions endpoint"),
+                )
+                models_endpoint = _prompt_with_default(
+                    "Models endpoint",
+                    models_endpoint_default,
+                    hint=theme.muted("model catalog endpoint"),
+                )
+            print("")
+        if _section_selected(section, "search"):
+            print(theme.accent("Step 3/3: Search provider"))
+            search_provider = _prompt_choice(
+                theme,
+                "Choose a provider:",
+                [
+                    ("tavily", "recommended default, requires TAVILY_API_KEY"),
+                    ("brave", "alternative, requires BRAVE_SEARCH_API_KEY"),
+                ],
+                default=search_provider_default,
+            )
+            print("")
 
-    updates = {
-        "workspace": {"path": workspace_path},
-        "agent": {"model_endpoint": model_endpoint, "models_endpoint": models_endpoint},
-        "search": {"provider": search_provider},
-    }
+    updates: Dict[str, Any] = {}
+    if _section_selected(section, "workspace"):
+        updates["workspace"] = {"path": workspace_path}
+    if _section_selected(section, "model"):
+        updates["agent"] = {"model_endpoint": model_endpoint, "models_endpoint": models_endpoint}
+    if _section_selected(section, "search"):
+        updates["search"] = {"provider": search_provider}
     merged = deep_merge(base, updates)
     try:
         normalized, warnings = normalize_config(merged)
         validate_endpoint_policy(normalized)
     except ValueError as exc:
-        print(f"init failed: {exc}")
+        print(f"{theme.error('init failed:')} {exc}")
         return 2
+
+    if not args.non_interactive:
+        print(theme.accent("Review"))
+        print(f"  {theme.label('Workspace:')} {normalized['workspace']['path']}")
+        print(f"  {theme.label('Model endpoint:')} {normalized['agent']['model_endpoint']}")
+        print(f"  {theme.label('Models endpoint:')} {normalized['agent']['models_endpoint']}")
+        print(f"  {theme.label('Search provider:')} {normalized['search']['provider']}")
+        print(f"  {theme.label('Secrets file:')} {app_paths.dotenv_path}")
+        if not _prompt_yes_no("Write these settings now?", default=True):
+            print(theme.warn("Setup cancelled. No files were written."))
+            return 1
 
     cleaned = config_for_editor_view(normalized)
     app_paths.config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -210,14 +407,22 @@ def _run_init(args: argparse.Namespace) -> int:
     _ensure_dotenv_template(app_paths.dotenv_path)
 
     for warning in existing_warnings + warnings:
-        print(f"config warning: {warning}")
-    print(f"Initialized config: {app_paths.config_path}")
-    print(f"Initialized env template: {app_paths.dotenv_path}")
-    print("Next steps: `uv run alphanus doctor` then `uv run alphanus`")
+        print(f"{theme.warn('config warning:')} {warning}")
+    print("")
+    print(theme.ok("Initialization complete."))
+    print(f"  {theme.label('Config:')} {theme.path(str(app_paths.config_path))}")
+    print(f"  {theme.label('Env:')} {theme.path(str(app_paths.dotenv_path))}")
+    print(f"  {theme.label('Sessions:')} {theme.path(str((Path(app_paths.state_root) / 'sessions').resolve()))}")
+    print(f"  {theme.label('Memory:')} {theme.path(str((Path(app_paths.state_root) / 'memory').resolve()))}")
+    print("")
+    print(theme.accent("Next steps"))
+    print(f"  {theme.step('uv run alphanus doctor')}  {theme.muted('validate configuration and dependencies')}")
+    print(f"  {theme.step('uv run alphanus')}         {theme.muted('launch the interface')}")
     return 0
 
 
 def _run_doctor(args: argparse.Namespace) -> int:
+    theme = _CliTheme()
     app_paths = get_app_paths()
     try:
         config, warnings = _load_runtime_config(app_paths, args)
@@ -225,7 +430,7 @@ def _run_doctor(args: argparse.Namespace) -> int:
         if args.json:
             print(json.dumps({"ok": False, "error": str(exc), "config_warnings": []}, indent=2))
             return 2
-        print(f"doctor: config error: {exc}")
+        print(f"{theme.error('doctor config error:')} {exc}")
         return 2
 
     workspace, memory, _runtime, agent = _build_agent_runtime(app_paths, config, debug=args.debug)
@@ -237,20 +442,39 @@ def _run_doctor(args: argparse.Namespace) -> int:
         print(json.dumps(payload, indent=2))
     else:
         for warning in warnings:
-            print(f"config warning: {warning}")
-        print("Alphanus doctor")
-        print(f"  config: {app_paths.config_path}")
-        print(f"  env: {app_paths.dotenv_path}")
-        print(f"  sessions: {(Path(app_paths.state_root) / 'sessions').resolve()}")
-        print(f"  memory: {memory.storage_path}")
-        print(f"  workspace: {workspace.workspace_root}")
+            print(f"{theme.warn('config warning:')} {warning}")
         agent_status = report.get("agent", {}) if isinstance(report, dict) else {}
         workspace_status = report.get("workspace", {}) if isinstance(report, dict) else {}
         search_status = report.get("search", {}) if isinstance(report, dict) else {}
-        print(f"  endpoint policy: {agent_status.get('endpoint_policy_error') or 'ok'}")
-        print(f"  model ready: {bool(agent_status.get('ready'))}")
-        print(f"  workspace writable: {bool(workspace_status.get('writable'))}")
-        print(f"  search ready: {bool(search_status.get('ready'))} {search_status.get('reason') or ''}".rstrip())
+        endpoint_error = str(agent_status.get("endpoint_policy_error") or "").strip()
+        endpoint_ok = not endpoint_error
+        model_ok = bool(agent_status.get("ready"))
+        workspace_ok = bool(workspace_status.get("exists")) and bool(workspace_status.get("writable"))
+        search_ok = bool(search_status.get("ready"))
+
+        print("")
+        print(theme.brand(" ALPHANUS DOCTOR "))
+        print(theme.muted("Running health checks for config, model endpoint, workspace, and search integration."))
+        print("")
+        print(f"  {theme.label('Config:')} {theme.path(str(app_paths.config_path))}")
+        print(f"  {theme.label('Env:')} {theme.path(str(app_paths.dotenv_path))}")
+        print(f"  {theme.label('Sessions:')} {theme.path(str((Path(app_paths.state_root) / 'sessions').resolve()))}")
+        print(f"  {theme.label('Memory:')} {theme.path(str(memory.storage_path))}")
+        print(f"  {theme.label('Workspace:')} {theme.path(str(workspace.workspace_root))}")
+        print("\n")
+        print(theme.accent("Checks"))
+        endpoint_detail = "ok" if endpoint_ok else endpoint_error
+        endpoint_state = theme.ok("[OK]") if endpoint_ok else theme.error("[FAIL]")
+        model_state = theme.ok("[OK]") if model_ok else theme.warn("[WAIT]")
+        workspace_state = theme.ok("[OK]") if workspace_ok else theme.error("[FAIL]")
+        search_state = theme.ok("[OK]") if search_ok else theme.warn("[WAIT]")
+        search_detail = str(search_status.get("reason") or "").strip() or "ok"
+        endpoint_suffix = f"  {endpoint_detail}" if endpoint_detail != "ok" else ""
+        search_suffix = f"  {search_detail}" if search_detail != "ok" else ""
+        print(f"  endpoint policy:   {endpoint_state}{endpoint_suffix}")
+        print(f"  model readiness:   {model_state}")
+        print(f"  workspace access:  {workspace_state}")
+        print(f"  search provider:   {search_state}{search_suffix}")
 
     failures = []
     agent_status = report.get("agent", {}) if isinstance(report, dict) else {}
@@ -264,6 +488,15 @@ def _run_doctor(args: argparse.Namespace) -> int:
         failures.append("workspace")
     if not bool(search_status.get("ready")):
         failures.append("search")
+    if not args.json:
+        if failures:
+            print("")
+            print(f"{theme.error('Doctor result: FAIL')} ({', '.join(failures)})")
+            print(theme.muted("Fix failing checks, then rerun `uv run alphanus doctor`."))
+        else:
+            print("")
+            print(theme.ok("Doctor result: PASS"))
+        print("")
     return 1 if failures else 0
 
 
