@@ -186,7 +186,7 @@ ALPHANUS_TUI_CSS = """
         height: 6;
         background: #000000;
         layout: vertical;
-        padding: 0 0 0 3;
+        padding: 0 0 0 1;
     }
 
     #command-popup {
@@ -197,20 +197,20 @@ ALPHANUS_TUI_CSS = """
         display: none;
         position: absolute;
         overlay: screen;
-        padding: 0 1;
+        padding: 0 0;
     }
 
     #command-popup-title {
         height: auto;
         color: #6366f1;
-        padding: 1 1 0 1;
+        padding: 0 0 0 0;
         text-style: bold;
     }
 
     #command-popup-hint {
         height: auto;
         color: #a1a1aa;
-        padding: 0 1 1 1;
+        padding: 0 0 1 0;
     }
 
     #command-options {
@@ -219,7 +219,8 @@ ALPHANUS_TUI_CSS = """
         max-height: 8;
         background: #000000;
         border: none;
-        padding: 0 1 1 1;
+        padding: 0 0 0 0;
+        scrollbar-size: 1 1;
         scrollbar-background: #000000;
         scrollbar-background-hover: #18181b;
         scrollbar-background-active: #18181b;
@@ -294,7 +295,7 @@ ALPHANUS_TUI_CSS = """
         layout: horizontal;
         background: #000000;
         border: round #63636b;
-        padding: 0 1;
+        padding: 0 0;
         margin: 0 0 0 0;
         align: left middle;
     }
@@ -305,6 +306,7 @@ ALPHANUS_TUI_CSS = """
         border: none;
         background: transparent;
         color: #e4e4e7;
+        padding: 0 0;
     }
 
     ChatInput:focus {
