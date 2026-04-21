@@ -37,7 +37,7 @@ def refresh_command_popup(app: Any, value: str, *, chat_input_cls: Any) -> None:
     app._command_matches = next_matches
     option_rows = min(len(app._command_matches), 8)
     option_height = option_rows + 1
-    popup_height = option_height + 5
+    popup_height = option_height + 4
     separator = app.query_one("#footer-sep", Static)
     input_region = getattr(chat_input, "region", None)
     input_size = getattr(chat_input, "size", None)
@@ -57,7 +57,8 @@ def refresh_command_popup(app: Any, value: str, *, chat_input_cls: Any) -> None:
     popup.display = True
     popup.styles.height = popup_height
     popup.styles.width = max(44, min(72, max(input_width, 44)))
-    popup.offset = (max(1, input_x), max(1, separator_y - popup_height))
+    # Align popup content with the first input character column.
+    popup.offset = (max(1, input_x - 1), max(1, separator_y - popup_height + 1))
     options.styles.height = option_height
     rendered = [
         Option(
