@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -34,6 +35,7 @@ from core.sessions import ChatSession
 from tui.app_shell_runtime import compose_shell as compose_tui_shell
 from tui.app_shell_runtime import initialize_shell_state as init_tui_shell_state
 from tui.commands import (
+    COMMAND_ENTRIES,
     HELP_SECTIONS,
 )
 from tui.command_palette_runtime import (
@@ -75,6 +77,8 @@ from tui.interaction_runtime import (
     show_keyboard_shortcuts as show_tui_keyboard_shortcuts,
 )
 from tui.popups import (
+    CommandPaletteItem,
+    CommandPaletteModal,
     CodeViewerModal,
     ConfigEditorModal,
     PickerItem,
@@ -231,7 +235,8 @@ class ChatInput(Input):
     BINDINGS = [
         Binding("ctrl+h", "delete_left", show=False),
         Binding("ctrl+u", "clear_all", show=False),
-        Binding("ctrl+k", "kill_to_end", show=False),
+        Binding("ctrl+k", "open_global_palette", show=False),
+        Binding("ctrl+shift+k", "kill_to_end", show=False),
         Binding("ctrl+backspace", "remove_last_attachment", show=False),
         Binding("ctrl+shift+backspace", "clear_attachments", show=False),
         Binding("ctrl+f", "open_file_picker", show=False),
@@ -386,6 +391,9 @@ class ChatInput(Input):
     def action_open_command_palette(self) -> None:
         self._invoke_app_action("action_open_command_palette")
 
+    def action_open_global_palette(self) -> None:
+        self._invoke_app_action("action_open_global_palette")
+
     def action_open_file_picker(self) -> None:
         self._invoke_app_action("action_open_file_picker")
 
@@ -423,6 +431,7 @@ class AlphanusTUI(App):
         Binding("ctrl+shift+backspace", "clear_attachments", show=False),
         Binding("ctrl+f", "open_file_picker", show=False),
         Binding("ctrl+g", "focus_input", show=False),
+        Binding("ctrl+k", "open_global_palette", show=False),
         Binding("ctrl+p", "open_command_palette", show=False),
         Binding("tab", "focus_next_panel", show=False),
         Binding("shift+tab", "focus_prev_panel", show=False),
@@ -756,6 +765,7 @@ class AlphanusTUI(App):
                 "Keymap",
                 [
                     ("F1 / ?", "Show keyboard shortcuts"),
+                    ("Ctrl+K", "Open quick palette"),
                     ("Ctrl+P / /", "Open slash command palette"),
                     ("Ctrl+F", "Open file picker"),
                     ("Ctrl+G", "Focus composer"),
@@ -785,7 +795,7 @@ class AlphanusTUI(App):
                     ("Ctrl+Backspace", "Remove last attachment"),
                     ("Ctrl+Shift+Backspace", "Clear attachments"),
                     ("Ctrl+U", "Clear the full draft"),
-                    ("Ctrl+K", "Delete to end of line"),
+                    ("Ctrl+Shift+K", "Delete to end of line"),
                     ("/detach [n|last|all]", "Remove pending attachments"),
                 ],
             ),
@@ -830,6 +840,15 @@ class AlphanusTUI(App):
             chat_input.value = "/"
             chat_input.cursor_position = len(chat_input.value)
         self._refresh_command_popup(chat_input.value)
+
+    def action_open_global_palette(self) -> None:
+        if self.streaming or self._await_shell_confirm:
+            return
+        self._hide_command_popup()
+        self._set_focused_panel("input")
+        items, actions = self._build_global_palette_catalog()
+        self._global_palette_actions = actions
+        self.push_screen(CommandPaletteModal(items=items), self._on_global_palette_close)
 
     def action_open_file_picker(self) -> None:
         if self.streaming or self._await_shell_confirm:
@@ -1347,6 +1366,173 @@ class AlphanusTUI(App):
 
     def _on_attachment_picker_close(self, root_id: str, current_dir: str, result: Optional[Dict[str, str]]) -> None:
         on_tui_attachment_picker_close(self, root_id, current_dir, result, accent_color=ACCENT_COLOR)
+
+    def _workspace_file_candidates(self, *, max_items: int = 60) -> List[Path]:
+        root = self._workspace_root()
+        if not root.exists() or not root.is_dir():
+            return []
+        files: List[Path] = []
+        skip_dirs = {
+            ".git",
+            ".hg",
+            ".svn",
+            ".alphanus",
+            ".venv",
+            "venv",
+            "__pycache__",
+            "node_modules",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".ruff_cache",
+        }
+        for current, dirs, names in os.walk(root):
+            dirs[:] = sorted(
+                d
+                for d in dirs
+                if d not in skip_dirs and not d.startswith(".")
+            )
+            for name in sorted(names):
+                if name.startswith("."):
+                    continue
+                candidate = (Path(current) / name).resolve()
+                if not candidate.is_file():
+                    continue
+                if classify_attachment(str(candidate)) == "unknown":
+                    continue
+                files.append(candidate)
+                if len(files) >= max_items:
+                    return files
+        return files
+
+    def _build_global_palette_catalog(self) -> tuple[List[CommandPaletteItem], Dict[str, Dict[str, str]]]:
+        items: List[CommandPaletteItem] = []
+        actions: Dict[str, Dict[str, str]] = {}
+
+        def add_item(
+            *,
+            kind: str,
+            value: str,
+            prompt: str,
+            search_text: str,
+            rank: int,
+        ) -> None:
+            item_id = f"{kind}:{len(items)}"
+            items.append(
+                CommandPaletteItem(
+                    id=item_id,
+                    prompt=prompt,
+                    search_text=search_text,
+                    rank=rank,
+                )
+            )
+            actions[item_id] = {"kind": kind, "value": value}
+
+        for entry in COMMAND_ENTRIES:
+            aliases = " ".join(entry.aliases)
+            add_item(
+                kind="command_insert",
+                value=entry.insert_text,
+                prompt=(
+                    f"[bold #6366f1]cmd[/bold #6366f1] "
+                    f"[#f4f4f5]{esc(entry.prompt)}[/#f4f4f5] "
+                    f"[dim]{esc(entry.description)}[/dim]"
+                ),
+                search_text=f"command {entry.prompt} {aliases} {entry.description}".strip(),
+                rank=0,
+            )
+
+        for summary in self._session_store.list_sessions()[:20]:
+            state = (
+                "[bold #6366f1]active[/bold #6366f1]"
+                if summary.is_active
+                else "[#71717a]saved[/#71717a]"
+            )
+            add_item(
+                kind="session_open",
+                value=summary.id,
+                prompt=(
+                    f"[bold #10b981]session[/bold #10b981] "
+                    f"{state} [#f4f4f5]{esc(summary.title)}[/#f4f4f5] "
+                    f"[dim]{summary.turn_count} turns[/dim]"
+                ),
+                search_text=f"session {summary.id} {summary.title} {summary.turn_count} turns",
+                rank=1 if summary.is_active else 2,
+            )
+
+        workspace_root = self._workspace_root()
+        for path in self._workspace_file_candidates(max_items=60):
+            rel = self._root_relative_label(path, workspace_root)
+            add_item(
+                kind="file_attach",
+                value=str(path),
+                prompt=(
+                    f"[bold #f59e0b]file[/bold #f59e0b] "
+                    f"[#f4f4f5]{esc(rel)}[/#f4f4f5]"
+                ),
+                search_text=f"file {rel} {path.name}",
+                rank=3,
+            )
+
+        loaded_ids = set(getattr(self, "_loaded_skill_ids", []))
+        for skill in self.agent.skill_runtime.list_skills():
+            loaded = skill.id in loaded_ids
+            if not loaded and (not bool(getattr(skill, "enabled", False)) or not bool(getattr(skill, "available", False))):
+                continue
+            action = "unload" if loaded else "load"
+            state_markup = (
+                "[#22c55e]loaded[/#22c55e]"
+                if loaded
+                else "[#a1a1aa]available[/#a1a1aa]"
+            )
+            add_item(
+                kind="skill_toggle",
+                value=skill.id,
+                prompt=(
+                    f"[bold #22c55e]skill[/bold #22c55e] "
+                    f"[#f4f4f5]{esc(skill.id)}[/#f4f4f5] "
+                    f"{state_markup} [dim]{action}[/dim]"
+                ),
+                search_text=f"skill {skill.id} {skill.name} {skill.description} {action}",
+                rank=4 if loaded else 5,
+            )
+
+        return items, actions
+
+    def _on_global_palette_close(self, result: Optional[Dict[str, str]]) -> None:
+        self.query_one(ChatInput).focus()
+        selected_id = str((result or {}).get("id") or "").strip()
+        if not selected_id:
+            return
+        action = self._global_palette_actions.get(selected_id)
+        if not action:
+            return
+        kind = str(action.get("kind") or "").strip()
+        value = str(action.get("value") or "").strip()
+        if not kind or not value:
+            return
+        if kind == "command_insert":
+            chat_input = self.query_one(ChatInput)
+            chat_input.value = value
+            chat_input.cursor_position = len(chat_input.value)
+            self._refresh_command_popup(chat_input.value)
+            return
+        if kind == "session_open":
+            try:
+                self._load_session_from_manager(value)
+            except (ValueError, OSError, KeyError) as exc:
+                self._write_error(f"Load failed: {exc}")
+            return
+        if kind == "file_attach":
+            if self._attach_file_path(value):
+                self._write_info(f"Attached file: {Path(value).name}")
+            return
+        if kind == "skill_toggle":
+            if value in set(getattr(self, "_loaded_skill_ids", [])):
+                if self._unload_skill_from_session(value):
+                    self._write_info(f"Unloaded skill {value}")
+            else:
+                if self._load_skill_into_session(value):
+                    self._write_info(f"Loaded skill {value}")
 
     def _refresh_command_popup(self, value: str) -> None:
         refresh_tui_command_popup(self, value, chat_input_cls=ChatInput)

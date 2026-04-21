@@ -87,6 +87,7 @@ def initialize_shell_state(app: Any, *, agent: Any, debug: bool) -> None:
     app._shell_confirm_event = None
     app._shell_confirm_result = None
     app._command_matches = []
+    app._global_palette_actions = {}
     app._code_blocks = []
     app._show_tool_details = True
     app._pending_tool_details = []

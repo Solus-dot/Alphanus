@@ -16,7 +16,7 @@ from core.types import ModelStatus
 from tui.live_tool_preview import LiveToolPreviewManager
 from tui.commands import active_command_query, active_command_span, command_entries_for_query, popup_command_query
 from tui.interface import AlphanusTUI, ChatInput
-from tui.popups import SelectionPickerModal, SessionManagerModal, SessionNameModal
+from tui.popups import CommandPaletteModal, SelectionPickerModal, SessionManagerModal, SessionNameModal
 from tui.status_runtime import StatusRuntimeState
 from tui.stream_runtime import StreamRuntimeState
 from tui.transcript import ScrollAnchor, TranscriptEntry, TranscriptView
@@ -253,6 +253,8 @@ def test_active_command_span_covers_command_token() -> None:
 def test_chat_input_binds_new_shortcuts_locally() -> None:
     bindings = {binding.key: binding.action for binding in ChatInput.BINDINGS}
 
+    assert bindings["ctrl+k"] == "open_global_palette"
+    assert bindings["ctrl+shift+k"] == "kill_to_end"
     assert bindings["ctrl+backspace"] == "remove_last_attachment"
     assert bindings["ctrl+shift+backspace"] == "clear_attachments"
     assert bindings["ctrl+f"] == "open_file_picker"
@@ -421,6 +423,7 @@ async def test_chat_input_literal_placeholder_backspace_deletes_single_character
 def test_app_bindings_include_open_file_picker_shortcut() -> None:
     bindings = {binding.key: binding.action for binding in AlphanusTUI.BINDINGS}
 
+    assert bindings["ctrl+k"] == "open_global_palette"
     assert bindings["ctrl+backspace"] == "remove_last_attachment"
     assert bindings["ctrl+shift+backspace"] == "clear_attachments"
     assert bindings["ctrl+f"] == "open_file_picker"
@@ -1479,6 +1482,7 @@ def test_show_keymap_writes_expected_sections() -> None:
 
     assert "SECTION:Keymap" in lines
     assert any("F1 / ?" in line for line in lines)
+    assert any("Ctrl+K" in line for line in lines)
     assert any("Ctrl+P / /" in line for line in lines)
     assert any("Ctrl+F" in line for line in lines)
     assert any("Backspace (empty)" in line for line in lines)
@@ -1490,6 +1494,104 @@ def test_show_keymap_writes_expected_sections() -> None:
     assert any("SECTION:Slash Palette" == line for line in lines)
     assert any("Enter / o" in line for line in lines)
     assert len(set(command_cols)) == 1
+
+
+def test_action_open_global_palette_pushes_modal() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    tui._await_shell_confirm = False
+    calls: list[str] = []
+    captured: dict[str, object] = {}
+    tui._hide_command_popup = lambda: calls.append("hide")
+    tui._set_focused_panel = lambda panel: calls.append(f"focus:{panel}")
+    tui._build_global_palette_catalog = lambda: ([], {"x": {"kind": "command_insert", "value": "/help"}})
+    tui.push_screen = lambda modal, callback: captured.update({"modal": modal, "callback": callback})
+
+    tui.action_open_global_palette()
+
+    assert calls == ["hide", "focus:input"]
+    assert isinstance(captured.get("modal"), CommandPaletteModal)
+    assert callable(captured.get("callback"))
+
+
+def test_on_global_palette_close_inserts_command() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    chat_input = SimpleNamespace(value="", cursor_position=0, focus=lambda: None)
+    tui.query_one = lambda selector, _type=None: chat_input if selector is ChatInput else None
+    tui._global_palette_actions = {"a": {"kind": "command_insert", "value": "/doctor"}}
+    refreshed: list[str] = []
+    tui._refresh_command_popup = lambda value: refreshed.append(value)
+
+    tui._on_global_palette_close({"id": "a"})
+
+    assert chat_input.value == "/doctor"
+    assert chat_input.cursor_position == len("/doctor")
+    assert refreshed == ["/doctor"]
+
+
+def test_workspace_file_candidates_excludes_unsupported_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    supported = workspace / "notes.txt"
+    unsupported = workspace / "artifact.bin"
+    supported.write_text("hello", encoding="utf-8")
+    unsupported.write_bytes(b"\x00\x01")
+
+    monkeypatch.setattr(
+        "tui.interface.classify_attachment",
+        lambda path: "text" if path.endswith(".txt") else "unknown",
+    )
+
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._workspace_root = lambda: workspace
+
+    candidates = tui._workspace_file_candidates(max_items=10)
+
+    assert supported.resolve() in candidates
+    assert unsupported.resolve() not in candidates
+
+
+def test_global_palette_catalog_excludes_non_loadable_unloaded_skills() -> None:
+    def skill_stub(
+        skill_id: str,
+        *,
+        enabled: bool,
+        available: bool,
+        name: str = "Skill",
+        description: str = "desc",
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=skill_id,
+            enabled=enabled,
+            available=available,
+            name=name,
+            description=description,
+        )
+
+    loaded = skill_stub("loaded-skill", enabled=False, available=False)
+    loadable = skill_stub("loadable-skill", enabled=True, available=True)
+    disabled = skill_stub("disabled-skill", enabled=False, available=True)
+    unavailable = skill_stub("unavailable-skill", enabled=True, available=False)
+
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._workspace_file_candidates = lambda max_items=60: []
+    tui._workspace_root = lambda: Path("/tmp")
+    tui._root_relative_label = lambda path, root: path.name
+    tui._session_store = SimpleNamespace(list_sessions=lambda: [])
+    tui._loaded_skill_ids = ["loaded-skill"]
+    tui.agent = SimpleNamespace(skill_runtime=SimpleNamespace(list_skills=lambda: [loaded, loadable, disabled, unavailable]))
+
+    _items, actions = tui._build_global_palette_catalog()
+    skill_actions = [action for action in actions.values() if action.get("kind") == "skill_toggle"]
+    skill_ids = {str(action.get("value")) for action in skill_actions}
+
+    assert "loaded-skill" in skill_ids
+    assert "loadable-skill" in skill_ids
+    assert "disabled-skill" not in skill_ids
+    assert "unavailable-skill" not in skill_ids
 
 
 def test_handle_keyboard_shortcuts_command_renders_keymap() -> None:

@@ -762,3 +762,216 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
     @on(OptionList.OptionSelected, "#picker-modal-list")
     def _option_selected(self, _event: OptionList.OptionSelected) -> None:
         self.action_confirm()
+
+
+@dataclass(frozen=True)
+class CommandPaletteItem:
+    id: str
+    prompt: str
+    search_text: str
+    rank: int = 0
+
+
+class CommandPaletteModal(ModalScreen[Optional[Dict[str, str]]]):
+    CSS = """
+    CommandPaletteModal {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.78);
+    }
+
+    #command-palette-modal {
+        width: 84;
+        max-width: 94%;
+        height: auto;
+        background: #09090b;
+        border: solid #52525b;
+        padding: 0 1;
+    }
+
+    #command-palette-kicker {
+        color: #71717a;
+        padding: 0;
+    }
+
+    #command-palette-title {
+        color: #e4e4e7;
+        text-style: bold;
+        padding: 0;
+    }
+
+    #command-palette-subtitle {
+        color: #a1a1aa;
+        padding: 0;
+    }
+
+    #command-palette-query {
+        width: 1fr;
+        margin: 0;
+        background: #000000;
+        color: #e4e4e7;
+        border: round #63636b;
+    }
+
+    #command-palette-list {
+        width: 1fr;
+        height: auto;
+        max-height: 12;
+        background: #000000;
+        border: solid #52525b;
+        margin: 0;
+        padding: 0;
+    }
+
+    #command-palette-list > .option-list--option-highlighted {
+        color: #ffffff;
+        background: #1a1730;
+    }
+
+    #command-palette-empty {
+        color: #a1a1aa;
+        padding: 0;
+    }
+
+    #command-palette-hint {
+        color: #71717a;
+        padding: 0;
+    }
+
+    #command-palette-footer {
+        width: 1fr;
+        height: auto;
+        layout: vertical;
+        align-horizontal: left;
+        padding: 0;
+    }
+
+    #command-palette-open,
+    #command-palette-cancel {
+        width: 1fr;
+        border: none;
+        content-align: left middle;
+        height: 1;
+        padding: 0 1 0 1;
+        margin: 0;
+    }
+
+    #command-palette-open {
+        background: #0f1230;
+        color: #c7d2fe;
+    }
+
+    #command-palette-cancel {
+        background: #14161b;
+        color: #d4d4d8;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", show=False),
+        Binding("enter", "confirm", show=False),
+        Binding("return", "confirm", show=False),
+        Binding("down", "move_down", show=False),
+        Binding("up", "move_up", show=False),
+    ]
+
+    def __init__(self, *, items: list[CommandPaletteItem]) -> None:
+        super().__init__()
+        self._all_items = list(items)
+        self._filtered: list[CommandPaletteItem] = []
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="command-palette-modal"):
+            yield Static("QUICK OPEN", id="command-palette-kicker")
+            yield Static("Commands · Sessions · Files · Skills", id="command-palette-title")
+            yield Static("Type to search. Enter opens highlighted item.", id="command-palette-subtitle")
+            yield Input(placeholder="Search (e.g. doctor, session, py, skill)", id="command-palette-query")
+            yield OptionList(id="command-palette-list")
+            yield Static("", id="command-palette-empty")
+            yield Static("Shortcuts: [Enter] open · [Up/Down] move · [Esc] close", id="command-palette-hint")
+            with Vertical(id="command-palette-footer"):
+                yield Button("Open [Enter]", id="command-palette-open", variant="primary")
+                yield Button("Cancel [Esc]", id="command-palette-cancel", variant="default")
+
+    def on_mount(self) -> None:
+        self._refresh_options("")
+        self.query_one("#command-palette-query", Input).focus()
+
+    def _score_item(self, item: CommandPaletteItem, query: str) -> Optional[tuple[int, int, int, str]]:
+        q = query.strip().lower()
+        search = item.search_text.lower()
+        prompt = item.prompt.lower()
+        if not q:
+            return (item.rank, 9, len(prompt), prompt)
+        tokens = [part for part in q.split() if part]
+        if any(token not in search for token in tokens):
+            return None
+        starts = 0 if prompt.startswith(q) else 1
+        contains = 0 if q in prompt else 1
+        return (item.rank, starts + contains, len(prompt), prompt)
+
+    def _refresh_options(self, query: str) -> None:
+        ranked: list[tuple[tuple[int, int, int, str], CommandPaletteItem]] = []
+        for item in self._all_items:
+            score = self._score_item(item, query)
+            if score is None:
+                continue
+            ranked.append((score, item))
+        ranked.sort(key=lambda pair: pair[0])
+        self._filtered = [item for _score, item in ranked[:120]]
+
+        options = self.query_one("#command-palette-list", OptionList)
+        options.clear_options()
+        if self._filtered:
+            options.add_options([Option(item.prompt, id=item.id) for item in self._filtered])
+            options.highlighted = 0
+        empty = self.query_one("#command-palette-empty", Static)
+        empty.update("" if self._filtered else "No matches")
+        self.query_one("#command-palette-open", Button).disabled = not self._filtered
+
+    def _shift_selection(self, delta: int) -> None:
+        if not self._filtered:
+            return
+        options = self.query_one("#command-palette-list", OptionList)
+        current = 0 if options.highlighted is None else int(options.highlighted)
+        options.highlighted = (current + delta) % len(self._filtered)
+        options.scroll_to_highlight(top=False)
+
+    def action_move_down(self) -> None:
+        self._shift_selection(1)
+
+    def action_move_up(self) -> None:
+        self._shift_selection(-1)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_confirm(self) -> None:
+        if not self._filtered:
+            return
+        options = self.query_one("#command-palette-list", OptionList)
+        selected = options.highlighted_option
+        if selected is None or selected.id is None:
+            selected_id = self._filtered[0].id
+        else:
+            selected_id = str(selected.id)
+        self.dismiss({"id": selected_id})
+
+    @on(Input.Changed, "#command-palette-query")
+    def _query_changed(self, event: Input.Changed) -> None:
+        self._refresh_options(event.value)
+
+    @on(Input.Submitted, "#command-palette-query")
+    def _query_submitted(self, _event: Input.Submitted) -> None:
+        self.action_confirm()
+
+    @on(Button.Pressed, "#command-palette-open")
+    def _open_button(self) -> None:
+        self.action_confirm()
+
+    @on(Button.Pressed, "#command-palette-cancel")
+    def _cancel_button(self) -> None:
+        self.action_cancel()
+
+    @on(OptionList.OptionSelected, "#command-palette-list")
+    def _option_selected(self, _event: OptionList.OptionSelected) -> None:
+        self.action_confirm()
