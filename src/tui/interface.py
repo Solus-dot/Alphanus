@@ -892,19 +892,13 @@ class AlphanusTUI(App):
     def action_show_keymap(self) -> None:
         self._show_keyboard_shortcuts()
 
-    def _toggle_tool_details(self) -> None:
+    def action_toggle_details(self) -> None:
         self._show_tool_details = not self._show_tool_details
         self._write_info(f"Live tool details {'shown' if self._show_tool_details else 'hidden'}")
 
-    def action_toggle_details(self) -> None:
-        self._toggle_tool_details()
-
-    def _toggle_thinking_mode(self) -> None:
+    def action_toggle_thinking(self) -> None:
         self.thinking = not self.thinking
         self._write_info(f"Thinking {'enabled' if self.thinking else 'disabled'}")
-
-    def action_toggle_thinking(self) -> None:
-        self._toggle_thinking_mode()
 
     def action_open_command_palette(self) -> None:
         if self.streaming or self._await_shell_confirm:
