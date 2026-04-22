@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable, Dict, List, Optional
 
 from core.message_types import ChatMessage, JSONValue
 from core.runtime_config import ProviderConfig

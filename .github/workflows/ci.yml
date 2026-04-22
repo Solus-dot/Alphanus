@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests-and-static:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Ruff
+        run: uv run ruff check src tests --select F821
+
+      - name: Pyright
+        run: uv run pyright src/core/workspace.py src/core/configuration.py
+
+      - name: Unused Imports/Variables
+        run: uv run ruff check src/core/workspace.py src/core/configuration.py --select F401,F841
+
+      - name: Tests
+        run: uv run pytest

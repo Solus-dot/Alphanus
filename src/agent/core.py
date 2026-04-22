@@ -4,7 +4,7 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 from core.message_types import ChatMessage, JSONValue, MessageContentPart
 from agent.classifier import TurnClassifier

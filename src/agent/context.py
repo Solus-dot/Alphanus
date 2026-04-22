@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Optional, Set
+from typing import List, Optional, Set
 
-from core.message_types import ChatMessage, JSONValue, MessageContentPart, ToolCallDelta
+from core.message_types import ChatMessage, JSONValue, MessageContentPart
 
 
 class ContextWindowManager:

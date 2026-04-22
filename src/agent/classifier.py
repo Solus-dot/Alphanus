@@ -5,7 +5,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from core.message_types import ChatMessage, JSONValue, MessageContentPart
 from core.skills import SkillContext, SkillRuntime

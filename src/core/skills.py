@@ -14,7 +14,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional, TypedDict
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict
 
 from core.message_types import ChatMessage, JSONValue, ShellConfirmationFn, ToolCallDelta, UserInputRequestFn
 from core.memory import VectorMemory

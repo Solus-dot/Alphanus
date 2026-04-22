@@ -425,7 +425,6 @@ class WorkspaceManager:
         if source == self.workspace_root:
             raise PermissionError("Moving the workspace root is not allowed")
 
-        protected_dir = self.protected_state_dir
         if self._is_protected_state_path(source) or self._is_protected_state_path(destination):
             raise PermissionError("Moving protected internal state is not allowed")
         if source == destination:

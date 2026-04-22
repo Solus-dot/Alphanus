@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Callable, Optional
+from typing import Callable, Dict, Optional
 
 from core.message_types import ChatMessage
 from core.runtime_config import ProviderConfig
