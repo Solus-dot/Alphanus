@@ -14,6 +14,11 @@ from textual.widgets import Button, Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from core.sessions import SessionSummary
+from tui.themes import fallback_color
+
+DEFAULT_ACCENT_COLOR = fallback_color("accent")
+DEFAULT_SUBTLE_COLOR = fallback_color("subtle")
+DEFAULT_TEXT_COLOR = fallback_color("text")
 
 
 class CodeViewerModal(ModalScreen[None]):
@@ -26,13 +31,13 @@ class CodeViewerModal(ModalScreen[None]):
     #code-modal {
         width: 88%;
         height: 88%;
-        background: #000000;
-        border: panel #52525b;
+        background: $panel;
+        border: panel $app-border;
         padding: 1 2;
     }
 
     #code-modal-title {
-        color: #e4e4e7;
+        color: $foreground;
         text-style: bold;
         padding: 0 0 1 0;
     }
@@ -40,9 +45,9 @@ class CodeViewerModal(ModalScreen[None]):
     #code-modal-editor {
         width: 1fr;
         height: 1fr;
-        background: #000000;
-        color: #e4e4e7;
-        border: solid #52525b;
+        background: $panel;
+        color: $foreground;
+        border: solid $app-border;
     }
 
     #code-modal-footer {
@@ -53,20 +58,20 @@ class CodeViewerModal(ModalScreen[None]):
 
     #code-modal-hint {
         width: 1fr;
-        color: #a1a1aa;
+        color: $app-muted;
         padding-top: 1;
     }
 
     #code-copy {
-        background: #6366f1;
-        color: #ffffff;
+        background: $accent;
+        color: $foreground;
         border: none;
         margin-right: 1;
     }
 
     #code-close {
-        background: #000000;
-        color: #e4e4e7;
+        background: $panel;
+        color: $foreground;
         border: none;
     }
     """
@@ -76,11 +81,19 @@ class CodeViewerModal(ModalScreen[None]):
         Binding("ctrl+shift+c", "copy_all", show=False),
     ]
 
-    def __init__(self, code: str, language: Optional[str], title: str = "Code Block") -> None:
+    def __init__(
+        self,
+        code: str,
+        language: Optional[str],
+        title: str = "Code Block",
+        *,
+        syntax_theme: str = "dracula",
+    ) -> None:
         super().__init__()
         self._code = code
         self._language = language or "text"
         self._title = title
+        self._syntax_theme = syntax_theme
 
     def compose(self) -> ComposeResult:
         with Vertical(id="code-modal"):
@@ -88,7 +101,7 @@ class CodeViewerModal(ModalScreen[None]):
             yield TextArea(
                 self._code,
                 language=self._language,
-                theme="dracula",
+                theme=self._syntax_theme,
                 read_only=True,
                 show_line_numbers=False,
                 compact=True,
@@ -127,38 +140,38 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
     #config-modal {
         width: 90%;
         height: 90%;
-        background: #000000;
-        border: panel #52525b;
+        background: $panel;
+        border: panel $app-border;
         padding: 1 2;
     }
 
     #config-modal-title {
-        color: #e4e4e7;
+        color: $foreground;
         text-style: bold;
         padding: 0 0 1 0;
     }
 
     #config-modal-subtitle {
-        color: #a1a1aa;
+        color: $app-muted;
         padding: 0 0 1 0;
     }
 
     #config-modal-note {
-        color: #6366f1;
+        color: $accent;
         padding: 0 0 1 0;
     }
 
     #config-modal-editor {
         width: 1fr;
         height: 1fr;
-        background: #000000;
-        color: #e4e4e7;
-        border: solid #52525b;
+        background: $panel;
+        color: $foreground;
+        border: solid $app-border;
     }
 
     #config-modal-error {
         min-height: 1;
-        color: #f87171;
+        color: $error;
         padding: 1 0 0 0;
     }
 
@@ -169,15 +182,15 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
     }
 
     #config-save {
-        background: #10b981;
-        color: #ffffff;
+        background: $success;
+        color: $foreground;
         border: none;
         margin-right: 1;
     }
 
     #config-cancel {
-        background: #000000;
-        color: #e4e4e7;
+        background: $panel;
+        color: $foreground;
         border: none;
     }
     """
@@ -187,10 +200,11 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
         Binding("ctrl+s", "save", show=False),
     ]
 
-    def __init__(self, config_path: Path, initial_text: str) -> None:
+    def __init__(self, config_path: Path, initial_text: str, *, syntax_theme: str = "dracula") -> None:
         super().__init__()
         self._config_path = config_path
         self._initial_text = initial_text
+        self._syntax_theme = syntax_theme
 
     def compose(self) -> ComposeResult:
         with Vertical(id="config-modal"):
@@ -203,7 +217,7 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
             yield TextArea(
                 self._initial_text,
                 language="json",
-                theme="dracula",
+                theme=self._syntax_theme,
                 read_only=False,
                 show_line_numbers=True,
                 compact=True,
@@ -263,29 +277,29 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
         width: 68;
         max-width: 92%;
         height: auto;
-        background: #09090b;
-        border: solid #52525b;
+        background: $background;
+        border: solid $app-border;
         padding: 0 1;
     }
 
     #session-modal-kicker {
-        color: #71717a;
+        color: $app-subtle;
         padding: 0;
     }
 
     #session-modal-subtitle {
-        color: #a1a1aa;
+        color: $app-muted;
         padding: 0;
     }
 
     #session-modal-hint {
-        color: #71717a;
+        color: $app-subtle;
         padding: 0;
     }
 
     #session-modal-list-label,
     #session-modal-action-label {
-        color: #6366f1;
+        color: $accent;
         padding: 0;
     }
 
@@ -293,15 +307,15 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
         width: 1fr;
         height: auto;
         max-height: 10;
-        background: #000000;
-        border: solid #52525b;
+        background: $panel;
+        border: solid $app-border;
         margin: 0;
         padding: 0;
     }
 
     #session-modal-list > .option-list--option-highlighted {
-        color: #ffffff;
-        background: #1a1730;
+        color: $foreground;
+        background: $app-selection-bg;
     }
 
     #session-modal-footer {
@@ -324,18 +338,18 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
     }
 
     #session-open {
-        background: #0f1230;
-        color: #c7d2fe;
+        background: $surface;
+        color: $foreground;
     }
 
     #session-delete {
-        background: #14161b;
-        color: #d4d4d8;
+        background: $surface;
+        color: $foreground;
     }
 
     #session-new {
-        background: #14161b;
-        color: #d4d4d8;
+        background: $surface;
+        color: $foreground;
     }
 
     """
@@ -372,20 +386,24 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
                 yield Button(Text("New Session [N]"), id="session-new", variant="default")
 
     def _session_options(self) -> list[Option]:
+        theme_color = getattr(self.app, "_theme_color", None)
+        accent = str(theme_color("accent", DEFAULT_ACCENT_COLOR)) if callable(theme_color) else DEFAULT_ACCENT_COLOR
+        subtle = str(theme_color("subtle", DEFAULT_SUBTLE_COLOR)) if callable(theme_color) else DEFAULT_SUBTLE_COLOR
+        text_color = str(theme_color("text", DEFAULT_TEXT_COLOR)) if callable(theme_color) else DEFAULT_TEXT_COLOR
         options: list[Option] = []
         for index, session in enumerate(self._sessions, start=1):
             marker = (
-                "[bold #6366f1]active[/bold #6366f1]"
+                f"[bold {accent}]active[/bold {accent}]"
                 if session.is_active
-                else "[#71717a]saved[/#71717a]"
+                else f"[{subtle}]saved[/{subtle}]"
             )
             title = (
-                f"[bold #6366f1]{esc(session.title)}[/bold #6366f1]"
+                f"[bold {accent}]{esc(session.title)}[/bold {accent}]"
                 if session.is_active
-                else f"[#f4f4f5]{esc(session.title)}[/#f4f4f5]"
+                else f"[{text_color}]{esc(session.title)}[/{text_color}]"
             )
             prompt = (
-                f"[bold #6366f1]{index}.[/bold #6366f1] "
+                f"[bold {accent}]{index}.[/bold {accent}] "
                 f"{marker} {title} "
                 f"[dim]{session.turn_count} turns · {session.branch_count} branches[/dim]"
             )
@@ -488,38 +506,38 @@ class SessionNameModal(ModalScreen[Optional[Dict[str, str]]]):
         width: 58;
         max-width: 92%;
         height: auto;
-        background: #09090b;
-        border: solid #52525b;
+        background: $background;
+        border: solid $app-border;
         padding: 0 1;
     }
 
     #session-name-modal-kicker {
-        color: #71717a;
+        color: $app-subtle;
         padding: 0;
     }
 
     #session-name-modal-title {
-        color: #e4e4e7;
+        color: $foreground;
         text-style: bold;
         padding: 0;
     }
 
     #session-name-modal-subtitle {
-        color: #a1a1aa;
+        color: $app-muted;
         padding: 0;
     }
 
     #session-name-modal-hint {
-        color: #71717a;
+        color: $app-subtle;
         padding: 0;
     }
 
     #session-name-modal-input {
         width: 1fr;
         margin: 0;
-        background: #000000;
-        color: #e4e4e7;
-        border: round #63636b;
+        background: $panel;
+        color: $foreground;
+        border: round $app-border;
     }
 
     #session-name-modal-footer {
@@ -541,13 +559,13 @@ class SessionNameModal(ModalScreen[Optional[Dict[str, str]]]):
     }
 
     #session-name-create {
-        background: #0f1230;
-        color: #c7d2fe;
+        background: $surface;
+        color: $foreground;
     }
 
     #session-name-cancel {
-        background: #14161b;
-        color: #d4d4d8;
+        background: $surface;
+        color: $foreground;
     }
     """
 
@@ -610,34 +628,34 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
         width: 68;
         max-width: 92%;
         height: auto;
-        background: #09090b;
-        border: solid #52525b;
+        background: $background;
+        border: solid $app-border;
         padding: 0 1;
     }
 
     #picker-modal-kicker {
-        color: #71717a;
+        color: $app-subtle;
         padding: 0;
     }
 
     #picker-modal-title {
-        color: #e4e4e7;
+        color: $foreground;
         text-style: bold;
         padding: 0;
     }
 
     #picker-modal-subtitle {
-        color: #a1a1aa;
+        color: $app-muted;
         padding: 0;
     }
 
     #picker-modal-hint {
-        color: #71717a;
+        color: $app-subtle;
         padding: 0;
     }
 
     #picker-modal-list-label {
-        color: #6366f1;
+        color: $accent;
         padding: 0;
     }
 
@@ -645,19 +663,19 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
         width: 1fr;
         height: auto;
         max-height: 10;
-        background: #000000;
-        border: solid #52525b;
+        background: $panel;
+        border: solid $app-border;
         margin: 0;
         padding: 0;
     }
 
     #picker-modal-list > .option-list--option-highlighted {
-        color: #ffffff;
-        background: #1a1730;
+        color: $foreground;
+        background: $app-selection-bg;
     }
 
     #picker-modal-empty {
-        color: #a1a1aa;
+        color: $app-muted;
         padding: 0;
     }
 
@@ -680,13 +698,13 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
     }
 
     #picker-confirm {
-        background: #0f1230;
-        color: #c7d2fe;
+        background: $surface;
+        color: $foreground;
     }
 
     #picker-cancel {
-        background: #14161b;
-        color: #d4d4d8;
+        background: $surface;
+        color: $foreground;
     }
     """
 
@@ -700,22 +718,26 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
     def __init__(
         self,
         *,
+        kicker: str = "FILE SELECTOR",
         title: str,
         subtitle: str,
+        list_label: str = "Available Files",
         confirm_label: str,
         empty_text: str,
         items: list[PickerItem],
     ) -> None:
         super().__init__()
+        self._kicker = kicker
         self._title = title
         self._subtitle = subtitle
+        self._list_label = list_label
         self._confirm_label = confirm_label
         self._empty_text = empty_text
         self._items = items
 
     def compose(self) -> ComposeResult:
         with Vertical(id="picker-modal"):
-            yield Static("FILE SELECTOR", id="picker-modal-kicker")
+            yield Static(self._kicker, id="picker-modal-kicker")
             yield Static(self._title, id="picker-modal-title")
             yield Static(self._subtitle, id="picker-modal-subtitle")
             yield Static(
@@ -723,7 +745,7 @@ class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
                 id="picker-modal-hint",
             )
             if self._items:
-                yield Static("Available Files", id="picker-modal-list-label")
+                yield Static(self._list_label, id="picker-modal-list-label")
                 yield OptionList(*[Option(item.prompt, id=item.id) for item in self._items], id="picker-modal-list")
             else:
                 yield Static(self._empty_text, id="picker-modal-empty")
@@ -783,57 +805,57 @@ class CommandPaletteModal(ModalScreen[Optional[Dict[str, str]]]):
         width: 84;
         max-width: 94%;
         height: auto;
-        background: #09090b;
-        border: solid #52525b;
+        background: $background;
+        border: solid $app-border;
         padding: 0 1;
     }
 
     #command-palette-kicker {
-        color: #71717a;
+        color: $app-subtle;
         padding: 0;
     }
 
     #command-palette-title {
-        color: #e4e4e7;
+        color: $foreground;
         text-style: bold;
         padding: 0;
     }
 
     #command-palette-subtitle {
-        color: #a1a1aa;
+        color: $app-muted;
         padding: 0;
     }
 
     #command-palette-query {
         width: 1fr;
         margin: 0;
-        background: #000000;
-        color: #e4e4e7;
-        border: round #63636b;
+        background: $panel;
+        color: $foreground;
+        border: round $app-border;
     }
 
     #command-palette-list {
         width: 1fr;
         height: auto;
         max-height: 12;
-        background: #000000;
-        border: solid #52525b;
+        background: $panel;
+        border: solid $app-border;
         margin: 0;
         padding: 0;
     }
 
     #command-palette-list > .option-list--option-highlighted {
-        color: #ffffff;
-        background: #1a1730;
+        color: $foreground;
+        background: $app-selection-bg;
     }
 
     #command-palette-empty {
-        color: #a1a1aa;
+        color: $app-muted;
         padding: 0;
     }
 
     #command-palette-hint {
-        color: #71717a;
+        color: $app-subtle;
         padding: 0;
     }
 
@@ -856,13 +878,13 @@ class CommandPaletteModal(ModalScreen[Optional[Dict[str, str]]]):
     }
 
     #command-palette-open {
-        background: #0f1230;
-        color: #c7d2fe;
+        background: $surface;
+        color: $foreground;
     }
 
     #command-palette-cancel {
-        background: #14161b;
-        color: #d4d4d8;
+        background: $surface;
+        color: $foreground;
     }
     """
 

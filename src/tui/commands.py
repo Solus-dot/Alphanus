@@ -86,6 +86,7 @@ _COMMAND_SECTIONS: Tuple[_CommandSection, ...] = (
             CommandEntry("/memory-stats", "/memory-stats", "Show memory stats"),
             CommandEntry("/context", "/context", "Show inference engine context usage"),
             CommandEntry("/workspace-tree", "/workspace-tree", "Render workspace tree"),
+            CommandEntry("/theme", "/theme", "Open theme picker"),
             CommandEntry("/config", "/config", "Edit the global config in a popup"),
             CommandEntry("/report [file]", "/report ", "Save a support bundle JSON"),
             CommandEntry("/code [n|last]", "/code ", "Open a copyable code block viewer"),

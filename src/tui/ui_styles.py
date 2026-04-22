@@ -1,15 +1,15 @@
 ALPHANUS_TUI_CSS = """
     Screen {
         layout: vertical;
-        background: #09090b;
-        color: #e4e4e7;
+        background: $background;
+        color: $foreground;
     }
 
     #topbar {
         height: 3;
         layout: horizontal;
-        background: #000000;
-        border-bottom: solid #52525b;
+        background: $panel;
+        border-bottom: solid $app-border;
         padding: 0 2;
     }
 
@@ -36,39 +36,39 @@ ALPHANUS_TUI_CSS = """
     #main-area {
         height: 1fr;
         layout: horizontal;
-        background: #000000;
+        background: $panel;
     }
 
     #chat-column {
         width: 1fr;
         height: 1fr;
         layout: vertical;
-        background: #000000;
+        background: $panel;
     }
 
     #chat-scroll {
         width: 1fr;
         height: 1fr;
-        background: #000000;
+        background: $panel;
         overflow-x: hidden;
         scrollbar-size: 1 1;
-        scrollbar-color: #52525b #000000;
-        scrollbar-background: #000000;
-        scrollbar-background-hover: #18181b;
-        scrollbar-background-active: #18181b;
-        scrollbar-color-hover: #52525b;
-        scrollbar-color-active: #6366f1;
-        scrollbar-corner-color: #000000;
+        scrollbar-color: $app-border $panel;
+        scrollbar-background: $panel;
+        scrollbar-background-hover: $surface;
+        scrollbar-background-active: $surface;
+        scrollbar-color-hover: $app-border;
+        scrollbar-color-active: $accent;
+        scrollbar-corner-color: $panel;
     }
 
     #chat-scroll.-active-panel {
-        border: round #6366f1;
+        border: round $accent;
     }
 
     #chat-log {
         width: 1fr;
         height: auto;
-        background: #000000;
+        background: $panel;
         padding: 0 3 0 1;
         overflow-x: hidden;
         scrollbar-size: 0 0;
@@ -77,7 +77,7 @@ ALPHANUS_TUI_CSS = """
     #partial {
         width: 1fr;
         height: auto;
-        background: #000000;
+        background: $panel;
         display: none;
         padding: 0 3 0 1;
         overflow-x: hidden;
@@ -85,8 +85,8 @@ ALPHANUS_TUI_CSS = """
 
     #sidebar {
         width: 38;
-        border-left: solid #52525b;
-        background: #000000;
+        border-left: solid $app-border;
+        background: $panel;
         display: none;
         padding: 0;
         layout: grid;
@@ -98,10 +98,10 @@ ALPHANUS_TUI_CSS = """
         position: absolute;
         width: 100%;
         height: 1;
-        background: #000000;
-        border-top: solid #5a5a66;
-        border-left: solid #5a5a66;
-        color: #5a5a66;
+        background: $panel;
+        border-top: solid $app-border;
+        border-left: solid $app-border;
+        color: $app-border;
         padding: 0 0;
     }
 
@@ -116,7 +116,7 @@ ALPHANUS_TUI_CSS = """
     #sidebar-inspector-header {
         width: 1fr;
         height: auto;
-        color: #a1a1aa;
+        color: $app-muted;
         text-style: bold;
         padding: 1 2 0 2;
     }
@@ -124,67 +124,67 @@ ALPHANUS_TUI_CSS = """
     #sidebar-tree-meta {
         width: 1fr;
         height: auto;
-        color: #71717a;
+        color: $app-subtle;
         padding: 0 2 1 2;
     }
 
     #sidebar-tree-scroll {
         width: 1fr;
         height: 1fr;
-        background: #000000;
+        background: $panel;
         padding: 0 2 1 2;
-        scrollbar-background: #000000;
-        scrollbar-background-hover: #18181b;
-        scrollbar-background-active: #18181b;
-        scrollbar-color: #3f3f46;
-        scrollbar-color-hover: #52525b;
-        scrollbar-color-active: #6366f1;
-        scrollbar-corner-color: #000000;
+        scrollbar-background: $panel;
+        scrollbar-background-hover: $surface;
+        scrollbar-background-active: $surface;
+        scrollbar-color: $surface;
+        scrollbar-color-hover: $app-border;
+        scrollbar-color-active: $accent;
+        scrollbar-corner-color: $panel;
     }
 
     #sidebar.-active-panel {
-        border-left: solid #6366f1;
+        border-left: solid $accent;
     }
 
     #sidebar-tree-content {
         width: 1fr;
         height: auto;
-        background: #000000;
+        background: $panel;
     }
 
     #sidebar-inspector-section {
         width: 1fr;
         height: 1fr;
         min-height: 8;
-        border-top: solid #52525b;
-        background: #000000;
+        border-top: solid $app-border;
+        background: $panel;
         layout: vertical;
     }
 
     #sidebar-inspector-scroll {
         width: 1fr;
         height: 1fr;
-        background: #000000;
+        background: $panel;
         padding: 0 2 1 2;
-        scrollbar-background: #000000;
-        scrollbar-background-hover: #18181b;
-        scrollbar-background-active: #18181b;
-        scrollbar-color: #3f3f46;
-        scrollbar-color-hover: #52525b;
-        scrollbar-color-active: #6366f1;
-        scrollbar-corner-color: #000000;
+        scrollbar-background: $panel;
+        scrollbar-background-hover: $surface;
+        scrollbar-background-active: $surface;
+        scrollbar-color: $surface;
+        scrollbar-color-hover: $app-border;
+        scrollbar-color-active: $accent;
+        scrollbar-corner-color: $panel;
     }
 
     #sidebar-inspector-content {
         width: 1fr;
         height: auto;
-        background: #000000;
+        background: $panel;
     }
 
     #footer {
         width: 1fr;
         height: 6;
-        background: #000000;
+        background: $panel;
         layout: vertical;
         padding: 0 0 0 1;
     }
@@ -192,8 +192,8 @@ ALPHANUS_TUI_CSS = """
     #command-popup {
         width: 64;
         max-height: 13;
-        background: #000000;
-        border: round #52525b;
+        background: $panel;
+        border: round $app-border;
         display: none;
         position: absolute;
         overlay: screen;
@@ -202,14 +202,14 @@ ALPHANUS_TUI_CSS = """
 
     #command-popup-title {
         height: auto;
-        color: #6366f1;
+        color: $accent;
         padding: 0 0 0 0;
         text-style: bold;
     }
 
     #command-popup-hint {
         height: auto;
-        color: #a1a1aa;
+        color: $app-muted;
         padding: 0 0 1 0;
     }
 
@@ -217,45 +217,45 @@ ALPHANUS_TUI_CSS = """
         width: 1fr;
         height: auto;
         max-height: 8;
-        background: #000000;
+        background: $panel;
         border: none;
         padding: 0 0 0 0;
         scrollbar-size: 1 1;
-        scrollbar-background: #000000;
-        scrollbar-background-hover: #18181b;
-        scrollbar-background-active: #18181b;
-        scrollbar-color: #3f3f46;
-        scrollbar-color-hover: #52525b;
-        scrollbar-color-active: #6366f1;
-        scrollbar-corner-color: #000000;
+        scrollbar-background: $panel;
+        scrollbar-background-hover: $surface;
+        scrollbar-background-active: $surface;
+        scrollbar-color: $surface;
+        scrollbar-color-hover: $app-border;
+        scrollbar-color-active: $accent;
+        scrollbar-corner-color: $panel;
     }
 
     #command-options > .option-list--option-highlighted {
-        color: #e4e4e7;
-        background: #18181b;
+        color: $foreground;
+        background: $surface;
         text-style: none;
     }
 
     #command-options:focus > .option-list--option-highlighted {
-        color: #ffffff;
-        background: #1a1730;
+        color: $foreground;
+        background: $app-selection-bg;
         text-style: bold;
     }
 
     #footer-sep {
         width: 1fr;
         height: 1;
-        background: #000000;
-        border-top: solid #5a5a66;
-        color: #5a5a66;
+        background: $panel;
+        border-top: solid $app-border;
+        color: $app-border;
         padding: 0 0;
     }
 
     #attachment-bar {
         width: 1fr;
         height: 1;
-        background: #000000;
-        color: #e4e4e7;
+        background: $panel;
+        color: $foreground;
         content-align: left middle;
         padding: 0 1;
     }
@@ -265,7 +265,7 @@ ALPHANUS_TUI_CSS = """
         height: 1;
         layout: horizontal;
         padding: 0 1;
-        background: #000000;
+        background: $panel;
     }
 
     #status-left {
@@ -284,7 +284,7 @@ ALPHANUS_TUI_CSS = """
         width: 1fr;
         height: 3;
         layout: vertical;
-        background: #000000;
+        background: $panel;
         padding: 0 0 0 0;
         min-height: 3;
     }
@@ -293,8 +293,8 @@ ALPHANUS_TUI_CSS = """
         width: 1fr;
         height: 3;
         layout: horizontal;
-        background: #000000;
-        border: round #63636b;
+        background: $panel;
+        border: round $app-border;
         padding: 0 0;
         margin: 0 0 0 0;
         align: left middle;
@@ -305,7 +305,7 @@ ALPHANUS_TUI_CSS = """
         height: 3;
         border: none;
         background: transparent;
-        color: #e4e4e7;
+        color: $foreground;
         padding: 0 0;
     }
 
@@ -315,7 +315,7 @@ ALPHANUS_TUI_CSS = """
     }
 
     #input-row.-active-panel #composer-shell {
-        border: round #6366f1;
+        border: round $accent;
     }
 
     #input-accessories {
@@ -330,8 +330,8 @@ ALPHANUS_TUI_CSS = """
         width: auto;
         min-width: 8;
         height: 1;
-        background: #1a1730;
-        color: #6366f1;
+        background: $app-selection-bg;
+        color: $accent;
         border: none;
         text-style: bold;
         padding: 0 0;

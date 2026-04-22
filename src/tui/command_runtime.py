@@ -51,7 +51,7 @@ def handle_command(app, text: str) -> bool:
         app.conv_tree.arm_branch(arg)
         app._save_active_session()
         label = app.conv_tree._pending_branch_label
-        app._write_command_action(f"Branch armed '{label}'", icon="⎇", color="#6366f1")
+        app._write_command_action(f"Branch armed '{label}'", icon="⎇")
         app._update_status1()
         app._update_input_placeholder()
         return True
@@ -60,7 +60,7 @@ def handle_command(app, text: str) -> bool:
         if app.conv_tree._pending_branch:
             app.conv_tree.clear_pending_branch()
             app._save_active_session()
-            app._write_command_action("Disarmed pending branch", icon="↩", color="#6366f1")
+            app._write_command_action("Disarmed pending branch", icon="↩")
             app._update_status1()
             app._update_input_placeholder()
             return True
@@ -69,7 +69,7 @@ def handle_command(app, text: str) -> bool:
             app._write_error("No branch to leave.")
         else:
             app._save_active_session()
-            app._write_command_action("Returned to fork point", icon="↩", color="#6366f1")
+            app._write_command_action("Returned to fork point", icon="↩")
             app._rebuild_viewport()
             app._update_sidebar()
         app._update_status1()
@@ -229,6 +229,13 @@ def handle_command(app, text: str) -> bool:
 
     if cmd == "/config":
         app._open_config_editor()
+        return True
+
+    if cmd == "/theme":
+        if arg:
+            app._write_usage("/theme")
+            return True
+        app._cmd_theme()
         return True
 
     if cmd == "/report":

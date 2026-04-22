@@ -32,6 +32,7 @@ from core.configuration import (
 from core.conv_tree import ConvTree, Turn
 from core.runtime_config import UiRuntimeConfig
 from core.sessions import ChatSession
+from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
 from tui.app_shell_runtime import compose_shell as compose_tui_shell
 from tui.app_shell_runtime import initialize_shell_state as init_tui_shell_state
 from tui.commands import (
@@ -186,6 +187,7 @@ from tui.transcript_runtime import (
     write_user_bar_line as tui_write_user_bar_line,
     write_user_bar_wrapped_line as tui_write_user_bar_wrapped_line,
 )
+from tui.themes import ThemeSpec, available_theme_ids, default_theme_variables, fallback_color, theme_spec
 from tui.ui_styles import ALPHANUS_TUI_CSS
 from tui.tree_render import render_tree_rows
 from tui.view_runtime import (
@@ -198,7 +200,13 @@ from tui.view_runtime import (
 )
 
 MAX_REPLY_ACC_CHARS = 24000
-ACCENT_COLOR = "#6366f1"
+DEFAULT_ACCENT_COLOR = fallback_color("accent")
+DEFAULT_PANEL_BG = fallback_color("panel_bg")
+DEFAULT_TEXT_COLOR = fallback_color("text")
+DEFAULT_SUBTLE_COLOR = fallback_color("subtle")
+DEFAULT_SUCCESS_COLOR = fallback_color("success")
+DEFAULT_WARNING_COLOR = fallback_color("warning")
+DEFAULT_MUTED_COLOR = fallback_color("muted")
 
 
 def _global_config_path() -> Path:
@@ -214,7 +222,7 @@ class _CompactPasteChunk:
 
 
 class _PasteTokenHighlighter(Highlighter):
-    STYLE = "bold #6366f1 on #000000"
+    STYLE = f"bold {DEFAULT_ACCENT_COLOR} on {DEFAULT_PANEL_BG}"
 
     def __init__(self, token_ranges_provider: Optional[Callable[[], List[Tuple[int, int]]]] = None) -> None:
         super().__init__()
@@ -451,6 +459,9 @@ class AlphanusTUI(App):
     thinking: reactive[bool] = reactive(True)
     streaming: reactive[bool] = reactive(False)
 
+    def get_theme_variable_defaults(self) -> dict[str, str]:
+        return default_theme_variables()
+
     def __init__(self, agent: Agent, debug: bool = False):
         super().__init__()
         init_tui_shell_state(self, agent=agent, debug=debug)
@@ -465,6 +476,72 @@ class AlphanusTUI(App):
             self._ui_timing = timing
         return timing
 
+    def _theme_id(self) -> str:
+        current = str(getattr(self, "_active_theme_id", "") or "").strip().lower()
+        if current:
+            resolved, _ = normalize_theme_id(current, default=DEFAULT_THEME_ID)
+            return resolved
+        ui_cfg = getattr(self, "_ui_config", None)
+        configured = str(getattr(ui_cfg, "theme", "") or "").strip().lower()
+        resolved, _ = normalize_theme_id(configured, default=DEFAULT_THEME_ID)
+        return resolved
+
+    def _theme_spec(self) -> ThemeSpec:
+        return theme_spec(self._theme_id())
+
+    def _theme_color(self, key: str, default: str) -> str:
+        spec = self._theme_spec()
+        return str(spec.colors.get(key, default))
+
+    def _syntax_theme_name(self) -> str:
+        return self._theme_spec().syntax_theme
+
+    def _text_area_theme_name(self) -> str:
+        return self._theme_spec().text_area_theme
+
+    def _register_themes(self) -> None:
+        if getattr(self, "_themes_registered", False):
+            return
+        for theme_id in available_theme_ids():
+            self.register_theme(theme_spec(theme_id).theme)
+        self._themes_registered = True
+
+    def _set_compact_paste_highlighter_style(self) -> None:
+        style = f"bold {self._theme_color('accent', DEFAULT_ACCENT_COLOR)} on {self._theme_color('panel_bg', DEFAULT_PANEL_BG)}"
+        _PasteTokenHighlighter.STYLE = style
+        ChatInput.PASTE_TOKEN_STYLE = style
+        try:
+            chat_input = self.query_one(ChatInput)
+        except Exception:
+            return
+        highlighter = getattr(chat_input, "highlighter", None)
+        if isinstance(highlighter, _PasteTokenHighlighter):
+            highlighter.STYLE = style
+        chat_input.sync_paste_placeholders(chat_input.value)
+
+    def _apply_theme(self, raw_theme_id: str) -> str:
+        resolved, _ = normalize_theme_id(raw_theme_id, default=DEFAULT_THEME_ID)
+        self._register_themes()
+        self.theme = resolved
+        self._active_theme_id = resolved
+        self._set_compact_paste_highlighter_style()
+        try:
+            self.refresh_css(animate=False)
+            self._redraw_after_resize()
+        except NoMatches:
+            pass
+        return resolved
+
+    def _apply_theme_from_config(self) -> str:
+        configured = getattr(self, "_ui_config", None)
+        configured_theme = str(getattr(configured, "theme", DEFAULT_THEME_ID))
+        try:
+            return self._apply_theme(configured_theme)
+        except Exception:
+            resolved, _ = normalize_theme_id(configured_theme, default=DEFAULT_THEME_ID)
+            self._active_theme_id = resolved
+            return resolved
+
     def _stream_runtime_state(self) -> StreamRuntimeState:
         state = getattr(self, "_stream_runtime", None)
         if state is None:
@@ -474,6 +551,8 @@ class AlphanusTUI(App):
 
     def on_mount(self) -> None:
         self.thinking = bool(self.agent.config.get("agent", {}).get("enable_thinking", True))
+        self._register_themes()
+        self._apply_theme_from_config()
         self.set_interval(0.1, self._tick)
         self._install_stream_drain_timer()
         self._sync_tree_cursor()
@@ -1035,13 +1114,19 @@ class AlphanusTUI(App):
         tui_write_renderable(self, renderable, indent=indent)
 
     def _syntax_renderable(self, code: str, language: Optional[str]):
-        return tui_syntax_renderable(code, language)
+        return tui_syntax_renderable(
+            self,
+            code,
+            language,
+            syntax_theme=self._syntax_theme_name(),
+            background_color=self._theme_color("panel_bg", DEFAULT_PANEL_BG),
+        )
 
     def _code_panel_renderable(self, code: str, language: Optional[str]):
         return tui_code_panel_renderable(self, code, language)
 
     def _reasoning_panel_renderable(self, text: str):
-        return tui_reasoning_panel_renderable(text)
+        return tui_reasoning_panel_renderable(self, text)
 
     def _tool_event_panel(
         self,
@@ -1051,7 +1136,7 @@ class AlphanusTUI(App):
         name: str,
         detail: str = "",
     ):
-        return tui_tool_event_panel(title, title_color, border_color, name, detail)
+        return tui_tool_event_panel(self, title, title_color, border_color, name, detail)
 
     def _tool_lifecycle_panel(
         self,
@@ -1121,25 +1206,34 @@ class AlphanusTUI(App):
         tui_maybe_scroll_end(self, force=force)
 
     def _write_info(self, text: str) -> None:
-        tui_write_info(self, text, accent_color=ACCENT_COLOR)
+        tui_write_info(self, text, accent_color=self._theme_color("accent", DEFAULT_ACCENT_COLOR))
 
     def _write_error(self, text: str) -> None:
         tui_write_error(self, text)
 
-    def _write_section_heading(self, title: str, color: str = ACCENT_COLOR) -> None:
-        tui_write_section_heading(self, title, color=color)
+    def _write_section_heading(self, title: str, color: Optional[str] = None) -> None:
+        heading_color = color or self._theme_color("accent", DEFAULT_ACCENT_COLOR)
+        tui_write_section_heading(self, title, color=heading_color)
 
     def _write_detail_line(self, label: str, value: str, *, value_markup: bool = False) -> None:
-        tui_write_detail_line(self, label, value, accent_color=ACCENT_COLOR, value_markup=value_markup)
+        tui_write_detail_line(
+            self,
+            label,
+            value,
+            accent_color=self._theme_color("accent", DEFAULT_ACCENT_COLOR),
+            value_markup=value_markup,
+        )
 
-    def _write_indexed_dim_lines(self, rows: List[str], *, color: str = ACCENT_COLOR, allow_markup: bool = False) -> None:
-        tui_write_indexed_dim_lines(self, rows, color=color, allow_markup=allow_markup)
+    def _write_indexed_dim_lines(self, rows: List[str], *, color: Optional[str] = None, allow_markup: bool = False) -> None:
+        indexed_color = color or self._theme_color("accent", DEFAULT_ACCENT_COLOR)
+        tui_write_indexed_dim_lines(self, rows, color=indexed_color, allow_markup=allow_markup)
 
-    def _write_command_action(self, text: str, *, icon: str = "•", color: str = ACCENT_COLOR) -> None:
-        tui_write_command_action(self, text, color=color, icon=icon)
+    def _write_command_action(self, text: str, *, icon: str = "•", color: Optional[str] = None) -> None:
+        action_color = color or self._theme_color("accent", DEFAULT_ACCENT_COLOR)
+        tui_write_command_action(self, text, color=action_color, icon=icon)
 
     def _write_command_row(self, command: str, desc: str, *, col: int) -> None:
-        tui_write_command_row(self, command, desc, col=col, accent_color=ACCENT_COLOR)
+        tui_write_command_row(self, command, desc, col=col, accent_color=self._theme_color("accent", DEFAULT_ACCENT_COLOR))
 
     def _write_muted_lines(self, rows: List[str]) -> None:
         tui_write_muted_lines(self, rows)
@@ -1241,12 +1335,14 @@ class AlphanusTUI(App):
         return "tool call:" in s
 
     def _update_status1(self) -> None:
+        colors = self._theme_spec().colors
         text = status_right_markup(
             model_name=self._status_runtime.model_name,
             branch_armed=bool(self.conv_tree._pending_branch),
             branch_label=self.conv_tree._pending_branch_label,
             thinking=self.thinking,
             width=self.size.width,
+            colors=colors,
         )
         if text == self._last_status_right:
             self._update_topbar()
@@ -1359,13 +1455,29 @@ class AlphanusTUI(App):
         return attach_tui_file_path(self, path)
 
     def _attachment_picker_items(self, relative_dir: str = ".", *, root_id: str = "workspace") -> List[PickerItem]:
-        return attachment_tui_picker_items(self, relative_dir, root_id=root_id, accent_color=ACCENT_COLOR)
+        return attachment_tui_picker_items(
+            self,
+            relative_dir,
+            root_id=root_id,
+            accent_color=self._theme_color("accent", DEFAULT_ACCENT_COLOR),
+        )
 
     def _open_attachment_picker(self, relative_dir: str = ".", root_id: str = "workspace") -> None:
-        open_tui_attachment_picker(self, relative_dir, root_id=root_id, accent_color=ACCENT_COLOR)
+        open_tui_attachment_picker(
+            self,
+            relative_dir,
+            root_id=root_id,
+            accent_color=self._theme_color("accent", DEFAULT_ACCENT_COLOR),
+        )
 
     def _on_attachment_picker_close(self, root_id: str, current_dir: str, result: Optional[Dict[str, str]]) -> None:
-        on_tui_attachment_picker_close(self, root_id, current_dir, result, accent_color=ACCENT_COLOR)
+        on_tui_attachment_picker_close(
+            self,
+            root_id,
+            current_dir,
+            result,
+            accent_color=self._theme_color("accent", DEFAULT_ACCENT_COLOR),
+        )
 
     def _workspace_file_candidates(self, *, max_items: int = 60) -> List[Path]:
         root = self._workspace_root()
@@ -1407,6 +1519,12 @@ class AlphanusTUI(App):
     def _build_global_palette_catalog(self) -> tuple[List[CommandPaletteItem], Dict[str, Dict[str, str]]]:
         items: List[CommandPaletteItem] = []
         actions: Dict[str, Dict[str, str]] = {}
+        accent = self._theme_color("accent", DEFAULT_ACCENT_COLOR)
+        text_color = self._theme_color("text", DEFAULT_TEXT_COLOR)
+        subtle = self._theme_color("subtle", DEFAULT_SUBTLE_COLOR)
+        success = self._theme_color("success", DEFAULT_SUCCESS_COLOR)
+        warning = self._theme_color("warning", DEFAULT_WARNING_COLOR)
+        muted = self._theme_color("muted", DEFAULT_MUTED_COLOR)
 
         def add_item(
             *,
@@ -1433,8 +1551,8 @@ class AlphanusTUI(App):
                 kind="command_insert",
                 value=entry.insert_text,
                 prompt=(
-                    f"[bold #6366f1]cmd[/bold #6366f1] "
-                    f"[#f4f4f5]{esc(entry.prompt)}[/#f4f4f5] "
+                    f"[bold {accent}]cmd[/bold {accent}] "
+                    f"[{text_color}]{esc(entry.prompt)}[/{text_color}] "
                     f"[dim]{esc(entry.description)}[/dim]"
                 ),
                 search_text=f"command {entry.prompt} {aliases} {entry.description}".strip(),
@@ -1443,16 +1561,16 @@ class AlphanusTUI(App):
 
         for summary in self._session_store.list_sessions()[:20]:
             state = (
-                "[bold #6366f1]active[/bold #6366f1]"
+                f"[bold {accent}]active[/bold {accent}]"
                 if summary.is_active
-                else "[#71717a]saved[/#71717a]"
+                else f"[{subtle}]saved[/{subtle}]"
             )
             add_item(
                 kind="session_open",
                 value=summary.id,
                 prompt=(
-                    f"[bold #10b981]session[/bold #10b981] "
-                    f"{state} [#f4f4f5]{esc(summary.title)}[/#f4f4f5] "
+                    f"[bold {success}]session[/bold {success}] "
+                    f"{state} [{text_color}]{esc(summary.title)}[/{text_color}] "
                     f"[dim]{summary.turn_count} turns[/dim]"
                 ),
                 search_text=f"session {summary.id} {summary.title} {summary.turn_count} turns",
@@ -1466,8 +1584,8 @@ class AlphanusTUI(App):
                 kind="file_attach",
                 value=str(path),
                 prompt=(
-                    f"[bold #f59e0b]file[/bold #f59e0b] "
-                    f"[#f4f4f5]{esc(rel)}[/#f4f4f5]"
+                    f"[bold {warning}]file[/bold {warning}] "
+                    f"[{text_color}]{esc(rel)}[/{text_color}]"
                 ),
                 search_text=f"file {rel} {path.name}",
                 rank=3,
@@ -1480,16 +1598,16 @@ class AlphanusTUI(App):
                 continue
             action = "unload" if loaded else "load"
             state_markup = (
-                "[#22c55e]loaded[/#22c55e]"
+                f"[{success}]loaded[/{success}]"
                 if loaded
-                else "[#a1a1aa]available[/#a1a1aa]"
+                else f"[{muted}]available[/{muted}]"
             )
             add_item(
                 kind="skill_toggle",
                 value=skill.id,
                 prompt=(
-                    f"[bold #22c55e]skill[/bold #22c55e] "
-                    f"[#f4f4f5]{esc(skill.id)}[/#f4f4f5] "
+                    f"[bold {success}]skill[/bold {success}] "
+                    f"[{text_color}]{esc(skill.id)}[/{text_color}] "
                     f"{state_markup} [dim]{action}[/dim]"
                 ),
                 search_text=f"skill {skill.id} {skill.name} {skill.description} {action}",
@@ -1566,9 +1684,90 @@ class AlphanusTUI(App):
             return
         safe = self._config_for_editor(raw if isinstance(raw, dict) else {})
         text = json.dumps(safe, indent=2) + "\n"
-        self.push_screen(ConfigEditorModal(_global_config_path(), text), self._on_config_editor_close)
+        self.push_screen(
+            ConfigEditorModal(_global_config_path(), text, syntax_theme=self._text_area_theme_name()),
+            self._on_config_editor_close,
+        )
         for warning in warnings:
             self._write_info(f"Config warning: {warning}")
+
+    def _cmd_theme(self) -> None:
+        self._open_theme_picker()
+
+    def _open_theme_picker(self) -> None:
+        active = self._theme_id()
+        accent = self._theme_color("accent", DEFAULT_ACCENT_COLOR)
+        text_color = self._theme_color("text", DEFAULT_TEXT_COLOR)
+        muted = self._theme_color("muted", DEFAULT_MUTED_COLOR)
+        items = []
+        for theme_id in available_theme_ids():
+            spec = theme_spec(theme_id)
+            marker = f"[bold {accent}]active[/bold {accent}]" if theme_id == active else f"[{muted}]available[/{muted}]"
+            items.append(
+                PickerItem(
+                    id=f"theme:{theme_id}",
+                    prompt=(
+                        f"[bold {spec.colors.get('accent', accent)}]{esc(spec.title)}[/bold {spec.colors.get('accent', accent)}] "
+                        f"{marker} [{text_color}]{esc(spec.description)}[/{text_color}]"
+                    ),
+                )
+            )
+        self.push_screen(
+            SelectionPickerModal(
+                kicker="THEME",
+                title="Choose Theme",
+                subtitle=f"Current theme: {active}",
+                list_label="Available Themes",
+                confirm_label="Apply / Save",
+                empty_text="No themes available.",
+                items=items,
+            ),
+            self._on_theme_picker_close,
+        )
+
+    def _on_theme_picker_close(self, result: Optional[Dict[str, str]]) -> None:
+        selected_id = str((result or {}).get("id") or "").strip()
+        if not selected_id.startswith("theme:"):
+            self.query_one(ChatInput).focus()
+            return
+        selected_theme = selected_id.split(":", 1)[1]
+        resolved = self._apply_theme(selected_theme)
+        persist_warnings = self._persist_theme_preference(resolved)
+        self._write_command_action(f"Theme set to '{resolved}'", icon="◉")
+        for warning in persist_warnings:
+            self._write_info(f"Config warning: {warning}")
+        self.query_one(ChatInput).focus()
+
+    def _persist_theme_preference(self, theme_id: str) -> List[str]:
+        warnings: List[str] = []
+        try:
+            current = load_global_config(_global_config_path(), warnings=warnings)
+        except (OSError, ValueError) as exc:
+            self._write_error(f"Theme persisted only for this run: {exc}")
+            return warnings
+
+        updates = self._merge_live_config(current, {"tui": {"theme": theme_id}})
+        try:
+            normalized, normalize_warnings = normalize_config(updates)
+            warnings.extend(normalize_warnings)
+            validate_endpoint_policy(normalized)
+        except ValueError as exc:
+            self._write_error(f"Theme persisted only for this run: {exc}")
+            return warnings
+
+        cleaned = self._config_for_editor(normalized)
+        try:
+            _global_config_path().write_text(json.dumps(cleaned, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            self._write_error(f"Theme persisted only for this run: {exc}")
+            return warnings
+
+        merged = self._merge_live_config(self.agent.config, normalized)
+        self.agent.reload_config(merged)
+        self._ui_config = UiRuntimeConfig.from_config(merged)
+        self._ui_timing = self._ui_config.timing
+        self._apply_tui_config()
+        return warnings
 
     def _merge_live_config(self, base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
         return merge_tui_live_config(base, updates)
@@ -1624,7 +1823,14 @@ class AlphanusTUI(App):
             self._write_error(f"No code block {index}")
             return
         code, language = self._code_blocks[index - 1]
-        self.push_screen(CodeViewerModal(code, language, title=f"Code Block {index}"))
+        self.push_screen(
+            CodeViewerModal(
+                code,
+                language,
+                title=f"Code Block {index}",
+                syntax_theme=self._text_area_theme_name(),
+            )
+        )
 
     def _update_sidebar(self) -> None:
         update_tui_sidebar(self)
@@ -1634,7 +1840,7 @@ class AlphanusTUI(App):
         return tui_sidebar_render_width(sidebar)
 
     def _write_turn_user(self, turn: Turn) -> None:
-        write_tui_turn_user(self, turn, accent_color=ACCENT_COLOR)
+        write_tui_turn_user(self, turn, accent_color=self._theme_color("accent", DEFAULT_ACCENT_COLOR))
 
     def _write_skill_exchanges(self, turn: Turn) -> None:
         write_tui_skill_exchanges(self, turn)
@@ -1795,13 +2001,13 @@ class AlphanusTUI(App):
         return handle_tui_command(self, text)
 
     def _cmd_help(self) -> None:
-        cmd_tui_help(self, help_sections=HELP_SECTIONS, accent_color=ACCENT_COLOR)
+        cmd_tui_help(self, help_sections=HELP_SECTIONS, accent_color=self._theme_color("accent", DEFAULT_ACCENT_COLOR))
 
     def _cmd_tree(self) -> None:
-        cmd_tui_tree(self, accent_color=ACCENT_COLOR)
+        cmd_tui_tree(self, accent_color=self._theme_color("accent", DEFAULT_ACCENT_COLOR))
 
     def _cmd_skills(self) -> None:
-        cmd_tui_skills(self, accent_color=ACCENT_COLOR)
+        cmd_tui_skills(self, accent_color=self._theme_color("accent", DEFAULT_ACCENT_COLOR))
 
     def _load_skill_into_session(self, skill_id: str) -> bool:
         return load_tui_skill_into_session(self, skill_id)
@@ -1819,7 +2025,7 @@ class AlphanusTUI(App):
         return cmd_tui_context(self, arg)
 
     def _cmd_doctor(self) -> None:
-        cmd_tui_doctor(self, accent_color=ACCENT_COLOR)
+        cmd_tui_doctor(self, accent_color=self._theme_color("accent", DEFAULT_ACCENT_COLOR))
 
     def _cmd_report(self, arg: str) -> bool:
         return cmd_tui_report(self, arg)

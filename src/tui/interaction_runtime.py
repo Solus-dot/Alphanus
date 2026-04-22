@@ -133,7 +133,7 @@ def on_input_submitted(app: Any, event: Any, *, chat_input_cls: Any) -> None:
     handled = app._handle_command(text)
     if handled:
         cmd = text.split(None, 1)[0].lower()
-        if cmd not in {"/quit", "/exit", "/q", "/config"}:
+        if cmd not in {"/quit", "/exit", "/q", "/config", "/theme"}:
             app._ensure_command_gap()
         return
     if not app.streaming:

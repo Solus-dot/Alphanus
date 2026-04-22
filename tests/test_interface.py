@@ -1672,6 +1672,50 @@ def test_handle_file_without_path_opens_attachment_picker() -> None:
     assert opened == ["."]
 
 
+def test_handle_theme_opens_theme_picker() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    opened: list[str] = []
+    tui._cmd_theme = lambda: opened.append("theme")
+
+    assert tui._handle_command("/theme") is True
+    assert opened == ["theme"]
+
+
+def test_handle_theme_rejects_arguments() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    usages: list[str] = []
+    tui._write_usage = lambda usage: usages.append(usage) or True
+
+    assert tui._handle_command("/theme soft") is True
+    assert usages == ["/theme"]
+
+
+def test_on_theme_picker_close_applies_theme_and_persists() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    applied: list[str] = []
+    persisted: list[str] = []
+    actions: list[str] = []
+    infos: list[str] = []
+    focused: list[str] = []
+    tui._apply_theme = lambda theme_id: applied.append(theme_id) or "soft"
+    tui._persist_theme_preference = lambda theme_id: persisted.append(theme_id) or ["normalized warning"]
+    tui._write_command_action = lambda text, **_kwargs: actions.append(text)
+    tui._write_info = infos.append
+    tui.query_one = lambda selector, _type=None: SimpleNamespace(focus=lambda: focused.append("focus")) if selector is ChatInput else None
+
+    tui._on_theme_picker_close({"id": "theme:soft"})
+
+    assert applied == ["soft"]
+    assert persisted == ["soft"]
+    assert actions == ["Theme set to 'soft'"]
+    assert infos == ["Config warning: normalized warning"]
+    assert focused == ["focus"]
+
+
 def test_handle_detach_last_removes_most_recent_attachment() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._id = "app"

@@ -24,6 +24,8 @@ def initialize_shell_state(app: Any, *, agent: Any, debug: bool) -> None:
     app._inactive_assistant_char_limit = app._ui_config.inactive_assistant_char_limit
     app._inactive_tool_argument_char_limit = app._ui_config.inactive_tool_argument_char_limit
     app._inactive_tool_content_char_limit = app._ui_config.inactive_tool_content_char_limit
+    app._active_theme_id = app._ui_config.theme
+    app._themes_registered = False
 
     runtime_cfg = app.agent.config.get("runtime", {}) if isinstance(app.agent.config, dict) else {}
     configured_state_root = str(runtime_cfg.get("state_root", "")).strip() if isinstance(runtime_cfg, dict) else ""

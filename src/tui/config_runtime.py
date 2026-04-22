@@ -37,6 +37,9 @@ def apply_tui_config(app: Any) -> None:
     app._inactive_tool_argument_char_limit = app._ui_config.inactive_tool_argument_char_limit
     app._inactive_tool_content_char_limit = app._ui_config.inactive_tool_content_char_limit
     app._scroll_interval = app._ui_timing.scroll_interval_s
+    apply_theme = getattr(app, "_apply_theme_from_config", None)
+    if callable(apply_theme):
+        apply_theme()
     install_stream_drain_timer(app)
     app.conv_tree = app._apply_tree_compaction_policy(app.conv_tree)
     app._log().max_lines = app._chat_log_max_lines
