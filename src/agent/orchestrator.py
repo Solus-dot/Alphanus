@@ -11,6 +11,7 @@ from agent.evidence_guard import EvidenceGuard
 from agent.llm_client import LLMClient
 from agent.policies import OutputSanitizer, PromptPolicyRenderer, search_rule
 from agent.telemetry import TelemetryEmitter
+from agent.tool_execution_engine import ToolExecutionEngine
 from agent.turn_policy_engine import TurnPolicyEngine
 from core.skill_parser import SkillManifest
 from core.types import (
@@ -73,6 +74,7 @@ class TurnOrchestrator:
         self.sanitizer = OutputSanitizer(self.max_reasoning_chars)
         self.policy_engine = TurnPolicyEngine(self.skill_runtime, self.default_tool_budgets)
         self.evidence_guard = EvidenceGuard(self.skill_runtime)
+        self.tool_execution_engine = ToolExecutionEngine()
 
     @staticmethod
     def emit(on_event: Optional[Callable[[JsonObject], None]], event: JsonObject) -> None:
@@ -261,65 +263,13 @@ class TurnOrchestrator:
 
     @staticmethod
     def tool_result_paths(name: str, payload: dict[str, object]) -> list[str]:
-        data = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(data, dict):
-            return []
-        if name in {"create_file", "edit_file", "create_directory", "read_file"}:
-            path = str(data.get("filepath", "")).strip()
-            return [path] if path else []
-        if name == "read_files":
-            created = data.get("created") or data.get("files")
-            if not isinstance(created, list):
-                return []
-            out: List[str] = []
-            for item in created:
-                if not isinstance(item, dict):
-                    continue
-                path = str(item.get("filepath", "")).strip()
-                if path:
-                    out.append(path)
-            return out
-        return []
+        return ToolExecutionEngine.tool_result_paths(name, payload)
 
     def tool_budget_reason(self, state: TurnState, call: ToolCall) -> str:
         return self.policy_engine.tool_budget_reason(state, call) or ""
 
     def record_tool_effects(self, state: TurnState, call: ToolCall, result: dict[str, object], *, policy_blocked: bool = False) -> None:
-        state.completion.tool_counts[call.name] = state.completion.tool_counts.get(call.name, 0) + 1
-        record = ToolExecutionRecord(name=call.name, args=dict(call.arguments), result=result, policy_blocked=policy_blocked)
-        state.evidence.append(record)
-        if result.get("ok"):
-            paths = self.tool_result_paths(call.name, result)
-            if call.name in {"create_file", "edit_file"}:
-                for path in paths:
-                    if path and path not in state.completion.materialized_paths:
-                        state.completion.materialized_paths.append(path)
-            if call.name in {"read_file", "read_files"}:
-                for path in paths:
-                    if path and path not in state.completion.readback_paths:
-                        state.completion.readback_paths.append(path)
-
-        if not state.search_mode or call.name not in {"web_search", "fetch_url"}:
-            return
-        if result.get("ok"):
-            state.completion.search_has_success = True
-            if call.name == "fetch_url":
-                state.completion.search_has_fetch_content = True
-                fetched_payload = result.get("data") if isinstance(result.get("data"), dict) else {}
-                for key in ("url", "final_url"):
-                    seen_url = str(fetched_payload.get(key, "")).strip()
-                    if seen_url:
-                        state.completion.fetched_urls.add(seen_url)
-            return
-        if call.name == "web_search":
-            state.completion.search_failure_count += 1
-        if call.name == "fetch_url":
-            error_obj = result.get("error") or {}
-            message = str(error_obj.get("message", "")).lower()
-            raw_url = str(call.arguments.get("url", "")).strip()
-            host = urllib.parse.urlparse(raw_url).netloc.lower()
-            if host and any(code in message for code in ("http 401", "http 403", "http 429")):
-                state.completion.blocked_fetch_domains.add(host)
+        self.tool_execution_engine.record_tool_effects(state, call, result, policy_blocked=policy_blocked)
 
     def needs_fetch_evidence(self, state: TurnState) -> bool:
         return self.evidence_guard.needs_fetch_evidence(state)
