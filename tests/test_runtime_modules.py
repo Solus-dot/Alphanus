@@ -628,7 +628,7 @@ def test_skill_runtime_only_exposes_custom_tools_after_skill_view_load(tmp_path:
 def test_llm_client_call_with_retry_delegates_to_provider_stream(mocker) -> None:
     llm_client = LLMClient({"agent": {}})
     expected = StreamPassResult(finish_reason="stop", content="ok")
-    mocker.patch.object(llm_client, "_status_allows_immediate_send", return_value=ModelStatus(state="online"))
+    mocker.patch.object(llm_client.provider, "_status_allows_immediate_send", return_value=ModelStatus(state="online"))
     stream = mocker.patch.object(llm_client.provider, "stream_completion", return_value=expected)
 
     result = llm_client.call_with_retry({"messages": []}, stop_event=None, on_event=None, pass_id="pass_1")
@@ -639,13 +639,13 @@ def test_llm_client_call_with_retry_delegates_to_provider_stream(mocker) -> None
 
 def test_llm_client_call_with_retry_retries_once_on_retryable_failure(mocker) -> None:
     llm_client = LLMClient({"agent": {}})
-    llm_client.per_turn_retries = 1
-    llm_client.retry_backoff_s = 0.0
+    llm_client.provider.per_turn_retries = 1
+    llm_client.provider.retry_backoff_s = 0.0
     events: list[dict[str, object]] = []
-    mocker.patch.object(llm_client, "_status_allows_immediate_send", return_value=ModelStatus(state="online"))
-    mocker.patch.object(llm_client, "_should_retry_exception", return_value=True)
-    mocker.patch.object(llm_client, "refresh_model_status", return_value=ModelStatus(state="online"))
-    mocker.patch.object(llm_client, "ensure_ready", return_value=True)
+    mocker.patch.object(llm_client.provider, "_status_allows_immediate_send", return_value=ModelStatus(state="online"))
+    mocker.patch.object(llm_client.provider, "_should_retry_exception", return_value=True)
+    mocker.patch.object(llm_client.provider, "refresh_model_status", return_value=ModelStatus(state="online"))
+    mocker.patch.object(llm_client.provider, "check_ready", return_value=True)
     stream = mocker.patch.object(
         llm_client.provider,
         "stream_completion",

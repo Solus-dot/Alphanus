@@ -165,41 +165,7 @@ class LLMClient:
         return payload
 
     def call_with_retry(self, payload: JsonObject, stop_event, on_event, pass_id: str) -> StreamPassResult:
-        attempt = 0
-        while True:
-            if self.stop_requested(stop_event):
-                return StreamPassResult(finish_reason="cancelled")
-            try:
-                status = self._status_allows_immediate_send()
-                if status.state == "offline":
-                    message = status.last_error or f"Model endpoint offline: {self.models_endpoint}"
-                    raise RuntimeError(f"Model endpoint offline: {message}")
-                return self.provider.stream_completion(payload, stop_event, on_event, pass_id=pass_id)
-            except Exception as exc:
-                if self._is_transport_failure(exc):
-                    self.mark_model_transport_failure(exc)
-                if self._should_retry_exception(exc) and attempt < self.per_turn_retries:
-                    attempt += 1
-                    self._emit(
-                        on_event,
-                        {"type": "info", "text": f"Retrying request ({attempt}/{self.per_turn_retries})..."},
-                    )
-                    self.telemetry.emit("request_retry", pass_id=pass_id, attempt=attempt, error=str(exc))
-                    if not self.sleep_with_stop(self.retry_backoff_s, stop_event):
-                        return StreamPassResult(finish_reason="cancelled")
-                    status = self.refresh_model_status(timeout_s=self._status_probe_timeout_s(), force=True)
-                    if status.state != "online":
-                        ready = self.ensure_ready(
-                            stop_event=stop_event,
-                            on_event=on_event,
-                            timeout_s=min(self.readiness_timeout_s, 5.0),
-                        )
-                        if ready is None:
-                            return StreamPassResult(finish_reason="cancelled")
-                        if not ready:
-                            raise
-                    continue
-                raise
+        return self.provider.call_with_retry(payload, stop_event, on_event, pass_id=pass_id)
 
     @staticmethod
     def _emit(on_event: Optional[Callable[[JsonObject], None]], event: JsonObject) -> None:

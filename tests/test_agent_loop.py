@@ -3992,7 +3992,7 @@ def test_local_connection_refused_is_not_retried(mocker, runtime: SkillRuntime):
     def boom(*_args, **_kwargs):
         raise urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
 
-    mocker.patch.object(agent.llm_client, "_status_allows_immediate_send", return_value=ModelStatus(state="online", endpoint=agent.models_endpoint))
+    mocker.patch.object(agent.llm_client.provider, "_status_allows_immediate_send", return_value=ModelStatus(state="online", endpoint=agent.models_endpoint))
     mocker.patch("agent.llm_client.stream_chat_completions", side_effect=boom)
 
     with pytest.raises(Exception):
@@ -4006,17 +4006,17 @@ def test_local_connection_refused_is_not_retried(mocker, runtime: SkillRuntime):
 def test_retryable_transport_error_still_runs_readiness_poll_after_offline_probe(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     events: list[dict] = []
-    mocker.patch.object(agent.llm_client, "_status_allows_immediate_send", return_value=ModelStatus(state="online", endpoint=agent.models_endpoint))
+    mocker.patch.object(agent.llm_client.provider, "_status_allows_immediate_send", return_value=ModelStatus(state="online", endpoint=agent.models_endpoint))
     stream = mocker.patch(
         "agent.llm_client.stream_chat_completions",
         side_effect=urllib.error.URLError(TimeoutError("timed out")),
     )
     mocker.patch.object(
-        agent.llm_client,
+        agent.llm_client.provider,
         "refresh_model_status",
         return_value=ModelStatus(state="offline", last_error="timed out", endpoint=agent.models_endpoint),
     )
-    ready = mocker.patch.object(agent.llm_client, "ensure_ready", return_value=False)
+    ready = mocker.patch.object(agent.llm_client.provider, "check_ready", return_value=False)
 
     with pytest.raises(Exception):
         agent.llm_client.call_with_retry({"messages": []}, None, events.append, pass_id="pass_1")
