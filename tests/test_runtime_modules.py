@@ -10,8 +10,8 @@ from agent.orchestrator import TurnOrchestrator
 from agent.policies import PromptPolicyRenderer
 from agent.telemetry import TelemetryEmitter, configure_logging
 from core.memory import VectorMemory
-from core.skills import SkillRuntime
-from core.types import ToolCall, TurnClassification
+from core.skills import SkillContext, SkillRuntime
+from core.types import ModelStatus, StreamPassResult, ToolCall, TurnClassification
 from core.workspace import WorkspaceManager
 
 
@@ -601,3 +601,63 @@ def test_orchestrator_search_budget_reason_is_explicit_for_time_sensitive_turns(
 
     assert reason is not None
     assert "search-attempt budget is exhausted" in reason
+
+
+def test_skill_runtime_only_exposes_custom_tools_after_skill_view_load(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    skill_ctx = SkillContext(
+        user_input="create",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(runtime.workspace.workspace_root),
+        memory_hits=[],
+    )
+
+    selected_before = runtime.select_skills(skill_ctx)
+    names_before = set(runtime.allowed_tool_names(selected_before, ctx=skill_ctx))
+    assert "create_directory" not in names_before
+
+    load_result = runtime.skill_view("workspace-ops", "", skill_ctx)
+    assert load_result.get("loaded") is True
+
+    selected_after = runtime.select_skills(skill_ctx)
+    names_after = set(runtime.allowed_tool_names(selected_after, ctx=skill_ctx))
+    assert "create_directory" in names_after
+
+
+def test_llm_client_call_with_retry_delegates_to_provider_stream(mocker) -> None:
+    llm_client = LLMClient({"agent": {}})
+    expected = StreamPassResult(finish_reason="stop", content="ok")
+    mocker.patch.object(llm_client, "_status_allows_immediate_send", return_value=ModelStatus(state="online"))
+    stream = mocker.patch.object(llm_client.provider, "stream_completion", return_value=expected)
+
+    result = llm_client.call_with_retry({"messages": []}, stop_event=None, on_event=None, pass_id="pass_1")
+
+    assert result == expected
+    stream.assert_called_once()
+
+
+def test_llm_client_call_with_retry_retries_once_on_retryable_failure(mocker) -> None:
+    llm_client = LLMClient({"agent": {}})
+    llm_client.per_turn_retries = 1
+    llm_client.retry_backoff_s = 0.0
+    events: list[dict[str, object]] = []
+    mocker.patch.object(llm_client, "_status_allows_immediate_send", return_value=ModelStatus(state="online"))
+    mocker.patch.object(llm_client, "_should_retry_exception", return_value=True)
+    mocker.patch.object(llm_client, "refresh_model_status", return_value=ModelStatus(state="online"))
+    mocker.patch.object(llm_client, "ensure_ready", return_value=True)
+    stream = mocker.patch.object(
+        llm_client.provider,
+        "stream_completion",
+        side_effect=[
+            RuntimeError("temporary"),
+            StreamPassResult(finish_reason="stop", content="ok"),
+        ],
+    )
+
+    result = llm_client.call_with_retry({"messages": []}, stop_event=None, on_event=events.append, pass_id="pass_1")
+
+    assert result.finish_reason == "stop"
+    assert result.content == "ok"
+    assert stream.call_count == 2
+    assert any(event.get("type") == "info" and "Retrying request (1/1)" in str(event.get("text", "")) for event in events)
