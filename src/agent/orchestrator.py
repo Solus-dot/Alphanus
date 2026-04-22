@@ -8,6 +8,7 @@ from typing import Any, Callable, List, Optional
 from core.message_types import ChatMessage
 from agent.classifier import TurnClassifier
 from agent.evidence_guard import EvidenceGuard
+from agent.finalization_engine import FinalizationEngine
 from agent.llm_client import LLMClient
 from agent.policies import OutputSanitizer, PromptPolicyRenderer, search_rule
 from agent.telemetry import TelemetryEmitter
@@ -75,6 +76,7 @@ class TurnOrchestrator:
         self.policy_engine = TurnPolicyEngine(self.skill_runtime, self.default_tool_budgets)
         self.evidence_guard = EvidenceGuard(self.skill_runtime)
         self.tool_execution_engine = ToolExecutionEngine()
+        self.finalization_engine = FinalizationEngine(self)
 
     @staticmethod
     def emit(on_event: Optional[Callable[[JsonObject], None]], event: JsonObject) -> None:
@@ -343,12 +345,25 @@ class TurnOrchestrator:
             blocked_domains=sorted(state.completion.blocked_fetch_domains),
             content_chars=len(result.content),
             reasoning_chars=len(result.reasoning),
+            finalization_attempts=state.telemetry.finalization_attempts,
+            finalization_repairs=state.telemetry.finalization_repairs,
+            finalization_fallback_applied=state.telemetry.finalization_fallback_applied,
         )
 
     def build_policy_snapshot(self, state: TurnState) -> TurnPolicySnapshot:
         return self.policy_engine.build_policy_snapshot(state)
 
     def finalize_turn(self, system_content: str, state: TurnState, stop_event, on_event, pass_id: str, extra_rules: str = "") -> AgentTurnResult:
+        return self.finalization_engine.finalize_turn(
+            system_content=system_content,
+            state=state,
+            stop_event=stop_event,
+            on_event=on_event,
+            pass_id=pass_id,
+            extra_rules=extra_rules,
+        )
+
+    def _finalize_turn_core(self, system_content: str, state: TurnState, stop_event, on_event, pass_id: str, extra_rules: str = "") -> AgentTurnResult:
         def finalize_once(extra: str, suffix: str):
             if self._is_stop_requested(stop_event):
                 return AgentTurnResult(
@@ -613,6 +628,7 @@ class TurnOrchestrator:
                 error=fallback_error,
             )
 
+        state.telemetry.finalization_attempts += 1
         first = finalize_once(extra_rules, "final")
         if isinstance(first, AgentTurnResult):
             return first
@@ -622,6 +638,8 @@ class TurnOrchestrator:
         leaked_markup = self.sanitizer.contains_tool_markup(first.content)
         if first_result.content.strip() and not leaked_markup:
             return first_result
+        state.telemetry.finalization_attempts += 1
+        state.telemetry.finalization_repairs += 1
         second = finalize_once(
             correction_rules(
                 "The previous finalization emitted tool markup."
@@ -638,6 +656,8 @@ class TurnOrchestrator:
         if second_result.content.strip() and not self.sanitizer.contains_tool_markup(second.content):
             return second_result
 
+        state.telemetry.finalization_attempts += 1
+        state.telemetry.finalization_repairs += 1
         third = finalize_once(
             correction_rules(
                 "The previous finalization still emitted tool markup or empty content."
@@ -654,6 +674,7 @@ class TurnOrchestrator:
         if third_result.content.strip() and not self.sanitizer.contains_tool_markup(third.content):
             return third_result
 
+        state.telemetry.finalization_fallback_applied = True
         self.emit(on_event, {"type": "info", "text": "Finalization fallback applied from tool evidence."})
         return fallback_final_result(third_result.reasoning)
 

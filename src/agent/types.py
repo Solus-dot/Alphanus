@@ -120,6 +120,9 @@ class TurnTelemetry:
     pass_index: int = 0
     model_usage: dict[str, int] = field(default_factory=dict)
     classification_source: str = ""
+    finalization_attempts: int = 0
+    finalization_repairs: int = 0
+    finalization_fallback_applied: bool = False
 
 
 @dataclass(slots=True)
