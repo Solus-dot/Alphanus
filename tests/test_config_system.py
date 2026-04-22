@@ -61,6 +61,16 @@ def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
     assert normalized["search"]["provider"] == DEFAULT_CONFIG["search"]["provider"]
     assert normalized["tui"]["chat_log_max_lines"] == 100
 
+
+def test_normalize_config_theme_alias_and_invalid_values() -> None:
+    aliased, alias_warnings = normalize_config({"schema_version": "1.0.0", "tui": {"theme": "catppuccin"}})
+    invalid, invalid_warnings = normalize_config({"schema_version": "1.0.0", "tui": {"theme": "unknown-theme"}})
+
+    assert aliased["tui"]["theme"] == "catppuccin-mocha"
+    assert invalid["tui"]["theme"] == DEFAULT_CONFIG["tui"]["theme"]
+    assert any("tui.theme" in warning for warning in invalid_warnings)
+    assert not any("unsupported 'catppuccin'" in warning for warning in alias_warnings)
+
 def test_load_global_config_reports_and_rejects_bad_json(tmp_path: Path) -> None:
     cfg = tmp_path / "config" / "global_config.json"
     cfg.parent.mkdir(parents=True, exist_ok=True)
@@ -204,7 +214,7 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
             "schema_version": "1.0.0",
             "agent": {"connect_timeout_s": 3, "per_turn_retries": 2},
             "skills": {"python_executable": "/usr/bin/python3"},
-            "tui": {"chat_log_max_lines": 1234, "timing": {"model_refresh_interval_s": 9}},
+            "tui": {"theme": "gruvbox-dark-soft", "chat_log_max_lines": 1234, "timing": {"model_refresh_interval_s": 9}},
         }
     )
 
@@ -216,5 +226,6 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
     assert provider.per_turn_retries == 2
     assert provider.auth_header == "Authorization: Bearer demo"
     assert skills.python_executable == "/usr/bin/python3"
+    assert ui.theme == "gruvbox-dark-soft"
     assert ui.chat_log_max_lines == 1234
     assert ui.timing.model_refresh_interval_s == 9.0

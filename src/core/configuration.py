@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 from urllib.parse import urlparse
 
+from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
+
 SCHEMA_VERSION = "1.0.0"
 MAX_CONFIG_BYTES = 512 * 1024
 
@@ -97,6 +99,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "path": "./logs/runtime.jsonl",
     },
     "tui": {
+        "theme": DEFAULT_THEME_ID,
         "chat_log_max_lines": 5000,
         "timing": {
             "stream_drain_interval_s": 0.016,
@@ -703,6 +706,20 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
     merged["logging"] = logging_cfg
 
     tui_cfg = merged.get("tui", {}) if isinstance(merged.get("tui"), dict) else {}
+    raw_theme = _coerce_string(
+        tui_cfg.get("theme"),
+        str(DEFAULT_CONFIG["tui"]["theme"]),
+        path="tui.theme",
+        warnings=warnings,
+        allow_empty=False,
+    )
+    resolved_theme, changed = normalize_theme_id(raw_theme, default=str(DEFAULT_THEME_ID))
+    if changed:
+        if raw_theme.strip():
+            _warn(warnings, f"tui.theme: unsupported {raw_theme!r}, using {resolved_theme!r}")
+        else:
+            _warn(warnings, f"tui.theme: empty value, using {resolved_theme!r}")
+    tui_cfg["theme"] = resolved_theme
     tui_cfg["chat_log_max_lines"] = _coerce_int(
         tui_cfg.get("chat_log_max_lines"),
         int(DEFAULT_CONFIG["tui"]["chat_log_max_lines"]),

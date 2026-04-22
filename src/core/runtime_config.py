@@ -4,6 +4,8 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
+
 
 def _section(config: Dict[str, Any], key: str) -> Dict[str, Any]:
     value = config.get(key)
@@ -109,6 +111,7 @@ class UiTimingConfig:
 
 @dataclass(slots=True)
 class UiRuntimeConfig:
+    theme: str
     chat_log_max_lines: Optional[int]
     tree_compaction_enabled: bool
     inactive_assistant_char_limit: int
@@ -121,7 +124,10 @@ class UiRuntimeConfig:
         tui_cfg = _section(config, "tui")
         tree_cfg = _section(tui_cfg, "tree_compaction")
         chat_log_max_lines = _coerce_int(tui_cfg.get("chat_log_max_lines"), 5000, minimum=1)
+        theme_raw = _coerce_string(tui_cfg.get("theme"), DEFAULT_THEME_ID)
+        theme, _ = normalize_theme_id(theme_raw, default=DEFAULT_THEME_ID)
         return cls(
+            theme=theme,
             chat_log_max_lines=chat_log_max_lines if chat_log_max_lines > 0 else None,
             tree_compaction_enabled=_coerce_bool(tree_cfg.get("enabled"), True),
             inactive_assistant_char_limit=_coerce_int(

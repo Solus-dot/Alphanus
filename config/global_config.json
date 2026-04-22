@@ -47,5 +47,8 @@
     "level": "INFO",
     "format": "json",
     "path": "./logs/runtime.jsonl"
+  },
+  "tui": {
+    "theme": "catppuccin-mocha"
   }
 }
