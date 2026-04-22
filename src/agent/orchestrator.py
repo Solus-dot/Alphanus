@@ -2,28 +2,25 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 import urllib.parse
-import uuid
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, List, Optional
 
-from core.message_types import ChatMessage, JSONValue
+from core.message_types import ChatMessage
 from agent.classifier import TurnClassifier
+from agent.evidence_guard import EvidenceGuard
 from agent.llm_client import LLMClient
 from agent.policies import OutputSanitizer, PromptPolicyRenderer, search_rule
 from agent.telemetry import TelemetryEmitter
+from agent.turn_policy_engine import TurnPolicyEngine
 from core.skill_parser import SkillManifest
 from core.types import (
     AgentTurnResult,
-    CompletionEvidence,
     JsonObject,
     ShellConfirmationFn,
     ToolCall,
     ToolExecutionRecord,
     TurnPolicySnapshot,
     TurnState,
-    TurnTelemetry,
     UserInputRequestFn,
 )
 from core.skills import SkillRuntime
@@ -74,6 +71,8 @@ class TurnOrchestrator:
                     logging.debug("Invalid tool budget for %s: %s", key, exc)
                     continue
         self.sanitizer = OutputSanitizer(self.max_reasoning_chars)
+        self.policy_engine = TurnPolicyEngine(self.skill_runtime, self.default_tool_budgets)
+        self.evidence_guard = EvidenceGuard(self.skill_runtime)
 
     @staticmethod
     def emit(on_event: Optional[Callable[[JsonObject], None]], event: JsonObject) -> None:
@@ -153,27 +152,10 @@ class TurnOrchestrator:
         return out
 
     def build_turn_state(self, ctx, selected: list[SkillManifest], history_messages: list[ChatMessage], classification) -> TurnState:
-        state = TurnState(
-            ctx=ctx,
-            selected=selected,
-            dynamic_history=list(history_messages),
-            skill_exchanges=[],
-            classification=classification,
-            completion=CompletionEvidence(),
-            telemetry=TurnTelemetry(
-                turn_id=f"turn_{uuid.uuid4().hex[:10]}",
-                classification_source=classification.source,
-            ),
-            search_tools_enabled=False,
-            evidence=[],
-            tool_budgets=dict(self.default_tool_budgets),
-        )
-        self.refresh_search_tools_enabled(state)
-        return state
+        return self.policy_engine.build_turn_state(ctx, selected, history_messages, classification)
 
     def refresh_search_tools_enabled(self, state: TurnState) -> None:
-        turn_tool_names = set(self.skill_runtime.allowed_tool_names(state.selected, ctx=state.ctx))
-        state.search_tools_enabled = "web_search" in turn_tool_names
+        self.policy_engine.refresh_search_tools_enabled(state)
 
     def _default_select_skills(self, ctx, stop_event):
         classification = self.classify_context(ctx, stop_event=stop_event)
@@ -265,31 +247,17 @@ class TurnOrchestrator:
             )
         return raw
 
-    @staticmethod
-    def workspace_materialization_count(state: TurnState) -> int:
-        return len(state.completion.materialized_paths)
+    def workspace_materialization_count(self, state: TurnState) -> int:
+        return self.evidence_guard.workspace_materialization_count(state)
 
-    @staticmethod
-    def _tool_counts_as_workspace_mutation(record: ToolExecutionRecord, skill_runtime) -> bool:
-        if record.policy_blocked or not bool(record.result.get("ok")):
-            return False
-        if skill_runtime.tool_is_mutating(record.name):
-            return True
-        if record.name != "shell_command":
-            return False
-        meta = record.result.get("meta")
-        return bool(isinstance(meta, dict) and meta.get("workspace_changed"))
+    def _tool_counts_as_workspace_mutation(self, record: ToolExecutionRecord, _skill_runtime) -> bool:
+        return self.evidence_guard.tool_counts_as_workspace_mutation(record)
 
     def workspace_mutation_count(self, state: TurnState) -> int:
-        return sum(
-            1
-            for record in state.evidence
-            if self._tool_counts_as_workspace_mutation(record, self.skill_runtime)
-        )
+        return self.evidence_guard.workspace_mutation_count(state)
 
-    @staticmethod
-    def workspace_readback_count(state: TurnState) -> int:
-        return len(state.completion.readback_paths)
+    def workspace_readback_count(self, state: TurnState) -> int:
+        return self.evidence_guard.workspace_readback_count(state)
 
     @staticmethod
     def tool_result_paths(name: str, payload: dict[str, object]) -> list[str]:
@@ -314,23 +282,7 @@ class TurnOrchestrator:
         return []
 
     def tool_budget_reason(self, state: TurnState, call: ToolCall) -> str:
-        limit = state.tool_budgets.get(call.name)
-        count = state.completion.tool_counts.get(call.name, 0)
-        if limit is None or count < limit:
-            return ""
-        if state.search_mode and call.name == "web_search":
-            return search_rule(
-                "The search-attempt budget is exhausted.",
-                "Answer only from the evidence already gathered.",
-                "Do not issue more search calls.",
-            )
-        if state.search_mode and call.name == "fetch_url":
-            return search_rule(
-                "The page-fetch budget is exhausted.",
-                "Answer only from the evidence already gathered.",
-                "Do not fetch more pages.",
-            )
-        return f"Tool budget exceeded for {call.name} ({limit})"
+        return self.policy_engine.tool_budget_reason(state, call) or ""
 
     def record_tool_effects(self, state: TurnState, call: ToolCall, result: dict[str, object], *, policy_blocked: bool = False) -> None:
         state.completion.tool_counts[call.name] = state.completion.tool_counts.get(call.name, 0) + 1
@@ -369,40 +321,11 @@ class TurnOrchestrator:
             if host and any(code in message for code in ("http 401", "http 403", "http 429")):
                 state.completion.blocked_fetch_domains.add(host)
 
-    @staticmethod
-    def needs_fetch_evidence(state: TurnState) -> bool:
-        return state.search_mode and state.time_sensitive_query and not state.completion.search_has_fetch_content
+    def needs_fetch_evidence(self, state: TurnState) -> bool:
+        return self.evidence_guard.needs_fetch_evidence(state)
 
     def workspace_action_evidence(self, state: TurnState) -> JsonObject:
-        successful_mutating_tools: List[str] = []
-        policy_blocked_tools: List[str] = []
-        recent_tools: List[Dict[str, Any]] = []
-        for record in state.evidence[-12:]:
-            ok = bool(record.result.get("ok"))
-            mutating = self._tool_counts_as_workspace_mutation(record, self.skill_runtime)
-            if mutating and record.name not in successful_mutating_tools:
-                successful_mutating_tools.append(record.name)
-            if record.policy_blocked and record.name not in policy_blocked_tools:
-                policy_blocked_tools.append(record.name)
-            error_obj = record.result.get("error")
-            error = error_obj if isinstance(error_obj, dict) else {}
-            recent_tools.append(
-                {
-                    "name": record.name,
-                    "ok": ok,
-                    "mutating": mutating,
-                    "policy_blocked": record.policy_blocked,
-                    "error_code": str(error.get("code", "")).strip(),
-                    "error_message": str(error.get("message", "")).strip()[:240],
-                }
-            )
-        return {
-            "tool_counts": dict(state.completion.tool_counts),
-            "has_successful_mutation": bool(successful_mutating_tools),
-            "successful_mutating_tools": successful_mutating_tools,
-            "policy_blocked_tools": policy_blocked_tools,
-            "recent_tools": recent_tools,
-        }
+        return self.evidence_guard.workspace_action_evidence(state)
 
     def workspace_action_outcome(self, state: TurnState, text: str, *, stop_event, pass_id: str) -> str:
         if self.workspace_mutation_count(state) > 0:
@@ -473,17 +396,7 @@ class TurnOrchestrator:
         )
 
     def build_policy_snapshot(self, state: TurnState) -> TurnPolicySnapshot:
-        turn_tool_names = set(self.skill_runtime.allowed_tool_names(state.selected, ctx=state.ctx))
-        return TurnPolicySnapshot(
-            search_mode=state.search_mode,
-            time_sensitive_query=state.time_sensitive_query,
-            forced_search_retry=state.forced_search_retry and state.completion.tool_counts.get("web_search", 0) == 0,
-            requires_workspace_action=state.requires_workspace_action,
-            forced_action_retry=state.forced_action_retry and not state.completion.tool_counts,
-            explicit_external_path=state.explicit_external_path,
-            prefer_local_workspace_tools=state.prefer_local_workspace_tools,
-            shell_tool_exposed="shell_command" in turn_tool_names,
-        )
+        return self.policy_engine.build_policy_snapshot(state)
 
     def finalize_turn(self, system_content: str, state: TurnState, stop_event, on_event, pass_id: str, extra_rules: str = "") -> AgentTurnResult:
         def finalize_once(extra: str, suffix: str):
