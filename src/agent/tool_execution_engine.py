@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import urllib.parse
-from typing import List
+from typing import List, cast
 
+from core.message_types import JSONValue
 from core.types import ToolCall, ToolExecutionRecord, TurnState
 
 
@@ -30,12 +31,13 @@ class ToolExecutionEngine:
         return []
 
     def record_tool_effects(self, state: TurnState, call: ToolCall, result: dict[str, object], *, policy_blocked: bool = False) -> None:
+        result_json = cast(dict[str, JSONValue], result)
         state.completion.tool_counts[call.name] = state.completion.tool_counts.get(call.name, 0) + 1
         state.evidence.append(
             ToolExecutionRecord(
                 name=call.name,
                 args=dict(call.arguments),
-                result=result,
+                result=result_json,
                 policy_blocked=policy_blocked,
             )
         )
@@ -56,7 +58,8 @@ class ToolExecutionEngine:
             state.completion.search_has_success = True
             if call.name == "fetch_url":
                 state.completion.search_has_fetch_content = True
-                fetched_payload = result.get("data") if isinstance(result.get("data"), dict) else {}
+                data_obj = result.get("data")
+                fetched_payload = data_obj if isinstance(data_obj, dict) else {}
                 for key in ("url", "final_url"):
                     seen_url = str(fetched_payload.get(key, "")).strip()
                     if seen_url:
@@ -65,7 +68,8 @@ class ToolExecutionEngine:
         if call.name == "web_search":
             state.completion.search_failure_count += 1
         if call.name == "fetch_url":
-            error_obj = result.get("error") or {}
+            error_raw = result.get("error")
+            error_obj = error_raw if isinstance(error_raw, dict) else {}
             message = str(error_obj.get("message", "")).lower()
             raw_url = str(call.arguments.get("url", "")).strip()
             host = urllib.parse.urlparse(raw_url).netloc.lower()

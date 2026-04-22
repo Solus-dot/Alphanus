@@ -15,5 +15,6 @@ _MAIN_DEPRECATION_MESSAGE = (
 
 
 if __name__ == "__main__":
-    print(_MAIN_DEPRECATION_MESSAGE, file=sys.stderr)
+    if sys.stderr.isatty():
+        print(_MAIN_DEPRECATION_MESSAGE, file=sys.stderr)
     raise SystemExit(main())

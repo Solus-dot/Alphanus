@@ -27,10 +27,20 @@ jobs:
         run: uv run ruff check src tests --select F821
 
       - name: Pyright
-        run: uv run pyright src/core/workspace.py src/core/configuration.py
+        run: >
+          uv run pyright
+          src/core/workspace.py
+          src/core/configuration.py
+          src/agent/evidence_guard.py
+          src/agent/turn_policy_engine.py
+          src/agent/tool_execution_engine.py
+          src/agent/finalization_engine.py
+          src/core/skill_discovery.py
+          src/core/skill_registry.py
+          src/core/skill_selector.py
 
       - name: Unused Imports/Variables
-        run: uv run ruff check src/core/workspace.py src/core/configuration.py --select F401,F841
+        run: uv run ruff check src tests --select F401,F841
 
       - name: Tests
         run: uv run pytest

@@ -40,8 +40,9 @@ def refresh_command_popup(app: Any, value: str, *, chat_input_cls: Any) -> None:
     app._command_matches = next_matches
     accent = app._theme_color("accent", DEFAULT_ACCENT_COLOR) if hasattr(app, "_theme_color") else DEFAULT_ACCENT_COLOR
     option_rows = min(len(app._command_matches), 8)
-    option_height = option_rows + 1
-    popup_height = option_height + 4
+    desired_option_height = option_rows + 1
+    popup_chrome_height = 4
+    desired_popup_height = desired_option_height + popup_chrome_height
     separator = app.query_one("#footer-sep", Static)
     input_region = getattr(chat_input, "region", None)
     input_size = getattr(chat_input, "size", None)
@@ -58,11 +59,16 @@ def refresh_command_popup(app: Any, value: str, *, chat_input_cls: Any) -> None:
         input_height = int(getattr(input_region, "height", 0) or 0)
         separator_y = max(1, input_y + input_height)
 
+    max_popup_height = max(1, separator_y - 1)
+    popup_height = min(desired_popup_height, max_popup_height)
+    option_height = max(1, min(desired_option_height, popup_height - popup_chrome_height))
+
     popup.display = True
     popup.styles.height = popup_height
     popup.styles.width = max(44, min(72, max(input_width, 44)))
-    # Align popup content with the first input character column.
-    popup.offset = (max(1, input_x - 1), max(1, separator_y - popup_height + 1))
+    # Align popup content with the first input character column and keep it
+    # strictly above the footer separator.
+    popup.offset = (max(1, input_x), max(1, separator_y - popup_height))
     options.styles.height = option_height
     rendered = [
         Option(

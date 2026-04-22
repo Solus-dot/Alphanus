@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import List, Optional
+from typing import List
 
 from core.skills import SkillContext, SkillRuntime
 from core.skill_parser import SkillManifest

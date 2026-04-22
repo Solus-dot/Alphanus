@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Tuple
 
 from rich.markup import escape as esc
 from textual.widgets import Static

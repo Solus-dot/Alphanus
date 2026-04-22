@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.widgets import Button, OptionList, Static

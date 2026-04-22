@@ -6,10 +6,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
-from core.message_types import ChatMessage, JSONValue
 from core.runtime_config import ProviderConfig
 from core.streaming import build_ssl_context, should_retry, stream_chat_completions as core_stream_chat_completions
 
