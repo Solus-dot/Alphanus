@@ -4,10 +4,14 @@ import json
 from pathlib import Path
 
 from agent.classifier import TurnClassifier
+from agent.context import ContextWindowManager
 from agent.llm_client import LLMClient
+from agent.orchestrator import TurnOrchestrator
+from agent.policies import PromptPolicyRenderer
 from agent.telemetry import TelemetryEmitter, configure_logging
 from core.memory import VectorMemory
 from core.skills import SkillRuntime
+from core.types import ToolCall, TurnClassification
 from core.workspace import WorkspaceManager
 
 
@@ -466,3 +470,134 @@ def test_classifier_clears_local_workspace_preference_for_shell_confirmation_fol
     assert classification.followup_kind == "confirmation"
     assert classification.requires_workspace_action is True
     assert classification.prefer_local_workspace_tools is False
+
+
+def _orchestrator_runtime(tmp_path: Path) -> tuple[SkillRuntime, TurnClassifier, TurnOrchestrator]:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {}}
+    llm_client = LLMClient(cfg)
+    classifier = TurnClassifier(cfg, runtime, llm_client)
+    orchestrator = TurnOrchestrator(
+        skill_runtime=runtime,
+        context_mgr=ContextWindowManager(),
+        llm_client=llm_client,
+        classifier=classifier,
+        prompt_renderer=PromptPolicyRenderer("system", runtime),
+    )
+    return runtime, classifier, orchestrator
+
+
+def _turn_state(tmp_path: Path, *, user_input: str, time_sensitive: bool, workspace_action: bool):
+    runtime, classifier, orchestrator = _orchestrator_runtime(tmp_path)
+    ctx = classifier.build_skill_context(user_input, [], [], [])
+    classification = TurnClassification(
+        time_sensitive=time_sensitive,
+        requires_workspace_action=workspace_action,
+        prefer_local_workspace_tools=workspace_action,
+        source="fallback",
+    )
+    state = orchestrator.build_turn_state(ctx, [], [], classification)
+    return runtime, orchestrator, state
+
+
+def test_orchestrator_policy_snapshot_captures_forced_flags_and_shell_exposure(mocker, tmp_path: Path) -> None:
+    runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="latest updates",
+        time_sensitive=True,
+        workspace_action=True,
+    )
+    state.search_tools_enabled = True
+    state.forced_search_retry = True
+    state.forced_action_retry = True
+    mocker.patch.object(
+        runtime,
+        "allowed_tool_names",
+        return_value=["shell_command", "web_search", "request_user_input"],
+    )
+
+    snapshot = orchestrator.build_policy_snapshot(state)
+
+    assert snapshot.search_mode is True
+    assert snapshot.time_sensitive_query is True
+    assert snapshot.forced_search_retry is True
+    assert snapshot.requires_workspace_action is True
+    assert snapshot.forced_action_retry is True
+    assert snapshot.shell_tool_exposed is True
+
+
+def test_orchestrator_records_workspace_evidence_and_policy_blocks(tmp_path: Path) -> None:
+    _runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="create a file",
+        time_sensitive=False,
+        workspace_action=True,
+    )
+
+    mutating_shell_call = ToolCall(
+        stream_id="call_1",
+        index=0,
+        id="call_1",
+        name="shell_command",
+        arguments={"command": "touch notes.txt"},
+    )
+    shell_call = ToolCall(
+        stream_id="call_2",
+        index=1,
+        id="call_2",
+        name="shell_command",
+        arguments={"command": "rm -rf /tmp/nope"},
+    )
+
+    orchestrator.record_tool_effects(
+        state,
+        mutating_shell_call,
+        {
+            "ok": True,
+            "data": {"stdout": "", "stderr": ""},
+            "error": None,
+            "meta": {"workspace_changed": True},
+        },
+    )
+    orchestrator.record_tool_effects(
+        state,
+        shell_call,
+        {
+            "ok": False,
+            "data": None,
+            "error": {"code": "E_POLICY", "message": "shell blocked"},
+            "meta": {},
+        },
+        policy_blocked=True,
+    )
+
+    evidence = orchestrator.workspace_action_evidence(state)
+
+    assert state.completion.tool_counts["shell_command"] == 2
+    assert evidence["has_successful_mutation"] is True
+    assert "shell_command" in evidence["successful_mutating_tools"]
+    assert "shell_command" in evidence["policy_blocked_tools"]
+
+
+def test_orchestrator_search_budget_reason_is_explicit_for_time_sensitive_turns(tmp_path: Path) -> None:
+    _runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="latest status",
+        time_sensitive=True,
+        workspace_action=False,
+    )
+    state.search_tools_enabled = True
+    state.tool_budgets["web_search"] = 1
+    state.completion.tool_counts["web_search"] = 1
+    web_search_call = ToolCall(
+        stream_id="call_search",
+        index=0,
+        id="call_search",
+        name="web_search",
+        arguments={"query": "latest status"},
+    )
+
+    reason = orchestrator.tool_budget_reason(state, web_search_call)
+
+    assert reason is not None
+    assert "search-attempt budget is exhausted" in reason
