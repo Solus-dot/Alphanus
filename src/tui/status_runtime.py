@@ -113,6 +113,7 @@ def apply_model_status(host: StatusRuntimeHost, status: ModelStatus) -> None:
 
 
 def update_status2(app: Any) -> None:
+    colors = app._theme_spec().colors if hasattr(app, "_theme_spec") else None
     left = status_left_markup(
         await_shell_confirm=app._await_shell_confirm,
         streaming=app.streaming,
@@ -122,6 +123,7 @@ def update_status2(app: Any) -> None:
         auto_follow_stream=app._auto_follow_stream,
         focus_panel=app._focused_panel,
         width=app.size.width,
+        colors=colors,
     )
     if left == app._last_status_left:
         return
@@ -132,12 +134,14 @@ def update_status2(app: Any) -> None:
 def update_topbar(app: Any) -> None:
     workspace_root = str(app.agent.skill_runtime.workspace.workspace_root)
     width = app.size.width
-    app.query_one("#topbar-left").update(topbar_left(workspace_root, width=width))
+    colors = app._theme_spec().colors if hasattr(app, "_theme_spec") else None
+    app.query_one("#topbar-left").update(topbar_left(workspace_root, width=width, colors=colors))
     app.query_one("#topbar-center").update(
         topbar_center(
             session_name=app._session_title or "Session",
             branch_name=app._current_branch_name(),
             width=width,
+            colors=colors,
         )
     )
     app.query_one("#topbar-right").update(
@@ -147,5 +151,6 @@ def update_topbar(app: Any) -> None:
             context_window=app._context_window_tokens(),
             width=width,
             endpoint_state=app._status_runtime.model_status.state,
+            colors=colors,
         )
     )

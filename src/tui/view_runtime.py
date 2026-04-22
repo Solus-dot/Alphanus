@@ -8,6 +8,10 @@ from textual.widgets import Static
 
 from core.conv_tree import Turn
 from tui.sidebar import render_sidebar_inspector_markup, render_sidebar_tree_markup
+from tui.themes import fallback_color
+
+DEFAULT_ACCENT_COLOR = fallback_color("accent")
+DEFAULT_MUTED_COLOR = fallback_color("muted")
 
 
 def sidebar_render_width(sidebar: Any) -> int:
@@ -26,16 +30,18 @@ def update_sidebar(app: Any) -> None:
     else:
         app._sync_tree_cursor()
     width = sidebar_render_width(sidebar)
+    colors = app._theme_spec().colors if hasattr(app, "_theme_spec") else None
     app.query_one("#sidebar-tree-meta", Static).update(f"{app.conv_tree.turn_count()} turns")
     app.query_one("#sidebar-tree-content", Static).update(
-        render_sidebar_tree_markup(app.conv_tree, width=width, selected_id=app._tree_cursor_id)
+        render_sidebar_tree_markup(app.conv_tree, width=width, selected_id=app._tree_cursor_id, colors=colors)
     )
     app.query_one("#sidebar-inspector-content", Static).update(
-        render_sidebar_inspector_markup(app.conv_tree, width=width, selected_id=app._tree_cursor_id)
+        render_sidebar_inspector_markup(app.conv_tree, width=width, selected_id=app._tree_cursor_id, colors=colors)
     )
 
 
-def write_turn_user(app: Any, turn: Turn, accent_color: str = "#6366f1") -> None:
+def write_turn_user(app: Any, turn: Turn, accent_color: str = DEFAULT_ACCENT_COLOR) -> None:
+    muted = app._theme_color("muted", DEFAULT_MUTED_COLOR) if hasattr(app, "_theme_color") else DEFAULT_MUTED_COLOR
     app._write("")
     if turn.branch_root:
         label = f" ⎇  {esc(turn.label)}" if turn.label else " ⎇  branch"
@@ -43,7 +49,7 @@ def write_turn_user(app: Any, turn: Turn, accent_color: str = "#6366f1") -> None
     attachment_summary = turn.attachment_summary()
     if attachment_summary:
         app._write_user_bar_line(
-            f"[dim]attachments:[/dim] [#a1a1aa]{esc(attachment_summary)}[/#a1a1aa]",
+            f"[dim]attachments:[/dim] [{muted}]{esc(attachment_summary)}[/{muted}]",
             content_indent=2,
         )
     body = turn.user_text()

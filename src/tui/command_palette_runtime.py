@@ -14,6 +14,9 @@ from tui.commands import (
     exact_command_inputs,
     popup_command_query,
 )
+from tui.themes import fallback_color
+
+DEFAULT_ACCENT_COLOR = fallback_color("accent")
 
 
 def refresh_command_popup(app: Any, value: str, *, chat_input_cls: Any) -> None:
@@ -35,6 +38,7 @@ def refresh_command_popup(app: Any, value: str, *, chat_input_cls: Any) -> None:
         return
 
     app._command_matches = next_matches
+    accent = app._theme_color("accent", DEFAULT_ACCENT_COLOR) if hasattr(app, "_theme_color") else DEFAULT_ACCENT_COLOR
     option_rows = min(len(app._command_matches), 8)
     option_height = option_rows + 1
     popup_height = option_height + 4
@@ -62,7 +66,7 @@ def refresh_command_popup(app: Any, value: str, *, chat_input_cls: Any) -> None:
     options.styles.height = option_height
     rendered = [
         Option(
-            f"[bold #6366f1]{esc(command_label(entry))}[/bold #6366f1] [dim]{esc(entry.description)}[/dim]",
+            f"[bold {accent}]{esc(command_label(entry))}[/bold {accent}] [dim]{esc(entry.description)}[/dim]",
             id=str(index),
         )
         for index, entry in enumerate(app._command_matches)

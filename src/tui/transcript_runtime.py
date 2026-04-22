@@ -14,10 +14,29 @@ from rich.syntax import Syntax
 from rich.text import Text
 
 from tui.markdown_utils import fence_language, hanging_indent, render_md
+from tui.themes import fallback_color
 from tui.transcript import ScrollAnchor, TranscriptEntry, count_renderable_lines
 
-USER_MESSAGE_BAR_COLOR = "#10b981"
-ASSISTANT_MESSAGE_BAR_COLOR = "#6366f1"
+DEFAULT_USER_BAR_COLOR = fallback_color("user_bar")
+DEFAULT_ASSISTANT_BAR_COLOR = fallback_color("assistant_bar")
+DEFAULT_PANEL_BG = fallback_color("panel_bg")
+DEFAULT_PANEL_BORDER = fallback_color("panel_border")
+DEFAULT_TEXT_COLOR = fallback_color("text")
+DEFAULT_MUTED_COLOR = fallback_color("muted")
+DEFAULT_SUCCESS_COLOR = fallback_color("success")
+DEFAULT_ERROR_COLOR = fallback_color("error")
+DEFAULT_CHIP_BG = fallback_color("chip_bg")
+DEFAULT_CHIP_TEXT = fallback_color("chip_text")
+
+
+def _theme_color(app: Any, key: str, default: str) -> str:
+    picker = getattr(app, "_theme_color", None)
+    if callable(picker):
+        try:
+            return str(picker(key, default))
+        except Exception:
+            return default
+    return default
 
 
 class EdgeBar:
@@ -168,21 +187,33 @@ def write_renderable(app: Any, renderable: RenderableType, indent: int = 2) -> N
 
 def write_user_bar_line(app: Any, markup: str = "", *, content_indent: int = 0) -> None:
     app._write_renderable(
-        app._bar_renderable(Text.from_markup(markup), USER_MESSAGE_BAR_COLOR, content_indent=content_indent),
+        app._bar_renderable(
+            Text.from_markup(markup),
+            _theme_color(app, "user_bar", DEFAULT_USER_BAR_COLOR),
+            content_indent=content_indent,
+        ),
         indent=0,
     )
 
 
 def write_assistant_bar_line(app: Any, markup: str = "", *, content_indent: int = 0) -> None:
     app._write_renderable(
-        app._bar_renderable(Text.from_markup(markup), ASSISTANT_MESSAGE_BAR_COLOR, content_indent=content_indent),
+        app._bar_renderable(
+            Text.from_markup(markup),
+            _theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
+            content_indent=content_indent,
+        ),
         indent=0,
     )
 
 
 def write_assistant_bar_renderable(app: Any, renderable: RenderableType, *, content_indent: int = 0) -> None:
     app._write_renderable(
-        app._bar_renderable(renderable, ASSISTANT_MESSAGE_BAR_COLOR, content_indent=content_indent),
+        app._bar_renderable(
+            renderable,
+            _theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
+            content_indent=content_indent,
+        ),
         indent=0,
     )
 
@@ -192,7 +223,7 @@ def write_user_bar_wrapped_line(app: Any, line: str) -> None:
     app._write_renderable(
         app._bar_renderable(
             Text.from_markup(esc(line.lstrip(" "))),
-            USER_MESSAGE_BAR_COLOR,
+            _theme_color(app, "user_bar", DEFAULT_USER_BAR_COLOR),
             content_indent=first_indent,
             continuation_indent=continuation_indent,
         ),
@@ -205,7 +236,7 @@ def write_assistant_bar_wrapped_line(app: Any, line: str, markup: str) -> None:
     app._write_renderable(
         app._bar_renderable(
             Text.from_markup(markup.lstrip(" ")),
-            ASSISTANT_MESSAGE_BAR_COLOR,
+            _theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
             content_indent=first_indent,
             continuation_indent=continuation_indent,
         ),
@@ -213,53 +244,69 @@ def write_assistant_bar_wrapped_line(app: Any, line: str, markup: str) -> None:
     )
 
 
-def syntax_renderable(code: str, language: Optional[str]) -> Syntax:
+def syntax_renderable(
+    app: Any,
+    code: str,
+    language: Optional[str],
+    *,
+    syntax_theme: str = "github-dark",
+    background_color: str = DEFAULT_PANEL_BG,
+) -> Syntax:
     return Syntax(
         code,
         language or "text",
-        theme="github-dark",
+        theme=syntax_theme,
         word_wrap=True,
-        background_color="#09090b",
+        background_color=background_color,
         line_numbers=False,
     )
 
 
 def code_panel_renderable(app: Any, code: str, language: Optional[str]) -> Panel:
+    border = _theme_color(app, "panel_border", DEFAULT_PANEL_BORDER)
+    panel_bg = _theme_color(app, "panel_bg", DEFAULT_PANEL_BG)
     return Panel(
         app._syntax_renderable(code, language),
         expand=True,
         padding=(0, 1),
-        border_style="#27272a",
-        style="on #09090b",
+        border_style=border,
+        style=f"on {panel_bg}",
     )
 
 
-def reasoning_panel_renderable(text: str) -> Panel:
+def reasoning_panel_renderable(app: Any, text: str) -> Panel:
+    accent = _theme_color(app, "accent", DEFAULT_ASSISTANT_BAR_COLOR)
+    border = _theme_color(app, "panel_border", DEFAULT_PANEL_BORDER)
+    panel_bg = _theme_color(app, "panel_bg", DEFAULT_PANEL_BG)
     rendered, _ = render_md(text, False)
     return Panel(
         Text.from_markup(f"[dim]{rendered}[/dim]"),
-        title="[dim #6366f1]thinking[/dim #6366f1]",
+        title=f"[dim {accent}]thinking[/dim {accent}]",
         title_align="left",
         expand=True,
         padding=(0, 1),
-        border_style="#27272a",
-        style="on #09090b",
+        border_style=border,
+        style=f"on {panel_bg}",
         box=box.SQUARE,
     )
 
 
 def tool_event_panel(
+    app: Any,
     title: str,
     title_color: str,
     border_color: str,
     name: str,
     detail: str = "",
 ) -> Panel:
+    text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
+    muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
+    panel_bg = _theme_color(app, "panel_bg", DEFAULT_PANEL_BG)
     text = Text()
-    text.append(name, style="bold #f4f4f5")
+    text.append(name, style=f"bold {text_color}")
     if detail:
         text.append("   ")
-        text.append(detail, style="#a1a1aa")
+        text.append(detail, style=muted)
     return Panel(
         text,
         title=f"[bold {title_color}]{title}[/bold {title_color}]",
@@ -267,24 +314,27 @@ def tool_event_panel(
         expand=True,
         padding=(0, 1),
         border_style=border_color,
-        style="on #09090b",
+        style=f"on {panel_bg}",
         box=box.SQUARE,
     )
 
 
 def tool_lifecycle_panel(app: Any, name: str, detail: str, *, ok: bool) -> Panel:
+    success = _theme_color(app, "success", DEFAULT_SUCCESS_COLOR)
+    error = _theme_color(app, "error", DEFAULT_ERROR_COLOR)
     return app._tool_event_panel(
         "tool → done" if ok else "tool → fail",
-        "#10b981" if ok else "#f87171",
-        "#10b981" if ok else "#f87171",
+        success if ok else error,
+        success if ok else error,
         name,
         detail,
     )
 
 
 def update_tool_call_partial(app: Any, name: str, detail: str = "") -> None:
+    assistant = _theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR)
     app._set_partial_renderable(
-        app._bar_renderable(app._tool_event_panel("tool", ASSISTANT_MESSAGE_BAR_COLOR, ASSISTANT_MESSAGE_BAR_COLOR, name, detail), ASSISTANT_MESSAGE_BAR_COLOR),
+        app._bar_renderable(app._tool_event_panel("tool", assistant, assistant, name, detail), assistant),
         visible=True,
     )
 
@@ -397,13 +447,14 @@ def render_content_line(app: Any, line: str) -> None:
 
 
 def update_partial_content(app: Any) -> None:
+    assistant = _theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR)
     if app._in_fence:
         lines = list(app._fence_lines)
         if app._buf_c and not app._is_fence_line(app._buf_c):
             lines.append(app._buf_c)
         if lines:
             app._set_partial_renderable(
-                app._bar_renderable(app._code_panel_renderable("\n".join(lines), app._fence_lang), ASSISTANT_MESSAGE_BAR_COLOR)
+                app._bar_renderable(app._code_panel_renderable("\n".join(lines), app._fence_lang), assistant)
             )
         else:
             app._set_partial_renderable(None)
@@ -416,7 +467,7 @@ def update_partial_content(app: Any) -> None:
     app._set_partial_renderable(
         app._bar_renderable(
             Text.from_markup(rendered.lstrip(" ")),
-            ASSISTANT_MESSAGE_BAR_COLOR,
+            assistant,
             content_indent=first_indent,
             continuation_indent=continuation_indent,
         )
@@ -424,8 +475,9 @@ def update_partial_content(app: Any) -> None:
 
 
 def update_live_preview_partial(app: Any, lines: List[str], language: Optional[str]) -> None:
+    assistant = _theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR)
     app._set_partial_renderable(
-        app._bar_renderable(app._code_panel_renderable("\n".join(lines), language), ASSISTANT_MESSAGE_BAR_COLOR),
+        app._bar_renderable(app._code_panel_renderable("\n".join(lines), language), assistant),
         visible=True,
     )
 
@@ -482,7 +534,8 @@ def maybe_scroll_end(app: Any, force: bool = False) -> None:
 
 
 def write_info(app: Any, text: str, *, accent_color: str) -> None:
-    app._write(f"  [bold {accent_color}]›[/bold {accent_color}] [#f4f4f5]{esc(text)}[/#f4f4f5]")
+    text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
+    app._write(f"  [bold {accent_color}]›[/bold {accent_color}] [{text_color}]{esc(text)}[/{text_color}]")
 
 
 def write_error(app: Any, text: str) -> None:
@@ -495,9 +548,10 @@ def write_section_heading(app: Any, title: str, *, color: str) -> None:
 
 
 def write_detail_line(app: Any, label: str, value: str, *, accent_color: str, value_markup: bool = False) -> None:
+    text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
     rendered = value if value_markup else esc(value)
     app._write(
-        f"  [bold {accent_color}]{esc(label)}:[/bold {accent_color}] [#f4f4f5]{rendered}[/#f4f4f5]"
+        f"  [bold {accent_color}]{esc(label)}:[/bold {accent_color}] [{text_color}]{rendered}[/{text_color}]"
         if not value_markup
         else f"  [bold {accent_color}]{esc(label)}:[/bold {accent_color}] {rendered}"
     )
@@ -510,27 +564,31 @@ def write_indexed_dim_lines(
     color: str,
     allow_markup: bool = False,
 ) -> None:
+    text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
     for index, row in enumerate(rows):
         if allow_markup:
             app._write(f"  [{color}]{index}.[/{color}] {row}")
         else:
-            app._write(f"  [{color}]{index}.[/{color}] [#f4f4f5]{esc(row)}[/#f4f4f5]")
+            app._write(f"  [{color}]{index}.[/{color}] [{text_color}]{esc(row)}[/{text_color}]")
 
 
 def write_command_action(app: Any, text: str, *, color: str, icon: str = "•") -> None:
-    app._write(f"  [bold {color}]{esc(icon)}[/bold {color}] [#f4f4f5]{esc(text)}[/#f4f4f5]")
+    text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
+    app._write(f"  [bold {color}]{esc(icon)}[/bold {color}] [{text_color}]{esc(text)}[/{text_color}]")
 
 
 def write_command_row(app: Any, command: str, desc: str, *, col: int, accent_color: str) -> None:
+    muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
     gap = max(1, col - len(command))
     app._write(
-        f"  [bold {accent_color}]{esc(command)}[/bold {accent_color}]{' ' * gap}[#a1a1aa]{esc(desc)}[/#a1a1aa]"
+        f"  [bold {accent_color}]{esc(command)}[/bold {accent_color}]{' ' * gap}[{muted}]{esc(desc)}[/{muted}]"
     )
 
 
 def write_muted_lines(app: Any, rows: List[str]) -> None:
+    muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
     for row in rows:
-        app._write(f"  [#a1a1aa]{esc(row)}[/#a1a1aa]")
+        app._write(f"  [{muted}]{esc(row)}[/{muted}]")
 
 
 def write_usage(app: Any, usage: str) -> bool:
@@ -546,11 +604,14 @@ def ensure_command_gap(app: Any) -> None:
 def pending_attachment_markup(app: Any) -> str:
     if not app.pending:
         return ""
+    chip_bg = _theme_color(app, "chip_bg", DEFAULT_CHIP_BG)
+    chip_text = _theme_color(app, "chip_text", DEFAULT_CHIP_TEXT)
+    muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
     chips: List[str] = []
     visible = app.pending[:3]
     for index, (path, _kind) in enumerate(visible, start=1):
-        chips.append(f"[#f4f4f5 on #1a1730] {index}. {esc(os.path.basename(path))} [/#f4f4f5 on #1a1730]")
+        chips.append(f"[{chip_text} on {chip_bg}] {index}. {esc(os.path.basename(path))} [/{chip_text} on {chip_bg}]")
     overflow = len(app.pending) - len(visible)
     if overflow > 0:
-        chips.append(f"[#a1a1aa on #1a1730] +{overflow} more [/#a1a1aa on #1a1730]")
+        chips.append(f"[{muted} on {chip_bg}] +{overflow} more [/{muted} on {chip_bg}]")
     return " ".join(chips)

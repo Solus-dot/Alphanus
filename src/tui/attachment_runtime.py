@@ -8,6 +8,11 @@ from rich.markup import escape as esc
 
 from core.attachments import classify_attachment
 from tui.popups import PickerItem, SelectionPickerModal
+from tui.themes import fallback_color
+
+DEFAULT_ACCENT_COLOR = fallback_color("accent")
+DEFAULT_TEXT_COLOR = fallback_color("text")
+DEFAULT_MUTED_COLOR = fallback_color("muted")
 
 
 def workspace_root(app: Any) -> Path:
@@ -75,7 +80,15 @@ def attach_file_path(app: Any, path: str | Path) -> bool:
     return True
 
 
-def attachment_picker_items(app: Any, relative_dir: str = ".", *, root_id: str = "workspace", accent_color: str = "#6366f1") -> List[PickerItem]:
+def attachment_picker_items(
+    app: Any,
+    relative_dir: str = ".",
+    *,
+    root_id: str = "workspace",
+    accent_color: str = DEFAULT_ACCENT_COLOR,
+) -> List[PickerItem]:
+    text_color = app._theme_color("text", DEFAULT_TEXT_COLOR) if hasattr(app, "_theme_color") else DEFAULT_TEXT_COLOR
+    muted = app._theme_color("muted", DEFAULT_MUTED_COLOR) if hasattr(app, "_theme_color") else DEFAULT_MUTED_COLOR
     items: List[PickerItem] = []
     current = Path(relative_dir)
     for candidate_root in ("workspace", "home"):
@@ -91,7 +104,7 @@ def attachment_picker_items(app: Any, relative_dir: str = ".", *, root_id: str =
         parent = current.parent.as_posix()
         if parent == "":
             parent = "."
-        items.append(PickerItem(id=f"nav:{parent}", prompt=f"[dim]{esc('../')}[/dim] [#a1a1aa]parent[/#a1a1aa]"))
+        items.append(PickerItem(id=f"nav:{parent}", prompt=f"[dim]{esc('../')}[/dim] [{muted}]parent[/{muted}]"))
 
     root_path = attachment_root_path(app, root_id)
     list_target = str(root_path if relative_dir in {".", ""} else (root_path / relative_dir))
@@ -113,13 +126,18 @@ def attachment_picker_items(app: Any, relative_dir: str = ".", *, root_id: str =
         items.append(
             PickerItem(
                 id=f"file:{target}",
-                prompt=f"[#f4f4f5]{esc(entry)}[/#f4f4f5] [dim]{kind}[/dim]",
+                prompt=f"[{text_color}]{esc(entry)}[/{text_color}] [dim]{kind}[/dim]",
             )
         )
     return items
 
 
-def open_attachment_picker(app: Any, relative_dir: str = ".", root_id: str = "workspace", accent_color: str = "#6366f1") -> None:
+def open_attachment_picker(
+    app: Any,
+    relative_dir: str = ".",
+    root_id: str = "workspace",
+    accent_color: str = DEFAULT_ACCENT_COLOR,
+) -> None:
     clean_dir = relative_dir or "."
     root_path = attachment_root_path(app, root_id)
     title = f"Attach File · {attachment_root_label(root_id)}"
@@ -154,7 +172,7 @@ def on_attachment_picker_close(
     current_dir: str,
     result: Optional[Dict[str, str]],
     *,
-    accent_color: str = "#6366f1",
+    accent_color: str = DEFAULT_ACCENT_COLOR,
 ) -> None:
     _ = current_dir
     selection = str((result or {}).get("id") or "").strip()

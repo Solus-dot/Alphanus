@@ -10,8 +10,19 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.types import AgentTurnResult
 from tui.markdown_utils import render_md
+from tui.themes import fallback_color
 
-ASSISTANT_MESSAGE_BAR_COLOR = "#6366f1"
+DEFAULT_ASSISTANT_BAR_COLOR = fallback_color("assistant_bar")
+
+
+def _assistant_color(app: Any) -> str:
+    picker = getattr(app, "_theme_color", None)
+    if callable(picker):
+        try:
+            return str(picker("assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR))
+        except Exception:
+            return DEFAULT_ASSISTANT_BAR_COLOR
+    return DEFAULT_ASSISTANT_BAR_COLOR
 
 
 @dataclass(slots=True)
@@ -125,7 +136,7 @@ def refresh_deferred_partial(app: Any) -> None:
         ).strip()
         if display:
             app._set_partial_renderable(
-                app._bar_renderable(app._reasoning_panel_renderable(display), ASSISTANT_MESSAGE_BAR_COLOR)
+                app._bar_renderable(app._reasoning_panel_renderable(display), _assistant_color(app))
             )
         else:
             app._set_partial_renderable(None)
@@ -196,7 +207,7 @@ def on_agent_event(app: Any, event: Dict[str, Any]) -> None:
             ).strip()
             if display:
                 app._set_partial_renderable(
-                    app._bar_renderable(app._reasoning_panel_renderable(display), ASSISTANT_MESSAGE_BAR_COLOR)
+                    app._bar_renderable(app._reasoning_panel_renderable(display), _assistant_color(app))
                 )
             else:
                 app._set_partial_renderable(None)
