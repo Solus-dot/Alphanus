@@ -14,10 +14,12 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict
+from typing import Any, Dict, List, Optional, Tuple
 
-from core.message_types import ChatMessage, JSONValue, ShellConfirmationFn, ToolCallDelta, UserInputRequestFn
+from core.message_types import JSONValue, ShellConfirmationFn, UserInputRequestFn
+from core.skill_discovery import SkillDiscovery
 from core.memory import VectorMemory
+from core.skill_registry import SkillRegistry
 from core.runtime_config import SkillsRuntimeConfig
 from core.skill_parser import SKILL_DOC, SkillEntrypointDef, SkillManifest, extract_skill_doc, parse_agentskill_manifest
 from core.workspace import WorkspaceManager
@@ -224,37 +226,10 @@ class SkillRuntime:
         return env
 
     def _discover_skill_roots(self) -> List[Path]:
-        # Skills are loaded from the configured skills root.
-        return [self.skills_dir]
+        return SkillDiscovery.discover_skill_roots(self.skills_dir)
 
     def _discover_skill_dirs(self, root: Path) -> List[Path]:
-        if not root.exists():
-            return []
-        candidates: List[Path] = []
-        seen: set[str] = set()
-        docs = [root / SKILL_DOC] if (root / SKILL_DOC).exists() else []
-        if root.is_dir():
-            try:
-                docs.extend(sorted(root.rglob(SKILL_DOC)))
-            except Exception as exc:
-                logging.debug("rglob for SKILL.md failed in %s: %s", root, exc)
-                docs = docs or []
-        for skill_doc in docs:
-            skill_dir = skill_doc.parent.resolve()
-            if ".git" in skill_dir.parts:
-                continue
-            if not self._is_relative_to(skill_dir, root.resolve()):
-                continue
-            rel = skill_doc.relative_to(root.resolve())
-            if len(rel.parts) > 5:
-                continue
-            key = str(skill_dir)
-            if key in seen:
-                continue
-            seen.add(key)
-            candidates.append(skill_dir)
-        candidates.sort(key=lambda item: (len(item.relative_to(root.resolve()).parts), str(item)))
-        return candidates
+        return SkillDiscovery.discover_skill_dirs(root, is_relative_to=self._is_relative_to)
 
     @staticmethod
     def _load_module(path: Path, module_name: str):
@@ -325,9 +300,7 @@ class SkillRuntime:
         return manifest.prompt
 
     def _remove_skill_tools(self, skill_id: str) -> None:
-        for tool_name, reg in list(self._tool_registry.items()):
-            if reg.skill_id == skill_id:
-                self._tool_registry.pop(tool_name, None)
+        SkillRegistry.remove_skill_tools(self._tool_registry, skill_id)
 
     def _invalidate_skill_caches(self) -> None:
         self._list_skills_cache = None
@@ -344,50 +317,23 @@ class SkillRuntime:
             items.append(text)
 
     def _rebuild_skill_index(self) -> None:
-        self._skill_index = {}
-        for skill in self.enabled_skills():
-            self._skill_index[skill.id] = {
-                "id": skill.id,
-                "name": skill.name,
-                "description": skill.description,
-                "tags": list(skill.tags),
-                "categories": list(skill.categories),
-                "tools": list(skill.allowed_tools),
-                "produces": list(skill.produces),
-                "entrypoints": [entry.name for entry in self._skill_entrypoints(skill)],
-                "scripts": self._skill_runnable_scripts(skill),
-                "execution_allowed": bool(skill.execution_allowed),
-                "adapter": skill.adapter,
-                "user_invocable": bool(skill.user_invocable),
-                "model_invocable": not bool(skill.disable_model_invocation),
-            }
+        self._skill_index = SkillRegistry.rebuild_skill_index(
+            self.enabled_skills(),
+            skill_entrypoints=self._skill_entrypoints,
+            skill_runnable_scripts=self._skill_runnable_scripts,
+        )
 
     def _register_tool(self, tool_name: str, manifest: SkillManifest, spec: Dict[str, Any], **extra: Any) -> bool:
-        if tool_name in self._tool_registry:
-            prev = self._tool_registry[tool_name]
-            self._append_unique(
-                manifest.validation_errors,
-                f"duplicate tool '{tool_name}' already registered by {prev.skill_id}",
-            )
-            return False
-
-        capability = str(spec.get("capability", "")).strip()
-        description = str(spec.get("description", "")).strip()
-        parameters = spec.get("parameters")
-        if not capability or not description or not isinstance(parameters, dict):
-            self._append_unique(manifest.validation_errors, f"invalid tool spec '{tool_name}'")
-            return False
-
-        self._tool_registry[tool_name] = RegisteredTool(
-            name=tool_name,
-            skill_id=manifest.id,
-            tool_scope=self._tool_scope_for_name(tool_name),
-            capability=capability,
-            description=description,
-            parameters=parameters,
-            **extra,
+        return SkillRegistry.register_tool(
+            tool_registry=self._tool_registry,
+            registered_tool_cls=RegisteredTool,
+            tool_name=tool_name,
+            manifest=manifest,
+            tool_scope_for_name=self._tool_scope_for_name,
+            append_unique=self._append_unique,
+            spec=spec,
+            extra=extra,
         )
-        return True
 
     @staticmethod
     def _tool_scope_for_name(tool_name: str) -> str:
