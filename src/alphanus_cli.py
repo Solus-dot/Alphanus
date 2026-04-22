@@ -21,13 +21,15 @@ from core.configuration import (
     resolve_path,
     validate_endpoint_policy,
 )
+from core.theme_catalog import BUILTIN_THEME_IDS, DEFAULT_THEME_ID, THEME_ALIASES, normalize_theme_id
 from core.memory import VectorMemory
 from core.skills import SkillRuntime
 from core.workspace import WorkspaceManager
 from tui.interface import AlphanusTUI
+from tui.themes import theme_spec
 
 
-INIT_SECTIONS = ("all", "workspace", "model", "search")
+INIT_SECTIONS = ("all", "workspace", "model", "search", "theme")
 
 
 class _CliTheme:
@@ -143,6 +145,13 @@ def _build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--model-endpoint", type=str, default="", help="Model chat completions endpoint")
     init_parser.add_argument("--models-endpoint", type=str, default="", help="Model listing endpoint")
     init_parser.add_argument("--search-provider", type=str, choices=["tavily", "brave"], default="", help="Search provider")
+    init_parser.add_argument(
+        "--theme",
+        type=str,
+        choices=list(BUILTIN_THEME_IDS) + sorted(THEME_ALIASES.keys()),
+        default="",
+        help="Theme id",
+    )
 
     doctor_parser = subparsers.add_parser(
         "doctor",
@@ -223,11 +232,12 @@ def _prompt_yes_no(label: str, *, default: bool = True) -> bool:
 
 def _prompt_choice(theme: _CliTheme, label: str, options: list[tuple[str, str]], *, default: str) -> str:
     print(theme.label(label))
+    value_width = max((len(value) for value, _desc in options), default=7)
     for idx, (value, description) in enumerate(options, start=1):
-        print(f"  {theme.accent(str(idx) + '.')} {value:<7} {theme.muted(description)}")
+        print(f"  {theme.accent(str(idx) + '.')} {value:<{value_width}} {theme.muted(description)}")
     default_index = next((idx for idx, (value, _desc) in enumerate(options, start=1) if value == default), 1)
     while True:
-        raw = input(f"Choose provider [{default_index}]: ").strip().lower()
+        raw = input(f"Choose option [{default_index}]: ").strip().lower()
         if not raw:
             return default
         if raw.isdigit():
@@ -237,7 +247,7 @@ def _prompt_choice(theme: _CliTheme, label: str, options: list[tuple[str, str]],
         for value, _desc in options:
             if raw == value:
                 return value
-        print(theme.warn("Invalid choice. Enter option number or provider name."))
+        print(theme.warn("Invalid choice. Enter option number or name."))
 
 
 def _section_selected(section: str, name: str) -> bool:
@@ -264,6 +274,13 @@ def _apply_reset_scope(base: Dict[str, Any], *, section: str) -> Dict[str, Any]:
 
     if _section_selected(section, "search"):
         updated["search"] = copy.deepcopy(default_cfg.get("search", {}))
+
+    if _section_selected(section, "theme"):
+        current_tui = updated.get("tui", {}) if isinstance(updated.get("tui"), dict) else {}
+        default_tui = default_cfg.get("tui", {}) if isinstance(default_cfg.get("tui"), dict) else {}
+        if "theme" in default_tui:
+            current_tui["theme"] = copy.deepcopy(default_tui["theme"])
+        updated["tui"] = current_tui
 
     return updated
 
@@ -310,11 +327,14 @@ def _run_init(args: argparse.Namespace) -> int:
     model_endpoint_default = str(base.get("agent", {}).get("model_endpoint", DEFAULT_CONFIG["agent"]["model_endpoint"]))
     models_endpoint_default = str(base.get("agent", {}).get("models_endpoint", DEFAULT_CONFIG["agent"]["models_endpoint"]))
     search_provider_default = str(base.get("search", {}).get("provider", DEFAULT_CONFIG["search"]["provider"]))
+    theme_default = str(base.get("tui", {}).get("theme", DEFAULT_THEME_ID))
+    theme_default, _ = normalize_theme_id(theme_default, default=DEFAULT_THEME_ID)
 
     workspace_path = workspace_default
     model_endpoint = model_endpoint_default
     models_endpoint = models_endpoint_default
     search_provider = search_provider_default
+    ui_theme = theme_default
 
     if args.non_interactive:
         print(theme.brand(" ALPHANUS INIT "))
@@ -326,22 +346,29 @@ def _run_init(args: argparse.Namespace) -> int:
             models_endpoint = args.models_endpoint.strip() or models_endpoint_default
         if _section_selected(section, "search"):
             search_provider = args.search_provider.strip() or search_provider_default
+        if _section_selected(section, "theme"):
+            requested_theme = args.theme.strip() or theme_default
+            ui_theme, _ = normalize_theme_id(requested_theme, default=theme_default)
     else:
+        steps = [name for name in ("workspace", "model", "search", "theme") if _section_selected(section, name)]
+        total_steps = max(len(steps), 1)
+        step_index = 1
         print(theme.brand(" ALPHANUS SETUP "))
         print(theme.muted(f"Wizard scope: {section}. Press Enter to keep defaults."))
-        print(theme.muted("We'll configure runtime state, model connectivity, and web search defaults."))
+        print(theme.muted("We'll configure runtime state, model connectivity, search, and display theme defaults."))
         print(f"{theme.label('State root:')} {state_root}")
         print("")
         if _section_selected(section, "workspace"):
-            print(theme.accent("Step 1/3: Workspace"))
+            print(theme.accent(f"Step {step_index}/{total_steps}: Workspace"))
             workspace_path = _prompt_with_default(
                 "Workspace path",
                 workspace_default,
                 hint=theme.muted("where project files live"),
             )
+            step_index += 1
             print("")
         if _section_selected(section, "model"):
-            print(theme.accent("Step 2/3: Model endpoint"))
+            print(theme.accent(f"Step {step_index}/{total_steps}: Model endpoint"))
             use_local = _prompt_yes_no(
                 "Use the local OpenAI-compatible endpoint preset (127.0.0.1:8080)?",
                 default=model_endpoint_default == str(DEFAULT_CONFIG["agent"]["model_endpoint"]),
@@ -361,9 +388,10 @@ def _run_init(args: argparse.Namespace) -> int:
                     models_endpoint_default,
                     hint=theme.muted("model catalog endpoint"),
                 )
+            step_index += 1
             print("")
         if _section_selected(section, "search"):
-            print(theme.accent("Step 3/3: Search provider"))
+            print(theme.accent(f"Step {step_index}/{total_steps}: Search provider"))
             search_provider = _prompt_choice(
                 theme,
                 "Choose a provider:",
@@ -373,6 +401,18 @@ def _run_init(args: argparse.Namespace) -> int:
                 ],
                 default=search_provider_default,
             )
+            step_index += 1
+            print("")
+        if _section_selected(section, "theme"):
+            print(theme.accent(f"Step {step_index}/{total_steps}: Theme"))
+            theme_options = [(name, theme_spec(name).description) for name in BUILTIN_THEME_IDS]
+            selected_theme = _prompt_choice(
+                theme,
+                "Choose a UI theme:",
+                theme_options,
+                default=theme_default,
+            )
+            ui_theme, _ = normalize_theme_id(selected_theme, default=theme_default)
             print("")
 
     updates: Dict[str, Any] = {}
@@ -382,6 +422,8 @@ def _run_init(args: argparse.Namespace) -> int:
         updates["agent"] = {"model_endpoint": model_endpoint, "models_endpoint": models_endpoint}
     if _section_selected(section, "search"):
         updates["search"] = {"provider": search_provider}
+    if _section_selected(section, "theme"):
+        updates["tui"] = {"theme": ui_theme}
     merged = deep_merge(base, updates)
     try:
         normalized, warnings = normalize_config(merged)
@@ -396,6 +438,7 @@ def _run_init(args: argparse.Namespace) -> int:
         print(f"  {theme.label('Model endpoint:')} {normalized['agent']['model_endpoint']}")
         print(f"  {theme.label('Models endpoint:')} {normalized['agent']['models_endpoint']}")
         print(f"  {theme.label('Search provider:')} {normalized['search']['provider']}")
+        print(f"  {theme.label('Theme:')} {normalized['tui']['theme']}")
         print(f"  {theme.label('Secrets file:')} {app_paths.dotenv_path}")
         if not _prompt_yes_no("Write these settings now?", default=True):
             print(theme.warn("Setup cancelled. No files were written."))

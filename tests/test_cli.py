@@ -155,6 +155,7 @@ def test_init_non_interactive_writes_global_config_and_env_template(monkeypatch,
             model_endpoint="http://127.0.0.1:8080/v1/chat/completions",
             models_endpoint="http://127.0.0.1:8080/v1/models",
             search_provider="tavily",
+            theme="catppuccin-macchiato",
             debug=False,
             dangerously_skip_permissions=False,
         ),
@@ -167,6 +168,7 @@ def test_init_non_interactive_writes_global_config_and_env_template(monkeypatch,
     assert dotenv_path.exists()
     stored = json.loads(config_path.read_text(encoding="utf-8"))
     assert stored["workspace"]["path"] == str(tmp_path / "ws")
+    assert stored["tui"]["theme"] == "catppuccin-macchiato"
 
 
 def test_parser_accepts_global_flags_after_subcommand() -> None:
@@ -177,6 +179,16 @@ def test_parser_accepts_global_flags_after_subcommand() -> None:
     assert args.command == "doctor"
     assert args.json is True
     assert args.debug is True
+
+
+def test_parser_accepts_init_theme_section_and_alias() -> None:
+    parser = alphanus_cli._build_parser()
+
+    args = parser.parse_args(["init", "theme", "--non-interactive", "--theme", "catppuccin"])
+
+    assert args.command == "init"
+    assert args.section == "theme"
+    assert args.theme == "catppuccin"
 
 
 def test_doctor_json_output_is_machine_readable(monkeypatch, capsys, tmp_path) -> None:
@@ -262,6 +274,7 @@ def test_init_partial_reset_preserves_unselected_sections(monkeypatch, tmp_path)
             model_endpoint="",
             models_endpoint="",
             search_provider="",
+            theme="",
         )
     )
 
@@ -272,3 +285,50 @@ def test_init_partial_reset_preserves_unselected_sections(monkeypatch, tmp_path)
     assert stored["agent"]["tls_verify"] is False
     assert stored["agent"]["model_endpoint"] == alphanus_cli.DEFAULT_CONFIG["agent"]["model_endpoint"]
     assert stored["agent"]["models_endpoint"] == alphanus_cli.DEFAULT_CONFIG["agent"]["models_endpoint"]
+
+
+def test_init_non_interactive_theme_only_updates_theme(monkeypatch, tmp_path) -> None:
+    state_root = tmp_path / ".alphanus"
+    config_path = state_root / "config" / "global_config.json"
+    dotenv_path = state_root / ".env"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("{}", encoding="utf-8")
+
+    existing_config = {
+        "workspace": {"path": str(tmp_path / "custom-workspace")},
+        "search": {"provider": "brave"},
+        "tui": {"theme": "classic"},
+    }
+
+    monkeypatch.setattr(
+        alphanus_cli,
+        "get_app_paths",
+        lambda: SimpleNamespace(
+            app_root=tmp_path,
+            state_root=state_root,
+            config_path=config_path,
+            dotenv_path=dotenv_path,
+            bundled_skills_dir=tmp_path / "skills",
+            repo_root=tmp_path,
+        ),
+    )
+    monkeypatch.setattr(alphanus_cli, "load_global_config", lambda _path, warnings=None: existing_config)
+
+    exit_code = alphanus_cli._run_init(
+        SimpleNamespace(
+            section="theme",
+            non_interactive=True,
+            reset=False,
+            workspace_path="",
+            model_endpoint="",
+            models_endpoint="",
+            search_provider="",
+            theme="gruvbox-dark-soft",
+        )
+    )
+
+    assert exit_code == 0
+    stored = json.loads(config_path.read_text(encoding="utf-8"))
+    assert stored["workspace"]["path"] == str(tmp_path / "custom-workspace")
+    assert stored["search"]["provider"] == "brave"
+    assert stored["tui"]["theme"] == "gruvbox-dark-soft"
