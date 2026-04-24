@@ -239,19 +239,6 @@ class Agent:
     def _call_with_retry(self, payload: JsonObject, stop_event, on_event, pass_id: str):
         return self.llm_client.call_with_retry(payload, stop_event, on_event, pass_id)
 
-    def _build_turn_state(self, ctx, selected, history_messages, user_input):
-        classification = self._classify_turn(ctx)
-        return self.orchestrator.build_turn_state(ctx, selected, history_messages, classification)
-
-    def _record_tool_effects(self, state, call, result) -> None:
-        self.orchestrator.record_tool_effects(state, call, result)
-
-    def _run_finalization_pass(self, system_content, state, stop_event, on_event, pass_id, extra_rules: str = ""):
-        return self.orchestrator.finalize_turn(system_content, state, stop_event, on_event, pass_id, extra_rules)
-
-    def _needs_fetch_evidence(self, state) -> bool:
-        return self.orchestrator.needs_fetch_evidence(state)
-
     def _tool_call_args_for_history(self, args: dict[str, object]) -> dict[str, object]:
         return self.orchestrator.tool_call_args_for_history(args)
 
