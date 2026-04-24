@@ -31,6 +31,23 @@ _SECRET_KEYS = {
 }
 _SECRET_SUFFIXES = ("_api_key", "_apikey", "_token", "_secret", "_password")
 _ALLOWED_SEARCH_PROVIDERS = {"tavily", "brave"}
+_RUNTIME_PROFILE_ALIASES = {
+    "standard": "standard",
+    "workspace": "standard",
+    "full": "standard",
+    "minimal": "minimal",
+    "minimal_reliable": "minimal",
+    "safe": "minimal",
+}
+_PERMISSION_PROFILE_ALIASES = {
+    "safe": "safe",
+    "minimal": "safe",
+    "readonly": "safe",
+    "read-only": "safe",
+    "workspace": "workspace",
+    "standard": "workspace",
+    "full": "full",
+}
 _VALID_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -78,6 +95,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "capabilities": {
         "shell_require_confirmation": True,
         "dangerously_skip_permissions": False,
+        "permission_profile": "full",
     },
     "skills": {
         "strict_capability_policy": False,
@@ -88,6 +106,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "runtime": {
         "ask_user_tool": True,
+        "profile": "standard",
     },
     "tools": {},
     "search": {
@@ -619,6 +638,21 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         path="capabilities.dangerously_skip_permissions",
         warnings=warnings,
     )
+    permission_profile_raw = _coerce_string(
+        caps_cfg.get("permission_profile"),
+        str(DEFAULT_CONFIG["capabilities"]["permission_profile"]),
+        path="capabilities.permission_profile",
+        warnings=warnings,
+        allow_empty=False,
+    ).lower()
+    permission_profile = _PERMISSION_PROFILE_ALIASES.get(permission_profile_raw)
+    if permission_profile is None:
+        permission_profile = str(DEFAULT_CONFIG["capabilities"]["permission_profile"])
+        _warn(
+            warnings,
+            f"capabilities.permission_profile: unsupported {permission_profile_raw!r}, using {permission_profile!r}",
+        )
+    caps_cfg["permission_profile"] = permission_profile
     merged["capabilities"] = caps_cfg
 
     skills_cfg = merged.get("skills", {}) if isinstance(merged.get("skills"), dict) else {}
@@ -653,6 +687,18 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         path="runtime.ask_user_tool",
         warnings=warnings,
     )
+    runtime_profile_raw = _coerce_string(
+        runtime_cfg.get("profile"),
+        str(DEFAULT_CONFIG["runtime"]["profile"]),
+        path="runtime.profile",
+        warnings=warnings,
+        allow_empty=False,
+    ).lower()
+    runtime_profile = _RUNTIME_PROFILE_ALIASES.get(runtime_profile_raw)
+    if runtime_profile is None:
+        runtime_profile = str(DEFAULT_CONFIG["runtime"]["profile"])
+        _warn(warnings, f"runtime.profile: unsupported {runtime_profile_raw!r}, using {runtime_profile!r}")
+    runtime_cfg["profile"] = runtime_profile
     merged["runtime"] = runtime_cfg
 
     tools_cfg = merged.get("tools", {}) if isinstance(merged.get("tools"), dict) else {}

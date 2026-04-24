@@ -71,6 +71,32 @@ def test_normalize_config_theme_alias_and_invalid_values() -> None:
     assert any("tui.theme" in warning for warning in invalid_warnings)
     assert not any("unsupported 'catppuccin'" in warning for warning in alias_warnings)
 
+
+def test_normalize_config_runtime_profile_aliases() -> None:
+    minimal, minimal_warnings = normalize_config({"schema_version": "1.0.0", "runtime": {"profile": "safe"}})
+    standard, standard_warnings = normalize_config({"schema_version": "1.0.0", "runtime": {"profile": "workspace"}})
+    invalid, invalid_warnings = normalize_config({"schema_version": "1.0.0", "runtime": {"profile": "unknown"}})
+
+    assert minimal["runtime"]["profile"] == "minimal"
+    assert standard["runtime"]["profile"] == "standard"
+    assert invalid["runtime"]["profile"] == DEFAULT_CONFIG["runtime"]["profile"]
+    assert not minimal_warnings
+    assert not standard_warnings
+    assert any("runtime.profile" in warning for warning in invalid_warnings)
+
+
+def test_normalize_config_permission_profile_aliases() -> None:
+    safe, safe_warnings = normalize_config({"schema_version": "1.0.0", "capabilities": {"permission_profile": "minimal"}})
+    workspace, workspace_warnings = normalize_config({"schema_version": "1.0.0", "capabilities": {"permission_profile": "standard"}})
+    invalid, invalid_warnings = normalize_config({"schema_version": "1.0.0", "capabilities": {"permission_profile": "unknown"}})
+
+    assert safe["capabilities"]["permission_profile"] == "safe"
+    assert workspace["capabilities"]["permission_profile"] == "workspace"
+    assert invalid["capabilities"]["permission_profile"] == DEFAULT_CONFIG["capabilities"]["permission_profile"]
+    assert not safe_warnings
+    assert not workspace_warnings
+    assert any("capabilities.permission_profile" in warning for warning in invalid_warnings)
+
 def test_load_global_config_reports_and_rejects_bad_json(tmp_path: Path) -> None:
     cfg = tmp_path / "config" / "global_config.json"
     cfg.parent.mkdir(parents=True, exist_ok=True)
