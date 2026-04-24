@@ -48,7 +48,7 @@ def test_main_does_not_block_on_model_readiness_before_launching_tui(monkeypatch
             stats=lambda **_kw: {"mode_label": "lexical", "min_score_default": 0.3},
         )
 
-    monkeypatch.setattr(alphanus_cli, "VectorMemory", _memory_stub)
+    monkeypatch.setattr(alphanus_cli, "LexicalMemory", _memory_stub)
     runtime_calls: list[dict[str, object]] = []
 
     def _skill_runtime_stub(**kwargs):

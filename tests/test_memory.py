@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from core.memory import VectorMemory
+from core.memory import LexicalMemory
 from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
 
@@ -20,14 +20,14 @@ def _memory_runtime(tmp_path: Path) -> tuple[SkillRuntime, str]:
     runtime = SkillRuntime(
         skills_dir=str(repo_root / "skills"),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
     return runtime, str(ws)
 
 
 def test_add_search_forget(tmp_path: Path):
-    mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"))
+    mem = LexicalMemory(storage_path=str(tmp_path / "mem.pkl"))
 
     item = mem.add_memory("I like coffee", memory_type="preference")
     hits = mem.search("coffee", top_k=3, min_score=0.0)
@@ -40,7 +40,7 @@ def test_add_search_forget(tmp_path: Path):
 
 def test_first_add_does_not_immediately_autosave(tmp_path: Path):
     path = tmp_path / "mem.pkl"
-    mem = VectorMemory(storage_path=str(path))
+    mem = LexicalMemory(storage_path=str(path))
 
     mem.add_memory("first item")
 
@@ -52,15 +52,15 @@ def test_corrupt_file_recovery(tmp_path: Path):
     path = tmp_path / "bad.pkl"
     path.write_bytes(b"not-a-pickle")
 
-    mem = VectorMemory(storage_path=str(path))
+    mem = LexicalMemory(storage_path=str(path))
 
     assert mem.memories == []
-    assert mem.stats(probe_encoder=False)["load_recovery_count"] == 1
+    assert mem.stats()["load_recovery_count"] == 1
 
 
 def test_empty_search_does_not_force_disk_write(tmp_path: Path):
     path = tmp_path / "mem.pkl"
-    mem = VectorMemory(storage_path=str(path))
+    mem = LexicalMemory(storage_path=str(path))
 
     assert mem.search("anything") == []
     assert not path.exists()
@@ -151,9 +151,9 @@ def test_recall_memory_rejects_empty_query(tmp_path: Path):
 
 
 def test_stats_reports_lexical_backend(tmp_path: Path):
-    mem = VectorMemory(storage_path=str(tmp_path / "mem.pkl"))
+    mem = LexicalMemory(storage_path=str(tmp_path / "mem.pkl"))
 
-    stats = mem.stats(probe_encoder=False)
+    stats = mem.stats()
 
     assert stats["backend"] == "lexical"
     assert stats["mode_label"] == "lexical"
@@ -164,10 +164,10 @@ def test_load_rejects_invalid_payload_shape(tmp_path: Path):
     path = tmp_path / "mem.pkl"
     path.write_text('{"schema_version":"3.0.0","id":1,"text":"x","metadata":[]}\n', encoding="utf-8")
 
-    mem = VectorMemory(storage_path=str(path))
+    mem = LexicalMemory(storage_path=str(path))
 
     assert mem.memories == []
-    assert mem.stats(probe_encoder=False)["load_recovery_count"] == 1
+    assert mem.stats()["load_recovery_count"] == 1
     assert path.exists()
 
 
@@ -178,9 +178,9 @@ def test_load_rejects_legacy_schema_as_unsupported(tmp_path: Path):
         encoding="utf-8",
     )
 
-    mem = VectorMemory(storage_path=str(path))
+    mem = LexicalMemory(storage_path=str(path))
 
-    stats = mem.stats(probe_encoder=False)
+    stats = mem.stats()
     assert mem.memories == []
     assert stats["load_unsupported_count"] == 1
     assert path.exists()
@@ -190,16 +190,16 @@ def test_load_skips_malformed_json_line(tmp_path: Path):
     path = tmp_path / "mem.pkl"
     path.write_text('{"schema_version":"3.0.0","id":1,"text":"good","metadata":{},"type":"conversation","timestamp":1.0,"access_count":0,"last_accessed":1.0}\nnot-json\n', encoding="utf-8")
 
-    mem = VectorMemory(storage_path=str(path))
+    mem = LexicalMemory(storage_path=str(path))
 
-    stats = mem.stats(probe_encoder=False)
+    stats = mem.stats()
     assert len(mem.memories) == 1
     assert stats["load_recovery_count"] == 1
 
 
 def test_save_rotates_backups(tmp_path: Path):
     path = tmp_path / "mem.pkl"
-    mem = VectorMemory(storage_path=str(path), backup_revisions=1, autosave_every=100)
+    mem = LexicalMemory(storage_path=str(path), backup_revisions=1, autosave_every=100)
 
     mem.add_memory("first")
     mem.flush()
@@ -218,7 +218,7 @@ def test_save_rotates_backups(tmp_path: Path):
 
 def test_flush_writes_events_and_facts(tmp_path: Path):
     path = tmp_path / "mem.pkl"
-    mem = VectorMemory(storage_path=str(path), autosave_every=100)
+    mem = LexicalMemory(storage_path=str(path), autosave_every=100)
 
     mem.add_memory("first")
     mem.add_memory("second", metadata={"k": "v"})
@@ -238,7 +238,7 @@ def test_flush_writes_events_and_facts(tmp_path: Path):
 
 def test_save_replace_failure_keeps_primary_file(tmp_path: Path, monkeypatch):
     path = tmp_path / "mem.pkl"
-    mem = VectorMemory(storage_path=str(path), backup_revisions=2, autosave_every=100)
+    mem = LexicalMemory(storage_path=str(path), backup_revisions=2, autosave_every=100)
     mem.add_memory("first")
     mem.flush()
     original = path.read_bytes()

@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 
-from core.memory import VectorMemory
+from core.memory import LexicalMemory
 from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
 
@@ -19,7 +19,7 @@ def _runtime(tmp_path: Path) -> SkillRuntime:
     return SkillRuntime(
         skills_dir=str(repo_root / "skills"),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
 

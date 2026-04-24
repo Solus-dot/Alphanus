@@ -9,7 +9,7 @@ import urllib.error
 
 import pytest
 
-from core.memory import VectorMemory
+from core.memory import LexicalMemory
 from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
 
@@ -575,7 +575,7 @@ def test_search_ops_skill_loads_and_executes_from_repo(tmp_path: Path, mocker, m
     runtime = SkillRuntime(
         skills_dir=str(Path(__file__).resolve().parents[1] / "skills"),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(mem)),
+        memory=LexicalMemory(storage_path=str(mem)),
         config={"search": {"provider": "tavily"}},
     )
     skill = runtime.get_skill("search-ops")

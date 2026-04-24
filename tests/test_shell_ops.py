@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 from agent.core import Agent
-from core.memory import VectorMemory
+from core.memory import LexicalMemory
 from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
 
@@ -15,7 +15,7 @@ def _runtime(tmp_path: Path, config: dict) -> SkillRuntime:
     ws = home / "ws"
     home.mkdir()
     ws.mkdir()
-    memory = VectorMemory(storage_path=str(tmp_path / "mem.pkl"))
+    memory = LexicalMemory(storage_path=str(tmp_path / "mem.pkl"))
     return SkillRuntime(
         skills_dir=str(repo_root / "skills"),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),

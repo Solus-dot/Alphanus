@@ -9,7 +9,7 @@ from agent.llm_client import LLMClient
 from agent.orchestrator import TurnOrchestrator
 from agent.policies import PromptPolicyRenderer
 from agent.telemetry import TelemetryEmitter, configure_logging
-from core.memory import VectorMemory
+from core.memory import LexicalMemory
 from core.skills import SkillContext, SkillRuntime
 from core.types import ModelStatus, StreamPassResult, ToolCall, TurnClassification
 from core.workspace import WorkspaceManager
@@ -59,7 +59,7 @@ def execute(tool_name, args, env):
     return SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
 

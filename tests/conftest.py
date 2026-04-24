@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from core.memory import VectorMemory
+from core.memory import LexicalMemory
 from core.workspace import WorkspaceManager
 
 
@@ -29,6 +29,6 @@ def workspace(tmp_path: Path) -> WorkspaceManager:
 
 
 @pytest.fixture
-def memory(tmp_path: Path) -> VectorMemory:
+def memory(tmp_path: Path) -> LexicalMemory:
     path = tmp_path / "memory.pkl"
-    return VectorMemory(storage_path=str(path))
+    return LexicalMemory(storage_path=str(path))
