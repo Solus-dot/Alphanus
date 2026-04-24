@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.parse
 from typing import Any, Callable, List, Optional
 
@@ -11,6 +12,7 @@ from agent.evidence_guard import EvidenceGuard
 from agent.finalization_engine import FinalizationEngine
 from agent.llm_client import LLMClient
 from agent.policies import OutputSanitizer, PromptPolicyRenderer, search_rule
+from agent.runtime_hooks import TurnRuntimeHooks
 from agent.telemetry import TelemetryEmitter
 from agent.tool_execution_engine import ToolExecutionEngine
 from agent.turn_policy_engine import TurnPolicyEngine
@@ -37,6 +39,7 @@ class TurnOrchestrator:
         classifier: TurnClassifier,
         prompt_renderer: PromptPolicyRenderer,
         telemetry: Optional[TelemetryEmitter] = None,
+        runtime_hooks: Optional[TurnRuntimeHooks] = None,
     ) -> None:
         self.skill_runtime = skill_runtime
         self.context_mgr = context_mgr
@@ -44,11 +47,42 @@ class TurnOrchestrator:
         self.classifier = classifier
         self.prompt_renderer = prompt_renderer
         self.telemetry = telemetry or TelemetryEmitter()
-        self.call_with_retry = llm_client.call_with_retry
-        self.build_skill_context = classifier.build_skill_context
-        self.classify_context = classifier.classify
-        self.select_skills = self._default_select_skills
+        self._runtime_hooks = runtime_hooks
         self.reload_config(llm_client.config)
+
+    def bind_runtime_hooks(self, runtime_hooks: Optional[TurnRuntimeHooks]) -> None:
+        self._runtime_hooks = runtime_hooks
+
+    def call_with_retry(self, payload: JsonObject, stop_event, on_event, pass_id: str):
+        hooks = self._runtime_hooks
+        if hooks is not None:
+            return hooks.call_with_retry(payload, stop_event, on_event, pass_id)
+        return self.llm_client.call_with_retry(payload, stop_event, on_event, pass_id)
+
+    def build_skill_context(
+        self,
+        user_input: str,
+        branch_labels: List[str],
+        attachments: List[str],
+        history_messages: Optional[list[ChatMessage]] = None,
+        loaded_skill_ids: Optional[list[str]] = None,
+    ):
+        hooks = self._runtime_hooks
+        if hooks is not None:
+            return hooks.build_skill_context(user_input, branch_labels, attachments, history_messages, loaded_skill_ids)
+        return self.classifier.build_skill_context(user_input, branch_labels, attachments, history_messages, loaded_skill_ids)
+
+    def classify_context(self, ctx, stop_event=None):
+        hooks = self._runtime_hooks
+        if hooks is not None:
+            return hooks.classify_context(ctx, stop_event=stop_event)
+        return self.classifier.classify(ctx, stop_event=stop_event)
+
+    def select_skills(self, ctx, stop_event):
+        hooks = self._runtime_hooks
+        if hooks is not None:
+            return hooks.select_skills(ctx, stop_event)
+        return self._default_select_skills(ctx, stop_event)
 
     def reload_config(self, config: JsonObject) -> None:
         self.config = config
@@ -87,6 +121,22 @@ class TurnOrchestrator:
         except Exception as exc:
             logging.debug("Event emission failed: %s", exc)
             return
+
+    @staticmethod
+    def _trace_list(state: TurnState, key: str) -> list[dict[str, object]]:
+        existing = state.trace_data.get(key)
+        if isinstance(existing, list):
+            return [item for item in existing if isinstance(item, dict)]
+        return []
+
+    @staticmethod
+    def _set_trace_list(state: TurnState, key: str, rows: list[dict[str, object]]) -> None:
+        state.trace_data[key] = rows
+
+    def _trace_add(self, state: TurnState, key: str, row: dict[str, object]) -> None:
+        rows = self._trace_list(state, key)
+        rows.append(row)
+        self._set_trace_list(state, key, rows)
 
     def _is_stop_requested(self, stop_event) -> bool:
         return self.llm_client.stop_requested(stop_event)
@@ -307,6 +357,18 @@ class TurnOrchestrator:
         )
 
     def build_turn_journal(self, state: TurnState, result: AgentTurnResult) -> JsonObject:
+        started_at = float(state.trace_data.get("started_at", state.telemetry.started_at) or state.telemetry.started_at)
+        finished_at = time.time()
+        elapsed_ms = max(0, int((finished_at - started_at) * 1000))
+        pass_first_tokens: list[int] = []
+        for item in self._trace_list(state, "passes"):
+            raw = item.get("first_token_latency_ms")
+            if isinstance(raw, bool):
+                continue
+            if isinstance(raw, (int, float)):
+                pass_first_tokens.append(max(0, int(raw)))
+        first_token_latency_ms: Optional[int] = pass_first_tokens[0] if pass_first_tokens else None
+        tool_loop_depth = int(sum(max(0, int(v)) for v in state.completion.tool_counts.values()))
         return {
             "status": result.status,
             "error": result.error or "",
@@ -328,6 +390,19 @@ class TurnOrchestrator:
             "search_failures": state.completion.search_failure_count,
             "has_fetch_evidence": state.completion.search_has_fetch_content,
             "model_usage": dict(state.telemetry.model_usage),
+            "timing": {
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "elapsed_ms": elapsed_ms,
+                "pass_count": state.pass_index,
+                "first_token_latency_ms": first_token_latency_ms,
+            },
+            "tool_loop_depth": tool_loop_depth,
+            "turn_trace": {
+                "passes": self._trace_list(state, "passes"),
+                "tool_calls": self._trace_list(state, "tool_calls"),
+                "tool_results": self._trace_list(state, "tool_results"),
+            },
         }
 
     def log_turn_summary(self, state: TurnState, result: AgentTurnResult) -> None:
@@ -731,6 +806,21 @@ class TurnOrchestrator:
         ):
             tools = None
         payload = self.llm_client.build_payload(model_messages, thinking=thinking, tools=tools or None)
+        pass_trace: dict[str, object] = {
+            "pass_id": pass_id,
+            "started_at": time.time(),
+            "selected_skills": [getattr(skill, "id", "") for skill in state.selected],
+            "tool_names": [
+                str(fn.get("name", "")).strip()
+                for item in (tools or [])
+                if isinstance(item, dict)
+                for fn in [item.get("function")]
+                if isinstance(fn, dict)
+            ],
+            "system_prompt": system_content,
+            "payload": payload,
+        }
+        self._trace_add(state, "passes", pass_trace)
 
         try:
             stream_result = self.call_with_retry(payload, stop_event, on_event, pass_id=pass_id)
@@ -774,6 +864,12 @@ class TurnOrchestrator:
                     skill_exchanges=state.skill_exchanges,
                     error=message,
                 )
+
+        pass_trace["completed_at"] = time.time()
+        pass_trace["duration_ms"] = max(0, int((float(pass_trace["completed_at"]) - float(pass_trace["started_at"])) * 1000))
+        pass_trace["finish_reason"] = stream_result.finish_reason
+        pass_trace["usage"] = dict(getattr(stream_result, "usage", {}) or {})
+        pass_trace["first_token_latency_ms"] = getattr(stream_result, "first_token_latency_ms", None)
 
         if stream_result.finish_reason == "cancelled":
             return AgentTurnResult(
@@ -882,6 +978,14 @@ class TurnOrchestrator:
             )
 
         for call in stream_result.tool_calls:
+            call_trace = {
+                "pass_id": pass_id,
+                "id": call.id,
+                "name": call.name,
+                "arguments": dict(call.arguments),
+                "started_at": time.time(),
+            }
+            self._trace_add(state, "tool_calls", call_trace)
             if self._is_stop_requested(stop_event):
                 return (
                     "result",
@@ -929,6 +1033,18 @@ class TurnOrchestrator:
                 state.dynamic_history.append(tool_message)
                 state.skill_exchanges.append(tool_message)
                 self.record_tool_effects(state, call, result, policy_blocked=True)
+                self._trace_add(
+                    state,
+                    "tool_results",
+                    {
+                        "pass_id": pass_id,
+                        "id": call.id,
+                        "name": call.name,
+                        "result": result,
+                        "policy_blocked": True,
+                        "finished_at": time.time(),
+                    },
+                )
                 if self._is_stop_requested(stop_event):
                     self.emit(
                         on_event,
@@ -985,6 +1101,18 @@ class TurnOrchestrator:
             state.dynamic_history.append(tool_message)
             state.skill_exchanges.append(tool_message)
             self.record_tool_effects(state, call, result)
+            self._trace_add(
+                state,
+                "tool_results",
+                {
+                    "pass_id": pass_id,
+                    "id": call.id,
+                    "name": call.name,
+                    "result": result,
+                    "policy_blocked": False,
+                    "finished_at": time.time(),
+                },
+            )
             if self._is_stop_requested(stop_event):
                 self.emit(
                     on_event,

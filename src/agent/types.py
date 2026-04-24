@@ -26,6 +26,7 @@ class StreamPassResult:
     reasoning: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     usage: dict[str, int] = field(default_factory=dict)
+    first_token_latency_ms: Optional[int] = None
 
 
 ModelStatusState = Literal["unknown", "online", "offline"]
@@ -142,6 +143,7 @@ class TurnState:
     forced_search_retry: bool = False
     forced_action_retry: bool = False
     tool_budgets: dict[str, int] = field(default_factory=dict)
+    trace_data: dict[str, JSONValue] = field(default_factory=dict)
 
     @property
     def search_mode(self) -> bool:

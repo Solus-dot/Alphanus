@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import uuid
 
 from core.message_types import ChatMessage
@@ -26,6 +27,12 @@ class TurnPolicyEngine:
             search_tools_enabled=False,
             evidence=[],
             tool_budgets=dict(self.default_tool_budgets),
+            trace_data={
+                "started_at": time.time(),
+                "passes": [],
+                "tool_calls": [],
+                "tool_results": [],
+            },
         )
         self.refresh_search_tools_enabled(state)
         return state
