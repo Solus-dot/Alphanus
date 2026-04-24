@@ -461,6 +461,8 @@ class OpenAICompatibleProvider:
         tool_phase_started = False
         suppress_content_stream = False
         usage: Dict[str, int] = {}
+        stream_started_at = time.time()
+        first_output_at: Optional[float] = None
         self.telemetry.emit("chat_pass_start", pass_id=pass_id, endpoint=self.model_endpoint, payload=payload)
 
         for chunk in self._stream_chat_completions(
@@ -492,11 +494,15 @@ class OpenAICompatibleProvider:
 
             reasoning = delta.get("reasoning_content") or ""
             if reasoning:
+                if first_output_at is None:
+                    first_output_at = time.time()
                 reasoning_parts.append(reasoning)
                 self._emit(on_event, {"type": "reasoning_token", "text": reasoning})
 
             content = delta.get("content") or ""
             if content:
+                if first_output_at is None:
+                    first_output_at = time.time()
                 content_parts.append(content)
                 if self._contains_tool_markup(content):
                     if not suppress_content_stream:
@@ -513,6 +519,8 @@ class OpenAICompatibleProvider:
 
             tool_deltas = delta.get("tool_calls") or []
             if tool_deltas:
+                if first_output_at is None:
+                    first_output_at = time.time()
                 if not tool_phase_started:
                     tool_phase_started = True
                     self._emit(on_event, {"type": "tool_phase_started"})
@@ -546,12 +554,16 @@ class OpenAICompatibleProvider:
             reasoning="".join(reasoning_parts),
             tool_calls=[{"id": call.id, "name": call.name, "arguments": call.arguments} for call in tool_calls],
         )
+        first_token_latency_ms: Optional[int] = None
+        if first_output_at is not None:
+            first_token_latency_ms = max(0, int((first_output_at - stream_started_at) * 1000))
         return StreamPassResult(
             finish_reason=finish_reason,
             content="".join(content_parts),
             reasoning="".join(reasoning_parts),
             tool_calls=tool_calls,
             usage=usage,
+            first_token_latency_ms=first_token_latency_ms,
         )
 
     def call_with_retry(self, payload: dict[str, object], stop_event, on_event, pass_id: str) -> StreamPassResult:

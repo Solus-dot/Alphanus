@@ -242,6 +242,7 @@ def cmd_doctor(app: Any, *, accent_color: str) -> None:
     app._write_detail_line("endpoint_ready", str(agent.get("ready", False)).lower())
     if agent.get("endpoint_policy_error"):
         app._write_detail_line("endpoint_policy", str(agent.get("endpoint_policy_error")))
+    app._write_detail_line("permission_profile", str(agent.get("permission_profile", "full")))
     app._write_detail_line("workspace", str(workspace.get("path", "")))
     app._write_detail_line("workspace_writable", str(workspace.get("writable", False)).lower())
     app._write_detail_line("memory_backend", str(memory.get("backend", "lexical")))
@@ -253,6 +254,13 @@ def cmd_doctor(app: Any, *, accent_color: str) -> None:
     app._write_detail_line("search_ready", str(search.get("ready", False)).lower())
     if search.get("reason"):
         app._write_detail_line("search_reason", str(search.get("reason")))
+    metrics = report.get("harness_metrics", {})
+    if isinstance(metrics, dict):
+        app._write_detail_line("task_completion_rate", str(metrics.get("task_completion_rate", 0.0)))
+        app._write_detail_line("human_interruption_rate", str(metrics.get("human_interruption_rate", 0.0)))
+        app._write_detail_line("tool_failure_rate", str(metrics.get("tool_failure_rate", 0.0)))
+        app._write_detail_line("avg_tool_loop_depth", str(metrics.get("avg_tool_loop_depth", 0.0)))
+        app._write_detail_line("first_token_latency_ms_avg", str(metrics.get("first_token_latency_ms_avg", 0.0)))
     app._write_section_heading("Skills")
     for skill in report.get("skills", []):
         line = (

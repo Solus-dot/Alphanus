@@ -13,7 +13,7 @@ import pytest
 from agent.core import Agent
 from agent.policies import PromptPolicyRenderer
 from core.types import ModelStatus, TurnClassification, TurnPolicySnapshot
-from core.memory import VectorMemory
+from core.memory import LexicalMemory
 from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
 
@@ -98,7 +98,7 @@ def execute(tool_name, args, env):
     return SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
 
@@ -209,6 +209,70 @@ def test_agent_records_model_usage_from_stream(mocker, runtime: SkillRuntime):
     assert result.status == "done"
     assert result.journal["model_usage"]["prompt_tokens"] == 321
     assert result.journal["model_usage"]["completion_tokens"] == 12
+
+
+def test_agent_journal_contains_turn_trace_payload_and_tools(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+
+    chat_reqs = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\\"trace.txt\\\", \\\"content\\\": \\\"hello\\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"content":"Done"}}]}',
+                'data: {"choices":[{"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "write trace file"}],
+        user_input="write trace file",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    trace = result.journal.get("turn_trace", {})
+    assert isinstance(trace, dict)
+    passes = trace.get("passes", [])
+    assert isinstance(passes, list) and passes
+    first_pass = passes[0]
+    assert isinstance(first_pass, dict)
+    assert first_pass.get("payload")
+    assert first_pass.get("system_prompt")
+    tool_calls = trace.get("tool_calls", [])
+    assert isinstance(tool_calls, list) and tool_calls
+    assert tool_calls[0].get("name") == "create_file"
+    tool_results = trace.get("tool_results", [])
+    assert isinstance(tool_results, list) and tool_results
+    assert tool_results[0].get("name") == "create_file"
 
 
 def test_image_turn_without_selected_skill_tools_omits_tool_schemas(mocker, runtime: SkillRuntime):
@@ -738,7 +802,7 @@ Alpha.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
     assert [skill.id for skill in runtime.enabled_skills()] == ["alpha"]
@@ -782,7 +846,7 @@ Alpha.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
     agent = Agent({"agent": {}}, runtime)
@@ -815,7 +879,7 @@ Alpha.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
     generation_before = runtime.generation
@@ -3540,6 +3604,35 @@ def test_doctor_report_uses_env_auth_header(mocker, runtime: SkillRuntime, monke
     mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
     report = agent.doctor_report()
     assert report["agent"]["auth_header_source"] == "env"
+    assert report["agent"]["permission_profile"] == "full"
+    assert report["harness_metrics"]["turns_total"] == 0
+
+
+def test_doctor_report_handles_non_object_runtime_and_capabilities_sections(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+        },
+        "runtime": "not-a-dict",
+        "capabilities": ["not", "a", "dict"],
+    }
+    agent = Agent(cfg, runtime)
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        raise AssertionError("unexpected endpoint")
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+    report = agent.doctor_report()
+    assert report["agent"]["runtime_profile"] == "standard"
+    assert report["agent"]["permission_profile"] == "full"
 
 
 def test_doctor_report_supports_brave_provider(mocker, runtime: SkillRuntime, monkeypatch):
@@ -4130,7 +4223,7 @@ def execute(tool_name, args, env):
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     cfg = {
         "agent": {
@@ -4204,7 +4297,7 @@ Use scripts/convert.py when needed.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     cfg = {
         "agent": {
@@ -4318,7 +4411,7 @@ Ask a follow-up before continuing.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     cfg = {
         "agent": {
@@ -4383,7 +4476,7 @@ Ask a follow-up before continuing.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     cfg = {
         "agent": {

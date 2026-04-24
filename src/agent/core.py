@@ -8,10 +8,12 @@ from typing import Callable, List, Optional
 from core.message_types import ChatMessage
 from agent.classifier import TurnClassifier
 from agent.context import ContextWindowManager
+from agent.harness_metrics import HarnessMetrics
 from agent.llm_client import LLMClient
 from agent.orchestrator import TurnOrchestrator, request_user_input_passthrough
 from agent.policies import PromptPolicyRenderer
 from agent.prompts import build_system_prompt
+from agent.runtime_hooks import AgentTurnRuntimeHooks
 from agent.telemetry import TelemetryEmitter
 from core.configuration import validate_endpoint_policy
 from core.types import AgentTurnResult, JsonObject, ModelStatus, ShellConfirmationFn
@@ -23,6 +25,7 @@ class Agent:
         self.skill_runtime = skill_runtime
         self.debug = debug
         self.telemetry = TelemetryEmitter()
+        self.harness_metrics = HarnessMetrics()
         self.system_prompt = build_system_prompt(self.skill_runtime.workspace.workspace_root)
         self.context_mgr = ContextWindowManager()
         self.llm_client = LLMClient(config, debug=debug, telemetry=self.telemetry)
@@ -40,6 +43,9 @@ class Agent:
             prompt_renderer=self.prompt_renderer,
             telemetry=self.telemetry,
         )
+        self._runtime_hooks = AgentTurnRuntimeHooks(self)
+        self.classifier.bind_runtime_hooks(self._runtime_hooks)
+        self.orchestrator.bind_runtime_hooks(self._runtime_hooks)
         self.reload_config(config)
 
     @property
@@ -77,41 +83,26 @@ class Agent:
     def reload_config(self, config: JsonObject) -> None:
         self.config = config
         self.skill_runtime.reload_config(config)
-        self.skill_runtime._proc_env_base = self.skill_runtime._build_proc_env_base()
+        self.skill_runtime.refresh_process_env()
         self.skill_runtime.load_skills()
         context_cfg = config.get("context", {}) if isinstance(config.get("context"), dict) else {}
-        self.context_mgr = ContextWindowManager(
-            context_limit=int(context_cfg.get("context_limit", 8192)),
-            keep_last_n=int(context_cfg.get("keep_last_n", 10)),
-            safety_margin=int(context_cfg.get("safety_margin", 500)),
-        )
+        self.context_mgr.context_limit = int(context_cfg.get("context_limit", 8192))
+        self.context_mgr.keep_last_n = int(context_cfg.get("keep_last_n", 10))
+        self.context_mgr.safety_margin = int(context_cfg.get("safety_margin", 500))
         self.system_prompt = build_system_prompt(self.skill_runtime.workspace.workspace_root)
         self.llm_client.reload_config(config)
         self.classifier.reload_config(config)
-        self.prompt_renderer = PromptPolicyRenderer(
-            self.system_prompt,
-            self.skill_runtime,
-            context_limit=self.context_mgr.context_limit,
-        )
-        self.orchestrator = TurnOrchestrator(
-            skill_runtime=self.skill_runtime,
-            context_mgr=self.context_mgr,
-            llm_client=self.llm_client,
-            classifier=self.classifier,
-            prompt_renderer=self.prompt_renderer,
-            telemetry=self.telemetry,
-        )
-        self.classifier.call_with_retry = lambda payload, stop_event, on_event, pass_id: self._call_with_retry(payload, stop_event, on_event, pass_id)
-        self.orchestrator.call_with_retry = lambda payload, stop_event, on_event, pass_id: self._call_with_retry(payload, stop_event, on_event, pass_id)
-        self.orchestrator.build_skill_context = lambda user_input, branch_labels, attachments, history_messages, loaded_skill_ids: self._build_skill_context(
-            user_input,
-            branch_labels,
-            attachments,
-            history_messages,
-            loaded_skill_ids,
-        )
-        self.orchestrator.classify_context = lambda ctx, stop_event=None: self._classify_turn(ctx, stop_event)
-        self.orchestrator.select_skills = lambda ctx, stop_event: self._select_turn(ctx, stop_event)
+        self.classifier.bind_runtime_hooks(self._runtime_hooks)
+        self.prompt_renderer.system_prompt = self.system_prompt
+        self.prompt_renderer.skill_runtime = self.skill_runtime
+        self.prompt_renderer.context_limit = self.context_mgr.context_limit
+        self.orchestrator.skill_runtime = self.skill_runtime
+        self.orchestrator.context_mgr = self.context_mgr
+        self.orchestrator.llm_client = self.llm_client
+        self.orchestrator.classifier = self.classifier
+        self.orchestrator.prompt_renderer = self.prompt_renderer
+        self.orchestrator.bind_runtime_hooks(self._runtime_hooks)
+        self.orchestrator.reload_config(config)
         self.model_endpoint = self.llm_client.model_endpoint
         self.models_endpoint = self.llm_client.models_endpoint
         self.allow_cross_host = self.llm_client.allow_cross_host
@@ -152,10 +143,15 @@ class Agent:
         return None
 
     def doctor_report(self) -> dict[str, object]:
+        config_obj = self.config if isinstance(self.config, dict) else {}
         endpoint_error = self._validate_endpoints()
         workspace_root = Path(self.skill_runtime.workspace.workspace_root)
         memory_stats = self.skill_runtime.memory.stats()
-        search_cfg = self.config.get("search", {}) if isinstance(self.config, dict) else {}
+        runtime_cfg = config_obj.get("runtime", {}) if isinstance(config_obj.get("runtime"), dict) else {}
+        capabilities_cfg = (
+            config_obj.get("capabilities", {}) if isinstance(config_obj.get("capabilities"), dict) else {}
+        )
+        search_cfg = config_obj.get("search", {}) if isinstance(config_obj.get("search"), dict) else {}
         provider = str(search_cfg.get("provider", "tavily")).strip().lower() or "tavily"
         provider_env = {"tavily": "TAVILY_API_KEY", "brave": "BRAVE_SEARCH_API_KEY"}
         required_env = provider_env.get(provider, "")
@@ -168,6 +164,8 @@ class Agent:
                 "ready": bool(ready),
                 "endpoint_policy_error": endpoint_error or "",
                 "auth_header_source": "env" if self.llm_client.auth_header else "none",
+                "runtime_profile": str(runtime_cfg.get("profile", "standard")),
+                "permission_profile": str(capabilities_cfg.get("permission_profile", "full")),
             },
             "workspace": {
                 "path": str(workspace_root),
@@ -187,6 +185,7 @@ class Agent:
                 "ready": search_ready,
                 "reason": "" if search_ready or not required_env else f"missing env: {required_env}",
             },
+            "harness_metrics": self.harness_metrics.snapshot(),
             "skills": self.skill_runtime.skill_health_report(),
         }
 
@@ -256,6 +255,13 @@ class Agent:
     def _tool_call_args_for_history(self, args: dict[str, object]) -> dict[str, object]:
         return self.orchestrator.tool_call_args_for_history(args)
 
+    def _record_and_return(self, result: AgentTurnResult) -> AgentTurnResult:
+        try:
+            self.harness_metrics.record(result)
+        except Exception:
+            pass
+        return result
+
     def run_turn(
         self,
         history_messages: list[ChatMessage],
@@ -270,71 +276,91 @@ class Agent:
     ) -> AgentTurnResult:
         endpoint_err = self._validate_endpoints()
         if endpoint_err:
-            return AgentTurnResult(status="error", content="", reasoning="", skill_exchanges=[], error=endpoint_err)
+            return self._record_and_return(
+                AgentTurnResult(status="error", content="", reasoning="", skill_exchanges=[], error=endpoint_err)
+            )
         if self.llm_client.stop_requested(stop_event):
-            return AgentTurnResult(status="cancelled", content="", reasoning="", skill_exchanges=[])
+            return self._record_and_return(AgentTurnResult(status="cancelled", content="", reasoning="", skill_exchanges=[]))
         status = self.get_model_status()
         if status.state == "offline" and self.llm_client.is_model_status_fresh(status):
             if self.llm_client.should_fail_fast_on_offline_status(status):
                 detail = f": {status.last_error}" if status.last_error else ""
-                return AgentTurnResult(
-                    status="error",
-                    content="",
-                    reasoning="",
-                    skill_exchanges=[],
-                    error=f"Model endpoint offline{detail}",
+                return self._record_and_return(
+                    AgentTurnResult(
+                        status="error",
+                        content="",
+                        reasoning="",
+                        skill_exchanges=[],
+                        error=f"Model endpoint offline{detail}",
+                    )
                 )
             ready = self.ensure_ready(stop_event=stop_event, on_event=on_event)
             if ready is None:
-                return AgentTurnResult(status="cancelled", content="", reasoning="", skill_exchanges=[])
+                return self._record_and_return(AgentTurnResult(status="cancelled", content="", reasoning="", skill_exchanges=[]))
             if not ready:
                 refreshed = self.get_model_status()
                 detail = f": {refreshed.last_error}" if refreshed.last_error else ""
-                return AgentTurnResult(
-                    status="error",
-                    content="",
-                    reasoning="",
-                    skill_exchanges=[],
-                    error=f"Model endpoint offline{detail}" if refreshed.state == "offline" else f"Model endpoint not ready: {self.models_endpoint}",
+                return self._record_and_return(
+                    AgentTurnResult(
+                        status="error",
+                        content="",
+                        reasoning="",
+                        skill_exchanges=[],
+                        error=(
+                            f"Model endpoint offline{detail}"
+                            if refreshed.state == "offline"
+                            else f"Model endpoint not ready: {self.models_endpoint}"
+                        ),
+                    )
                 )
         if not self.llm_client.is_model_status_fresh(status):
             if status.state != "unknown":
                 status = self.refresh_model_status(timeout_s=min(self.connect_timeout_s, 1.0), force=True)
                 if status.state == "online":
-                    return self.orchestrator.run_turn(
-                        history_messages=history_messages,
-                        user_input=user_input,
-                        thinking=thinking,
-                        branch_labels=branch_labels,
-                        attachments=attachments,
-                        loaded_skill_ids=loaded_skill_ids,
-                        stop_event=stop_event,
-                        on_event=on_event,
-                        confirm_shell=confirm_shell,
-                        request_user_input=request_user_input_passthrough,
+                    return self._record_and_return(
+                        self.orchestrator.run_turn(
+                            history_messages=history_messages,
+                            user_input=user_input,
+                            thinking=thinking,
+                            branch_labels=branch_labels,
+                            attachments=attachments,
+                            loaded_skill_ids=loaded_skill_ids,
+                            stop_event=stop_event,
+                            on_event=on_event,
+                            confirm_shell=confirm_shell,
+                            request_user_input=request_user_input_passthrough,
+                        )
                     )
             ready = self.ensure_ready(stop_event=stop_event, on_event=on_event)
             if ready is None:
-                return AgentTurnResult(status="cancelled", content="", reasoning="", skill_exchanges=[])
+                return self._record_and_return(AgentTurnResult(status="cancelled", content="", reasoning="", skill_exchanges=[]))
             if not ready:
                 status = self.get_model_status()
                 detail = f": {status.last_error}" if status.last_error else ""
-                return AgentTurnResult(
-                    status="error",
-                    content="",
-                    reasoning="",
-                    skill_exchanges=[],
-                    error=f"Model endpoint offline{detail}" if status.state == "offline" else f"Model endpoint not ready: {self.models_endpoint}",
+                return self._record_and_return(
+                    AgentTurnResult(
+                        status="error",
+                        content="",
+                        reasoning="",
+                        skill_exchanges=[],
+                        error=(
+                            f"Model endpoint offline{detail}"
+                            if status.state == "offline"
+                            else f"Model endpoint not ready: {self.models_endpoint}"
+                        ),
+                    )
                 )
-        return self.orchestrator.run_turn(
-            history_messages=history_messages,
-            user_input=user_input,
-            thinking=thinking,
-            branch_labels=branch_labels,
-            attachments=attachments,
-            loaded_skill_ids=loaded_skill_ids,
-            stop_event=stop_event,
-            on_event=on_event,
-            confirm_shell=confirm_shell,
-            request_user_input=request_user_input_passthrough,
+        return self._record_and_return(
+            self.orchestrator.run_turn(
+                history_messages=history_messages,
+                user_input=user_input,
+                thinking=thinking,
+                branch_labels=branch_labels,
+                attachments=attachments,
+                loaded_skill_ids=loaded_skill_ids,
+                stop_event=stop_event,
+                on_event=on_event,
+                confirm_shell=confirm_shell,
+                request_user_input=request_user_input_passthrough,
+            )
         )
