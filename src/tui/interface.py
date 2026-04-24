@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import os
 import threading
@@ -9,7 +8,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from rich.console import RenderableType
-from rich.highlighter import Highlighter
 from rich.markup import escape as esc
 from textual import events, on, work
 from textual.app import App, ComposeResult
@@ -26,8 +24,6 @@ from core.attachments import build_content, classify_attachment
 from core.configuration import (
     config_for_editor_view,
     load_global_config,
-    normalize_config,
-    validate_endpoint_policy,
 )
 from core.conv_tree import ConvTree, Turn
 from core.runtime_config import UiRuntimeConfig
@@ -36,9 +32,9 @@ from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
 from tui.app_shell_runtime import compose_shell as compose_tui_shell
 from tui.app_shell_runtime import initialize_shell_state as init_tui_shell_state
 from tui.commands import (
-    COMMAND_ENTRIES,
     HELP_SECTIONS,
 )
+from tui.chat_input import ChatInput, _PasteTokenHighlighter
 from tui.command_palette_runtime import (
     accept_command_selection as accept_tui_command_selection,
     command_popup_active as tui_command_popup_active,
@@ -77,6 +73,11 @@ from tui.interaction_runtime import (
     on_session_manager_close as on_tui_session_manager_close,
     show_keyboard_shortcuts as show_tui_keyboard_shortcuts,
 )
+from tui.interface_input_runtime import (
+    handle_key as on_tui_key,
+    on_config_editor_close as on_tui_config_editor_close,
+    show_keyboard_shortcuts as show_tui_keyboard_shortcuts_sections,
+)
 from tui.popups import (
     CommandPaletteItem,
     CommandPaletteModal,
@@ -86,6 +87,14 @@ from tui.popups import (
     SelectionPickerModal,
     SessionNameModal,
     SessionManagerModal,
+)
+from tui.palette_theme_runtime import (
+    build_global_palette_catalog as build_tui_global_palette_catalog,
+    on_global_palette_close as on_tui_global_palette_close,
+    on_theme_picker_close as on_tui_theme_picker_close,
+    open_theme_picker as open_tui_theme_picker,
+    persist_theme_preference as persist_tui_theme_preference,
+    workspace_file_candidates as workspace_tui_file_candidates,
 )
 from tui.attachment_runtime import (
     attach_file_path as attach_tui_file_path,
@@ -211,214 +220,6 @@ DEFAULT_MUTED_COLOR = fallback_color("muted")
 
 def _global_config_path() -> Path:
     return get_app_paths().config_path
-
-
-@dataclass
-class _CompactPasteChunk:
-    start: int
-    end: int
-    marker: str
-    text: str
-
-
-class _PasteTokenHighlighter(Highlighter):
-    STYLE = f"bold {DEFAULT_ACCENT_COLOR} on {DEFAULT_PANEL_BG}"
-
-    def __init__(self, token_ranges_provider: Optional[Callable[[], List[Tuple[int, int]]]] = None) -> None:
-        super().__init__()
-        self._token_ranges_provider = token_ranges_provider or (lambda: [])
-
-    def highlight(self, text) -> None:
-        plain = text.plain
-        for start, end in self._token_ranges_provider():
-            if start < 0 or end <= start or end > len(plain):
-                continue
-            text.stylize(self.STYLE, start, end)
-
-
-class ChatInput(Input):
-    COMPACT_PASTE_THRESHOLD = 120
-    PASTE_TOKEN_STYLE = _PasteTokenHighlighter.STYLE
-
-    BINDINGS = [
-        Binding("ctrl+h", "delete_left", show=False),
-        Binding("ctrl+u", "clear_all", show=False),
-        Binding("ctrl+k", "open_global_palette", show=False),
-        Binding("ctrl+shift+k", "kill_to_end", show=False),
-        Binding("ctrl+backspace", "remove_last_attachment", show=False),
-        Binding("ctrl+shift+backspace", "clear_attachments", show=False),
-        Binding("ctrl+f", "open_file_picker", show=False),
-        Binding("ctrl+g", "focus_input", show=False),
-        Binding("ctrl+p", "open_command_palette", show=False),
-        Binding("f1", "show_keymap", show=False),
-        Binding("f2", "toggle_details", show=False),
-        Binding("f3", "toggle_thinking", show=False),
-    ]
-
-    def __init__(self, *args, **kwargs) -> None:
-        if kwargs.get("highlighter") is None:
-            kwargs["highlighter"] = _PasteTokenHighlighter()
-        super().__init__(*args, **kwargs)
-        self._compact_paste_chunks: List[_CompactPasteChunk] = []
-        self._last_value = self.value
-        if isinstance(self.highlighter, _PasteTokenHighlighter):
-            self.highlighter._token_ranges_provider = self._highlighted_placeholder_ranges
-
-    def _highlighted_placeholder_ranges(self) -> List[Tuple[int, int]]:
-        return [(chunk.start, chunk.end) for chunk in self._compact_paste_chunks]
-
-    @staticmethod
-    def _paste_marker(text: str) -> str:
-        return f"[Pasted {len(text)} chars]"
-
-    @staticmethod
-    def _changed_span(old_value: str, new_value: str) -> Tuple[int, int, int]:
-        prefix_len = 0
-        max_prefix = min(len(old_value), len(new_value))
-        while prefix_len < max_prefix and old_value[prefix_len] == new_value[prefix_len]:
-            prefix_len += 1
-
-        old_suffix = len(old_value)
-        new_suffix = len(new_value)
-        while old_suffix > prefix_len and new_suffix > prefix_len and old_value[old_suffix - 1] == new_value[new_suffix - 1]:
-            old_suffix -= 1
-            new_suffix -= 1
-
-        return prefix_len, old_suffix, new_suffix
-
-    def _sync_chunk_ranges(self, value: str) -> None:
-        old_value = self._last_value
-        if old_value == value:
-            self._last_value = value
-            return
-
-        prefix_len, old_suffix, new_suffix = self._changed_span(old_value, value)
-
-        delta = (new_suffix - prefix_len) - (old_suffix - prefix_len)
-        updated: List[_CompactPasteChunk] = []
-        for chunk in self._compact_paste_chunks:
-            start = chunk.start
-            end = chunk.end
-
-            if end <= prefix_len:
-                pass
-            elif start >= old_suffix:
-                start += delta
-                end += delta
-            else:
-                continue
-
-            if start < 0 or end > len(value):
-                continue
-            if value[start:end] != chunk.marker:
-                continue
-            updated.append(_CompactPasteChunk(start=start, end=end, marker=chunk.marker, text=chunk.text))
-
-        self._compact_paste_chunks = updated
-        self._last_value = value
-
-    def on_paste(self, event: events.Paste) -> None:
-        text = event.text
-        if len(text) < self.COMPACT_PASTE_THRESHOLD:
-            return
-        prevent_default = getattr(event, "prevent_default", None)
-        if callable(prevent_default):
-            prevent_default()
-        self.sync_paste_placeholders(self.value)
-        marker = self._paste_marker(text)
-        before = self.value
-        super().insert_text_at_cursor(marker)
-        after = self.value
-        start, _old_end, end = self._changed_span(before, after)
-        if after[start:end] != marker:
-            found = after.find(marker, start)
-            if found < 0:
-                self._last_value = after
-                event.stop()
-                return
-            start = found
-            end = found + len(marker)
-        self._compact_paste_chunks.append(_CompactPasteChunk(start=start, end=end, marker=marker, text=text))
-        self._last_value = self.value
-        event.stop()
-
-    def sync_paste_placeholders(self, value: Optional[str] = None) -> None:
-        self._sync_chunk_ranges(self.value if value is None else value)
-
-    def expanded_value(self, value: Optional[str] = None) -> str:
-        self.sync_paste_placeholders(self.value if value is None else value)
-        expanded = self.value if value is None else value
-        for chunk in sorted(self._compact_paste_chunks, key=lambda item: item.start, reverse=True):
-            if chunk.start < 0 or chunk.end > len(expanded):
-                continue
-            if expanded[chunk.start : chunk.end] != chunk.marker:
-                continue
-            expanded = f"{expanded[:chunk.start]}{chunk.text}{expanded[chunk.end:]}"
-        return expanded
-
-    def clear_draft(self) -> None:
-        self._compact_paste_chunks.clear()
-        self.value = ""
-        self._last_value = self.value
-
-    def action_clear_all(self) -> None:
-        self.clear_draft()
-
-    def action_kill_to_end(self) -> None:
-        self.value = self.value[: self.cursor_position]
-        self.sync_paste_placeholders()
-
-    def action_delete_left(self) -> None:
-        self.sync_paste_placeholders(self.value)
-        if not self.selection.is_empty:
-            super().action_delete_left()
-            self.sync_paste_placeholders(self.value)
-            return
-
-        cursor = self.cursor_position
-        if cursor <= 0:
-            return
-
-        for chunk in self._compact_paste_chunks:
-            if chunk.start < cursor <= chunk.end:
-                self.delete(chunk.start, chunk.end)
-                self.sync_paste_placeholders(self.value)
-                return
-
-        super().action_delete_left()
-        self.sync_paste_placeholders(self.value)
-
-    def _invoke_app_action(self, action_name: str) -> None:
-        action = getattr(self.app, action_name, None)
-        if callable(action):
-            action()
-
-    def action_focus_input(self) -> None:
-        self._invoke_app_action("action_focus_input")
-
-    def action_open_command_palette(self) -> None:
-        self._invoke_app_action("action_open_command_palette")
-
-    def action_open_global_palette(self) -> None:
-        self._invoke_app_action("action_open_global_palette")
-
-    def action_open_file_picker(self) -> None:
-        self._invoke_app_action("action_open_file_picker")
-
-    def action_remove_last_attachment(self) -> None:
-        self._invoke_app_action("action_remove_last_attachment")
-
-    def action_clear_attachments(self) -> None:
-        self._invoke_app_action("action_clear_attachments")
-
-    def action_show_keymap(self) -> None:
-        self._invoke_app_action("action_show_keymap")
-
-    def action_toggle_details(self) -> None:
-        self._invoke_app_action("action_toggle_details")
-
-    def action_toggle_thinking(self) -> None:
-        self._invoke_app_action("action_toggle_thinking")
 
 
 class AlphanusTUI(App):
@@ -839,55 +640,7 @@ class AlphanusTUI(App):
         self._update_topbar()
 
     def _show_keyboard_shortcuts(self) -> None:
-        sections = [
-            (
-                "Keymap",
-                [
-                    ("F1 / ?", "Show keyboard shortcuts"),
-                    ("Ctrl+K", "Open quick palette"),
-                    ("Ctrl+P / /", "Open slash command palette"),
-                    ("Ctrl+F", "Open file picker"),
-                    ("Ctrl+G", "Focus composer"),
-                    ("Tab / Shift+Tab", "Cycle active panels"),
-                    ("Ctrl+H / Ctrl+L", "Focus transcript or tree"),
-                    ("F2", "Toggle live tool details"),
-                    ("F3", "Toggle thinking mode"),
-                    ("Ctrl+C / Ctrl+D", "Quit app"),
-                ],
-            ),
-            ("Transcript", [("PgUp / PgDn", "Scroll transcript")]),
-            (
-                "Tree",
-                [
-                    ("j / k", "Move selection"),
-                    ("Enter / o", "Open selected node"),
-                    ("[ / ]", "Jump sibling branches"),
-                    ("g / G", "Jump top or bottom"),
-                ],
-            ),
-            (
-                "Input",
-                [
-                    ("Enter", "Send message"),
-                    ("Esc", "Clear input or stop stream"),
-                    ("Backspace (empty)", "Remove last attachment"),
-                    ("Ctrl+Backspace", "Remove last attachment"),
-                    ("Ctrl+Shift+Backspace", "Clear attachments"),
-                    ("Ctrl+U", "Clear the full draft"),
-                    ("Ctrl+Shift+K", "Delete to end of line"),
-                    ("/detach [n|last|all]", "Remove pending attachments"),
-                ],
-            ),
-            (
-                "Slash Palette",
-                [
-                    ("Up / Down", "Move command selection"),
-                    ("Tab", "Insert highlighted command"),
-                    ("Esc", "Close command palette"),
-                ],
-            ),
-        ]
-        show_tui_keyboard_shortcuts(self, sections=sections)
+        show_tui_keyboard_shortcuts_sections(self, show_fn=show_tui_keyboard_shortcuts)
 
     def action_show_keymap(self) -> None:
         self._show_keyboard_shortcuts()
@@ -961,42 +714,7 @@ class AlphanusTUI(App):
         return tree
 
     def on_key(self, event) -> None:
-        chat_input = self.query_one(ChatInput)
-        if chat_input.has_focus and self._command_popup_active():
-            key = event.key.lower()
-            if key == "down":
-                self._move_command_selection(1)
-                event.stop()
-                return
-            if key == "up":
-                self._move_command_selection(-1)
-                event.stop()
-                return
-            if key == "tab":
-                self._accept_command_selection()
-                event.stop()
-                return
-        if (
-            chat_input.has_focus
-            and not self.streaming
-            and not self._await_shell_confirm
-            and not self._command_popup_active()
-            and event.key.lower() == "backspace"
-            and not chat_input.value
-            and self.pending
-        ):
-            self.action_remove_last_attachment()
-            event.stop()
-            return
-        if not self._await_shell_confirm:
-            return
-        key = event.key.lower()
-        if key == "y":
-            self._finish_shell_confirm(True)
-            event.stop()
-        elif key in {"n", "escape"}:
-            self._finish_shell_confirm(False)
-            event.stop()
+        on_tui_key(self, event, chat_input_cls=ChatInput)
 
     def _tick(self) -> None:
         self._maybe_refresh_model_status()
@@ -1474,177 +1192,17 @@ class AlphanusTUI(App):
         )
 
     def _workspace_file_candidates(self, *, max_items: int = 60) -> List[Path]:
-        root = self._workspace_root()
-        if not root.exists() or not root.is_dir():
-            return []
-        files: List[Path] = []
-        skip_dirs = {
-            ".git",
-            ".hg",
-            ".svn",
-            ".alphanus",
-            ".venv",
-            "venv",
-            "__pycache__",
-            "node_modules",
-            ".pytest_cache",
-            ".mypy_cache",
-            ".ruff_cache",
-        }
-        for current, dirs, names in os.walk(root):
-            dirs[:] = sorted(
-                d
-                for d in dirs
-                if d not in skip_dirs and not d.startswith(".")
-            )
-            for name in sorted(names):
-                if name.startswith("."):
-                    continue
-                candidate = (Path(current) / name).resolve()
-                if not candidate.is_file():
-                    continue
-                if classify_attachment(str(candidate)) == "unknown":
-                    continue
-                files.append(candidate)
-                if len(files) >= max_items:
-                    return files
-        return files
+        return workspace_tui_file_candidates(
+            self,
+            max_items=max_items,
+            classify_attachment_fn=classify_attachment,
+        )
 
     def _build_global_palette_catalog(self) -> tuple[List[CommandPaletteItem], Dict[str, Dict[str, str]]]:
-        items: List[CommandPaletteItem] = []
-        actions: Dict[str, Dict[str, str]] = {}
-        accent = self._theme_color("accent", DEFAULT_ACCENT_COLOR)
-        text_color = self._theme_color("text", DEFAULT_TEXT_COLOR)
-        subtle = self._theme_color("subtle", DEFAULT_SUBTLE_COLOR)
-        success = self._theme_color("success", DEFAULT_SUCCESS_COLOR)
-        warning = self._theme_color("warning", DEFAULT_WARNING_COLOR)
-        muted = self._theme_color("muted", DEFAULT_MUTED_COLOR)
-
-        def add_item(
-            *,
-            kind: str,
-            value: str,
-            prompt: str,
-            search_text: str,
-            rank: int,
-        ) -> None:
-            item_id = f"{kind}:{len(items)}"
-            items.append(
-                CommandPaletteItem(
-                    id=item_id,
-                    prompt=prompt,
-                    search_text=search_text,
-                    rank=rank,
-                )
-            )
-            actions[item_id] = {"kind": kind, "value": value}
-
-        for entry in COMMAND_ENTRIES:
-            aliases = " ".join(entry.aliases)
-            add_item(
-                kind="command_insert",
-                value=entry.insert_text,
-                prompt=(
-                    f"[bold {accent}]cmd[/bold {accent}] "
-                    f"[{text_color}]{esc(entry.prompt)}[/{text_color}] "
-                    f"[dim]{esc(entry.description)}[/dim]"
-                ),
-                search_text=f"command {entry.prompt} {aliases} {entry.description}".strip(),
-                rank=0,
-            )
-
-        for summary in self._session_store.list_sessions()[:20]:
-            state = (
-                f"[bold {accent}]active[/bold {accent}]"
-                if summary.is_active
-                else f"[{subtle}]saved[/{subtle}]"
-            )
-            add_item(
-                kind="session_open",
-                value=summary.id,
-                prompt=(
-                    f"[bold {success}]session[/bold {success}] "
-                    f"{state} [{text_color}]{esc(summary.title)}[/{text_color}] "
-                    f"[dim]{summary.turn_count} turns[/dim]"
-                ),
-                search_text=f"session {summary.id} {summary.title} {summary.turn_count} turns",
-                rank=1 if summary.is_active else 2,
-            )
-
-        workspace_root = self._workspace_root()
-        for path in self._workspace_file_candidates(max_items=60):
-            rel = self._root_relative_label(path, workspace_root)
-            add_item(
-                kind="file_attach",
-                value=str(path),
-                prompt=(
-                    f"[bold {warning}]file[/bold {warning}] "
-                    f"[{text_color}]{esc(rel)}[/{text_color}]"
-                ),
-                search_text=f"file {rel} {path.name}",
-                rank=3,
-            )
-
-        loaded_ids = set(getattr(self, "_loaded_skill_ids", []))
-        for skill in self.agent.skill_runtime.list_skills():
-            loaded = skill.id in loaded_ids
-            if not loaded and (not bool(getattr(skill, "enabled", False)) or not bool(getattr(skill, "available", False))):
-                continue
-            action = "unload" if loaded else "load"
-            state_markup = (
-                f"[{success}]loaded[/{success}]"
-                if loaded
-                else f"[{muted}]available[/{muted}]"
-            )
-            add_item(
-                kind="skill_toggle",
-                value=skill.id,
-                prompt=(
-                    f"[bold {success}]skill[/bold {success}] "
-                    f"[{text_color}]{esc(skill.id)}[/{text_color}] "
-                    f"{state_markup} [dim]{action}[/dim]"
-                ),
-                search_text=f"skill {skill.id} {skill.name} {skill.description} {action}",
-                rank=4 if loaded else 5,
-            )
-
-        return items, actions
+        return build_tui_global_palette_catalog(self, command_palette_item_cls=CommandPaletteItem)
 
     def _on_global_palette_close(self, result: Optional[Dict[str, str]]) -> None:
-        self.query_one(ChatInput).focus()
-        selected_id = str((result or {}).get("id") or "").strip()
-        if not selected_id:
-            return
-        action = self._global_palette_actions.get(selected_id)
-        if not action:
-            return
-        kind = str(action.get("kind") or "").strip()
-        value = str(action.get("value") or "").strip()
-        if not kind or not value:
-            return
-        if kind == "command_insert":
-            chat_input = self.query_one(ChatInput)
-            chat_input.value = value
-            chat_input.cursor_position = len(chat_input.value)
-            self._refresh_command_popup(chat_input.value)
-            return
-        if kind == "session_open":
-            try:
-                self._load_session_from_manager(value)
-            except (ValueError, OSError, KeyError) as exc:
-                self._write_error(f"Load failed: {exc}")
-            return
-        if kind == "file_attach":
-            if self._attach_file_path(value):
-                self._write_info(f"Attached file: {Path(value).name}")
-            return
-        if kind == "skill_toggle":
-            if value in set(getattr(self, "_loaded_skill_ids", [])):
-                if self._unload_skill_from_session(value):
-                    self._write_info(f"Unloaded skill {value}")
-            else:
-                if self._load_skill_into_session(value):
-                    self._write_info(f"Loaded skill {value}")
+        on_tui_global_palette_close(self, result, chat_input_cls=ChatInput)
 
     def _refresh_command_popup(self, value: str) -> None:
         refresh_tui_command_popup(self, value, chat_input_cls=ChatInput)
@@ -1689,79 +1247,13 @@ class AlphanusTUI(App):
         self._open_theme_picker()
 
     def _open_theme_picker(self) -> None:
-        active = self._theme_id()
-        accent = self._theme_color("accent", DEFAULT_ACCENT_COLOR)
-        text_color = self._theme_color("text", DEFAULT_TEXT_COLOR)
-        muted = self._theme_color("muted", DEFAULT_MUTED_COLOR)
-        items = []
-        for theme_id in available_theme_ids():
-            spec = theme_spec(theme_id)
-            marker = f"[bold {accent}]active[/bold {accent}]" if theme_id == active else f"[{muted}]available[/{muted}]"
-            items.append(
-                PickerItem(
-                    id=f"theme:{theme_id}",
-                    prompt=(
-                        f"[bold {spec.colors.get('accent', accent)}]{esc(spec.title)}[/bold {spec.colors.get('accent', accent)}] "
-                        f"{marker} [{text_color}]{esc(spec.description)}[/{text_color}]"
-                    ),
-                )
-            )
-        self.push_screen(
-            SelectionPickerModal(
-                kicker="THEME",
-                title="Choose Theme",
-                subtitle=f"Current theme: {active}",
-                list_label="Available Themes",
-                confirm_label="Apply / Save",
-                empty_text="No themes available.",
-                items=items,
-            ),
-            self._on_theme_picker_close,
-        )
+        open_tui_theme_picker(self, picker_item_cls=PickerItem, selection_picker_modal_cls=SelectionPickerModal)
 
     def _on_theme_picker_close(self, result: Optional[Dict[str, str]]) -> None:
-        selected_id = str((result or {}).get("id") or "").strip()
-        if not selected_id.startswith("theme:"):
-            self.query_one(ChatInput).focus()
-            return
-        selected_theme = selected_id.split(":", 1)[1]
-        resolved = self._apply_theme(selected_theme)
-        persist_warnings = self._persist_theme_preference(resolved)
-        self._write_command_action(f"Theme set to '{resolved}'", icon="◉")
-        for warning in persist_warnings:
-            self._write_info(f"Config warning: {warning}")
-        self.query_one(ChatInput).focus()
+        on_tui_theme_picker_close(self, result, chat_input_cls=ChatInput, config_path=_global_config_path())
 
     def _persist_theme_preference(self, theme_id: str) -> List[str]:
-        warnings: List[str] = []
-        try:
-            current = load_global_config(_global_config_path(), warnings=warnings)
-        except (OSError, ValueError) as exc:
-            self._write_error(f"Theme persisted only for this run: {exc}")
-            return warnings
-
-        updates = self._merge_live_config(current, {"tui": {"theme": theme_id}})
-        try:
-            normalized, normalize_warnings = normalize_config(updates)
-            warnings.extend(normalize_warnings)
-            validate_endpoint_policy(normalized)
-        except ValueError as exc:
-            self._write_error(f"Theme persisted only for this run: {exc}")
-            return warnings
-
-        cleaned = self._config_for_editor(normalized)
-        try:
-            _global_config_path().write_text(json.dumps(cleaned, indent=2) + "\n", encoding="utf-8")
-        except OSError as exc:
-            self._write_error(f"Theme persisted only for this run: {exc}")
-            return warnings
-
-        merged = self._merge_live_config(self.agent.config, normalized)
-        self.agent.reload_config(merged)
-        self._ui_config = UiRuntimeConfig.from_config(merged)
-        self._ui_timing = self._ui_config.timing
-        self._apply_tui_config()
-        return warnings
+        return persist_tui_theme_preference(self, theme_id, config_path=_global_config_path())
 
     def _merge_live_config(self, base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
         return merge_tui_live_config(base, updates)
@@ -1773,44 +1265,12 @@ class AlphanusTUI(App):
         apply_tui_runtime_config(self)
 
     def _on_config_editor_close(self, result: Optional[Dict[str, Any]]) -> None:
-        if not result:
-            return
-        parsed = result.get("config")
-        if not isinstance(parsed, dict):
-            self._write_error("Config save failed: invalid config payload")
-            return
-
-        try:
-            normalized, warnings = normalize_config(parsed)
-            validate_endpoint_policy(normalized)
-        except ValueError as exc:
-            self._write_error(f"Config save failed: {exc}")
-            return
-
-        cleaned = self._config_for_editor(normalized)
-        _global_config_path().write_text(json.dumps(cleaned, indent=2) + "\n", encoding="utf-8")
-        merged = self._merge_live_config(self.agent.config, normalized)
-        self.agent.reload_config(merged)
-        self.thinking = bool(merged.get("agent", {}).get("enable_thinking", self.thinking))
-        self._ui_config = UiRuntimeConfig.from_config(merged)
-        self._ui_timing = self._ui_config.timing
-        refreshed_status = self.agent.get_model_status()
-        self._status_runtime = StatusRuntimeState(
-            model_status=refreshed_status,
-            model_name=refreshed_status.model_name if refreshed_status.state != "offline" else None,
-            model_context_window=(
-                refreshed_status.context_window
-                if isinstance(refreshed_status.context_window, int) and refreshed_status.context_window > 0
-                else None
-            ),
+        on_tui_config_editor_close(
+            self,
+            result,
+            config_path=_global_config_path(),
+            status_runtime_state_cls=StatusRuntimeState,
         )
-        self._update_topbar()
-        self._apply_tui_config()
-        self._maybe_refresh_model_status(force=True)
-        suffix = f" ({len(warnings)} normalization warning{'s' if len(warnings) != 1 else ''})." if warnings else "."
-        self._write_info("Saved global config. Use environment variables for secrets like TAVILY_API_KEY or BRAVE_SEARCH_API_KEY" + suffix)
-        for warning in warnings:
-            self._write_info(f"Config warning: {warning}")
 
     def _open_code_block(self, index: int) -> None:
         if index < 1 or index > len(self._code_blocks):
