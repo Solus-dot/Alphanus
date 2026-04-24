@@ -11,20 +11,37 @@ from core.message_types import ChatMessage, JSONValue, MessageContentPart
 from core.skills import SkillContext, SkillRuntime
 
 from agent.llm_client import LLMClient
+from agent.runtime_hooks import TurnRuntimeHooks
 from agent.telemetry import TelemetryEmitter
 from core.types import JsonObject, TurnClassification
 
 
 class TurnClassifier:
-    def __init__(self, config: dict[str, object], skill_runtime: SkillRuntime, llm_client: LLMClient, telemetry: Optional[TelemetryEmitter] = None) -> None:
+    def __init__(
+        self,
+        config: dict[str, object],
+        skill_runtime: SkillRuntime,
+        llm_client: LLMClient,
+        telemetry: Optional[TelemetryEmitter] = None,
+        runtime_hooks: Optional[TurnRuntimeHooks] = None,
+    ) -> None:
         self.config = config
         self.skill_runtime = skill_runtime
         self.llm_client = llm_client
         self.telemetry = telemetry or TelemetryEmitter()
-        self.call_with_retry = llm_client.call_with_retry
+        self._runtime_hooks = runtime_hooks
 
     def reload_config(self, config: dict[str, object]) -> None:
         self.config = config
+
+    def bind_runtime_hooks(self, runtime_hooks: Optional[TurnRuntimeHooks]) -> None:
+        self._runtime_hooks = runtime_hooks
+
+    def call_with_retry(self, payload, stop_event, on_event, pass_id):
+        hooks = self._runtime_hooks
+        if hooks is not None:
+            return hooks.call_with_retry(payload, stop_event, on_event, pass_id)
+        return self.llm_client.call_with_retry(payload, stop_event, on_event, pass_id)
 
     @staticmethod
     def message_text(value: JSONValue | list[MessageContentPart]) -> str:
