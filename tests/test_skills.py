@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 import core.skills as skills_module
-from core.memory import VectorMemory
+from core.memory import LexicalMemory
 from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
 
@@ -15,6 +15,90 @@ def _tool_names(runtime: SkillRuntime, selected, ctx: SkillContext | None = None
 
 def _always_available_tool_names() -> set[str]:
     return {"request_user_input", "skill_view", "skills_list"}
+
+
+def test_runtime_minimal_profile_restricts_optional_tools(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+
+    runtime = SkillRuntime(
+        skills_dir="skills",
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"runtime": {"profile": "minimal", "ask_user_tool": True}},
+        debug=True,
+    )
+    ctx = SkillContext(
+        user_input="search the latest news",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+    runtime.skill_view("search-ops", "", ctx)
+    runtime.skill_view("workspace-ops", "", ctx)
+    ctx.loaded_skill_ids = ["search-ops", "workspace-ops"]
+    selected = runtime.select_skills(ctx)
+    names = set(runtime.allowed_tool_names(selected, ctx=ctx))
+
+    assert "create_file" in names
+    assert "read_file" in names
+    assert "web_search" not in names
+    assert "fetch_url" not in names
+    assert "skills_list" in names
+    assert "skill_view" in names
+
+
+def test_permission_profile_safe_allows_read_only_workspace_tools(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+
+    runtime = SkillRuntime(
+        skills_dir="skills",
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"capabilities": {"permission_profile": "safe"}},
+        debug=True,
+    )
+    selected = runtime.skills_by_ids(["workspace-ops", "search-ops", "shell-ops"])
+    names = set(runtime.allowed_tool_names(selected))
+
+    assert "read_file" in names
+    assert "list_files" in names
+    assert "workspace_tree" in names
+    assert "create_file" not in names
+    assert "delete_path" not in names
+    assert "web_search" not in names
+    assert "shell_command" not in names
+
+
+def test_permission_profile_workspace_allows_workspace_mutation_but_blocks_web_and_shell(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+
+    runtime = SkillRuntime(
+        skills_dir="skills",
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"capabilities": {"permission_profile": "workspace"}},
+        debug=True,
+    )
+    selected = runtime.skills_by_ids(["workspace-ops", "search-ops", "shell-ops"])
+    names = set(runtime.allowed_tool_names(selected))
+
+    assert "create_file" in names
+    assert "edit_file" in names
+    assert "delete_path" in names
+    assert "run_checks" in names
+    assert "web_search" not in names
+    assert "fetch_url" not in names
+    assert "shell_command" not in names
 
 
 def test_skill_load_select_and_execute(tmp_path: Path):
@@ -83,7 +167,7 @@ def execute(tool_name, args, env):
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         debug=True,
     )
 
@@ -172,7 +256,7 @@ def execute(tool_name, args, env):
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
     ctx = SkillContext(
@@ -283,7 +367,7 @@ def execute(tool_name, args, env):
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
     runtime_only_tool_names = set(_tool_names(runtime, []))
@@ -351,7 +435,7 @@ def execute(tool_name, args, env):
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     ctx = SkillContext(
         user_input="save a summary to notes.md",
@@ -399,7 +483,7 @@ Use the helper script when available.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
     skill = runtime.get_skill("script-only")
@@ -449,7 +533,7 @@ Create PDFs with the declared entrypoint.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("report-pdf")
     assert skill is not None
@@ -491,7 +575,7 @@ Use validate_json.py when available.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
     skill = runtime.get_skill("research-helper")
@@ -542,7 +626,7 @@ Create PDFs through the declared entrypoint.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("preview-pdf")
     assert skill is not None
@@ -603,7 +687,7 @@ def execute(tool_name, args, env):
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     ctx = SkillContext(
         user_input="write a file",
@@ -673,7 +757,7 @@ def execute(tool_name, args, env):
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         debug=True,
     )
     skill = runtime.get_skill("lazy-skill")
@@ -737,7 +821,7 @@ def execute(tool_name, args, env):
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         debug=False,
     )
     skill = runtime.get_skill("faulty-skill")
@@ -820,7 +904,7 @@ def execute(tool_name, args, env):
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
 
@@ -872,7 +956,7 @@ Search the internet.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
 
@@ -924,7 +1008,7 @@ Design well.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
 
@@ -976,7 +1060,7 @@ Design well.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
     ctx = SkillContext(
@@ -1063,7 +1147,7 @@ def execute(tool_name, args, env):
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
 
@@ -1094,7 +1178,7 @@ Demo.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
     skill = runtime.get_skill("demo")
@@ -1134,7 +1218,7 @@ Utilities.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
     catalog = runtime.skill_catalog_text()
@@ -1170,7 +1254,7 @@ Search.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
 
@@ -1206,7 +1290,7 @@ Binary required.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
     skill = runtime.get_skill("cmd-skill")
@@ -1233,7 +1317,7 @@ def test_runtime_env_exposes_global_npm_root_as_node_path(tmp_path: Path, monkey
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
     assert runtime._proc_env_base["NODE_PATH"] == "/opt/homebrew/lib/node_modules"
@@ -1261,7 +1345,7 @@ Toggle.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
     assert runtime.set_enabled("toggle-skill", False) is True
@@ -1301,7 +1385,7 @@ Closing note.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("docs-skill")
     assert skill is not None
@@ -1346,7 +1430,7 @@ Body
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     assert runtime.list_skills() == []
 
@@ -1386,7 +1470,7 @@ def execute(tool_name, args, env):
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     listed = runtime.list_skills()
     assert len(listed) == 1
@@ -1451,7 +1535,7 @@ if __name__ == "__main__":
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("echo-skill")
     assert skill is None
@@ -1495,7 +1579,7 @@ Loaded on demand
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("lazy-skill")
     assert skill is not None
@@ -1539,7 +1623,7 @@ Hooked skill.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("hooked-skill")
     assert skill is not None
@@ -1574,7 +1658,7 @@ Use the helper script if your runtime knows how.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("script-only")
     assert skill is not None
@@ -1621,7 +1705,7 @@ if __name__ == "__main__":
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("script-only")
     assert skill is not None
@@ -1683,7 +1767,7 @@ Do not expose the raw script runner.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("script-wrapper")
     assert skill is not None
@@ -1753,7 +1837,7 @@ Create PDFs with the declared entrypoint.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={"capabilities": {"shell_require_confirmation": False, "dangerously_skip_permissions": True}},
     )
     skill = runtime.get_skill("report-pdf")
@@ -1820,7 +1904,7 @@ Generate the report through the compact execution contract.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={"capabilities": {"shell_require_confirmation": False, "dangerously_skip_permissions": True}},
     )
     skill = runtime.get_skill("compact-report")
@@ -1909,7 +1993,7 @@ if __name__ == "__main__":
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("meta-skill")
     assert skill is None
@@ -1956,7 +2040,7 @@ print("definitely not json")
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("bad-output")
     assert skill is None
@@ -2026,7 +2110,7 @@ time.sleep(2)
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("slow-skill")
     assert skill is None
@@ -2054,7 +2138,7 @@ Hello
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     report = runtime.skill_health_report()
 
@@ -2107,7 +2191,7 @@ def execute(tool_name, args, env):
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(repo), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
     skill = runtime.get_skill("repo-helper")
@@ -2143,7 +2227,7 @@ Bundled repo helper.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(workspace_root), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
     skill = runtime.get_skill("repo-helper")
@@ -2216,7 +2300,7 @@ Do work.
     runtime = SkillRuntime(
         skills_dir=str(bundled),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
     assert runtime.get_skill("home-helper") is None
@@ -2260,7 +2344,7 @@ Workspace version.
     runtime = SkillRuntime(
         skills_dir=str(bundled),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
     active = runtime.get_skill("dup-skill")
@@ -2292,7 +2376,7 @@ Ask for clarification when needed.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("asker")
     assert skill is not None
@@ -2348,7 +2432,7 @@ Use the bundled helper script when available.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
     skill = runtime.get_skill("script-check")
@@ -2390,7 +2474,7 @@ Use the bundled helper script when available.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
     skill = runtime.get_skill("script-check")
@@ -2422,7 +2506,7 @@ Use the bundled helper script when available.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
     skill = runtime.get_skill("script-check")
@@ -2474,7 +2558,7 @@ Use the bundled helper script when available.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={"skills": {"python_executable": str(missing_python)}},
     )
 
@@ -2512,7 +2596,7 @@ Read the bundled README when needed.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("doc-helper")
     assert skill is not None
@@ -2560,7 +2644,7 @@ Use the helper script.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     alpha = runtime.get_skill("alpha")
     assert alpha is not None
@@ -2608,7 +2692,7 @@ echo {skill_id}
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     alpha = runtime.get_skill("alpha")
     beta = runtime.get_skill("beta")
@@ -2658,7 +2742,7 @@ Use the bundled helper script when available.
     runtime = SkillRuntime(
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=VectorMemory(storage_path=str(tmp_path / "mem.pkl")),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("script-skill")
     assert skill is not None

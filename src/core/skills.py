@@ -16,9 +16,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.skill_executor import SkillExecutor
+from core.skill_inventory import SkillInventoryLoader
+from core.skill_process_env import SkillProcessEnvBuilder
 from core.message_types import JSONValue, ShellConfirmationFn, UserInputRequestFn
 from core.skill_discovery import SkillDiscovery
-from core.memory import VectorMemory
+from core.memory import LexicalMemory
 from core.skill_registry import SkillRegistry
 from core.skill_selector import SkillSelector
 from core.runtime_config import SkillsRuntimeConfig
@@ -126,7 +129,7 @@ class SkillContext:
 @dataclass(slots=True)
 class ToolExecutionEnv:
     workspace: WorkspaceManager
-    memory: VectorMemory
+    memory: LexicalMemory
     config: dict[str, JSONValue]
     debug: bool
     confirm_shell: Optional[ShellConfirmationFn] = None
@@ -152,7 +155,7 @@ class SkillRuntime:
         self,
         skills_dir: str,
         workspace: WorkspaceManager,
-        memory: VectorMemory,
+        memory: LexicalMemory,
         config: Optional[dict] = None,
         debug: bool = False,
     ) -> None:
@@ -165,6 +168,7 @@ class SkillRuntime:
         self.skills_cfg = {}
         self.tools_cfg = {}
         self.python_executable = sys.executable
+        self.ToolExecutionEnv = ToolExecutionEnv
         self.reload_config(config or {})
         self.generation = 0
 
@@ -180,6 +184,17 @@ class SkillRuntime:
         self._runnable_scripts_cache: Dict[Tuple[str, str], Tuple[str, ...]] = {}
         self._tools_schema_cache: Dict[Tuple[Any, ...], List[Dict[str, Any]]] = {}
         self._python_module_probe_cache: Dict[str, bool] = {}
+        self._inventory_loader = SkillInventoryLoader(self)
+        self._skill_executor = SkillExecutor(
+            self,
+            skills_list_tool_name=_SKILLS_LIST_TOOL_NAME,
+            skill_view_tool_name=_SKILL_VIEW_TOOL_NAME,
+            request_user_input_tool_name=_REQUEST_USER_INPUT_TOOL_NAME,
+            run_skill_tool_name=_RUN_SKILL_TOOL_NAME,
+            ok_fn=_ok,
+            err_fn=_err,
+            protocol_error_cls=ToolProtocolError,
+        )
         self._proc_env_base = self._build_proc_env_base()
         self.selector = SkillSelector(self)
         self.load_skills()
@@ -190,42 +205,33 @@ class SkillRuntime:
         self.tools_cfg = self.config.get("tools", {}) if isinstance(self.config.get("tools"), dict) else {}
         self.runtime_config = SkillsRuntimeConfig.from_config(self.config)
         self.python_executable = self.runtime_config.python_executable
+        runtime_cfg = self.config.get("runtime", {}) if isinstance(self.config.get("runtime"), dict) else {}
+        profile_raw = str(runtime_cfg.get("profile", "standard")).strip().lower()
+        self.runtime_profile = "minimal" if profile_raw in {"minimal", "safe", "minimal_reliable"} else "standard"
+        capabilities_cfg = self.config.get("capabilities", {}) if isinstance(self.config.get("capabilities"), dict) else {}
+        permission_profile_raw = str(capabilities_cfg.get("permission_profile", "full")).strip().lower()
+        if permission_profile_raw in {"safe", "minimal", "readonly", "read-only"}:
+            self.permission_profile = "safe"
+        elif permission_profile_raw in {"workspace", "standard"}:
+            self.permission_profile = "workspace"
+        else:
+            self.permission_profile = "full"
+
+    def refresh_process_env(self) -> None:
+        self._proc_env_base = self._build_proc_env_base()
+
+    def is_minimal_profile(self) -> bool:
+        return self.runtime_profile == "minimal"
 
     def _build_proc_env_base(self) -> Dict[str, str]:
-        env = os.environ.copy()
-        env["ALPHANUS_WORKSPACE_ROOT"] = str(self.workspace.workspace_root)
-        env["ALPHANUS_HOME_ROOT"] = str(self.workspace.home_root)
-        env["ALPHANUS_MEMORY_PATH"] = str(self.memory.storage_path)
-        env["ALPHANUS_MEMORY_BACKEND"] = "lexical"
-        env["ALPHANUS_SKILL_PYTHON"] = str(self.python_executable)
-        env["ALPHANUS_CONFIG_JSON"] = json.dumps(self.config, ensure_ascii=False)
-
-        # Prepend project src and repo root to PYTHONPATH for skill script imports.
-        repo_root = self.skills_dir.parent.resolve()
-        src_root = (repo_root / "src").resolve()
-        path_entries = [str(src_root)] if src_root.exists() else []
-        path_entries.append(str(repo_root))
-        existing = env.get("PYTHONPATH", "")
-        prefix = os.pathsep.join(path_entries)
-        env["PYTHONPATH"] = prefix if not existing else prefix + os.pathsep + existing
-
-        npm_path = shutil.which("npm")
-        if npm_path:
-            try:
-                proc = subprocess.run(
-                    [npm_path, "root", "-g"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-            except Exception as exc:
-                logging.debug("npm root probe failed: %s", exc)
-                proc = None
-            node_root = (proc.stdout or "").strip() if proc and proc.returncode == 0 else ""
-            if node_root:
-                existing_node_path = env.get("NODE_PATH", "")
-                env["NODE_PATH"] = node_root if not existing_node_path else node_root + os.pathsep + existing_node_path
-        return env
+        return SkillProcessEnvBuilder.build_base_env(
+            workspace_root=self.workspace.workspace_root,
+            home_root=self.workspace.home_root,
+            memory_path=self.memory.storage_path,
+            python_executable=self.python_executable,
+            skills_dir=self.skills_dir,
+            config=self.config,
+        )
 
     def _discover_skill_roots(self) -> List[Path]:
         return SkillDiscovery.discover_skill_roots(self.skills_dir)
@@ -406,70 +412,7 @@ class SkillRuntime:
         )
 
     def load_skills(self) -> None:
-        previous_enabled = {skill_id: skill.enabled for skill_id, skill in self.skills.items()}
-        self.generation += 1
-        self.skill_roots = self._discover_skill_roots()
-        self.skills = {}
-        self._all_skills = []
-        self._skill_index = {}
-        self._tool_registry = {}
-        self._invalidate_skill_caches()
-        self._register_runtime_tools()
-        if not any(root.exists() for root in self.skill_roots):
-            return
-
-        for root in self.skill_roots:
-            if not root.exists():
-                continue
-            for child in self._discover_skill_dirs(root):
-                manifest: Optional[SkillManifest] = None
-                try:
-                    manifest = self._load_manifest(child)
-                    if manifest is None:
-                        continue
-
-                    if manifest.id in previous_enabled:
-                        manifest.enabled = previous_enabled[manifest.id]
-
-                    (
-                        manifest.available,
-                        manifest.availability_code,
-                        manifest.availability_reason,
-                    ) = self._check_skill_availability(manifest)
-
-                    existing = self.skills.get(manifest.id)
-                    if existing is not None:
-                        source = self.skill_source_label(existing) or existing.id
-                        incoming = self.skill_source_label(manifest) or manifest.id
-                        self._append_unique(
-                            existing.validation_errors,
-                            f"duplicate skill id '{manifest.id}' ignored from {incoming}; using {source}",
-                        )
-                        continue
-
-                    if manifest.available and manifest.execution_allowed and not self._load_skill_tools(manifest):
-                        manifest.available = False
-                        manifest.execution_allowed = False
-                        if not manifest.availability_code or manifest.availability_code == "ready":
-                            manifest.availability_code = "invalid"
-                        if not manifest.availability_reason:
-                            manifest.availability_reason = manifest.validation_errors[0] if manifest.validation_errors else "skill load failed"
-
-                    self.skills[manifest.id] = manifest
-                    self._all_skills.append(manifest)
-                except Exception as exc:
-                    self._remove_skill_tools(manifest.id if manifest else child.name)
-                    if manifest is not None:
-                        self._append_unique(manifest.validation_errors, str(exc))
-                        manifest.available = False
-                        manifest.execution_allowed = False
-                        manifest.availability_code = "invalid"
-                        manifest.availability_reason = str(exc)
-                        self.skills[manifest.id] = manifest
-                        self._all_skills.append(manifest)
-                    elif self.debug:
-                        print(f"[skill] failed to load {child.name}: {exc}")
-        self._rebuild_skill_index()
+        self._inventory_loader.load_skills()
 
     @staticmethod
     def _current_os_aliases() -> set[str]:
@@ -947,6 +890,27 @@ class SkillRuntime:
     def tool_registration(self, tool_name: str) -> Optional[RegisteredTool]:
         return self._tool_registry.get(str(tool_name).strip())
 
+    def _tool_allowed_for_permission_profile(self, reg: RegisteredTool) -> bool:
+        profile = str(getattr(self, "permission_profile", "full") or "full").strip().lower()
+        if profile == "full":
+            return True
+
+        capability = str(reg.capability or "").strip().lower()
+        if reg.name in {_SKILLS_LIST_TOOL_NAME, _SKILL_VIEW_TOOL_NAME, _REQUEST_USER_INPUT_TOOL_NAME}:
+            return True
+        if reg.name == _RUN_SKILL_TOOL_NAME:
+            return False
+        if capability == "run_shell_command":
+            return False
+        if capability.startswith(("web_", "utility_")):
+            return False
+        if capability.startswith("memory_"):
+            return True
+        if profile == "workspace":
+            return capability.startswith("workspace_") or capability.startswith("skill_")
+        # safe profile: read-only workspace, memory helpers, and skill catalog/load utilities.
+        return capability in {"workspace_read", "workspace_tree"} or capability.startswith("skill_")
+
     def tool_is_mutating(self, tool_name: str) -> bool:
         reg = self.tool_registration(tool_name)
         if reg is None:
@@ -1202,11 +1166,17 @@ class SkillRuntime:
     ) -> List[str]:
         return sorted(name for name in self.allowed_tool_names(selected, ctx=ctx) if name in _CORE_TOOL_NAMES)
 
-    def optional_tool_names(self, selected: List[SkillManifest], ctx: Optional[SkillContext] = None) -> List[str]:
+    def _optional_tool_names_for_turn(
+        self,
+        selected: List[SkillManifest],
+        ctx: Optional[SkillContext] = None,
+    ) -> List[str]:
         selected_map = {skill.id: skill for skill in selected}
         allowed: List[str] = []
         for tool_name, reg in self._tool_registry.items():
             if tool_name == _RUN_SKILL_TOOL_NAME:
+                if not self._tool_allowed_for_permission_profile(reg):
+                    continue
                 if any(
                     (self._exposed_relevant_skill_entrypoints(skill, ctx) or self._exposed_relevant_skill_scripts(skill, ctx))
                     for skill in selected
@@ -1215,6 +1185,8 @@ class SkillRuntime:
                     allowed.append(tool_name)
                 continue
             if reg.skill_id == "__runtime__":
+                continue
+            if not self._tool_allowed_for_permission_profile(reg):
                 continue
             skill = selected_map.get(reg.skill_id)
             if not skill:
@@ -1226,11 +1198,32 @@ class SkillRuntime:
             allowed.append(tool_name)
         return sorted(allowed)
 
+    def optional_tool_names(self, selected: List[SkillManifest], ctx: Optional[SkillContext] = None) -> List[str]:
+        if self.is_minimal_profile():
+            return []
+        return self._optional_tool_names_for_turn(selected, ctx=ctx)
+
     def _tool_names_for_turn(
         self,
         selected: List[SkillManifest],
         ctx: Optional[SkillContext] = None,
     ) -> List[str]:
+        if self.is_minimal_profile():
+            turn_core_names = {
+                name
+                for name in (
+                    set(self.model_exposed_tool_names())
+                    | set(self._optional_tool_names_for_turn(selected, ctx=ctx))
+                )
+                if name in _CORE_TOOL_NAMES
+            }
+            safe_names = set(turn_core_names)
+            safe_names.update({_SKILLS_LIST_TOOL_NAME, _SKILL_VIEW_TOOL_NAME})
+            runtime_cfg = self.config.get("runtime", {}) if isinstance(self.config.get("runtime"), dict) else {}
+            if bool(runtime_cfg.get("ask_user_tool", True)):
+                safe_names.add(_REQUEST_USER_INPUT_TOOL_NAME)
+            return sorted(name for name in safe_names if name in self._tool_registry)
+
         names = set(self.model_exposed_tool_names())
         names.update(self.optional_tool_names(selected, ctx=ctx))
         runtime_cfg = self.config.get("runtime", {}) if isinstance(self.config.get("runtime"), dict) else {}
@@ -1605,21 +1598,7 @@ class SkillRuntime:
         env: ToolExecutionEnv,
         ctx: SkillContext,
     ) -> Any:
-        if reg.name == _SKILLS_LIST_TOOL_NAME:
-            return self.skills_list()
-        if reg.name == _SKILL_VIEW_TOOL_NAME:
-            return self.skill_view(str(args.get("name", "")).strip(), str(args.get("file_path", "")).strip(), ctx)
-        if reg.name == _REQUEST_USER_INPUT_TOOL_NAME:
-            if not env.request_user_input:
-                raise PermissionError("User input runtime is unavailable")
-            return env.request_user_input(args)
-        if reg.name == _RUN_SKILL_TOOL_NAME:
-            return self._execute_run_skill_tool(args, env)
-        if reg.module is None and reg.module_path:
-            reg.module = self._load_module(reg.module_path, reg.module_name or f"alphanus_tools_{reg.skill_id}")
-        if reg.module is None or not hasattr(reg.module, "execute"):
-            raise ToolProtocolError(f"Tool '{reg.name}' has no callable execute() handler")
-        return reg.module.execute(reg.name, args, env)
+        return self._skill_executor.execute_registered_tool(reg, args, env, ctx)
 
     def execute_tool_call(
         self,
@@ -1630,134 +1609,32 @@ class SkillRuntime:
         confirm_shell: Optional[ShellConfirmationFn] = None,
         request_user_input: Optional[UserInputRequestFn] = None,
     ) -> Dict[str, Any]:
-        start = time.perf_counter()
-        try:
-            reg, _owner = self._resolve_tool_call(tool_name, selected, ctx=ctx)
-            normalized_args = self._prepare_tool_args(reg, args, selected, ctx)
-            env = ToolExecutionEnv(
-                workspace=self.workspace,
-                memory=self.memory,
-                config=self.config,
-                debug=self.debug,
-                confirm_shell=confirm_shell,
-                request_user_input=request_user_input,
-            )
-            result = self._execute_registered_tool(reg, normalized_args, env, ctx)
-            duration = int((time.perf_counter() - start) * 1000)
-            return self._normalize_result(result, duration)
-        except LookupError as exc:
-            return _err("E_UNSUPPORTED", str(exc), int((time.perf_counter() - start) * 1000))
-        except ValueError as exc:
-            return _err("E_VALIDATION", str(exc), int((time.perf_counter() - start) * 1000))
-        except FileNotFoundError as exc:
-            return _err("E_NOT_FOUND", str(exc), int((time.perf_counter() - start) * 1000))
-        except PermissionError as exc:
-            return _err("E_POLICY", str(exc), int((time.perf_counter() - start) * 1000))
-        except (TimeoutError, subprocess.TimeoutExpired) as exc:
-            return _err("E_TIMEOUT", str(exc), int((time.perf_counter() - start) * 1000))
-        except ToolProtocolError as exc:
-            return _err("E_PROTOCOL", str(exc), int((time.perf_counter() - start) * 1000))
-        except RuntimeError as exc:
-            message = str(exc).strip() or "Action failed"
-            return _err("E_IO", message, int((time.perf_counter() - start) * 1000))
-        except Exception as exc:
-            message = str(exc) if self.debug else "Action failed"
-            return _err("E_IO", message, int((time.perf_counter() - start) * 1000))
+        return self._skill_executor.execute_tool_call(
+            tool_name,
+            args,
+            selected,
+            ctx,
+            confirm_shell=confirm_shell,
+            request_user_input=request_user_input,
+        )
 
     def _execute_run_skill_tool(
         self,
         args: Dict[str, Any],
         env: ToolExecutionEnv,
     ) -> Dict[str, Any]:
-        if str(args.get("entrypoint", "")).strip():
-            return self._execute_skill_entrypoint_tool(args, env)
-        if str(args.get("script", "")).strip():
-            return self._execute_skill_script_tool(args, env)
-        raise ValueError("run_skill requires an entrypoint or script")
+        return self._skill_executor.execute_run_skill_tool(args, env)
 
     def _execute_skill_script_tool(
         self,
         args: Dict[str, Any],
         env: ToolExecutionEnv,
     ) -> Dict[str, Any]:
-        skill = self.get_skill(str(args.get("skill_id", "")).strip())
-        if skill is None or not skill.path:
-            raise FileNotFoundError("Selected skill root is unavailable")
-
-        rel_script = str(args.get("script", "")).strip()
-        script_path = (skill.path / rel_script).resolve()
-        if not self._is_relative_to(script_path, skill.path.resolve()):
-            raise PermissionError("Skill script path escapes skill root")
-        if not script_path.exists():
-            raise FileNotFoundError(f"Skill script not found: {rel_script}")
-        ext = script_path.suffix.lower()
-        interpreter = self._script_interpreter(ext)
-        if not interpreter:
-            raise PermissionError(f"Unsupported skill script type: {script_path.suffix}")
-        if not Path(interpreter[0]).exists() and interpreter[0] != Path(sys.executable).resolve().as_posix() and shutil.which(interpreter[0]) is None:
-            raise FileNotFoundError(f"Missing interpreter for skill script: {interpreter[0]}")
-
-        argv = args.get("argv") if isinstance(args.get("argv"), list) else []
-        proc_env = dict(self._proc_env_base)
-        proc_env["ALPHANUS_SELECTED_SKILL_ID"] = skill.id
-        proc_env["ALPHANUS_SKILL_ROOT"] = str(skill.path)
-        proc_env["ALPHANUS_SKILL_SCRIPT"] = rel_script
-        params_payload = args.get("params")
-        if not isinstance(params_payload, dict):
-            params_payload = {}
-        proc_env["ALPHANUS_TOOL_ARGS_JSON"] = json.dumps(params_payload, ensure_ascii=False)
-        proc = subprocess.run(
-            list(interpreter) + [str(script_path)] + [str(item) for item in argv],
-            cwd=str(skill.path),
-            capture_output=True,
-            text=True,
-            input=str(args.get("stdin") or ""),
-            timeout=max(1, int(args.get("timeout_s", 30))),
-            env=proc_env,
-        )
-        if proc.returncode != 0:
-            stderr = (proc.stderr or "").strip()
-            stdout = (proc.stdout or "").strip()
-            msg = stderr or stdout or f"Skill script failed with exit code {proc.returncode}"
-            lowered = msg.lower()
-            if "permissionerror" in lowered or "operation not permitted" in lowered:
-                raise PermissionError(msg)
-            if "filenotfounderror" in lowered or "no such file or directory" in lowered:
-                raise FileNotFoundError(msg)
-            raise RuntimeError(msg)
-
-        out = (proc.stdout or "").strip()
-        if not out:
-            return {
-                "skill_id": skill.id,
-                "script": rel_script,
-                "stdout": "",
-            }
-        candidate = out.splitlines()[-1].strip()
-        try:
-            parsed = json.loads(candidate)
-        except Exception:
-            return {
-                "skill_id": skill.id,
-                "script": rel_script,
-                "stdout": out,
-                "stderr": (proc.stderr or "").strip(),
-            }
-        if isinstance(parsed, dict):
-            parsed.setdefault("skill_id", skill.id)
-            parsed.setdefault("script", rel_script)
-            return parsed
-        return {"skill_id": skill.id, "script": rel_script, "value": parsed}
+        return self._skill_executor.execute_skill_script_tool(args, env)
 
     @staticmethod
     def _resolve_entrypoint_placeholders(template: str, values: Dict[str, Any]) -> str:
-        def repl(match: re.Match[str]) -> str:
-            key = match.group(1)
-            if key not in values:
-                raise ValueError(f"Missing template value: {key}")
-            return shlex.quote(str(values[key]))
-
-        return re.sub(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", repl, template)
+        return SkillExecutor.resolve_entrypoint_placeholders(template, values)
 
     def _run_shell_workflow_command(
         self,
@@ -1766,75 +1643,14 @@ class SkillRuntime:
         timeout_s: int,
         cwd: Optional[str] = None,
     ) -> Dict[str, Any]:
-        caps = env.config.get("capabilities", {})
-        dangerously_skip_permissions = bool(caps.get("dangerously_skip_permissions", False))
-        shell_require_confirmation = bool(caps.get("shell_require_confirmation", True))
-        if shell_require_confirmation and not dangerously_skip_permissions:
-            if not env.confirm_shell:
-                raise PermissionError("Shell confirmation callback is required")
-            if not env.confirm_shell(command):
-                raise PermissionError("Shell command rejected by user")
-        allowed_cwd_roots = [cwd] if cwd else None
-        result = env.workspace.run_shell_command(
-            command,
-            timeout_s=max(1, int(timeout_s)),
-            cwd=cwd,
-            allowed_cwd_roots=allowed_cwd_roots,
-        )
-        if not result.get("ok"):
-            error = result.get("error") or {}
-            message = str(error.get("message", "Shell workflow command failed"))
-            code = str(error.get("code", ""))
-            if code == "E_POLICY":
-                raise PermissionError(message)
-            if code == "E_TIMEOUT":
-                raise TimeoutError(message)
-            raise RuntimeError(message)
-        return result["data"]
+        return self._skill_executor.run_shell_workflow_command(command, env, timeout_s, cwd=cwd)
 
     def _execute_skill_entrypoint_tool(
         self,
         args: Dict[str, Any],
         env: ToolExecutionEnv,
     ) -> Dict[str, Any]:
-        skill = self.get_skill(str(args.get("skill_id", "")).strip())
-        if skill is None or not skill.path:
-            raise FileNotFoundError("Selected skill root is unavailable")
-        entrypoint_name = str(args.get("entrypoint", "")).strip()
-        entrypoint = next((item for item in self._skill_entrypoints(skill) if item.name == entrypoint_name), None)
-        if entrypoint is None:
-            raise FileNotFoundError(f"Skill entrypoint not found: {entrypoint_name}")
-
-        params = args.get("params") if isinstance(args.get("params"), dict) else {}
-        template_values: Dict[str, Any] = {
-            "workspace_root": str(self.workspace.workspace_root),
-            "skill_root": str(skill.path),
-        }
-        template_values.update(params)
-        timeout_s = max(1, int(args.get("timeout_s", entrypoint.timeout_s)))
-
-        install_results: List[Dict[str, Any]] = []
-        verify_results: List[Dict[str, Any]] = []
-        command_cwd = str(skill.path) if entrypoint.cwd == "skill" else str(self.workspace.workspace_root)
-        for template in entrypoint.install:
-            command = self._resolve_entrypoint_placeholders(template, template_values)
-            install_results.append(self._run_shell_workflow_command(command, env, timeout_s, cwd=command_cwd))
-        for template in entrypoint.verify:
-            command = self._resolve_entrypoint_placeholders(template, template_values)
-            verify_results.append(self._run_shell_workflow_command(command, env, timeout_s, cwd=command_cwd))
-        command = self._resolve_entrypoint_placeholders(entrypoint.command, template_values)
-        run_data = self._run_shell_workflow_command(command, env, timeout_s, cwd=command_cwd)
-        return {
-            "skill_id": skill.id,
-            "entrypoint": entrypoint.name,
-            "command": command,
-            "install_results": install_results,
-            "verify_results": verify_results,
-            "stdout": run_data.get("stdout", ""),
-            "stderr": run_data.get("stderr", ""),
-            "returncode": run_data.get("returncode", 0),
-            "cwd": run_data.get("cwd", ""),
-        }
+        return self._skill_executor.execute_skill_entrypoint_tool(args, env)
 
     @staticmethod
     def _normalize_result(result: Any, duration_ms: int) -> Dict[str, Any]:
