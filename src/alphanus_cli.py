@@ -22,7 +22,7 @@ from core.configuration import (
     validate_endpoint_policy,
 )
 from core.theme_catalog import BUILTIN_THEME_IDS, DEFAULT_THEME_ID, THEME_ALIASES, normalize_theme_id
-from core.memory import VectorMemory
+from core.memory import LexicalMemory
 from core.skills import SkillRuntime
 from core.workspace import WorkspaceManager
 from tui.interface import AlphanusTUI
@@ -187,12 +187,12 @@ def _load_runtime_config(app_paths: Any, args: argparse.Namespace) -> tuple[Dict
     return config, config_warnings
 
 
-def _build_agent_runtime(app_paths: Any, config: Dict[str, Any], *, debug: bool) -> tuple[WorkspaceManager, VectorMemory, SkillRuntime, Agent]:
+def _build_agent_runtime(app_paths: Any, config: Dict[str, Any], *, debug: bool) -> tuple[WorkspaceManager, LexicalMemory, SkillRuntime, Agent]:
     workspace_root = resolve_path(config["workspace"]["path"], app_paths.state_root)
     workspace = WorkspaceManager(workspace_root=workspace_root)
     memory_path = str((Path(app_paths.state_root).resolve() / "memory" / "events.jsonl").resolve())
     memory_cfg = config.get("memory", {})
-    memory = VectorMemory(
+    memory = LexicalMemory(
         storage_path=memory_path,
         min_score=float(memory_cfg.get("min_score_default", 0.3)),
         backup_revisions=int(memory_cfg.get("backup_revisions", 2)),
@@ -561,7 +561,7 @@ def _run_tui(args: argparse.Namespace) -> int:
 
     if not config.get("agent", {}).get("tls_verify", True):
         logger.warning("TLS verification is disabled (agent.tls_verify=false)")
-    memory_stats = memory.stats(probe_encoder=False)
+    memory_stats = memory.stats()
     logger.info(f"[info] memory mode: {memory_stats.get('mode_label', 'lexical')}")
     logger.info(f"[info] memory min_score_default: {memory_stats.get('min_score_default', 0.3)}")
     logger.info("use /doctor inside the TUI for readiness and health diagnostics.")

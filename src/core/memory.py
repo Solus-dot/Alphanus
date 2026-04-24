@@ -23,7 +23,7 @@ class MemoryItem:
     last_accessed: float
 
 
-class VectorMemory:
+class LexicalMemory:
     def __init__(
         self,
         storage_path: str,
@@ -332,7 +332,7 @@ class VectorMemory:
         self._mark_dirty(force=False)
         return True
 
-    def stats(self, probe_encoder: bool = True) -> Dict[str, Any]:
+    def stats(self) -> Dict[str, Any]:
         by_type: Dict[str, int] = {}
         for item in self.memories:
             by_type[item.type] = by_type.get(item.type, 0) + 1
