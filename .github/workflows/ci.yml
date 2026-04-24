@@ -42,5 +42,16 @@ jobs:
       - name: Unused Imports/Variables
         run: uv run ruff check src tests --select F401,F841
 
+      - name: Dead Code (Vulture)
+        run: >
+          uv run vulture
+          src/agent/harness_metrics.py
+          src/agent/runtime_hooks.py
+          src/core/skill_executor.py
+          src/core/skill_inventory.py
+          src/core/skill_process_env.py
+          tools/vulture_whitelist.py
+          --min-confidence 80
+
       - name: Tests
         run: uv run pytest
