@@ -125,7 +125,6 @@ Notes:
 * `.env` is loaded from `~/.alphanus/.env` without overriding already-set environment variables
 * `uv run alphanus` requires `~/.alphanus/config/global_config.json`; if missing, run `uv run alphanus init`
 * `uv run alphanus doctor` validates config, env, endpoint reachability, and workspace permissions
-* `uv run main.py` still works in a repo checkout, but it is deprecated; use `uv run alphanus` as the primary entrypoint (planned removal: September 1, 2026)
 
 ---
 
