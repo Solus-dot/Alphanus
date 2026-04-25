@@ -1,5 +1,6 @@
 import argparse
 import copy
+import getpass
 import json
 import logging
 import os
@@ -142,8 +143,19 @@ def _build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--non-interactive", action="store_true", help="Use defaults/flags without prompts")
     init_parser.add_argument("--reset", action="store_true", help="Reset selected section(s) to defaults before applying")
     init_parser.add_argument("--workspace-path", type=str, default="", help="Workspace root path")
+    init_parser.add_argument("--base-url", type=str, default="", help="OpenAI-compatible base URL")
+    init_parser.add_argument("--responses-endpoint", type=str, default="", help="Responses API endpoint override")
     init_parser.add_argument("--model-endpoint", type=str, default="", help="Model chat completions endpoint")
     init_parser.add_argument("--models-endpoint", type=str, default="", help="Model listing endpoint")
+    init_parser.add_argument(
+        "--endpoint-mode",
+        type=str,
+        choices=["auto", "responses", "chat"],
+        default="",
+        help="Preferred endpoint mode",
+    )
+    init_parser.add_argument("--api-key", type=str, default="", help="Model API key (writes to ~/.alphanus/.env)")
+    init_parser.add_argument("--api-key-env", type=str, default="", help="Environment variable name for model API key")
     init_parser.add_argument("--search-provider", type=str, choices=["tavily", "brave"], default="", help="Search provider")
     init_parser.add_argument(
         "--theme",
@@ -267,7 +279,16 @@ def _apply_reset_scope(base: Dict[str, Any], *, section: str) -> Dict[str, Any]:
     if _section_selected(section, "model"):
         current_agent = updated.get("agent", {}) if isinstance(updated.get("agent"), dict) else {}
         default_agent = default_cfg.get("agent", {}) if isinstance(default_cfg.get("agent"), dict) else {}
-        for key in ("model_endpoint", "models_endpoint"):
+        for key in (
+            "base_url",
+            "responses_endpoint",
+            "model_endpoint",
+            "models_endpoint",
+            "endpoint_mode",
+            "api_key",
+            "api_key_env",
+            "auth_header_template",
+        ):
             if key in default_agent:
                 current_agent[key] = copy.deepcopy(default_agent[key])
         updated["agent"] = current_agent
@@ -293,6 +314,7 @@ def _ensure_dotenv_template(dotenv_path: Path) -> None:
         [
             "# Alphanus environment variables",
             "# Uncomment and set values as needed.",
+            "# ALPHANUS_API_KEY=",
             "# TAVILY_API_KEY=",
             "# BRAVE_SEARCH_API_KEY=",
             "# ALPHANUS_AUTH_HEADER=Authorization: Bearer <token>",
@@ -300,6 +322,31 @@ def _ensure_dotenv_template(dotenv_path: Path) -> None:
         ]
     )
     dotenv_path.write_text(template, encoding="utf-8")
+
+
+def _upsert_env_var(dotenv_path: Path, key: str, value: str) -> None:
+    key = key.strip()
+    if not key:
+        return
+    dotenv_path.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    if dotenv_path.exists():
+        lines = dotenv_path.read_text(encoding="utf-8").splitlines()
+    prefix = f"{key}="
+    replaced = False
+    updated: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(prefix) or stripped.startswith(f"export {prefix}"):
+            updated.append(f"{key}={value}")
+            replaced = True
+            continue
+        updated.append(line)
+    if not replaced:
+        if updated and updated[-1].strip():
+            updated.append("")
+        updated.append(f"{key}={value}")
+    dotenv_path.write_text("\n".join(updated).rstrip() + "\n", encoding="utf-8")
 
 
 def _run_init(args: argparse.Namespace) -> int:
@@ -324,15 +371,28 @@ def _run_init(args: argparse.Namespace) -> int:
         base = _apply_reset_scope(base, section=section)
 
     workspace_default = str(base.get("workspace", {}).get("path", DEFAULT_CONFIG["workspace"]["path"]))
+    base_url_default = str(base.get("agent", {}).get("base_url", DEFAULT_CONFIG["agent"]["base_url"]))
     model_endpoint_default = str(base.get("agent", {}).get("model_endpoint", DEFAULT_CONFIG["agent"]["model_endpoint"]))
+    responses_endpoint_default = str(
+        base.get("agent", {}).get("responses_endpoint", DEFAULT_CONFIG["agent"]["responses_endpoint"])
+    )
     models_endpoint_default = str(base.get("agent", {}).get("models_endpoint", DEFAULT_CONFIG["agent"]["models_endpoint"]))
+    endpoint_mode_default = str(base.get("agent", {}).get("endpoint_mode", DEFAULT_CONFIG["agent"]["endpoint_mode"]))
+    api_key_ref_default = str(base.get("agent", {}).get("api_key", DEFAULT_CONFIG["agent"]["api_key"]))
+    api_key_env_default = str(base.get("agent", {}).get("api_key_env", DEFAULT_CONFIG["agent"]["api_key_env"]))
     search_provider_default = str(base.get("search", {}).get("provider", DEFAULT_CONFIG["search"]["provider"]))
     theme_default = str(base.get("tui", {}).get("theme", DEFAULT_THEME_ID))
     theme_default, _ = normalize_theme_id(theme_default, default=DEFAULT_THEME_ID)
 
     workspace_path = workspace_default
+    base_url = base_url_default
     model_endpoint = model_endpoint_default
+    responses_endpoint = responses_endpoint_default
     models_endpoint = models_endpoint_default
+    endpoint_mode = endpoint_mode_default
+    api_key_env = api_key_env_default
+    api_key_ref = api_key_ref_default
+    api_key_value = ""
     search_provider = search_provider_default
     ui_theme = theme_default
 
@@ -340,14 +400,22 @@ def _run_init(args: argparse.Namespace) -> int:
         print(theme.brand(" ALPHANUS INIT "))
         print(theme.muted(f"Applying non-interactive setup profile ({section})."))
         if _section_selected(section, "workspace"):
-            workspace_path = args.workspace_path.strip() or workspace_default
+            workspace_path = str(getattr(args, "workspace_path", "") or "").strip() or workspace_default
         if _section_selected(section, "model"):
-            model_endpoint = args.model_endpoint.strip() or model_endpoint_default
-            models_endpoint = args.models_endpoint.strip() or models_endpoint_default
+            base_url = str(getattr(args, "base_url", "") or "").strip() or base_url_default
+            model_endpoint = str(getattr(args, "model_endpoint", "") or "").strip() or model_endpoint_default
+            responses_endpoint = (
+                str(getattr(args, "responses_endpoint", "") or "").strip() or responses_endpoint_default
+            )
+            models_endpoint = str(getattr(args, "models_endpoint", "") or "").strip() or models_endpoint_default
+            endpoint_mode = str(getattr(args, "endpoint_mode", "") or "").strip() or endpoint_mode_default
+            api_key_env = str(getattr(args, "api_key_env", "") or "").strip() or api_key_env_default
+            api_key_ref = f"env:{api_key_env}"
+            api_key_value = str(getattr(args, "api_key", "") or "").strip()
         if _section_selected(section, "search"):
-            search_provider = args.search_provider.strip() or search_provider_default
+            search_provider = str(getattr(args, "search_provider", "") or "").strip() or search_provider_default
         if _section_selected(section, "theme"):
-            requested_theme = args.theme.strip() or theme_default
+            requested_theme = str(getattr(args, "theme", "") or "").strip() or theme_default
             ui_theme, _ = normalize_theme_id(requested_theme, default=theme_default)
     else:
         steps = [name for name in ("workspace", "model", "search", "theme") if _section_selected(section, name)]
@@ -371,23 +439,55 @@ def _run_init(args: argparse.Namespace) -> int:
             print(theme.accent(f"Step {step_index}/{total_steps}: Model endpoint"))
             use_local = _prompt_yes_no(
                 "Use the local OpenAI-compatible endpoint preset (127.0.0.1:8080)?",
-                default=model_endpoint_default == str(DEFAULT_CONFIG["agent"]["model_endpoint"]),
+                default=base_url_default == str(DEFAULT_CONFIG["agent"]["base_url"]),
             )
             if use_local:
+                base_url = str(DEFAULT_CONFIG["agent"]["base_url"])
                 model_endpoint = str(DEFAULT_CONFIG["agent"]["model_endpoint"])
+                responses_endpoint = str(DEFAULT_CONFIG["agent"]["responses_endpoint"])
                 models_endpoint = str(DEFAULT_CONFIG["agent"]["models_endpoint"])
-                print(theme.muted("Applied local preset for /v1/chat/completions and /v1/models."))
+                endpoint_mode = str(DEFAULT_CONFIG["agent"]["endpoint_mode"])
+                print(theme.muted("Applied local preset for /v1/responses, /v1/chat/completions, and /v1/models."))
             else:
+                base_url = _prompt_with_default(
+                    "Base URL",
+                    base_url_default,
+                    hint=theme.muted("provider root, e.g. https://api.openai.com"),
+                )
                 model_endpoint = _prompt_with_default(
-                    "Model endpoint",
+                    "Chat endpoint",
                     model_endpoint_default,
                     hint=theme.muted("chat completions endpoint"),
+                )
+                responses_endpoint = _prompt_with_default(
+                    "Responses endpoint",
+                    responses_endpoint_default,
+                    hint=theme.muted("responses endpoint"),
                 )
                 models_endpoint = _prompt_with_default(
                     "Models endpoint",
                     models_endpoint_default,
                     hint=theme.muted("model catalog endpoint"),
                 )
+                endpoint_mode = _prompt_choice(
+                    theme,
+                    "Endpoint mode:",
+                    [
+                        ("auto", "responses first with fallback to chat"),
+                        ("responses", "force /v1/responses"),
+                        ("chat", "force /v1/chat/completions"),
+                    ],
+                    default=endpoint_mode_default if endpoint_mode_default in {"auto", "responses", "chat"} else "auto",
+                )
+            api_key_env = _prompt_with_default(
+                "API key env var",
+                api_key_env_default,
+                hint=theme.muted("where init stores the provider key"),
+            )
+            api_key_ref = f"env:{api_key_env.strip() or 'ALPHANUS_API_KEY'}"
+            api_key_value = getpass.getpass(
+                "API key (stored in ~/.alphanus/.env; leave blank to keep current): "
+            ).strip()
             step_index += 1
             print("")
         if _section_selected(section, "search"):
@@ -419,7 +519,15 @@ def _run_init(args: argparse.Namespace) -> int:
     if _section_selected(section, "workspace"):
         updates["workspace"] = {"path": workspace_path}
     if _section_selected(section, "model"):
-        updates["agent"] = {"model_endpoint": model_endpoint, "models_endpoint": models_endpoint}
+        updates["agent"] = {
+            "base_url": base_url,
+            "model_endpoint": model_endpoint,
+            "responses_endpoint": responses_endpoint,
+            "models_endpoint": models_endpoint,
+            "endpoint_mode": endpoint_mode,
+            "api_key": api_key_ref,
+            "api_key_env": api_key_env,
+        }
     if _section_selected(section, "search"):
         updates["search"] = {"provider": search_provider}
     if _section_selected(section, "theme"):
@@ -435,8 +543,12 @@ def _run_init(args: argparse.Namespace) -> int:
     if not args.non_interactive:
         print(theme.accent("Review"))
         print(f"  {theme.label('Workspace:')} {normalized['workspace']['path']}")
+        print(f"  {theme.label('Base URL:')} {normalized['agent']['base_url']}")
+        print(f"  {theme.label('Responses endpoint:')} {normalized['agent']['responses_endpoint']}")
         print(f"  {theme.label('Model endpoint:')} {normalized['agent']['model_endpoint']}")
         print(f"  {theme.label('Models endpoint:')} {normalized['agent']['models_endpoint']}")
+        print(f"  {theme.label('Endpoint mode:')} {normalized['agent']['endpoint_mode']}")
+        print(f"  {theme.label('API key ref:')} {normalized['agent']['api_key']}")
         print(f"  {theme.label('Search provider:')} {normalized['search']['provider']}")
         print(f"  {theme.label('Theme:')} {normalized['tui']['theme']}")
         print(f"  {theme.label('Secrets file:')} {app_paths.dotenv_path}")
@@ -448,6 +560,8 @@ def _run_init(args: argparse.Namespace) -> int:
     app_paths.config_path.parent.mkdir(parents=True, exist_ok=True)
     app_paths.config_path.write_text(json.dumps(cleaned, indent=2) + "\n", encoding="utf-8")
     _ensure_dotenv_template(app_paths.dotenv_path)
+    if _section_selected(section, "model") and api_key_value:
+        _upsert_env_var(app_paths.dotenv_path, normalized["agent"]["api_key_env"], api_key_value)
 
     for warning in existing_warnings + warnings:
         print(f"{theme.warn('config warning:')} {warning}")

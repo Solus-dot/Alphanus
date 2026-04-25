@@ -1,8 +1,14 @@
 {
   "schema_version": "1.0.0",
   "agent": {
+    "base_url": "http://127.0.0.1:8080",
     "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+    "responses_endpoint": "http://127.0.0.1:8080/v1/responses",
     "models_endpoint": "http://127.0.0.1:8080/v1/models",
+    "endpoint_mode": "chat",
+    "api_key": "env:ALPHANUS_API_KEY",
+    "api_key_env": "ALPHANUS_API_KEY",
+    "auth_header_template": "Authorization: Bearer {api_key}",
     "request_timeout_s": 180,
     "readiness_timeout_s": 30,
     "readiness_poll_s": 0.5,

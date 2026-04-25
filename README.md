@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  Built for running against a local <code>llama.cpp</code> server. Your workspace stays local. Secrets stay in environment variables.
+  Built for local-first workflows on OpenAI-compatible endpoints. Your workspace stays local. Secrets stay in environment variables.
 </p>
 
 ---
@@ -23,16 +23,16 @@
 
 Alphanus is an experimental coding assistant for local use.
 
-It combines a terminal UI, a streaming chat-completions loop, persistent lexical memory, explicit skills, and workspace-aware tooling into a system that is meant to be inspectable and hackable rather than hidden behind a hosted product.
+It combines a terminal UI, a streaming model loop, persistent lexical memory, explicit skills, and workspace-aware tooling into a system that is meant to be inspectable and hackable rather than hidden behind a hosted product.
 
-The current implementation is built around `llama.cpp` and a Textual interface, with support for named sessions, branching conversation history, configurable skills, and controlled workspace or shell operations.
+The current implementation is built around a Textual interface plus OpenAI-compatible provider adapters, with support for named sessions, branching conversation history, configurable skills, and controlled workspace or shell operations.
 
 ---
 
 ## Features
 
 - Streaming agent loop with separate reasoning and content handling
-- `llama.cpp` `/v1` API integration with OpenAI-style `tool_calls`
+- OpenAI-compatible endpoint support with `chat`, `responses`, or `auto` mode
 - Textual UI with live tool previews, code block popups, config editing, and support-bundle export
 - Dual command palettes: slash palette (`/` or `Ctrl+P`) and quick palette (`Ctrl+K`) with actionable commands, sessions, files, and skills
 - Switchable built-in themes with runtime picker support (`/theme`) and persisted `tui.theme` preference
@@ -79,11 +79,9 @@ Expect rough edges, changing configuration, and incomplete backend support.
 
 - Python `>=3.11`
 - [`uv`](https://docs.astral.sh/uv/)
-- A running `llama.cpp` server exposing:
-  - `http://127.0.0.1:8080/v1/chat/completions`
-  - `http://127.0.0.1:8080/v1/models`
-
-Backend support is currently focused on `llama.cpp`. Other inference backends are not yet supported or documented.
+- An OpenAI-compatible endpoint exposing:
+  - `GET /v1/models`
+  - `POST /v1/chat/completions` and/or `POST /v1/responses`
 
 ---
 
@@ -99,7 +97,8 @@ Set any required environment variables:
 
 * `TAVILY_API_KEY` when `search.provider = "tavily"`
 * `BRAVE_SEARCH_API_KEY` when `search.provider = "brave"`
-* `ALPHANUS_AUTH_HEADER` for authenticated model endpoints (`Header-Name: value`)
+* `ALPHANUS_API_KEY` for authenticated model endpoints
+* `ALPHANUS_AUTH_HEADER` (advanced override) for non-standard auth headers
 * `AUTH_HEADER` as a fallback if `ALPHANUS_AUTH_HEADER` is unset
 
 Run Alphanus:
@@ -159,8 +158,12 @@ Non-interactive setup:
 ```bash
 uv run alphanus init --non-interactive \
   --workspace-path ~/Desktop/Alphanus-Workspace \
-  --model-endpoint http://127.0.0.1:8080/v1/chat/completions \
-  --models-endpoint http://127.0.0.1:8080/v1/models \
+  --base-url https://api.openai.com \
+  --endpoint-mode auto \
+  --api-key "$ALPHANUS_API_KEY" \
+  --model-endpoint https://api.openai.com/v1/chat/completions \
+  --responses-endpoint https://api.openai.com/v1/responses \
+  --models-endpoint https://api.openai.com/v1/models \
   --search-provider tavily \
   --theme catppuccin-mocha
 ```
@@ -193,7 +196,7 @@ At load and save time, Alphanus:
 * merges missing keys from built-in defaults
 * normalizes types and clamps invalid values
 * strips secret-like fields from disk and from the `/config` editor
-* enforces same-host `model_endpoint` and `models_endpoint` unless `agent.allow_cross_host_endpoints = true`
+* enforces same-host `base_url`, `model_endpoint`, `responses_endpoint`, and `models_endpoint` unless `agent.allow_cross_host_endpoints = true`
 
 A trimmed example:
 
@@ -201,8 +204,13 @@ A trimmed example:
 {
   "schema_version": "1.0.0",
   "agent": {
+    "base_url": "http://127.0.0.1:8080",
     "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+    "responses_endpoint": "http://127.0.0.1:8080/v1/responses",
     "models_endpoint": "http://127.0.0.1:8080/v1/models",
+    "endpoint_mode": "chat",
+    "api_key": "env:ALPHANUS_API_KEY",
+    "api_key_env": "ALPHANUS_API_KEY",
     "request_timeout_s": 180,
     "readiness_timeout_s": 30,
     "enable_thinking": true,
@@ -240,6 +248,8 @@ A trimmed example:
 Important runtime notes:
 
 * `agent.request_timeout_s` is a stream idle timeout, not a total-turn deadline
+* `agent.endpoint_mode` supports `chat`, `responses`, and `auto` (responses-first with fallback)
+* `agent.api_key` should point to an env var reference (`env:NAME`) instead of storing plaintext keys
 * `agent.max_tokens` defaults to `null`, so no explicit `max_tokens` cap is sent unless configured
 * memory persistence is fixed at `~/.alphanus/memory/` (`events.jsonl` source-of-truth, generated `facts.md`)
 * session persistence is fixed at `~/.alphanus/sessions/`
