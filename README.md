@@ -301,7 +301,7 @@ Doctor and support reports also include harness-level runtime metrics:
 
 Bundled skills include:
 
-* `workspace-ops` — create, read, edit, move, and delete workspace paths; search code; render the workspace tree; and run approved verification commands
+* `workspace-ops` — create, read, edit, move, and delete workspace paths; supports section-scoped reads/edits (line bounds and anchors), regex edits, ripgrep-backed code search with optional context lines, workspace tree rendering, and approved verification commands
 * `memory-rag` — store, recall, forget, inspect, and export lexical memories
 * `search-ops` — web search and page fetch for current information
 * `shell-ops` — confirmed workspace shell commands
