@@ -62,6 +62,54 @@ def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
     assert normalized["tui"]["chat_log_max_lines"] == 100
 
 
+def test_normalize_config_preserves_api_key_env_reference() -> None:
+    normalized, warnings = normalize_config(
+        {
+            "schema_version": "1.0.0",
+            "agent": {
+                "api_key": "env:CUSTOM_KEY",
+                "api_key_env": "CUSTOM_KEY",
+            },
+        }
+    )
+
+    assert normalized["agent"]["api_key"] == "env:CUSTOM_KEY"
+    assert normalized["agent"]["api_key_env"] == "CUSTOM_KEY"
+    assert not any("secret-like fields" in warning for warning in warnings)
+
+
+def test_normalize_config_infers_base_url_from_existing_remote_endpoints() -> None:
+    normalized, _warnings = normalize_config(
+        {
+            "schema_version": "1.0.0",
+            "agent": {
+                "model_endpoint": "https://remote.example/v1/chat/completions",
+                "models_endpoint": "https://remote.example/v1/models",
+            },
+        }
+    )
+
+    assert normalized["agent"]["base_url"] == "https://remote.example"
+    assert normalized["agent"]["responses_endpoint"] == "https://remote.example/v1/responses"
+    validate_endpoint_policy(normalized)
+
+
+def test_normalize_config_aligns_api_key_reference_when_api_key_env_is_invalid() -> None:
+    normalized, warnings = normalize_config(
+        {
+            "schema_version": "1.0.0",
+            "agent": {
+                "api_key": "env:BAD-NAME",
+                "api_key_env": "BAD-NAME",
+            },
+        }
+    )
+
+    assert normalized["agent"]["api_key_env"] == "ALPHANUS_API_KEY"
+    assert normalized["agent"]["api_key"] == "env:ALPHANUS_API_KEY"
+    assert any("agent.api_key_env: invalid env name" in item for item in warnings)
+
+
 def test_normalize_config_theme_alias_and_invalid_values() -> None:
     aliased, alias_warnings = normalize_config({"schema_version": "1.0.0", "tui": {"theme": "catppuccin"}})
     invalid, invalid_warnings = normalize_config({"schema_version": "1.0.0", "tui": {"theme": "unknown-theme"}})

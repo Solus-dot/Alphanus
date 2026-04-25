@@ -10,6 +10,7 @@ from agent.orchestrator import TurnOrchestrator
 from agent.policies import PromptPolicyRenderer
 from agent.telemetry import TelemetryEmitter, configure_logging
 from core.memory import LexicalMemory
+from core.streaming import StreamError
 from core.skills import SkillContext, SkillRuntime
 from core.types import ModelStatus, StreamPassResult, ToolCall, TurnClassification
 from core.workspace import WorkspaceManager
@@ -743,3 +744,61 @@ def test_llm_client_call_with_retry_retries_once_on_retryable_failure(mocker) ->
     assert result.content == "ok"
     assert stream.call_count == 2
     assert any(event.get("type") == "info" and "Retrying request (1/1)" in str(event.get("text", "")) for event in events)
+
+
+def test_llm_client_build_payload_uses_responses_shape_when_forced() -> None:
+    llm_client = LLMClient({"agent": {"endpoint_mode": "responses"}})
+
+    payload = llm_client.build_payload(
+        model_messages=[{"role": "user", "content": "hi"}],
+        thinking=True,
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_files",
+                    "description": "List files",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    )
+
+    assert "input" in payload
+    assert "messages" not in payload
+    assert payload["stream"] is True
+    assert payload["tools"][0]["name"] == "list_files"
+    assert payload["tool_choice"] == "auto"
+
+
+def test_llm_client_auto_mode_falls_back_from_responses_to_chat(mocker) -> None:
+    llm_client = LLMClient({"agent": {"endpoint_mode": "auto", "per_turn_retries": 0}})
+    calls: list[str] = []
+    payload = llm_client.build_payload(model_messages=[{"role": "user", "content": "hello"}], thinking=True)
+    assert "input" in payload
+
+    def fake_stream(
+        *,
+        endpoint,
+        payload,
+        timeout_s,
+        headers,
+        ssl_context,
+        stop_event,
+        on_debug_event,
+    ):
+        calls.append(endpoint)
+        if endpoint.endswith("/v1/responses"):
+            raise StreamError("HTTP 404: Not Found", status_code=404, retryable=False)
+        yield {"choices": [{"delta": {"content": "ok"}}]}
+        yield {"choices": [{"finish_reason": "stop"}]}
+
+    mocker.patch.object(llm_client.provider, "_status_allows_immediate_send", return_value=ModelStatus(state="online"))
+    llm_client.provider._stream_chat_completions = fake_stream
+
+    result = llm_client.call_with_retry(payload, stop_event=None, on_event=None, pass_id="pass_1")
+
+    assert result.finish_reason == "stop"
+    assert result.content == "ok"
+    assert calls[0].endswith("/v1/responses")
+    assert calls[1].endswith("/v1/chat/completions")

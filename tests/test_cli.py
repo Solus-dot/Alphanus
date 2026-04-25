@@ -171,6 +171,51 @@ def test_init_non_interactive_writes_global_config_and_env_template(monkeypatch,
     assert stored["tui"]["theme"] == "catppuccin-macchiato"
 
 
+def test_init_non_interactive_model_section_writes_api_key_to_env(monkeypatch, tmp_path) -> None:
+    state_root = tmp_path / ".alphanus"
+    config_path = state_root / "config" / "global_config.json"
+    dotenv_path = state_root / ".env"
+
+    monkeypatch.setattr(
+        alphanus_cli,
+        "get_app_paths",
+        lambda: SimpleNamespace(
+            app_root=tmp_path,
+            state_root=state_root,
+            config_path=config_path,
+            dotenv_path=dotenv_path,
+            bundled_skills_dir=tmp_path / "skills",
+            repo_root=tmp_path,
+        ),
+    )
+
+    exit_code = alphanus_cli._run_init(
+        SimpleNamespace(
+            section="model",
+            non_interactive=True,
+            reset=False,
+            workspace_path="",
+            base_url="https://example.com",
+            responses_endpoint="https://example.com/v1/responses",
+            model_endpoint="https://example.com/v1/chat/completions",
+            models_endpoint="https://example.com/v1/models",
+            endpoint_mode="auto",
+            api_key="sk-demo",
+            api_key_env="ALPHANUS_API_KEY",
+            search_provider="",
+            theme="",
+        )
+    )
+
+    assert exit_code == 0
+    stored = json.loads(config_path.read_text(encoding="utf-8"))
+    assert stored["agent"]["base_url"] == "https://example.com"
+    assert stored["agent"]["endpoint_mode"] == "auto"
+    assert stored["agent"]["api_key"] == "env:ALPHANUS_API_KEY"
+    dotenv = dotenv_path.read_text(encoding="utf-8")
+    assert "ALPHANUS_API_KEY=sk-demo" in dotenv
+
+
 def test_parser_accepts_global_flags_after_subcommand() -> None:
     parser = alphanus_cli._build_parser()
 
