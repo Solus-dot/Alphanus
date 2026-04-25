@@ -45,6 +45,7 @@ class ChatSession:
     updated_at: str
     tree: ConvTree
     loaded_skill_ids: List[str] = field(default_factory=list)
+    collaboration_mode: str = "execute"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -55,6 +56,7 @@ class ChatSession:
             "updated_at": self.updated_at,
             "tree": self.tree.to_dict(),
             "loaded_skill_ids": list(self.loaded_skill_ids),
+            "collaboration_mode": str(self.collaboration_mode or "execute").strip().lower() or "execute",
         }
 
     @staticmethod
@@ -76,6 +78,11 @@ class ChatSession:
                 for item in (data.get("loaded_skill_ids") or [])
                 if str(item).strip()
             ],
+            collaboration_mode=(
+                "plan"
+                if str(data.get("collaboration_mode", "execute") or "execute").strip().lower() == "plan"
+                else "execute"
+            ),
         )
 
 
@@ -157,6 +164,7 @@ class SessionStore:
             updated_at=now,
             tree=tree or ConvTree(),
             loaded_skill_ids=[],
+            collaboration_mode="execute",
         )
         self._write_session(session)
         self._update_manifest_for_session(manifest, session, activate=activate)
@@ -168,6 +176,7 @@ class SessionStore:
         title: str,
         tree: ConvTree,
         loaded_skill_ids: Optional[List[str]] = None,
+        collaboration_mode: Optional[str] = None,
         *,
         created_at: Optional[str] = None,
         activate: bool = True,
@@ -185,6 +194,11 @@ class SessionStore:
                 for item in (loaded_skill_ids or raw_meta.get("loaded_skill_ids") or [])
                 if str(item).strip()
             ],
+            collaboration_mode=(
+                "plan"
+                if str(collaboration_mode or raw_meta.get("collaboration_mode") or "execute").strip().lower() == "plan"
+                else "execute"
+            ),
         )
         self._write_session(session)
         self._update_manifest_for_session(manifest, session, activate=activate)
@@ -296,6 +310,7 @@ class SessionStore:
             "turn_count": max(0, len(session.tree.nodes) - 1),
             "branch_count": sum(1 for node in session.tree.nodes.values() if node.branch_root),
             "loaded_skill_ids": list(session.loaded_skill_ids),
+            "collaboration_mode": str(session.collaboration_mode or "execute").strip().lower() or "execute",
         }
         if activate:
             manifest["active_session_id"] = session.id

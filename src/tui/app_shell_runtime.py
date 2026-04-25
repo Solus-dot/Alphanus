@@ -39,6 +39,7 @@ def initialize_shell_state(app: Any, *, agent: Any, debug: bool) -> None:
     app._session_id = ""
     app._session_title = ""
     app._session_created_at = ""
+    app._collaboration_mode = "execute"
     app._loaded_skill_ids = []
     app.conv_tree = app._new_conv_tree()
     app._activate_session_state(app._session_store.bootstrap())

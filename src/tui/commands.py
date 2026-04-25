@@ -32,6 +32,7 @@ _COMMAND_SECTIONS: Tuple[_CommandSection, ...] = (
             ),
             CommandEntry("/details", "/details", "Toggle tool execution details"),
             CommandEntry("/think", "/think", "Toggle thinking mode"),
+            CommandEntry("/mode [plan|execute]", "/mode ", "Show or set collaboration mode"),
             CommandEntry("/clear", "/clear", "Clear tree and chat log"),
             CommandEntry("/sessions", "/sessions", "Open sessions"),
             CommandEntry("/rename <name>", "/rename ", "Rename the active session"),

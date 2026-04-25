@@ -446,6 +446,18 @@ class AlphanusTUI(App):
     def _cmd_sessions(self) -> None:
         self._open_session_manager()
 
+    def _normalized_collaboration_mode(self, value: str) -> str:
+        return "plan" if str(value or "").strip().lower() == "plan" else "execute"
+
+    def _set_collaboration_mode(self, mode: str, *, persist: bool = False) -> str:
+        normalized = self._normalized_collaboration_mode(mode)
+        self._collaboration_mode = normalized
+        self._update_status1()
+        if persist:
+            self._save_active_session()
+            self._update_topbar()
+        return normalized
+
     def _open_session_manager(self) -> None:
         sessions = self._session_store.list_sessions()
         self.push_screen(
@@ -1053,6 +1065,7 @@ class AlphanusTUI(App):
             branch_armed=bool(self.conv_tree._pending_branch),
             branch_label=self.conv_tree._pending_branch_label,
             thinking=self.thinking,
+            collaboration_mode=str(getattr(self, "_collaboration_mode", "execute")),
             width=self.size.width,
             colors=colors,
         )
@@ -1330,6 +1343,7 @@ class AlphanusTUI(App):
             branch_labels=branch_labels,
             attachments=attachment_paths,
             loaded_skill_ids=loaded_skill_ids,
+            collaboration_mode=str(getattr(self, "_collaboration_mode", "execute")),
             stop_event=stop_event,
             on_event=on_event,
             confirm_shell=self._confirm_shell_command,

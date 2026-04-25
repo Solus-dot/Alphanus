@@ -171,4 +171,5 @@ def test_status_right_markup_includes_model_label_and_value() -> None:
 
     assert "model:" in status_right
     assert "Meta-Llama-3.1-8B-Instruct-Q4_K_M" in status_right
+    assert "mode:" in status_right
     assert "#6366f1" in status_right

@@ -105,6 +105,7 @@ def topbar_right(
     context_window: Optional[int],
     width: int,
     endpoint_state: str = "unknown",
+    collaboration_mode: str = "execute",
     colors: Optional[dict[str, str]] = None,
 ) -> str:
     theme = _theme_colors(colors)
@@ -115,10 +116,12 @@ def topbar_right(
     endpoint_markup = ""
     if short_endpoint:
         endpoint_markup = f"[{theme['muted']}]{esc(_truncate(short_endpoint, 22 if width < 140 else 28))}[/{theme['muted']}]"
+    mode_label = "plan" if str(collaboration_mode or "").strip().lower() == "plan" else "execute"
     return _join_topbar_segments(
         endpoint_markup,
         _endpoint_state_markup(endpoint_state, width=width, colors=theme),
         f"[dim]ctx:[/dim] {ctx_markup}",
+        f"[dim]mode:[/dim] [{theme['accent']}]{mode_label}[/{theme['accent']}]",
     )
 
 
@@ -128,6 +131,7 @@ def status_right_markup(
     branch_armed: bool,
     branch_label: Optional[str],
     thinking: bool,
+    collaboration_mode: str = "execute",
     width: int,
     colors: Optional[dict[str, str]] = None,
 ) -> str:
@@ -150,6 +154,8 @@ def status_right_markup(
 
     think_label = "auto" if thinking else "off"
     parts.append(f"[dim]thinking:[/dim] [{theme['accent']}]{think_label}[/{theme['accent']}]")
+    mode_label = "plan" if str(collaboration_mode or "").strip().lower() == "plan" else "execute"
+    parts.append(f"[dim]mode:[/dim] [{theme['accent']}]{mode_label}[/{theme['accent']}]")
     return "  ".join(parts)
 
 

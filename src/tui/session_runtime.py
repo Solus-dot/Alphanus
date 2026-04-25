@@ -9,6 +9,7 @@ def activate_session_state(app, session: ChatSession) -> None:
     app._session_id = session.id
     app._session_title = session.title
     app._session_created_at = session.created_at
+    app._collaboration_mode = "plan" if str(getattr(session, "collaboration_mode", "execute")).strip().lower() == "plan" else "execute"
     runtime = app.agent.skill_runtime
     app._loaded_skill_ids = [skill.id for skill in runtime.skills_by_ids(list(session.loaded_skill_ids))]
     tree = app._apply_tree_compaction_policy(session.tree)
@@ -29,11 +30,13 @@ def save_active_session(app, rename_to: Optional[str] = None) -> ChatSession:
         title,
         app.conv_tree,
         loaded_skill_ids=loaded_skill_ids,
+        collaboration_mode=str(getattr(app, "_collaboration_mode", "execute")),
         created_at=app._session_created_at,
         activate=True,
     )
     app._session_title = session.title
     app._session_created_at = session.created_at
+    app._collaboration_mode = "plan" if str(getattr(session, "collaboration_mode", "execute")).strip().lower() == "plan" else "execute"
     return session
 
 

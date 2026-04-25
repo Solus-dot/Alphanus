@@ -68,3 +68,20 @@ def test_delete_active_session_clears_manifest_active_session(tmp_path: Path) ->
     store.delete_session(session.id)
 
     assert store._load_manifest()["active_session_id"] == ""
+
+
+def test_save_tree_roundtrip_preserves_collaboration_mode(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path, tmp_path / "sessions")
+    session = store.bootstrap()
+
+    saved = store.save_tree(
+        session.id,
+        session.title,
+        session.tree,
+        collaboration_mode="plan",
+        created_at=session.created_at,
+    )
+    loaded = store.load_session(saved.id, activate=False)
+
+    assert saved.collaboration_mode == "plan"
+    assert loaded.collaboration_mode == "plan"

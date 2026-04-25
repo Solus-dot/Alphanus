@@ -28,6 +28,23 @@ def handle_command(app, text: str) -> bool:
         app._toggle_thinking_mode()
         return True
 
+    if cmd == "/mode":
+        if not arg:
+            mode = str(getattr(app, "_collaboration_mode", "execute"))
+            app._write_info(f"Collaboration mode: {mode}")
+            return True
+        target = arg.strip().lower()
+        if target not in {"plan", "execute"}:
+            app._write_usage("/mode [plan|execute]")
+            return True
+        previous = str(getattr(app, "_collaboration_mode", "execute")).strip().lower() or "execute"
+        current = app._set_collaboration_mode(target, persist=True)
+        if current == previous:
+            app._write_info(f"Collaboration mode already '{current}'.")
+        else:
+            app._write_command_action(f"Collaboration mode set to '{current}'", icon="✓")
+        return True
+
     if cmd == "/sessions":
         if app.streaming:
             app._write_error("Stop the active response before changing sessions.")

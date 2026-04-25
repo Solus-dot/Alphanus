@@ -22,6 +22,7 @@ def test_help_sections_are_derived_from_command_metadata() -> None:
 
     assert ("/quit /exit /q", "Exit app") in sections["CONVERSATION"]
     assert ("/file [path]", "Attach a file to the next message or open the picker") in sections["CONVERSATION"]
+    assert ("/mode [plan|execute]", "Show or set collaboration mode") in sections["CONVERSATION"]
     assert ("/theme", "Open theme picker") in sections["UTILITIES"]
 
     file_entry = next(entry for entry in COMMAND_ENTRIES if entry.prompt == "/file [path]")

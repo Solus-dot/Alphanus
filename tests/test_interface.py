@@ -107,6 +107,7 @@ def test_command_entries_no_longer_expose_load_or_new_sessions_commands() -> Non
 
     assert "/sessions" in prompts
     assert "/detach [n|last|all]" in prompts
+    assert "/mode [plan|execute]" in prompts
     assert "/load" not in prompts
     assert not any(prompt.startswith("/new") for prompt in prompts)
 
@@ -1619,11 +1620,13 @@ def test_handle_save_renames_and_persists_active_session() -> None:
         title: str,
         saved_tree: ConvTree,
         loaded_skill_ids=None,
+        collaboration_mode: str = "execute",
         *,
         created_at: str,
         activate: bool = True,
     ) -> ChatSession:
         saved_calls.append((session_id, title, created_at, list(loaded_skill_ids or [])))
+        assert collaboration_mode == "execute"
         assert saved_tree is tree
         assert activate is True
         return ChatSession(
@@ -1692,6 +1695,34 @@ def test_handle_theme_rejects_arguments() -> None:
 
     assert tui._handle_command("/theme soft") is True
     assert usages == ["/theme"]
+
+
+def test_handle_mode_without_argument_reports_current_mode() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    tui._collaboration_mode = "plan"
+    infos: list[str] = []
+    tui._write_info = infos.append
+
+    assert tui._handle_command("/mode") is True
+    assert infos == ["Collaboration mode: plan"]
+
+
+def test_handle_mode_switches_and_persists_mode() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    tui._collaboration_mode = "execute"
+    actions: list[str] = []
+    infos: list[str] = []
+    tui._write_command_action = lambda text, **_kwargs: actions.append(text)
+    tui._write_info = infos.append
+    tui._set_collaboration_mode = lambda mode, persist=False: "plan" if (mode, persist) == ("plan", True) else "execute"
+
+    assert tui._handle_command("/mode plan") is True
+    assert actions == ["Collaboration mode set to 'plan'"]
+    assert infos == []
 
 
 def test_on_theme_picker_close_applies_theme_and_persists() -> None:
@@ -1983,12 +2014,14 @@ def test_load_session_from_manager_switches_sessions() -> None:
         title: str,
         tree: ConvTree,
         loaded_skill_ids=None,
+        collaboration_mode: str = "execute",
         *,
         created_at: str,
         activate: bool = True,
     ) -> ChatSession:
         assert tree is current_tree
         assert list(loaded_skill_ids or []) == []
+        assert collaboration_mode == "execute"
         return ChatSession(
             id=session_id,
             title=title,
@@ -2119,6 +2152,25 @@ def test_activate_session_state_moves_non_empty_root_session_to_latest_leaf() ->
 
     assert tui.conv_tree.current_id == second.id
     assert tui._tree_cursor_id == second.id
+    assert tui._collaboration_mode == "execute"
+
+
+def test_activate_session_state_restores_collaboration_mode_from_session() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui.agent = SimpleNamespace(skill_runtime=SimpleNamespace(skills_by_ids=lambda ids: [SimpleNamespace(id=item) for item in ids]))
+    tui._apply_tree_compaction_policy = lambda current_tree: current_tree
+    session = ChatSession(
+        id="sess-3",
+        title="Planning Session",
+        created_at="2026-03-20T10:00:00+00:00",
+        updated_at="2026-03-20T10:05:00+00:00",
+        tree=ConvTree(),
+        collaboration_mode="plan",
+    )
+
+    tui._activate_session_state(session)
+
+    assert tui._collaboration_mode == "plan"
 
 
 def test_activate_session_state_preserves_root_when_pending_branch_is_armed() -> None:

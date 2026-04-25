@@ -151,6 +151,7 @@ def update_topbar(app: Any) -> None:
             context_window=app._context_window_tokens(),
             width=width,
             endpoint_state=app._status_runtime.model_status.state,
+            collaboration_mode=str(getattr(app, "_collaboration_mode", "execute")),
             colors=colors,
         )
     )
