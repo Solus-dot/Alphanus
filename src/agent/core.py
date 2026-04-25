@@ -132,7 +132,9 @@ class Agent:
             validate_endpoint_policy(
                 {
                     "agent": {
+                        "base_url": self.llm_client.base_url,
                         "model_endpoint": self.model_endpoint,
+                        "responses_endpoint": self.llm_client.responses_endpoint,
                         "models_endpoint": self.models_endpoint,
                         "allow_cross_host_endpoints": self.allow_cross_host,
                     }
@@ -159,11 +161,16 @@ class Agent:
         ready = self.ensure_ready(timeout_s=min(self.readiness_timeout_s, 3.0))
         return {
             "agent": {
+                "base_url": self.llm_client.base_url,
                 "model_endpoint": self.model_endpoint,
+                "responses_endpoint": self.llm_client.responses_endpoint,
                 "models_endpoint": self.models_endpoint,
                 "ready": bool(ready),
                 "endpoint_policy_error": endpoint_error or "",
-                "auth_header_source": "env" if self.llm_client.auth_header else "none",
+                "auth_header_source": self.llm_client.auth_source,
+                "endpoint_mode": self.llm_client.endpoint_mode,
+                "compatibility_profile": self.llm_client.compatibility_profile(),
+                "fallback_events": self.llm_client.fallback_events(),
                 "runtime_profile": str(runtime_cfg.get("profile", "standard")),
                 "permission_profile": str(capabilities_cfg.get("permission_profile", "full")),
             },

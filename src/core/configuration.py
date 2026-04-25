@@ -54,8 +54,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "schema_version": SCHEMA_VERSION,
     "agent": {
         "provider": "openai-compatible",
+        "base_url": "http://127.0.0.1:8080",
         "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+        "responses_endpoint": "http://127.0.0.1:8080/v1/responses",
         "models_endpoint": "http://127.0.0.1:8080/v1/models",
+        "endpoint_mode": "chat",
+        "api_key": "env:ALPHANUS_API_KEY",
+        "api_key_env": "ALPHANUS_API_KEY",
+        "auth_header_template": "Authorization: Bearer {api_key}",
         "connect_timeout_s": 10,
         "request_timeout_s": 180,
         "readiness_timeout_s": 30,
@@ -294,10 +300,17 @@ def strip_secret_fields(config: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
         if isinstance(obj, dict):
             cleaned: Dict[str, Any] = {}
             for key, value in obj.items():
-                if _is_secret_key(str(key)):
+                key_text = str(key)
+                if _is_secret_key(key_text):
+                    # Keep explicit environment references so config can point to a secret
+                    # without storing the plaintext value on disk.
+                    lowered = key_text.strip().lower()
+                    if lowered in {"api_key", "apikey"} and isinstance(value, str) and value.strip().lower().startswith("env:"):
+                        cleaned[key_text] = value.strip()
+                        continue
                     changed = True
                     continue
-                cleaned[str(key)] = _strip(value)
+                cleaned[key_text] = _strip(value)
             return cleaned
         if isinstance(obj, list):
             return [_strip(item) for item in obj]
@@ -332,6 +345,40 @@ def _normalize_endpoint(url: Any, *, default: str, path: str, warnings: List[str
     return endpoint
 
 
+def _normalize_base_url(url: Any, *, default: str, path: str, warnings: List[str]) -> str:
+    base = _coerce_string(url, default, path=path, warnings=warnings, allow_empty=False)
+    parsed = urlparse(base)
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"} or not parsed.hostname:
+        _warn(warnings, f"{path}: invalid URL {base!r}, using default")
+        return default
+    if parsed.username or parsed.password:
+        _warn(warnings, f"{path}: credentials in URL are not allowed, using default")
+        return default
+    root_path = (parsed.path or "").rstrip("/")
+    if root_path:
+        _warn(warnings, f"{path}: dropped path component from {base!r}")
+    normalized = parsed._replace(path="", params="", query="", fragment="")
+    return normalized.geturl().rstrip("/")
+
+
+def _endpoint_from_base_url(base_url: str, endpoint_path: str) -> str:
+    suffix = endpoint_path if endpoint_path.startswith("/") else f"/{endpoint_path}"
+    return f"{base_url.rstrip('/')}{suffix}"
+
+
+def _base_url_from_endpoint(endpoint: Any) -> str:
+    text = str(endpoint or "").strip()
+    if not text:
+        return ""
+    parsed = urlparse(text)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        return ""
+    if parsed.username or parsed.password:
+        return ""
+    return parsed._replace(path="", params="", query="", fragment="").geturl().rstrip("/")
+
+
 def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
     if not isinstance(raw_config, dict):
         raise ValueError("Global config must be a JSON object")
@@ -347,6 +394,7 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
 
     merged = deep_merge(DEFAULT_CONFIG, sanitized_input)
     merged["schema_version"] = schema_raw
+    input_agent_cfg = sanitized_input.get("agent", {}) if isinstance(sanitized_input.get("agent"), dict) else {}
 
     default_agent = DEFAULT_CONFIG["agent"]
     agent_cfg = merged.get("agent", {}) if isinstance(merged.get("agent"), dict) else {}
@@ -357,18 +405,107 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         warnings=warnings,
         allow_empty=False,
     )
+    base_url_input = input_agent_cfg.get("base_url")
+    inferred_base_url = ""
+    if base_url_input in (None, ""):
+        for endpoint_key in ("model_endpoint", "responses_endpoint", "models_endpoint"):
+            if endpoint_key in input_agent_cfg:
+                inferred_base_url = _base_url_from_endpoint(input_agent_cfg.get(endpoint_key))
+                if inferred_base_url:
+                    break
+    base_url_candidate = (
+        base_url_input
+        if base_url_input not in (None, "")
+        else (inferred_base_url or str(default_agent["base_url"]))
+    )
+    agent_cfg["base_url"] = _normalize_base_url(
+        base_url_candidate,
+        default=str(default_agent["base_url"]),
+        path="agent.base_url",
+        warnings=warnings,
+    )
+    model_endpoint_default = _endpoint_from_base_url(str(agent_cfg["base_url"]), "/v1/chat/completions")
+    responses_endpoint_default = _endpoint_from_base_url(str(agent_cfg["base_url"]), "/v1/responses")
+    models_endpoint_default = _endpoint_from_base_url(str(agent_cfg["base_url"]), "/v1/models")
+
+    model_input = input_agent_cfg.get("model_endpoint") if "model_endpoint" in input_agent_cfg else model_endpoint_default
+    responses_input = (
+        input_agent_cfg.get("responses_endpoint")
+        if "responses_endpoint" in input_agent_cfg
+        else responses_endpoint_default
+    )
+    models_input = input_agent_cfg.get("models_endpoint") if "models_endpoint" in input_agent_cfg else models_endpoint_default
+
     agent_cfg["model_endpoint"] = _normalize_endpoint(
-        agent_cfg.get("model_endpoint"),
-        default=default_agent["model_endpoint"],
+        model_input,
+        default=model_endpoint_default,
         path="agent.model_endpoint",
         warnings=warnings,
     )
+    agent_cfg["responses_endpoint"] = _normalize_endpoint(
+        responses_input,
+        default=responses_endpoint_default,
+        path="agent.responses_endpoint",
+        warnings=warnings,
+    )
     agent_cfg["models_endpoint"] = _normalize_endpoint(
-        agent_cfg.get("models_endpoint"),
-        default=default_agent["models_endpoint"],
+        models_input,
+        default=models_endpoint_default,
         path="agent.models_endpoint",
         warnings=warnings,
     )
+    endpoint_mode = _coerce_string(
+        agent_cfg.get("endpoint_mode"),
+        str(default_agent.get("endpoint_mode", "auto")),
+        path="agent.endpoint_mode",
+        warnings=warnings,
+        allow_empty=False,
+    ).lower()
+    if endpoint_mode not in {"auto", "responses", "chat"}:
+        _warn(warnings, f"agent.endpoint_mode: unsupported {endpoint_mode!r}, using 'auto'")
+        endpoint_mode = "auto"
+    agent_cfg["endpoint_mode"] = endpoint_mode
+    api_key_value = _coerce_string(
+        agent_cfg.get("api_key"),
+        str(default_agent.get("api_key", "env:ALPHANUS_API_KEY")),
+        path="agent.api_key",
+        warnings=warnings,
+    )
+    if api_key_value and not api_key_value.lower().startswith("env:"):
+        _warn(warnings, "agent.api_key: plaintext values are discouraged; use env:VARIABLE")
+    api_key_env = _coerce_string(
+        agent_cfg.get("api_key_env"),
+        str(default_agent.get("api_key_env", "ALPHANUS_API_KEY")),
+        path="agent.api_key_env",
+        warnings=warnings,
+        allow_empty=False,
+    )
+    if not _VALID_ENV_NAME_RE.match(api_key_env):
+        _warn(warnings, f"agent.api_key_env: invalid env name {api_key_env!r}, using default")
+        api_key_env = str(default_agent.get("api_key_env", "ALPHANUS_API_KEY"))
+    agent_cfg["api_key_env"] = api_key_env
+    if api_key_value.lower().startswith("env:"):
+        ref_name = api_key_value[4:].strip()
+        if not _VALID_ENV_NAME_RE.match(ref_name):
+            _warn(warnings, f"agent.api_key: invalid env reference {api_key_value!r}, using env:{api_key_env}")
+            api_key_value = f"env:{api_key_env}"
+        elif ref_name != api_key_env and not _VALID_ENV_NAME_RE.match(
+            str(input_agent_cfg.get("api_key_env", "")).strip()
+        ):
+            # Keep api_key aligned when api_key_env had to be corrected.
+            api_key_value = f"env:{api_key_env}"
+    agent_cfg["api_key"] = api_key_value
+    auth_template = _coerce_string(
+        agent_cfg.get("auth_header_template"),
+        str(default_agent.get("auth_header_template", "Authorization: Bearer {api_key}")),
+        path="agent.auth_header_template",
+        warnings=warnings,
+        allow_empty=False,
+    )
+    if "{api_key}" not in auth_template:
+        _warn(warnings, "agent.auth_header_template: missing '{api_key}' placeholder, using default")
+        auth_template = str(default_agent.get("auth_header_template", "Authorization: Bearer {api_key}"))
+    agent_cfg["auth_header_template"] = auth_template
     agent_cfg["connect_timeout_s"] = _coerce_float(
         agent_cfg.get("connect_timeout_s"),
         float(default_agent["connect_timeout_s"]),
@@ -873,19 +1010,39 @@ def validate_endpoint_policy(config: Dict[str, Any]) -> None:
     agent_cfg = config.get("agent", {}) if isinstance(config.get("agent"), dict) else {}
     model_endpoint = str(agent_cfg.get("model_endpoint", "")).strip()
     models_endpoint = str(agent_cfg.get("models_endpoint", "")).strip()
+    parsed_model = urlparse(model_endpoint)
+    inferred_base = ""
+    if parsed_model.scheme and parsed_model.hostname:
+        inferred_base = parsed_model._replace(path="", params="", query="", fragment="").geturl().rstrip("/")
+    base_url = str(agent_cfg.get("base_url", "")).strip() or inferred_base
+    responses_endpoint = str(agent_cfg.get("responses_endpoint", "")).strip() or _endpoint_from_base_url(
+        base_url or str(DEFAULT_CONFIG["agent"]["base_url"]),
+        "/v1/responses",
+    )
     allow_cross = bool(agent_cfg.get("allow_cross_host_endpoints", False))
 
-    parsed_model = urlparse(model_endpoint)
+    parsed_base = urlparse(base_url)
+    parsed_responses = urlparse(responses_endpoint)
     parsed_models = urlparse(models_endpoint)
+    if parsed_base.scheme.lower() not in {"http", "https"} or not parsed_base.hostname:
+        raise ValueError("agent.base_url must be a valid http(s) URL")
     if parsed_model.scheme.lower() not in {"http", "https"} or not parsed_model.hostname:
         raise ValueError("agent.model_endpoint must be a valid http(s) URL")
+    if parsed_responses.scheme.lower() not in {"http", "https"} or not parsed_responses.hostname:
+        raise ValueError("agent.responses_endpoint must be a valid http(s) URL")
     if parsed_models.scheme.lower() not in {"http", "https"} or not parsed_models.hostname:
         raise ValueError("agent.models_endpoint must be a valid http(s) URL")
 
-    host_a = (parsed_model.hostname or "").lower()
-    host_b = (parsed_models.hostname or "").lower()
-    if host_a != host_b and not allow_cross:
-        raise ValueError("agent.model_endpoint and agent.models_endpoint must share host")
+    hosts = {
+        (parsed_base.hostname or "").lower(),
+        (parsed_model.hostname or "").lower(),
+        (parsed_responses.hostname or "").lower(),
+        (parsed_models.hostname or "").lower(),
+    }
+    if len(hosts) > 1 and not allow_cross:
+        raise ValueError(
+            "agent.base_url, agent.model_endpoint, agent.responses_endpoint, and agent.models_endpoint must share host"
+        )
 
 
 def _load_existing_global_config(path: Path, *, warnings: List[str] | None = None) -> Dict[str, Any]:

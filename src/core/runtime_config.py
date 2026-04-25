@@ -152,8 +152,11 @@ class UiRuntimeConfig:
 @dataclass(slots=True)
 class ProviderConfig:
     provider_name: str
+    base_url: str
     model_endpoint: str
+    responses_endpoint: str
     models_endpoint: str
+    endpoint_mode: str
     tls_verify: bool
     ca_bundle_path: str
     allow_cross_host: bool
@@ -164,6 +167,9 @@ class ProviderConfig:
     per_turn_retries: int
     retry_backoff_s: float
     default_max_tokens: Optional[int]
+    api_key: str
+    api_key_env: str
+    auth_header_template: str
     auth_header: Optional[str]
 
     @classmethod
@@ -171,14 +177,26 @@ class ProviderConfig:
         agent_cfg = _section(config, "agent")
         return cls(
             provider_name=_coerce_string(agent_cfg.get("provider"), "openai-compatible"),
+            base_url=_coerce_string(
+                agent_cfg.get("base_url"),
+                "http://127.0.0.1:8080",
+            ),
             model_endpoint=_coerce_string(
                 agent_cfg.get("model_endpoint"),
                 "http://127.0.0.1:8080/v1/chat/completions",
+            ),
+            responses_endpoint=_coerce_string(
+                agent_cfg.get("responses_endpoint"),
+                "http://127.0.0.1:8080/v1/responses",
             ),
             models_endpoint=_coerce_string(
                 agent_cfg.get("models_endpoint"),
                 "http://127.0.0.1:8080/v1/models",
             ),
+            endpoint_mode=_coerce_string(
+                agent_cfg.get("endpoint_mode"),
+                "chat",
+            ).lower(),
             tls_verify=_coerce_bool(agent_cfg.get("tls_verify"), True),
             ca_bundle_path=_coerce_string(agent_cfg.get("ca_bundle_path"), ""),
             allow_cross_host=_coerce_bool(agent_cfg.get("allow_cross_host_endpoints"), False),
@@ -189,6 +207,12 @@ class ProviderConfig:
             per_turn_retries=_coerce_int(agent_cfg.get("per_turn_retries"), 1, minimum=0),
             retry_backoff_s=_coerce_float(agent_cfg.get("retry_backoff_s"), 0.5, minimum=0.0),
             default_max_tokens=_coerce_optional_positive_int(agent_cfg.get("max_tokens")),
+            api_key=_coerce_string(agent_cfg.get("api_key"), ""),
+            api_key_env=_coerce_string(agent_cfg.get("api_key_env"), "ALPHANUS_API_KEY"),
+            auth_header_template=_coerce_string(
+                agent_cfg.get("auth_header_template"),
+                "Authorization: Bearer {api_key}",
+            ),
             auth_header=(auth_header or "").strip() or None,
         )
 

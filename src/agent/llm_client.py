@@ -21,26 +21,28 @@ class LLMClient:
     def __init__(self, config: JsonObject, debug: bool = False, telemetry: Optional[TelemetryEmitter] = None) -> None:
         self.debug = debug
         self.telemetry = telemetry or TelemetryEmitter()
-        self.auth_header = (
-            os.environ.get("ALPHANUS_AUTH_HEADER", "").strip()
-            or os.environ.get("AUTH_HEADER", "").strip()
-            or None
-        )
+        self.auth_header = None
+        self.api_key = ""
+        self.auth_source = "none"
         self.reload_config(config)
 
     def reload_config(self, config: JsonObject) -> None:
         self.config = config
         agent_cfg = config.get("agent", {}) if isinstance(config.get("agent"), dict) else {}
-        self.provider_config = ProviderConfig.from_config(config, auth_header=self.auth_header)
+        self.provider_config = ProviderConfig.from_config(config, auth_header=self._resolve_auth_header(config))
         self.provider = OpenAICompatibleProvider(
             self.provider_config,
             telemetry=self.telemetry,
             debug=self.debug,
             stream_chat_completions_fn=lambda *args, **kwargs: stream_chat_completions(*args, **kwargs),
         )
+        self.auth_header = self.provider_config.auth_header
         self.connect_timeout_s = self.provider.connect_timeout_s
         self.model_endpoint = self.provider.model_endpoint
+        self.responses_endpoint = self.provider.responses_endpoint
         self.models_endpoint = self.provider.models_endpoint
+        self.base_url = self.provider.base_url
+        self.endpoint_mode = self.provider.endpoint_mode
         self.allow_cross_host = self.provider.allow_cross_host
         self.request_timeout_s = self.provider.request_timeout_s
         self.readiness_timeout_s = self.provider.readiness_timeout_s
@@ -54,6 +56,43 @@ class LLMClient:
         self.enable_structured_classification = bool(agent_cfg.get("enable_structured_classification", True))
         self.max_classifier_tokens = max(32, int(agent_cfg.get("max_classifier_tokens", 256)))
 
+    def _resolve_auth_header(self, config: JsonObject) -> Optional[str]:
+        agent_cfg = config.get("agent", {}) if isinstance(config.get("agent"), dict) else {}
+        api_key_ref = str(agent_cfg.get("api_key", "")).strip()
+        api_key_env = str(agent_cfg.get("api_key_env", "ALPHANUS_API_KEY")).strip() or "ALPHANUS_API_KEY"
+        auth_template = (
+            str(agent_cfg.get("auth_header_template", "Authorization: Bearer {api_key}")).strip()
+            or "Authorization: Bearer {api_key}"
+        )
+
+        explicit_header = (
+            os.environ.get("ALPHANUS_AUTH_HEADER", "").strip()
+            or os.environ.get("AUTH_HEADER", "").strip()
+            or ""
+        )
+        if api_key_ref.lower().startswith("env:"):
+            env_name = api_key_ref[4:].strip()
+            key = os.environ.get(env_name, "").strip() if env_name else ""
+        elif api_key_ref:
+            key = api_key_ref
+        else:
+            key = os.environ.get(api_key_env, "").strip()
+        self.api_key = key
+
+        if key:
+            try:
+                rendered = auth_template.format(api_key=key)
+            except Exception:
+                rendered = f"Authorization: Bearer {key}"
+            if ":" in rendered:
+                self.auth_source = "api_key"
+                return rendered.strip()
+        if explicit_header:
+            self.auth_source = "env"
+            return explicit_header
+        self.auth_source = "none"
+        return None
+
     @property
     def _ready_checked(self) -> bool:
         return bool(getattr(self.provider, "_ready_checked", False))
@@ -64,6 +103,12 @@ class LLMClient:
 
     def headers(self) -> Dict[str, str]:
         return self.provider.headers()
+
+    def compatibility_profile(self) -> Dict[str, object]:
+        return self.provider.compatibility_profile()
+
+    def fallback_events(self) -> list[dict[str, object]]:
+        return self.provider.fallback_events()
 
     @staticmethod
     def stop_requested(stop_event) -> bool:
@@ -148,21 +193,13 @@ class LLMClient:
         max_tokens_override: Optional[int] = None,
         model_override: str = "",
     ) -> JsonObject:
-        payload: JsonObject = {
-            "messages": model_messages,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-            "chat_template_kwargs": {"enable_thinking": bool(thinking)},
-        }
-        limit = self.default_max_tokens if max_tokens_override is None else max_tokens_override
-        if limit is not None and int(limit) > 0:
-            payload["max_tokens"] = int(limit)
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-        if model_override.strip():
-            payload["model"] = model_override.strip()
-        return payload
+        return self.provider.build_payload(
+            model_messages=model_messages,
+            thinking=thinking,
+            tools=tools,
+            max_tokens_override=max_tokens_override,
+            model_override=model_override,
+        )
 
     def call_with_retry(self, payload: JsonObject, stop_event, on_event, pass_id: str) -> StreamPassResult:
         return self.provider.call_with_retry(payload, stop_event, on_event, pass_id=pass_id)
