@@ -248,6 +248,7 @@ Important runtime notes:
 * `tui.theme` currently supports: `classic`, `soft`, `catppuccin-mocha`, `catppuccin-macchiato`, `tokyonight-moon`, `gruvbox-dark-soft` (`catppuccin` alias maps to `catppuccin-mocha`)
 * `runtime.profile` supports `standard` and `minimal` (`safe` and `minimal_reliable` normalize to `minimal`; `workspace` and `full` normalize to `standard`)
 * `capabilities.permission_profile` supports `safe`, `workspace`, and `full`; aliases `minimal`/`readonly` -> `safe` and `standard` -> `workspace`
+* Collaboration mode is session-scoped (`execute` or `plan`) and can be toggled with `/mode`
 * Skills are discovered from the configured repo `skills/` root only
 * `runtime.ask_user_tool` gates structured follow-up question flows via `request_user_input`
 
@@ -261,6 +262,17 @@ Important runtime notes:
 * `minimal`: only core workspace tools and skill discovery tools (`skills_list`, `skill_view`), plus `request_user_input` when `runtime.ask_user_tool` is enabled
 
 Use `minimal` when you want deterministic behavior with a reduced tool surface.
+
+---
+
+## Collaboration Modes
+
+Session-scoped collaboration mode controls whether turns are execution-oriented or planning-oriented:
+
+* `execute` (default): normal tool behavior
+* `plan`: read-only + ask mode; mutating tools, shell execution, and `run_skill` are blocked with policy errors
+
+Use `/mode` to inspect the current setting, or `/mode plan` and `/mode execute` to switch.
 
 ---
 
@@ -323,6 +335,7 @@ Important behavior:
 * `/keyboard-shortcuts` (`/shortcuts`, `/keymap`, `/keys`)
 * `/details`
 * `/think`
+* `/mode [plan|execute]`
 * `/clear`
 * `/sessions`
 * `/rename <name>`
