@@ -9,73 +9,57 @@
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: alpha">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
-  <img src="https://img.shields.io/badge/backend-llama.cpp-black" alt="Backend: llama.cpp">
   <img src="https://img.shields.io/badge/platform-local--first-lightgrey" alt="Local first">
 </p>
 
 <p align="center">
-  Built for local-first workflows on OpenAI-compatible endpoints. Your workspace stays local. Secrets stay in environment variables.
+  OpenAI-compatible endpoints, explicit tools, inspectable runtime behavior.
 </p>
 
 ---
 
-## Overview
+## Table of Contents
 
-Alphanus is an experimental coding assistant for local use.
-
-It combines a terminal UI, a streaming model loop, persistent lexical memory, explicit skills, and workspace-aware tooling into a system that is meant to be inspectable and hackable rather than hidden behind a hosted product.
-
-The current implementation is built around a Textual interface plus OpenAI-compatible provider adapters, with support for named sessions, branching conversation history, configurable skills, and controlled workspace or shell operations.
-
----
-
-## Features
-
-- Streaming agent loop with separate reasoning and content handling
-- OpenAI-compatible endpoint support with `chat`, `responses`, or `auto` mode
-- Textual UI with live tool previews, code block popups, config editing, and support-bundle export
-- Dual command palettes: slash palette (`/` or `Ctrl+P`) and quick palette (`Ctrl+K`) with actionable commands, sessions, files, and skills
-- Switchable built-in themes with runtime picker support (`/theme`) and persisted `tui.theme` preference
-- Runtime profiles: `standard` (default) and `minimal` (minimal reliable mode)
-- Named autosaved sessions with a branchable conversation tree
-- Persistent lexical memory with score thresholds and storage recovery safeguards
-- Explicit session-loaded skills with enable and disable controls
-- Web search support for time-sensitive answers
-- Workspace-aware tooling with confirmation gates and explicit session-loaded skill execution
-- First-class per-turn trace journal (pass payloads, selected skills, tool calls/results, timings)
+- [What Alphanus Is](#what-alphanus-is)
+- [Quick Start](#quick-start)
+- [Model Endpoint Setup](#model-endpoint-setup)
+- [Major Features](#major-features)
+  - [Sessions and Branching](#sessions-and-branching)
+  - [Collaboration Modes](#collaboration-modes)
+  - [Skills and Tool Loading](#skills-and-tool-loading)
+  - [Workspace Operations](#workspace-operations)
+  - [Memory](#memory)
+  - [Search](#search)
+  - [Safety and Permission Profiles](#safety-and-permission-profiles)
+  - [Turn Trace and Diagnostics](#turn-trace-and-diagnostics)
+- [Command Cheat Sheet](#command-cheat-sheet)
+- [Configuration](#configuration)
+- [State Layout](#state-layout)
+- [Development](#development)
+- [Status and Scope](#status-and-scope)
 
 ---
 
-## What's New
+## What Alphanus Is
 
-Recent user-facing additions include:
+Alphanus is an experimental local-first coding assistant.
 
-- `Ctrl+K` quick palette with an actionable catalog (commands, session switching, file attach, and skill load or unload)
-- Built-in theme system (`classic`, `soft`, `catppuccin-mocha`, `catppuccin-macchiato`, `tokyonight-moon`, `gruvbox-dark-soft`)
-- `/theme` command in the TUI to preview/apply themes and persist the selection
-- Scoped `init` setup (`all`, `workspace`, `model`, `search`, `theme`) plus `--theme` support for non-interactive setup
-- `runtime.profile` with `minimal` mode for a smaller, predictable tool surface
-- Capability permission profiles (`safe`, `workspace`, `full`) for tool-scope hardening
-- Turn-level trace capture in the journal (`turn_trace`) for replay and debugging
+It combines:
 
----
+- a Textual terminal UI
+- a streaming model loop
+- explicit tool execution
+- session-loaded skills
+- lexical memory
+- branching conversation history
 
-## Status
-
-Alphanus is currently **alpha** software.
-
-Current priorities are:
-
-- local-first workflows
-- power-user usability
-- explicit runtime behavior
-- safety boundaries around tools and shell access
-
-Expect rough edges, changing configuration, and incomplete backend support.
+The system is designed to be inspectable and controllable at runtime rather than hidden behind a hosted UI.
 
 ---
 
-## Requirements
+## Quick Start
+
+### Requirements
 
 - Python `>=3.11`
 - [`uv`](https://docs.astral.sh/uv/)
@@ -83,25 +67,13 @@ Expect rough edges, changing configuration, and incomplete backend support.
   - `GET /v1/models`
   - `POST /v1/chat/completions` and/or `POST /v1/responses`
 
----
-
-## Quick Start
-
-Install dependencies:
+### Install
 
 ```bash
 uv sync --extra dev
 ```
 
-Set any required environment variables:
-
-* `TAVILY_API_KEY` when `search.provider = "tavily"`
-* `BRAVE_SEARCH_API_KEY` when `search.provider = "brave"`
-* `ALPHANUS_API_KEY` for authenticated model endpoints
-* `ALPHANUS_AUTH_HEADER` (advanced override) for non-standard auth headers
-* `AUTH_HEADER` as a fallback if `ALPHANUS_AUTH_HEADER` is unset
-
-Run Alphanus:
+### Initialize, verify, run
 
 ```bash
 uv run alphanus init
@@ -109,37 +81,23 @@ uv run alphanus doctor
 uv run alphanus
 ```
 
-Useful flags:
+### Required env vars (as needed)
 
-```bash
-uv run alphanus --debug
-uv run alphanus --dangerously-skip-permissions
-uv run alphanus doctor --json --debug
-uv run alphanus run --debug
-uv run alphanus init theme --non-interactive --theme catppuccin-macchiato
-```
-
-Notes:
-
-* `.env` is loaded from `~/.alphanus/.env` without overriding already-set environment variables
-* `uv run alphanus` requires `~/.alphanus/config/global_config.json`; if missing, run `uv run alphanus init`
-* `uv run alphanus doctor` validates config, env, endpoint reachability, and workspace permissions
-* Legacy `uv run main.py` is removed; use `uv run alphanus` for all CLI entrypoints
+- `ALPHANUS_API_KEY` for authenticated model endpoints
+- `ALPHANUS_AUTH_HEADER` for advanced custom auth header override
+- `AUTH_HEADER` fallback if `ALPHANUS_AUTH_HEADER` is unset
+- `TAVILY_API_KEY` when `search.provider = "tavily"`
+- `BRAVE_SEARCH_API_KEY` when `search.provider = "brave"`
 
 ---
 
-## Initialize the New System
+## Model Endpoint Setup
 
-The runtime now separates app state from your workspace files.
+Alphanus supports three endpoint modes:
 
-State lives in:
-
-* `~/.alphanus/config/global_config.json` (config)
-* `~/.alphanus/.env` (environment secrets)
-* `~/.alphanus/sessions/` (sessions)
-* `~/.alphanus/memory/` (memory)
-
-Workspace files remain at `workspace.path` (default `~/Desktop/Alphanus-Workspace`).
+- `chat` (default)
+- `responses`
+- `auto` (responses-first with fallback to chat when unsupported)
 
 Interactive setup:
 
@@ -147,13 +105,7 @@ Interactive setup:
 uv run alphanus init
 ```
 
-Initialize only one section:
-
-```bash
-uv run alphanus init theme
-```
-
-Non-interactive setup:
+Non-interactive setup example:
 
 ```bash
 uv run alphanus init --non-interactive \
@@ -168,37 +120,195 @@ uv run alphanus init --non-interactive \
   --theme catppuccin-mocha
 ```
 
-Init section values: `all`, `workspace`, `model`, `search`, `theme`.
+Notes:
 
-Validate then launch:
+- `init` writes API key secrets to `~/.alphanus/.env`
+- config stores API key references (for example `env:ALPHANUS_API_KEY`) instead of plaintext keys
+- local backends that do not require auth can run with no API key set
 
-```bash
-uv run alphanus doctor
-uv run alphanus
-```
+---
 
-Machine-readable doctor output:
+## Major Features
 
-```bash
-uv run alphanus doctor --json
-```
+### Sessions and Branching
+
+- Named sessions are autosaved after each turn
+- A conversation can branch at any point and switch between branches
+- Tree view makes alternate solution paths explicit
+- Loaded skill IDs are persisted with each session
+
+Branching commands:
+
+- `/branch [label]`
+- `/unbranch`
+- `/branches`
+- `/switch <n>`
+- `/tree`
+
+### Collaboration Modes
+
+Session mode controls how turns behave:
+
+- `execute`: normal agent execution with tools
+- `plan`: read-only/ask-first mode; mutating tools and shell execution are blocked
+
+Commands:
+
+- `/mode`
+- `/mode plan`
+- `/mode execute`
+
+### Skills and Tool Loading
+
+- Skills are discovered under `<repo>/skills/<skill-id>/SKILL.md`
+- Skills can be enabled/disabled globally
+- Tools from a skill are only available when that skill is loaded in the active session
+- Skill execution is explicit through `run_skill` and tool schemas
+
+Useful commands:
+
+- `/skills`
+- `/skill-on <id>`
+- `/skill-off <id>`
+- `/skill-unload <id>`
+- `/skill-unload-all`
+- `/skill-reload`
+- `/skill-info <id>`
+
+### Workspace Operations
+
+`workspace-ops` covers create/read/edit/move/delete with guardrails.
+
+Current capabilities include:
+
+- section-scoped read/edit by line bounds and anchors
+- regex-based edits
+- ripgrep-backed code search with optional context lines
+- workspace tree rendering
+- verification command runner (`run_checks`) with approved commands
+
+### Memory
+
+Memory is lexical and persistent.
+
+- storage path: `~/.alphanus/memory/`
+- source of truth: `events.jsonl`
+- generated index file: `facts.md`
+- configurable score thresholds and backup revisions
+
+Relevant commands:
+
+- `/memory-stats`
+
+### Search
+
+Search is intended for time-sensitive queries.
+
+- providers: `tavily`, `brave`
+- policy: if evidence is insufficient, Alphanus declines to speculate
+- default per-turn budgets:
+  - `web_search=2`
+  - `fetch_url=2`
+  - `recall_memory=2`
+
+### Safety and Permission Profiles
+
+Runtime safety knobs:
+
+- `runtime.profile`: `standard` or `minimal`
+- `capabilities.permission_profile`: `safe`, `workspace`, `full`
+- shell commands require confirmation by default
+- dangerous shell patterns are blocked
+
+### Turn Trace and Diagnostics
+
+Per-turn journal includes:
+
+- `timing`: start/end/elapsed/pass count
+- `turn_trace.passes`: payloads, selected skills, exposed tools, finish reason
+- `turn_trace.tool_calls`: arguments + timestamps
+- `turn_trace.tool_results`: outputs + policy-block markers + timings
+
+`/doctor` and support bundles include harness metrics such as:
+
+- task completion rate
+- tool failure rate
+- avg tool loop depth
+- first token latency average
+
+---
+
+## Command Cheat Sheet
+
+### Conversation
+
+- `/help`
+- `/details`
+- `/think`
+- `/clear`
+- `/quit`, `/exit`, `/q`
+
+### Sessions
+
+- `/sessions`
+- `/rename <name>`
+- `/save [name]`
+
+### Files and Attachments
+
+- `/file [path]`
+- `/image [path]`
+- `/detach [n|last|all]`
+- `/code [n|last]`
+
+### Skills and Runtime
+
+- `/skills`
+- `/reload`
+- `/doctor`
+- `/theme`
+- `/config`
+- `/report [file]`
+
+### Keyboard Shortcuts
+
+- `F1`: shortcuts help
+- `Ctrl+K`: quick palette
+- `Ctrl+P` or `/`: slash-command palette
+- `Ctrl+F`: file picker
+- `Ctrl+G`: focus composer
+- `F2`: toggle tool details
+- `F3`: toggle thinking mode
+- `Ctrl+U`: clear draft
+- `Ctrl+Shift+K`: delete to end of line
 
 ---
 
 ## Configuration
 
-Global config is stored at:
+Global config path:
 
-* `~/.alphanus/config/global_config.json`
+- `~/.alphanus/config/global_config.json`
 
-At load and save time, Alphanus:
+Config behavior:
 
-* merges missing keys from built-in defaults
-* normalizes types and clamps invalid values
-* strips secret-like fields from disk and from the `/config` editor
-* enforces same-host `base_url`, `model_endpoint`, `responses_endpoint`, and `models_endpoint` unless `agent.allow_cross_host_endpoints = true`
+- missing keys merged from defaults
+- types normalized and invalid values clamped
+- secret-like fields stripped from disk and `/config` editor
+- endpoint host policy enforced unless `agent.allow_cross_host_endpoints = true`
 
-A trimmed example:
+Model-related config keys:
+
+- `agent.base_url`
+- `agent.model_endpoint`
+- `agent.responses_endpoint`
+- `agent.models_endpoint`
+- `agent.endpoint_mode`
+- `agent.api_key` (env reference recommended)
+- `agent.api_key_env`
+- `agent.auth_header_template`
+
+Trimmed config example:
 
 ```json
 {
@@ -213,264 +323,46 @@ A trimmed example:
     "api_key_env": "ALPHANUS_API_KEY",
     "request_timeout_s": 180,
     "readiness_timeout_s": 30,
-    "enable_thinking": true,
     "allow_cross_host_endpoints": false,
     "max_tokens": null
   },
   "workspace": {
     "path": "~/Desktop/Alphanus-Workspace"
   },
+  "runtime": {
+    "profile": "standard",
+    "ask_user_tool": true
+  },
   "capabilities": {
     "permission_profile": "full"
-  },
-  "memory": {
-    "min_score_default": 0.3,
-    "recall_min_score_default": 0.18,
-    "replace_min_score_default": 0.72,
-    "backup_revisions": 2
-  },
-  "context": {
-    "keep_last_n": 10
-  },
-  "runtime": {
-    "ask_user_tool": true,
-    "profile": "standard"
-  },
-  "tui": {
-    "theme": "catppuccin-mocha"
-  },
-  "search": {
-    "provider": "tavily"
   }
 }
 ```
 
-Important runtime notes:
+---
 
-* `agent.request_timeout_s` is a stream idle timeout, not a total-turn deadline
-* `agent.endpoint_mode` supports `chat`, `responses`, and `auto` (responses-first with fallback)
-* `agent.api_key` should point to an env var reference (`env:NAME`) instead of storing plaintext keys
-* `agent.max_tokens` defaults to `null`, so no explicit `max_tokens` cap is sent unless configured
-* memory persistence is fixed at `~/.alphanus/memory/` (`events.jsonl` source-of-truth, generated `facts.md`)
-* session persistence is fixed at `~/.alphanus/sessions/`
-* workspace content remains rooted at `workspace.path` (default `~/Desktop/Alphanus-Workspace`)
-* Internal context budget defaults exist at runtime, but several budget controls are intentionally hidden from the editable config file and TUI editor
-* `search.provider` currently supports `tavily` and `brave`
-* `tui.theme` currently supports: `classic`, `soft`, `catppuccin-mocha`, `catppuccin-macchiato`, `tokyonight-moon`, `gruvbox-dark-soft` (`catppuccin` alias maps to `catppuccin-mocha`)
-* `runtime.profile` supports `standard` and `minimal` (`safe` and `minimal_reliable` normalize to `minimal`; `workspace` and `full` normalize to `standard`)
-* `capabilities.permission_profile` supports `safe`, `workspace`, and `full`; aliases `minimal`/`readonly` -> `safe` and `standard` -> `workspace`
-* Collaboration mode is session-scoped (`execute` or `plan`) and can be toggled with `/mode`
-* Skills are discovered from the configured repo `skills/` root only
-* `runtime.ask_user_tool` gates structured follow-up question flows via `request_user_input`
+## State Layout
+
+Alphanus keeps runtime state separate from your workspace files.
+
+- `~/.alphanus/config/global_config.json` (config)
+- `~/.alphanus/.env` (secrets)
+- `~/.alphanus/sessions/` (sessions)
+- `~/.alphanus/memory/` (memory)
+
+Workspace content remains under `workspace.path`.
 
 ---
 
-## Runtime Profiles
+## Development
 
-`runtime.profile` controls model-visible tool scope:
-
-* `standard` (default): core tools plus optional skill tools for loaded and selected skills
-* `minimal`: only core workspace tools and skill discovery tools (`skills_list`, `skill_view`), plus `request_user_input` when `runtime.ask_user_tool` is enabled
-
-Use `minimal` when you want deterministic behavior with a reduced tool surface.
-
----
-
-## Collaboration Modes
-
-Session-scoped collaboration mode controls whether turns are execution-oriented or planning-oriented:
-
-* `execute` (default): normal tool behavior
-* `plan`: read-only + ask mode; mutating tools, shell execution, and `run_skill` are blocked with policy errors
-
-Use `/mode` to inspect the current setting, or `/mode plan` and `/mode execute` to switch.
-
----
-
-## Turn Trace and Observability
-
-Each turn journal now includes:
-
-* `timing`: `started_at`, `finished_at`, `elapsed_ms`, and pass count
-* `turn_trace.passes`: per-pass model payload, selected skills, exposed tools, finish reason, and pass timings
-* `turn_trace.tool_calls`: tool call arguments and timestamps
-* `turn_trace.tool_results`: tool outputs, policy-block markers, and completion timestamps
-
-Turn journals are persisted with session data and included in `/report` support bundles.
-
-Doctor and support reports also include harness-level runtime metrics:
-
-* `task_completion_rate`
-* `human_interruption_rate`
-* `tool_failure_rate`
-* `avg_tool_loop_depth`
-* `first_token_latency_ms_avg`
-
----
-
-## Built-in Skills
-
-Bundled skills include:
-
-* `workspace-ops` — create, read, edit, move, and delete workspace paths; supports section-scoped reads/edits (line bounds and anchors), regex edits, ripgrep-backed code search with optional context lines, workspace tree rendering, and approved verification commands
-* `memory-rag` — store, recall, forget, inspect, and export lexical memories
-* `search-ops` — web search and page fetch for current information
-* `shell-ops` — confirmed workspace shell commands
-* `utilities` — weather lookup, home file search, URL open, and YouTube helpers
-
-See [SKILLS_GUIDE.md](./SKILLS_GUIDE.md) for details.
-
----
-
-## Skills Model
-
-Alphanus separates skill discovery, enabling, and session loading.
-
-Important behavior:
-
-* Skill discovery uses the configured repo `skills/` root only
-* Skills are expected to live under `<repo>/skills/<skill-id>/SKILL.md`
-* `/skill-on` and `/skill-off` control whether a skill is globally enabled
-* Skills become session-loaded when the runtime calls `skill_view(name)`
-* Session-loaded skills persist with the session and can be removed with `/skill-unload` or `/skill-unload-all`
-* Native `tools.py` tools are available only when the owning skill is loaded in the active session
-* Executable skills run through unified `run_skill` (entrypoint or bundled script), scoped to loaded skills for the current turn
-
----
-
-## TUI Commands
-
-### Conversation and navigation
-
-* `/help`
-* `/keyboard-shortcuts` (`/shortcuts`, `/keymap`, `/keys`)
-* `/details`
-* `/think`
-* `/mode [plan|execute]`
-* `/clear`
-* `/sessions`
-* `/rename <name>`
-* `/save [name]`
-* `/file [path]`
-* `/image [path]` (alias of `/file`)
-* `/detach [n|last|all]`
-* `/code [n|last]`
-* `/quit`, `/exit`, `/q`
-
-### Branching
-
-* `/branch [label]`
-* `/unbranch`
-* `/branches`
-* `/switch <n>`
-* `/tree`
-
-### Skills and diagnostics
-
-* `/skills`
-* `/reload`
-* `/doctor`
-* `/skill-on <id>`
-* `/skill-off <id>`
-* `/skill-unload <id>`
-* `/skill-unload-all`
-* `/skill-reload`
-* `/skill-info <id>`
-
-### Memory, workspace, and support
-
-* `/memory-stats`
-* `/context`
-* `/workspace-tree`
-* `/theme`
-* `/config`
-* `/report [file]`
-
-### Keyboard shortcuts
-
-* `F1` shows the keyboard shortcut reference
-* `Ctrl+K` opens the quick palette
-* `Ctrl+P` or `/` opens the slash-command palette
-* `Ctrl+F` opens the file picker
-* `Ctrl+G` focuses the composer
-* `F2` toggles tool details
-* `F3` toggles thinking mode
-* `Ctrl+U` clears the full draft
-* `Ctrl+Shift+K` deletes from the cursor to the end of the line
-
-Session notes:
-
-* Startup opens a session picker before chat input
-* Sessions are stored under `~/.alphanus/sessions/`
-* The active session is autosaved after each turn
-* Loaded skill IDs are persisted with the session
-
----
-
-## Memory
-
-Memory is lexical and persistent.
-
-Notes:
-
-* `memory.min_score_default` sets the base lexical threshold for direct memory searches
-* `memory.recall_min_score_default` and `memory.replace_min_score_default` tune skill-level recall and replace-query behavior
-* `memory.backup_revisions` controls how many previous memory snapshots are kept as `.bakN` files
-* storage is fixed at `~/.alphanus/memory/` (`events.jsonl` is source-of-truth, `facts.md` is regenerated on flush)
-* Retrieval is lexical-only
-* For corrections, prefer `replace_query` or `replace_ids` when calling memory tools
-
----
-
-## Search
-
-Search is intended for time-sensitive or current-information tasks.
-
-Notes:
-
-* `search-ops` supports `tavily` and `brave`
-* Time-sensitive answers are expected to use fetched source text; otherwise Alphanus declines to speculate
-* Search credentials are environment variables only
-* Default per-turn tool budgets are:
-
-  * `web_search=2`
-  * `fetch_url=2`
-  * `recall_memory=2`
-
----
-
-## Workspace and Shell Safety
-
-Workspace and shell operations are intentionally constrained.
-
-* `delete_path` supports both files and directories
-* `run_checks` is limited to approved verification runners:
-
-  * `pytest`
-  * `ruff`
-  * `mypy`
-  * `pyright`
-  * `eslint`
-  * `tsc`
-  * `vitest`
-  * `jest`
-  * `tox`
-  * `nox`
-  * `uv run <approved-runner>`
-* Shell commands require confirmation by default
-* Shell-control operators and dangerous patterns are blocked
-
----
-
-## Testing
-
-Run the test suite with:
+Run tests:
 
 ```bash
 uv run pytest
 ```
 
-Recommended quality checks:
+Optional checks:
 
 ```bash
 uv run ruff check src tests
@@ -480,24 +372,15 @@ uv run vulture src tests
 
 ---
 
-## Architecture Notes
+## Status and Scope
 
-Current architecture changes focused on reducing coupling:
+Alphanus is currently alpha.
 
-* `Agent` no longer monkey-patches classifier/orchestrator lambdas during config reload; runtime behavior is wired through explicit runtime hooks
-* `SkillRuntime` delegates inventory loading, process-env construction, and tool execution to dedicated services
-* `interface.py` is slimmer and delegates input and palette/theme behavior to focused runtime modules
+Current focus:
 
----
+- local-first workflows
+- runtime transparency
+- safer tool execution boundaries
+- strong terminal UX for coding tasks
 
-## Project Direction
-
-Alphanus is aimed at users who want a coding assistant that is:
-
-* local-first
-* explicit in how it loads tools and skills
-* inspectable at runtime
-* usable from a terminal UI
-* comfortable to extend and modify
-
-It is not trying to hide the system behind a chat box. The intent is to make the assistant's runtime behavior visible and controllable.
+Expect active iteration and occasional config/schema evolution.
