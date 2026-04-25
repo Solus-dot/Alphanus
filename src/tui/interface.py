@@ -12,7 +12,7 @@ from rich.markup import escape as esc
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, ScrollableContainer, Vertical
+from textual.containers import ScrollableContainer, Vertical
 from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widgets import Button, Input, OptionList, Static
@@ -62,6 +62,22 @@ from tui.command_output_runtime import (
 from tui.config_runtime import apply_tui_config as apply_tui_runtime_config
 from tui.config_runtime import install_stream_drain_timer as install_tui_stream_drain_timer
 from tui.config_runtime import merge_live_config as merge_tui_live_config
+from tui.navigation_runtime import (
+    action_tree_bottom as action_tui_tree_bottom,
+    action_tree_down as action_tui_tree_down,
+    action_tree_open as action_tui_tree_open,
+    action_tree_top as action_tui_tree_top,
+    action_tree_up as action_tui_tree_up,
+    apply_focus_classes as apply_tui_focus_classes,
+    apply_sidebar_layout as apply_tui_sidebar_layout,
+    focus_next_panel as action_tui_focus_next_panel,
+    focus_prev_panel as action_tui_focus_prev_panel,
+    move_tree_sibling as move_tui_tree_sibling,
+    set_focused_panel as set_tui_focused_panel,
+    sidebar_target_width as tui_sidebar_target_width,
+    sync_tree_cursor as sync_tui_tree_cursor,
+    tree_rows as tui_tree_rows,
+)
 from tui.interaction_runtime import (
     action_handle_esc as action_tui_handle_esc,
     begin_shell_confirm as begin_tui_shell_confirm,
@@ -198,7 +214,6 @@ from tui.transcript_runtime import (
 )
 from tui.themes import ThemeSpec, available_theme_ids, default_theme_variables, fallback_color, theme_spec
 from tui.ui_styles import ALPHANUS_TUI_CSS
-from tui.tree_render import render_tree_rows
 from tui.view_runtime import (
     rebuild_viewport as rebuild_tui_viewport,
     sidebar_render_width as tui_sidebar_render_width,
@@ -266,6 +281,7 @@ class AlphanusTUI(App):
     def __init__(self, agent: Agent, debug: bool = False):
         super().__init__()
         init_tui_shell_state(self, agent=agent, debug=debug)
+        self._chat_input_cls = ChatInput
 
     def compose(self) -> ComposeResult:
         yield from compose_tui_shell(self, chat_input_cls=ChatInput, transcript_view_cls=TranscriptView)
@@ -377,19 +393,11 @@ class AlphanusTUI(App):
         self._schedule_resize_redraw()
 
     def _apply_sidebar_layout(self, width: int) -> None:
-        sidebar = self.query_one("#sidebar", Vertical)
-        target_width = self._sidebar_target_width(width)
-        sidebar.display = target_width > 0
-        if target_width > 0 and hasattr(sidebar, "styles"):
-            sidebar.styles.width = target_width
+        apply_tui_sidebar_layout(self, width)
 
     @staticmethod
     def _sidebar_target_width(width: int) -> int:
-        if width < 120:
-            return 0
-        if width < 140:
-            return 32
-        return 38
+        return tui_sidebar_target_width(width)
 
     def _schedule_resize_redraw(self) -> None:
         if self._resize_redraw_pending:
@@ -496,12 +504,10 @@ class AlphanusTUI(App):
         switch_tui_session(self, session, clear_pending=clear_pending)
 
     def _tree_rows(self) -> List[Tuple[str, str, bool]]:
-        return render_tree_rows(self.conv_tree, width=30)
+        return tui_tree_rows(self)
 
     def _sync_tree_cursor(self) -> None:
-        if self._tree_cursor_id in self.conv_tree.nodes:
-            return
-        self._tree_cursor_id = self.conv_tree.current_id
+        sync_tui_tree_cursor(self)
 
     def _current_branch_name(self) -> str:
         if self.conv_tree._pending_branch and self.conv_tree._pending_branch_label:
@@ -529,41 +535,16 @@ class AlphanusTUI(App):
         self._update_topbar()
 
     def _apply_focus_classes(self) -> None:
-        chat = self.query_one("#chat-scroll", ScrollableContainer)
-        sidebar = self.query_one("#sidebar", Vertical)
-        input_row = self.query_one("#input-row", Horizontal)
-        chat.remove_class("-active-panel")
-        sidebar.remove_class("-active-panel")
-        input_row.remove_class("-active-panel")
-        if self._focused_panel == "chat":
-            chat.add_class("-active-panel")
-        elif self._focused_panel == "tree":
-            sidebar.add_class("-active-panel")
-        else:
-            input_row.add_class("-active-panel")
+        apply_tui_focus_classes(self)
 
     def _set_focused_panel(self, panel: str) -> None:
-        if panel == "tree" and not self.query_one("#sidebar", Vertical).display:
-            panel = "chat"
-        self._focused_panel = panel
-        if panel == "input":
-            self.query_one(ChatInput).focus()
-        self._apply_focus_classes()
-        self._update_topbar()
+        set_tui_focused_panel(self, panel)
 
     def action_focus_next_panel(self) -> None:
-        order = ["chat", "tree", "input"]
-        if not self.query_one("#sidebar", Vertical).display:
-            order = ["chat", "input"]
-        current = order.index(self._focused_panel) if self._focused_panel in order else 0
-        self._set_focused_panel(order[(current + 1) % len(order)])
+        action_tui_focus_next_panel(self)
 
     def action_focus_prev_panel(self) -> None:
-        order = ["chat", "tree", "input"]
-        if not self.query_one("#sidebar", Vertical).display:
-            order = ["chat", "input"]
-        current = order.index(self._focused_panel) if self._focused_panel in order else 0
-        self._set_focused_panel(order[(current - 1) % len(order)])
+        action_tui_focus_prev_panel(self)
 
     def action_focus_chat(self) -> None:
         self._set_focused_panel("chat")
@@ -575,64 +556,19 @@ class AlphanusTUI(App):
         self._set_focused_panel("input")
 
     def action_tree_down(self) -> None:
-        if self._focused_panel != "tree":
-            return
-        rows = self._tree_rows()
-        ids = [tag for _text, tag, _active in rows if tag in self.conv_tree.nodes]
-        if not ids:
-            return
-        current = ids.index(self._tree_cursor_id) if self._tree_cursor_id in ids else 0
-        self._tree_cursor_id = ids[min(len(ids) - 1, current + 1)]
-        self._update_sidebar()
-        self._update_topbar()
+        action_tui_tree_down(self)
 
     def action_tree_up(self) -> None:
-        if self._focused_panel != "tree":
-            return
-        rows = self._tree_rows()
-        ids = [tag for _text, tag, _active in rows if tag in self.conv_tree.nodes]
-        if not ids:
-            return
-        current = ids.index(self._tree_cursor_id) if self._tree_cursor_id in ids else 0
-        self._tree_cursor_id = ids[max(0, current - 1)]
-        self._update_sidebar()
-        self._update_topbar()
+        action_tui_tree_up(self)
 
     def action_tree_top(self) -> None:
-        if self._focused_panel != "tree":
-            return
-        ids = [tag for _text, tag, _active in self._tree_rows() if tag in self.conv_tree.nodes]
-        if not ids:
-            return
-        self._tree_cursor_id = ids[0]
-        self._update_sidebar()
-        self._update_topbar()
+        action_tui_tree_top(self)
 
     def action_tree_bottom(self) -> None:
-        if self._focused_panel != "tree":
-            return
-        ids = [tag for _text, tag, _active in self._tree_rows() if tag in self.conv_tree.nodes]
-        if not ids:
-            return
-        self._tree_cursor_id = ids[-1]
-        self._update_sidebar()
-        self._update_topbar()
+        action_tui_tree_bottom(self)
 
     def _move_tree_sibling(self, direction: int) -> None:
-        if self._focused_panel != "tree":
-            return
-        node = self.conv_tree.nodes.get(self._tree_cursor_id)
-        if node is None or node.parent is None:
-            return
-        siblings = self.conv_tree.nodes[node.parent].children
-        if self._tree_cursor_id not in siblings:
-            return
-        idx = siblings.index(self._tree_cursor_id) + direction
-        if idx < 0 or idx >= len(siblings):
-            return
-        self._tree_cursor_id = siblings[idx]
-        self._update_sidebar()
-        self._update_topbar()
+        move_tui_tree_sibling(self, direction)
 
     def action_tree_prev_sibling(self) -> None:
         self._move_tree_sibling(-1)
@@ -641,15 +577,7 @@ class AlphanusTUI(App):
         self._move_tree_sibling(1)
 
     def action_tree_open(self) -> None:
-        if self._focused_panel != "tree":
-            return
-        if self._tree_cursor_id not in self.conv_tree.nodes:
-            return
-        self.conv_tree.current_id = self._tree_cursor_id
-        self._save_active_session()
-        self._rebuild_viewport()
-        self._update_sidebar()
-        self._update_topbar()
+        action_tui_tree_open(self)
 
     def _show_keyboard_shortcuts(self) -> None:
         show_tui_keyboard_shortcuts_sections(self, show_fn=show_tui_keyboard_shortcuts)
