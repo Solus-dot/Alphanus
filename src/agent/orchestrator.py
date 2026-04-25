@@ -205,8 +205,86 @@ class TurnOrchestrator:
                 out[key] = self.compact_jsonish(value)
         return out
 
-    def build_turn_state(self, ctx, selected: list[SkillManifest], history_messages: list[ChatMessage], classification) -> TurnState:
-        return self.policy_engine.build_turn_state(ctx, selected, history_messages, classification)
+    @staticmethod
+    def _normalize_collaboration_mode(value: str) -> str:
+        return "plan" if str(value or "").strip().lower() == "plan" else "execute"
+
+    def _is_plan_mode(self, state: TurnState) -> bool:
+        return self._normalize_collaboration_mode(getattr(state, "collaboration_mode", "execute")) == "plan"
+
+    def _tool_allowed_in_plan_mode(self, tool_name: str) -> bool:
+        normalized = str(tool_name or "").strip()
+        if not normalized:
+            return False
+        reg = self.skill_runtime.tool_registration(normalized)
+        if reg is None:
+            return False
+        capability = str(getattr(reg, "capability", "") or "").strip().lower()
+        if normalized == "request_user_input" or capability == "user_input_requester":
+            return True
+        if normalized == "shell_command" or capability in {"run_shell_command", "workspace_execute"}:
+            return False
+        if capability in {"workspace_read", "workspace_tree"}:
+            return True
+        return not self.skill_runtime.tool_is_mutating(normalized)
+
+    def _policy_block_tool(
+        self,
+        *,
+        state: TurnState,
+        call: ToolCall,
+        pass_id: str,
+        message: str,
+        on_event: Optional[Callable[[JsonObject], None]] = None,
+    ) -> None:
+        result = {
+            "ok": False,
+            "data": None,
+            "error": {
+                "code": "E_POLICY",
+                "message": message,
+            },
+            "meta": {},
+        }
+        self.emit(on_event, {"type": "tool_result", "name": call.name, "id": call.id, "result": result})
+        tool_message = {
+            "role": "tool",
+            "tool_call_id": call.id,
+            "name": call.name,
+            "content": self.safe_json_dumps(self.tool_result_for_history(call.name, result)),
+        }
+        state.dynamic_history.append(tool_message)
+        state.skill_exchanges.append(tool_message)
+        self.record_tool_effects(state, call, result, policy_blocked=True)
+        self._trace_add(
+            state,
+            "tool_results",
+            {
+                "pass_id": pass_id,
+                "id": call.id,
+                "name": call.name,
+                "result": result,
+                "policy_blocked": True,
+                "finished_at": time.time(),
+            },
+        )
+
+    def build_turn_state(
+        self,
+        ctx,
+        selected: list[SkillManifest],
+        history_messages: list[ChatMessage],
+        classification,
+        *,
+        collaboration_mode: str = "execute",
+    ) -> TurnState:
+        return self.policy_engine.build_turn_state(
+            ctx,
+            selected,
+            history_messages,
+            classification,
+            collaboration_mode=self._normalize_collaboration_mode(collaboration_mode),
+        )
 
     def refresh_search_tools_enabled(self, state: TurnState) -> None:
         self.policy_engine.refresh_search_tools_enabled(state)
@@ -343,6 +421,8 @@ class TurnOrchestrator:
         )
 
     def coerce_workspace_action_failure(self, state: TurnState, result: AgentTurnResult, *, stop_event, pass_id: str) -> AgentTurnResult:
+        if self._is_plan_mode(state):
+            return result
         if result.status != "done" or not state.requires_workspace_action or self.workspace_mutation_count(state) > 0:
             return result
         outcome = self.workspace_action_outcome(state, result.content, stop_event=stop_event, pass_id=pass_id)
@@ -372,6 +452,7 @@ class TurnOrchestrator:
         return {
             "status": result.status,
             "error": result.error or "",
+            "collaboration_mode": self._normalize_collaboration_mode(getattr(state, "collaboration_mode", "execute")),
             "selected_skills": [getattr(skill, "id", "") for skill in state.selected],
             "loaded_skill_ids": list(getattr(state.ctx, "loaded_skill_ids", []) or []),
             "tool_counts": dict(state.completion.tool_counts),
@@ -418,6 +499,7 @@ class TurnOrchestrator:
             search_failures=state.completion.search_failure_count,
             fetched_urls=len(state.completion.fetched_urls),
             blocked_domains=sorted(state.completion.blocked_fetch_domains),
+            collaboration_mode=self._normalize_collaboration_mode(getattr(state, "collaboration_mode", "execute")),
             content_chars=len(result.content),
             reasoning_chars=len(result.reasoning),
             finalization_attempts=state.telemetry.finalization_attempts,
@@ -549,7 +631,7 @@ class TurnOrchestrator:
                         "- If a search/fetch tool failed, explicitly say the web lookup failed in this turn and ask for a retry or alternate source.",
                     ]
                 )
-            if state.requires_workspace_action:
+            if state.requires_workspace_action and not self._is_plan_mode(state):
                 lines.extend(
                     [
                         "- If the requested workspace action was not completed with tools, say that plainly.",
@@ -586,7 +668,7 @@ class TurnOrchestrator:
                 causes.append(f"tool_failure={failure_detail}")
             if state.search_mode:
                 causes.append("search_evidence=insufficient")
-            if state.requires_workspace_action and self.workspace_mutation_count(state) == 0:
+            if state.requires_workspace_action and not self._is_plan_mode(state) and self.workspace_mutation_count(state) == 0:
                 causes.append("workspace_action=not_completed")
             if state.completion.tool_counts:
                 causes.append("finalization=blocked_markup_after_tools")
@@ -643,7 +725,7 @@ class TurnOrchestrator:
                         "I couldn't verify this from reliable web evidence because finalization kept failing in this turn. "
                         "Please retry."
                     )
-                if state.requires_workspace_action and self.workspace_mutation_count(state) == 0:
+                if state.requires_workspace_action and not self._is_plan_mode(state) and self.workspace_mutation_count(state) == 0:
                     return "I couldn't complete that workspace action in this turn because finalization kept failing. Please retry."
                 return "I couldn't produce a reliable final answer in this turn because finalization failed repeatedly. Please retry."
 
@@ -761,13 +843,20 @@ class TurnOrchestrator:
         branch_labels: Optional[List[str]] = None,
         attachments: Optional[List[str]] = None,
         loaded_skill_ids: Optional[List[str]] = None,
+        collaboration_mode: str = "execute",
         stop_event=None,
     ) -> TurnState:
         branch_labels = branch_labels or []
         attachments = attachments or []
         ctx = self.build_skill_context(user_input, branch_labels, attachments, history_messages, loaded_skill_ids or [])
         classification, selected = self.select_skills(ctx, stop_event)
-        return self.build_turn_state(ctx, selected, history_messages, classification)
+        return self.build_turn_state(
+            ctx,
+            selected,
+            history_messages,
+            classification,
+            collaboration_mode=collaboration_mode,
+        )
 
     def run_model_pass(
         self,
@@ -798,6 +887,14 @@ class TurnOrchestrator:
         system_messages = [{"role": "system", "content": system_content}]
         model_messages = self.context_mgr.prune(system_messages + state.dynamic_history, self.context_budget_max_tokens)
         tools = self.skill_runtime.tools_for_turn(state.selected, ctx=state.ctx)
+        if self._normalize_collaboration_mode(getattr(state, "collaboration_mode", "execute")) == "plan":
+            tools = [
+                item
+                for item in tools
+                if isinstance(item, dict)
+                and isinstance(item.get("function"), dict)
+                and self._tool_allowed_in_plan_mode(str(item["function"].get("name", "")).strip())
+            ]
         if (
             tools
             and self._latest_user_message_contains_vision_content(model_messages)
@@ -809,6 +906,7 @@ class TurnOrchestrator:
         pass_trace: dict[str, object] = {
             "pass_id": pass_id,
             "started_at": time.time(),
+            "collaboration_mode": self._normalize_collaboration_mode(getattr(state, "collaboration_mode", "execute")),
             "selected_skills": [getattr(skill, "id", "") for skill in state.selected],
             "tool_names": [
                 str(fn.get("name", "")).strip()
@@ -1013,37 +1111,46 @@ class TurnOrchestrator:
                     )
                 break
 
+            if (
+                self._normalize_collaboration_mode(getattr(state, "collaboration_mode", "execute")) == "plan"
+                and not self._tool_allowed_in_plan_mode(call.name)
+            ):
+                self._policy_block_tool(
+                    state=state,
+                    call=call,
+                    pass_id=pass_id,
+                    message=(
+                        f"{call.name} is not allowed in plan mode; "
+                        "use non-mutating inspection tools or switch to execute mode."
+                    ),
+                    on_event=on_event,
+                )
+                if self._is_stop_requested(stop_event):
+                    self.emit(
+                        on_event,
+                        {
+                            "type": "info",
+                            "text": f"Cancellation requested after completed tool '{call.name}'. Stopping turn.",
+                        },
+                    )
+                    return (
+                        "result",
+                        AgentTurnResult(
+                            status="cancelled",
+                            content="",
+                            reasoning=state.full_reasoning,
+                            skill_exchanges=state.skill_exchanges,
+                        ),
+                    )
+                continue
+
             if state.prefer_local_workspace_tools and self.skill_runtime.tool_is_blocked_for_local_workspace(call.name):
-                result = {
-                    "ok": False,
-                    "data": None,
-                    "error": {
-                        "code": "E_POLICY",
-                        "message": f"{call.name} is not allowed for local workspace file tasks; use workspace tools instead.",
-                    },
-                    "meta": {},
-                }
-                self.emit(on_event, {"type": "tool_result", "name": call.name, "id": call.id, "result": result})
-                tool_message = {
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "name": call.name,
-                    "content": self.safe_json_dumps(self.tool_result_for_history(call.name, result)),
-                }
-                state.dynamic_history.append(tool_message)
-                state.skill_exchanges.append(tool_message)
-                self.record_tool_effects(state, call, result, policy_blocked=True)
-                self._trace_add(
-                    state,
-                    "tool_results",
-                    {
-                        "pass_id": pass_id,
-                        "id": call.id,
-                        "name": call.name,
-                        "result": result,
-                        "policy_blocked": True,
-                        "finished_at": time.time(),
-                    },
+                self._policy_block_tool(
+                    state=state,
+                    call=call,
+                    pass_id=pass_id,
+                    message=f"{call.name} is not allowed for local workspace file tasks; use workspace tools instead.",
+                    on_event=on_event,
                 )
                 if self._is_stop_requested(stop_event):
                     self.emit(
@@ -1283,7 +1390,7 @@ class TurnOrchestrator:
             )
             return "finalized", finalized
 
-        if state.requires_workspace_action and self.workspace_mutation_count(state) == 0:
+        if not self._is_plan_mode(state) and state.requires_workspace_action and self.workspace_mutation_count(state) == 0:
             if not final.strip():
                 if not state.forced_action_retry:
                     state.forced_action_retry = True
@@ -1358,6 +1465,7 @@ class TurnOrchestrator:
         branch_labels: Optional[List[str]] = None,
         attachments: Optional[List[str]] = None,
         loaded_skill_ids: Optional[List[str]] = None,
+        collaboration_mode: str = "execute",
         stop_event=None,
         on_event: Optional[Callable[[JsonObject], None]] = None,
         confirm_shell: Optional[ShellConfirmationFn] = None,
@@ -1369,6 +1477,7 @@ class TurnOrchestrator:
             branch_labels=branch_labels,
             attachments=attachments,
             loaded_skill_ids=loaded_skill_ids,
+            collaboration_mode=collaboration_mode,
             stop_event=stop_event,
         )
 

@@ -100,6 +100,7 @@ class TurnPolicySnapshot:
     explicit_external_path: str = ""
     prefer_local_workspace_tools: bool = False
     shell_tool_exposed: bool = False
+    collaboration_mode: str = "execute"
 
 
 @dataclass(slots=True)
@@ -140,6 +141,7 @@ class TurnState:
     full_reasoning: str = ""
     pass_index: int = 0
     action_depth: int = 0
+    collaboration_mode: str = "execute"
     forced_search_retry: bool = False
     forced_action_retry: bool = False
     tool_budgets: dict[str, int] = field(default_factory=dict)

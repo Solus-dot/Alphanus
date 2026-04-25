@@ -524,6 +524,7 @@ def test_orchestrator_policy_snapshot_captures_forced_flags_and_shell_exposure(m
     assert snapshot.requires_workspace_action is True
     assert snapshot.forced_action_retry is True
     assert snapshot.shell_tool_exposed is True
+    assert snapshot.collaboration_mode == "execute"
 
 
 def test_orchestrator_records_workspace_evidence_and_policy_blocks(tmp_path: Path) -> None:
@@ -601,6 +602,87 @@ def test_orchestrator_search_budget_reason_is_explicit_for_time_sensitive_turns(
 
     assert reason is not None
     assert "search-attempt budget is exhausted" in reason
+
+
+def test_plan_mode_blocks_mutating_tool_calls(mocker, tmp_path: Path) -> None:
+    runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="create src folder",
+        time_sensitive=False,
+        workspace_action=True,
+    )
+    state.collaboration_mode = "plan"
+    execute_call = mocker.patch.object(runtime, "execute_tool_call")
+    stream_result = type(
+        "R",
+        (),
+        {
+            "tool_calls": [
+                ToolCall(
+                    stream_id="call_1",
+                    index=0,
+                    id="call_1",
+                    name="create_directory",
+                    arguments={"path": "src"},
+                )
+            ]
+        },
+    )()
+
+    action, result = orchestrator.execute_tool_calls(
+        system_content="system",
+        state=state,
+        pass_id="pass_1",
+        stream_result=stream_result,
+    )
+
+    assert action == "continue"
+    assert result is None
+    execute_call.assert_not_called()
+    assert state.completion.tool_counts.get("create_directory") == 1
+    assert state.evidence
+    blocked = state.evidence[-1]
+    assert blocked.name == "create_directory"
+    assert blocked.policy_blocked is True
+
+
+def test_plan_mode_allows_workspace_tree_read_only_tool(tmp_path: Path) -> None:
+    runtime, _classifier, orchestrator = _orchestrator_runtime(tmp_path)
+    runtime.tool_registration = lambda name: type("Reg", (), {"capability": "workspace_tree"})() if name == "workspace_tree" else None
+    runtime.tool_is_mutating = lambda _name: True
+
+    assert orchestrator._tool_allowed_in_plan_mode("workspace_tree") is True
+
+
+def test_finalize_response_skips_workspace_action_enforcement_in_plan_mode(tmp_path: Path) -> None:
+    _runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="delete temp files",
+        time_sensitive=False,
+        workspace_action=True,
+    )
+    state.collaboration_mode = "plan"
+    stream_result = type(
+        "R",
+        (),
+        {
+            "content": "Here is a step-by-step implementation plan.",
+            "finish_reason": "stop",
+        },
+    )()
+
+    action, result = orchestrator.finalize_response(
+        system_content="system",
+        state=state,
+        pass_id="pass_1",
+        stream_result=stream_result,
+    )
+
+    assert action == "result"
+    assert result is not None
+    assert result.status == "done"
+    assert "implementation plan" in result.content.lower()
+    assert state.forced_action_retry is False
 
 
 def test_skill_runtime_only_exposes_custom_tools_after_skill_view_load(tmp_path: Path) -> None:

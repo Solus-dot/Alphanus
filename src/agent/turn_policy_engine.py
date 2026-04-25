@@ -12,7 +12,16 @@ class TurnPolicyEngine:
         self.skill_runtime = skill_runtime
         self.default_tool_budgets = dict(default_tool_budgets)
 
-    def build_turn_state(self, ctx, selected, history_messages: list[ChatMessage], classification) -> TurnState:
+    def build_turn_state(
+        self,
+        ctx,
+        selected,
+        history_messages: list[ChatMessage],
+        classification,
+        *,
+        collaboration_mode: str = "execute",
+    ) -> TurnState:
+        normalized_mode = "plan" if str(collaboration_mode or "").strip().lower() == "plan" else "execute"
         state = TurnState(
             ctx=ctx,
             selected=selected,
@@ -27,6 +36,7 @@ class TurnPolicyEngine:
             search_tools_enabled=False,
             evidence=[],
             tool_budgets=dict(self.default_tool_budgets),
+            collaboration_mode=normalized_mode,
             trace_data={
                 "started_at": time.time(),
                 "passes": [],
@@ -78,4 +88,9 @@ class TurnPolicyEngine:
             explicit_external_path=state.explicit_external_path,
             prefer_local_workspace_tools=state.prefer_local_workspace_tools,
             shell_tool_exposed="shell_command" in turn_tool_names,
+            collaboration_mode=(
+                "plan"
+                if str(getattr(state, "collaboration_mode", "execute") or "").strip().lower() == "plan"
+                else "execute"
+            ),
         )

@@ -123,6 +123,15 @@ class PromptPolicyRenderer:
 
     def render_policy_rules(self, snapshot: TurnPolicySnapshot) -> str:
         blocks: List[str] = []
+        if str(getattr(snapshot, "collaboration_mode", "execute") or "").strip().lower() == "plan":
+            blocks.append(
+                "Plan mode rule:\n"
+                "- This turn is in plan mode.\n"
+                "- You may use only non-mutating tools to inspect context and gather facts.\n"
+                "- Do not perform workspace mutations, run shell commands, or execute skill scripts.\n"
+                "- If key intent or implementation details are missing, ask a concise follow-up question.\n"
+                "- Conclude with a concrete implementation plan that can be executed later."
+            )
         if snapshot.search_mode and snapshot.time_sensitive_query and snapshot.forced_search_retry:
             blocks.append(
                 "Mandatory retrieval rule:\n"
