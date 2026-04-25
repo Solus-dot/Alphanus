@@ -106,6 +106,22 @@ def test_workspace_reads_allowed_outside_home_root(tmp_path: Path):
     assert mgr.list_files(str(ws)) == ["notes.txt"]
 
 
+def test_resolve_text_section_accepts_reported_line_count_on_newline_terminated_files(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+
+    content = "alpha\nbeta\n"
+    resolved = mgr.resolve_text_section(content, start_line=3, end_line=3)
+
+    assert resolved["total_line_count"] == 3
+    assert resolved["start_line"] == 3
+    assert resolved["end_line"] == 3
+    assert resolved["content"] == ""
+
+
 def test_protected_internal_state_is_hidden_from_workspace_views(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"

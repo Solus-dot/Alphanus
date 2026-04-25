@@ -158,6 +158,105 @@ def test_workspace_ops_edit_file_supports_replace_all(tmp_path: Path):
     assert runtime.workspace.read_file("notes.txt") == "gamma\nalpha\ngamma\n"
 
 
+def test_workspace_ops_edit_file_supports_section_scoped_replacement(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("workspace-ops")
+    assert skill is not None
+
+    ctx = _ctx(str(runtime.workspace.workspace_root))
+    runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "notes.txt", "content": "head\nvalue=1\nmid\nvalue=1\n"},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    edited = runtime.execute_tool_call(
+        "edit_file",
+        {
+            "filepath": "notes.txt",
+            "old_string": "value=1",
+            "new_string": "value=2",
+            "start_line": 1,
+            "end_line": 2,
+        },
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    assert edited["ok"] is True
+    assert edited["data"]["section_scoped"] is True
+    assert edited["data"]["resolved_start_line"] == 1
+    assert edited["data"]["resolved_end_line"] == 2
+    assert edited["data"]["replacements_applied"] == 1
+    assert runtime.workspace.read_file("notes.txt") == "head\nvalue=2\nmid\nvalue=1\n"
+
+
+def test_workspace_ops_edit_file_supports_section_scoped_regex_replacement(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("workspace-ops")
+    assert skill is not None
+
+    ctx = _ctx(str(runtime.workspace.workspace_root))
+    runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "notes.txt", "content": "A=1\nA=2\nA=3\n"},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    edited = runtime.execute_tool_call(
+        "edit_file",
+        {
+            "filepath": "notes.txt",
+            "regex_pattern": r"A=\d",
+            "regex_replacement": "A=9",
+            "start_line": 2,
+            "end_line": 3,
+            "regex_replace_all": True,
+        },
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    assert edited["ok"] is True
+    assert edited["data"]["edit_mode"] == "regex_replace_all"
+    assert edited["data"]["section_scoped"] is True
+    assert edited["data"]["replacements_applied"] == 2
+    assert runtime.workspace.read_file("notes.txt") == "A=1\nA=9\nA=9\n"
+
+
+def test_workspace_ops_edit_file_rejects_mixed_edit_modes(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("workspace-ops")
+    assert skill is not None
+
+    ctx = _ctx(str(runtime.workspace.workspace_root))
+    runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "notes.txt", "content": "alpha\nbeta\n"},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    edited = runtime.execute_tool_call(
+        "edit_file",
+        {
+            "filepath": "notes.txt",
+            "content": "alpha\ngamma\n",
+            "old_string": "beta",
+            "new_string": "gamma",
+        },
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    assert edited["ok"] is False
+    assert edited["error"]["message"] == (
+        "edit_file requires exactly one edit mode: content, old_string/new_string, or regex_pattern/regex_replacement"
+    )
+
+
 def test_workspace_ops_create_directory_and_create_file(tmp_path: Path):
     runtime = _runtime(tmp_path)
     skill = runtime.get_skill("workspace-ops")
@@ -441,6 +540,121 @@ def test_workspace_ops_read_files_search_code_and_run_checks(tmp_path: Path):
     assert checks["ok"] is True
     assert checks["data"]["passed"] is True
     assert "pytest" in checks["data"]["stdout"].lower()
+
+
+def test_workspace_ops_read_file_supports_section_and_numbered_output(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("workspace-ops")
+    assert skill is not None
+
+    ctx = _ctx(str(runtime.workspace.workspace_root))
+    runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "notes.txt", "content": "alpha\nbeta\ngamma\ndelta"},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    read = runtime.execute_tool_call(
+        "read_file",
+        {
+            "filepath": "notes.txt",
+            "before_anchor": "alpha",
+            "after_anchor": "delta",
+            "include_line_numbers": True,
+        },
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert read["ok"] is True
+    assert read["data"]["content"] == "2: beta\n3: gamma\n"
+    assert read["data"]["section_scoped"] is True
+    assert read["data"]["resolved_start_line"] == 2
+    assert read["data"]["resolved_end_line"] == 3
+    assert read["data"]["before_anchor_line"] == 1
+    assert read["data"]["after_anchor_line"] == 4
+    assert read["data"]["returned_line_count"] == 2
+
+
+def test_workspace_ops_section_bounds_can_use_reported_line_count(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("workspace-ops")
+    assert skill is not None
+
+    ctx = _ctx(str(runtime.workspace.workspace_root))
+    runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "notes.txt", "content": "alpha\nbeta\n"},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    full_read = runtime.execute_tool_call(
+        "read_file",
+        {"filepath": "notes.txt"},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert full_read["ok"] is True
+    assert full_read["data"]["line_count"] == 3
+
+    section_read = runtime.execute_tool_call(
+        "read_file",
+        {"filepath": "notes.txt", "start_line": 3, "end_line": 3},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert section_read["ok"] is True
+    assert section_read["data"]["resolved_start_line"] == 3
+    assert section_read["data"]["resolved_end_line"] == 3
+    assert section_read["data"]["content"] == ""
+
+    edited = runtime.execute_tool_call(
+        "edit_file",
+        {
+            "filepath": "notes.txt",
+            "old_string": "beta",
+            "new_string": "gamma",
+            "start_line": 2,
+            "end_line": 3,
+        },
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert edited["ok"] is True
+    assert runtime.workspace.read_file("notes.txt") == "alpha\ngamma\n"
+
+
+def test_workspace_ops_search_code_supports_context_lines(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("workspace-ops")
+    assert skill is not None
+
+    ctx = _ctx(str(runtime.workspace.workspace_root))
+    runtime.execute_tool_call(
+        "create_file",
+        {
+            "filepath": "src/app.py",
+            "content": "def prelude():\n    return 1\n\ndef greet(name):\n    return f'hello {name}'\n",
+        },
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    search = runtime.execute_tool_call(
+        "search_code",
+        {"query": "greet(", "path": "src", "glob": "*.py", "before_context": 1, "after_context": 1},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert search["ok"] is True
+    assert search["data"]["count"] == 1
+    assert search["data"]["before_context"] == 1
+    assert search["data"]["after_context"] == 1
+    match = search["data"]["results"][0]
+    assert match["line"] == "def greet(name):"
+    assert match["before_context"] == [{"line_number": 3, "line": ""}]
+    assert match["after_context"] == [{"line_number": 5, "line": "    return f'hello {name}'"}]
 
 
 def test_workspace_ops_search_code_skips_blocked_home_descendants(tmp_path: Path):
