@@ -379,6 +379,110 @@ class WorkspaceManager:
             raise FileNotFoundError(str(target))
         return target.read_text(encoding="utf-8")
 
+    @staticmethod
+    def _line_count(text: str) -> int:
+        return text.count("\n") + (1 if text else 0)
+
+    @staticmethod
+    def _find_unique_anchor_line(lines: list[str], anchor: str, *, field_name: str) -> int:
+        needle = str(anchor)
+        if not needle:
+            raise ValueError(f"{field_name} must be non-empty when provided")
+        matches = [idx + 1 for idx, line in enumerate(lines) if needle in line]
+        if not matches:
+            raise ValueError(f"{field_name} was not found in the file")
+        if len(matches) > 1:
+            raise ValueError(f"{field_name} matched multiple lines; provide a more specific anchor")
+        return matches[0]
+
+    def resolve_text_section(
+        self,
+        content: str,
+        *,
+        start_line: Optional[int] = None,
+        end_line: Optional[int] = None,
+        before_anchor: str = "",
+        after_anchor: str = "",
+    ) -> dict[str, Any]:
+        lines_plain = content.split("\n") if content else []
+        total_line_count = self._line_count(content)
+        line_start_offsets: list[int] = []
+        if content:
+            line_start_offsets.append(0)
+            for idx, ch in enumerate(content):
+                if ch == "\n":
+                    line_start_offsets.append(idx + 1)
+            # Keep resolver line semantics aligned with tool metadata line_count.
+            # This includes the trailing empty logical line for newline-terminated files.
+            if len(line_start_offsets) != total_line_count:
+                raise RuntimeError("Failed to resolve logical line offsets")
+        selectors_applied = (
+            start_line is not None
+            or end_line is not None
+            or bool(before_anchor)
+            or bool(after_anchor)
+        )
+
+        if total_line_count == 0:
+            if selectors_applied:
+                raise ValueError("Section selectors cannot be resolved because the file is empty")
+            return {
+                "content": "",
+                "start_line": 0,
+                "end_line": 0,
+                "total_line_count": 0,
+                "start_offset": 0,
+                "end_offset": 0,
+                "before_anchor_line": 0,
+                "after_anchor_line": 0,
+                "selectors_applied": False,
+            }
+
+        resolved_start = int(start_line) if start_line is not None else 1
+        resolved_end = int(end_line) if end_line is not None else total_line_count
+
+        before_anchor_line = 0
+        after_anchor_line = 0
+        if before_anchor:
+            before_anchor_line = self._find_unique_anchor_line(lines_plain, before_anchor, field_name="before_anchor")
+            if start_line is None:
+                resolved_start = before_anchor_line + 1
+            elif resolved_start <= before_anchor_line:
+                raise ValueError("start_line must be after before_anchor")
+        if after_anchor:
+            after_anchor_line = self._find_unique_anchor_line(lines_plain, after_anchor, field_name="after_anchor")
+            if end_line is None:
+                resolved_end = after_anchor_line - 1
+            elif resolved_end >= after_anchor_line:
+                raise ValueError("end_line must be before after_anchor")
+
+        if before_anchor_line and after_anchor_line and before_anchor_line >= after_anchor_line:
+            raise ValueError("before_anchor must appear before after_anchor")
+        if resolved_start < 1 or resolved_start > total_line_count:
+            raise ValueError("start_line is out of range")
+        if resolved_end < 1 or resolved_end > total_line_count:
+            raise ValueError("end_line is out of range")
+        if resolved_start > resolved_end:
+            raise ValueError("Resolved section is empty; adjust line bounds or anchors")
+
+        start_offset = line_start_offsets[resolved_start - 1]
+        if resolved_end < total_line_count:
+            end_offset = line_start_offsets[resolved_end]
+        else:
+            end_offset = len(content)
+        section_content = content[start_offset:end_offset]
+        return {
+            "content": section_content,
+            "start_line": resolved_start,
+            "end_line": resolved_end,
+            "total_line_count": total_line_count,
+            "start_offset": start_offset,
+            "end_offset": end_offset,
+            "before_anchor_line": before_anchor_line,
+            "after_anchor_line": after_anchor_line,
+            "selectors_applied": selectors_applied,
+        }
+
     def read_files(self, paths: Iterable[str], max_chars_per_file: int = MAX_TOOL_TEXT_BYTES) -> List[dict[str, Any]]:
         limit = max(1, int(max_chars_per_file))
         files: List[dict[str, Any]] = []
@@ -591,6 +695,36 @@ class WorkspaceManager:
         except OSError:
             return str(self.workspace_root / candidate)
 
+    def _search_result_context(
+        self,
+        *,
+        file_path: str,
+        line_number: int,
+        before_context: int,
+        after_context: int,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        before_n = max(0, int(before_context))
+        after_n = max(0, int(after_context))
+        if before_n == 0 and after_n == 0:
+            return [], []
+        try:
+            resolved = self._resolve_read_path(file_path)
+            lines = resolved.read_text(encoding="utf-8").splitlines()
+        except (PermissionError, FileNotFoundError, UnicodeDecodeError, OSError):
+            return [], []
+        idx = max(0, int(line_number) - 1)
+        before_start = max(0, idx - before_n)
+        after_end = min(len(lines), idx + 1 + after_n)
+        before_rows = [
+            {"line_number": line_idx + 1, "line": lines[line_idx]}
+            for line_idx in range(before_start, min(idx, len(lines)))
+        ]
+        after_rows = [
+            {"line_number": line_idx + 1, "line": lines[line_idx]}
+            for line_idx in range(max(idx + 1, 0), after_end)
+        ]
+        return before_rows, after_rows
+
     def _search_code_with_rg(
         self,
         target: Path,
@@ -600,6 +734,8 @@ class WorkspaceManager:
         limit: int,
         case_sensitive: bool,
         fixed_strings: bool,
+        before_context: int,
+        after_context: int,
     ) -> Optional[dict[str, Any]]:
         if not self._is_relative_to(target, self.workspace_root):
             return None
@@ -612,6 +748,8 @@ class WorkspaceManager:
                 "results": [],
                 "truncated": False,
                 "backend": "rg",
+                "before_context": max(0, int(before_context)),
+                "after_context": max(0, int(after_context)),
             }
         if target.is_file() and glob and not fnmatch.fnmatch(target.name, glob):
             return {
@@ -622,6 +760,8 @@ class WorkspaceManager:
                 "results": [],
                 "truncated": False,
                 "backend": "rg",
+                "before_context": max(0, int(before_context)),
+                "after_context": max(0, int(after_context)),
             }
 
         rg_path = shutil.which("rg")
@@ -687,6 +827,15 @@ class WorkspaceManager:
                         "submatches": submatches,
                     }
                 )
+                if before_context > 0 or after_context > 0:
+                    before_rows, after_rows = self._search_result_context(
+                        file_path=str(results[-1]["filepath"]),
+                        line_number=int(results[-1]["line_number"]),
+                        before_context=before_context,
+                        after_context=after_context,
+                    )
+                    results[-1]["before_context"] = before_rows
+                    results[-1]["after_context"] = after_rows
                 if len(results) >= limit:
                     truncated = True
                     terminated_early = True
@@ -718,6 +867,8 @@ class WorkspaceManager:
             "results": results,
             "truncated": truncated,
             "backend": "rg",
+            "before_context": max(0, int(before_context)),
+            "after_context": max(0, int(after_context)),
         }
 
     def search_code(
@@ -729,6 +880,8 @@ class WorkspaceManager:
         max_results: int = 50,
         case_sensitive: bool = False,
         fixed_strings: bool = True,
+        before_context: int = 0,
+        after_context: int = 0,
     ) -> dict[str, Any]:
         needle = str(query)
         if not needle.strip():
@@ -745,6 +898,8 @@ class WorkspaceManager:
             limit=limit,
             case_sensitive=case_sensitive,
             fixed_strings=fixed_strings,
+            before_context=before_context,
+            after_context=after_context,
         )
         if rg_result is not None:
             return rg_result
@@ -756,7 +911,8 @@ class WorkspaceManager:
                 content = file_path.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
                 continue
-            for line_number, line in enumerate(content.splitlines(), start=1):
+            content_lines = content.splitlines()
+            for line_number, line in enumerate(content_lines, start=1):
                 haystack = line if case_sensitive else line.lower()
                 if pattern in haystack:
                     start = haystack.find(pattern)
@@ -768,6 +924,18 @@ class WorkspaceManager:
                             "submatches": [{"match": needle, "start": start, "end": start + len(needle)}],
                         }
                     )
+                    if before_context > 0 or after_context > 0:
+                        idx = line_number - 1
+                        before_start = max(0, idx - max(0, int(before_context)))
+                        after_end = min(len(content_lines), idx + 1 + max(0, int(after_context)))
+                        results[-1]["before_context"] = [
+                            {"line_number": row_idx + 1, "line": content_lines[row_idx]}
+                            for row_idx in range(before_start, idx)
+                        ]
+                        results[-1]["after_context"] = [
+                            {"line_number": row_idx + 1, "line": content_lines[row_idx]}
+                            for row_idx in range(idx + 1, after_end)
+                        ]
                     if len(results) >= limit:
                         return {
                             "query": needle,
@@ -777,6 +945,8 @@ class WorkspaceManager:
                             "results": results,
                             "truncated": True,
                             "backend": "python",
+                            "before_context": max(0, int(before_context)),
+                            "after_context": max(0, int(after_context)),
                         }
         return {
             "query": needle,
@@ -786,6 +956,8 @@ class WorkspaceManager:
             "results": results,
             "truncated": False,
             "backend": "python",
+            "before_context": max(0, int(before_context)),
+            "after_context": max(0, int(after_context)),
         }
 
     def run_checks(
