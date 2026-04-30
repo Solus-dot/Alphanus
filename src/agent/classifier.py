@@ -15,6 +15,27 @@ from agent.runtime_hooks import TurnRuntimeHooks
 from agent.telemetry import TelemetryEmitter
 from core.types import JsonObject, TurnClassification
 
+_EXPLICIT_PATH_PATTERN = re.compile(
+    r'(?P<quoted>(?P<quote>["\'`])(?P<quoted_path>(?:~/|/)[^"\'`]+?)(?P=quote))'
+    r"|(?P<plain>(?<![:/\w])(?P<plain_path>(?:~/|/)[^\s\"'`]+))"
+)
+_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
+_DRAFT_CLARIFICATION_RE = re.compile(
+    r"\b(?:which|what|where|when|who|clarify|confirm|should i|do you want|would you like|can you tell me)\b"
+)
+_DRAFT_DEFER_RE = re.compile(
+    r"\b(?:you can|please|you should)\b[^.\n]{0,100}\b(?:create|delete|remove|rename|move|edit|update|write|save|copy|paste|type|run|execute|use)\b"
+)
+_DRAFT_COMPLETION_RE = re.compile(
+    r"\b(?:i|we)\s+(?:have\s+)?(?:already\s+)?(?:successfully\s+)?(?:deleted|removed|created|updated|edited|modified|renamed|moved|wrote|saved)\b"
+)
+_DRAFT_WORKSPACE_DONE_RE = re.compile(r"\b(?:workspace is now empty|done with workspace tools)\b")
+_DRAFT_LIMITATION_RE = re.compile(
+    r"\b(?:could not|couldn't|cannot|can't|unable|not allowed|blocked|permission|permissions|unsupported|unavailable|disabled)\b"
+)
+_WORKSPACE_FILE_TOKEN_RE = re.compile(r"(?<![\w/.-])(?:[\w.-]+/)*[\w.-]+\.[a-z0-9]{1,16}\b", re.IGNORECASE)
+_WORKSPACE_ABS_PATH_RE = re.compile(r"(?<![:/\w])(?:~/|/)[^\s\"'`]+")
+
 
 class TurnClassifier:
     def __init__(
@@ -149,11 +170,7 @@ class TurnClassifier:
     def _explicit_path_outside_workspace(self, text: str) -> str:
         workspace_root = Path(self.skill_runtime.workspace.workspace_root)
         seen: set[str] = set()
-        path_pattern = re.compile(
-            r'(?P<quoted>(?P<quote>["\'`])(?P<quoted_path>(?:~/|/)[^"\'`]+?)(?P=quote))'
-            r"|(?P<plain>(?<![:/\w])(?P<plain_path>(?:~/|/)[^\s\"'`]+))"
-        )
-        for match in path_pattern.finditer(text or ""):
+        for match in _EXPLICIT_PATH_PATTERN.finditer(text or ""):
             raw = match.group("quoted_path") or match.group("plain_path") or ""
             cleaned = raw if match.group("quoted_path") else raw.rstrip(".,:;!?)]}")
             expanded = Path(os.path.expanduser(cleaned))
@@ -187,7 +204,7 @@ class TurnClassifier:
             payload = json.loads(stripped)
             return payload if isinstance(payload, dict) else {}
         except json.JSONDecodeError:
-            match = re.search(r"\{.*\}", stripped, flags=re.DOTALL)
+            match = _JSON_OBJECT_RE.search(stripped)
             if not match:
                 return {}
             try:
@@ -207,12 +224,7 @@ class TurnClassifier:
             return False
         if "?" in assistant_reply:
             return True
-        return bool(
-            re.search(
-                r"\b(?:which|what|where|when|who|clarify|confirm|should i|do you want|would you like|can you tell me)\b",
-                lowered,
-            )
-        )
+        return bool(_DRAFT_CLARIFICATION_RE.search(lowered))
 
     @classmethod
     def _draft_defers_workspace_action_to_user(cls, assistant_reply: str) -> bool:
@@ -221,24 +233,16 @@ class TurnClassifier:
             return False
         if "yourself" in lowered or "manually" in lowered:
             return True
-        return bool(
-            re.search(
-                r"\b(?:you can|please|you should)\b[^.\n]{0,100}\b(?:create|delete|remove|rename|move|edit|update|write|save|copy|paste|type|run|execute|use)\b",
-                lowered,
-            )
-        )
+        return bool(_DRAFT_DEFER_RE.search(lowered))
 
     @classmethod
     def _draft_claims_workspace_completion_without_evidence(cls, assistant_reply: str) -> bool:
         lowered = cls._normalized_text(assistant_reply)
         if not lowered:
             return False
-        if re.search(
-            r"\b(?:i|we)\s+(?:have\s+)?(?:already\s+)?(?:successfully\s+)?(?:deleted|removed|created|updated|edited|modified|renamed|moved|wrote|saved)\b",
-            lowered,
-        ):
+        if _DRAFT_COMPLETION_RE.search(lowered):
             return True
-        return bool(re.search(r"\b(?:workspace is now empty|done with workspace tools)\b", lowered))
+        return bool(_DRAFT_WORKSPACE_DONE_RE.search(lowered))
 
     @classmethod
     def _draft_reports_supported_limitation(cls, assistant_reply: str) -> bool:
@@ -247,12 +251,7 @@ class TurnClassifier:
             return False
         if "no workspace tool actually ran" in lowered:
             return True
-        return bool(
-            re.search(
-                r"\b(?:could not|couldn't|cannot|can't|unable|not allowed|blocked|permission|permissions|unsupported|unavailable|disabled)\b",
-                lowered,
-            )
-        )
+        return bool(_DRAFT_LIMITATION_RE.search(lowered))
 
     @staticmethod
     def _evidence_shows_blocked_or_unavailable_tool(evidence: dict[str, JSONValue]) -> bool:
@@ -275,9 +274,9 @@ class TurnClassifier:
         lowered = cls._normalized_text(raw)
         if not lowered:
             return False
-        if re.search(r"(?<![\w/.-])(?:[\w.-]+/)*[\w.-]+\.[a-z0-9]{1,16}\b", raw, flags=re.IGNORECASE):
+        if _WORKSPACE_FILE_TOKEN_RE.search(raw):
             return True
-        if re.search(r"(?<![:/\w])(?:~/|/)[^\s\"'`]+", raw):
+        if _WORKSPACE_ABS_PATH_RE.search(raw):
             return True
         if re.search(r"\b(?:file|files|folder|folders|filename|filenames)\b", lowered):
             return True
