@@ -9,6 +9,16 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
+from agent.backend_profiles import (
+    AUTO_BACKEND_PROFILE,
+    UNKNOWN_BACKEND_PROFILE,
+    detect_backend_profile,
+    is_local_backend_profile,
+    looks_like_backend_model_fallback_error,
+    normalize_backend_profile,
+    profile_capabilities,
+    rewrite_payload_for_profile,
+)
 from core.runtime_config import ProviderConfig
 from core.streaming import build_ssl_context, should_retry, stream_chat_completions as core_stream_chat_completions
 
@@ -82,6 +92,7 @@ class OpenAICompatibleProvider:
         self.models_endpoint = config.models_endpoint
         endpoint_mode = str(config.endpoint_mode or "auto").strip().lower()
         self.endpoint_mode = endpoint_mode if endpoint_mode in {"auto", "responses", "chat"} else "auto"
+        self.backend_profile_requested = normalize_backend_profile(config.backend_profile)
         self.tls_verify = config.tls_verify
         self.ca_bundle_path = config.ca_bundle_path
         self.allow_cross_host = config.allow_cross_host
@@ -101,6 +112,11 @@ class OpenAICompatibleProvider:
         self._resolved_endpoint_mode = "chat"
         self._fallback_events: list[dict[str, object]] = []
         self._compatibility = ProviderCompatibilityProfile(selected_endpoint_mode="chat")
+        self._backend_profile_detected = UNKNOWN_BACKEND_PROFILE
+        self._backend_profile_reason = "not detected"
+        self._backend_incompatibility_last = ""
+        self._backend_model_integrity_state = "unknown"
+        self._refresh_backend_profile(None)
 
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities()
@@ -113,17 +129,102 @@ class OpenAICompatibleProvider:
         return headers
 
     def compatibility_profile(self) -> dict[str, object]:
-        return self._compatibility.to_json()
+        profile = self._compatibility.to_json()
+        profile["backend_profile"] = self.backend_profile_info()
+        return profile
 
     def fallback_events(self) -> list[dict[str, object]]:
         return [dict(item) for item in self._fallback_events[-10:]]
+
+    def backend_profile_info(self) -> dict[str, object]:
+        selected = self._selected_backend_profile()
+        return {
+            "requested": self.backend_profile_requested,
+            "detected": self._backend_profile_detected,
+            "selected": selected,
+            "reason": self._backend_profile_reason,
+            "capabilities": profile_capabilities(selected).to_json(),
+            "model_integrity": self._backend_model_integrity_state,
+            "incompatibility_last": self._backend_incompatibility_last,
+        }
+
+    def _selected_backend_profile(self) -> str:
+        if self.backend_profile_requested != AUTO_BACKEND_PROFILE:
+            return self.backend_profile_requested
+        return self._backend_profile_detected
+
+    def _record_backend_incompatibility(self, message: str, *, pass_id: str = "") -> None:
+        self._backend_incompatibility_last = str(message or "").strip()
+        self._backend_model_integrity_state = "violation"
+        payload: dict[str, object] = {
+            "profile": self._selected_backend_profile(),
+            "reason": self._backend_incompatibility_last,
+        }
+        if pass_id:
+            payload["pass_id"] = pass_id
+        self.telemetry.emit("backend_model_integrity_violation", **payload)
+
+    def _refresh_backend_profile(self, models_payload: Optional[object]) -> None:
+        detected, reason = detect_backend_profile(
+            requested=self.backend_profile_requested,
+            base_url=self.base_url,
+            model_endpoint=self.model_endpoint,
+            responses_endpoint=self.responses_endpoint,
+            models_endpoint=self.models_endpoint,
+            models_payload=models_payload,
+        )
+        changed = (detected != self._backend_profile_detected) or (reason != self._backend_profile_reason)
+        self._backend_profile_detected = detected
+        self._backend_profile_reason = reason
+        if changed:
+            self.telemetry.emit(
+                "backend_profile_detected",
+                requested=self.backend_profile_requested,
+                detected=detected,
+                selected=self._selected_backend_profile(),
+                reason=reason,
+            )
+
+    def _normalize_payload_for_backend(self, payload: dict[str, object], *, mode: str, pass_id: str) -> dict[str, object]:
+        selected = self._selected_backend_profile()
+        normalized, changes = rewrite_payload_for_profile(payload, mode=mode, profile=selected)
+        if changes:
+            self.telemetry.emit(
+                "backend_payload_rewrite_applied",
+                pass_id=pass_id,
+                profile=selected,
+                changes=changes,
+            )
+        return normalized
+
+    def _enforce_model_integrity(self, payload: dict[str, object], status: ModelStatus, *, pass_id: str) -> None:
+        selected = self._selected_backend_profile()
+        if not is_local_backend_profile(selected):
+            return
+        if not profile_capabilities(selected).strict_model_integrity:
+            self._backend_model_integrity_state = "ok"
+            return
+        requested_model = str(payload.get("model", "")).strip()
+        active_model = str(status.model_name or "").strip()
+        if not requested_model or not active_model:
+            return
+        if requested_model == active_model:
+            self._backend_model_integrity_state = "ok"
+            return
+        message = (
+            f"Backend model mismatch for profile '{selected}': requested '{requested_model}' "
+            f"but backend reports loaded model '{active_model}'. "
+            "Load the requested model first or set an explicit backend profile that supports model switching."
+        )
+        self._record_backend_incompatibility(message, pass_id=pass_id)
+        raise RuntimeError(message)
 
     def _compatibility_cache_key(self) -> tuple[str, str, str, str]:
         return (
             str(self.base_url),
             str(self.model_endpoint),
             str(self.responses_endpoint),
-            str(self.auth_header or ""),
+            f"{self.auth_header or ''}|{self.backend_profile_requested}|{self._backend_profile_detected}",
         )
 
     def _is_endpoint_unsupported(self, exc: Exception) -> bool:
@@ -144,17 +245,21 @@ class OpenAICompatibleProvider:
         return any(marker in text for marker in markers)
 
     def _select_endpoint_mode(self) -> str:
+        selected_backend = self._selected_backend_profile()
+        backend_capabilities = profile_capabilities(selected_backend)
         if self.endpoint_mode in {"responses", "chat"}:
             selected = self.endpoint_mode
+            if selected == "responses" and not backend_capabilities.supports_responses:
+                selected = "chat"
             self._resolved_endpoint_mode = selected
             self._compatibility = ProviderCompatibilityProfile(
                 selected_endpoint_mode=selected,
-                supports_responses=selected == "responses",
+                supports_responses=backend_capabilities.supports_responses and selected == "responses",
                 supports_chat=selected == "chat",
-                supports_tools=True,
+                supports_tools=backend_capabilities.supports_tools,
                 supports_stream=True,
                 supports_reasoning=True,
-                supports_multimodal_input=selected == "responses",
+                supports_multimodal_input=backend_capabilities.supports_multimodal_input and selected == "responses",
                 supports_multimodal_output=selected == "responses",
                 supports_structured_output=selected == "responses",
                 tier="tier1-guaranteed",
@@ -166,17 +271,17 @@ class OpenAICompatibleProvider:
         if key == self._profile_cache_key and self._resolved_endpoint_mode in {"responses", "chat"}:
             return self._resolved_endpoint_mode
         self._profile_cache_key = key
-        self._resolved_endpoint_mode = "responses"
+        self._resolved_endpoint_mode = "responses" if backend_capabilities.supports_responses else "chat"
         self._compatibility = ProviderCompatibilityProfile(
-            selected_endpoint_mode="responses",
-            supports_responses=True,
+            selected_endpoint_mode=self._resolved_endpoint_mode,
+            supports_responses=backend_capabilities.supports_responses,
             supports_chat=True,
-            supports_tools=True,
+            supports_tools=backend_capabilities.supports_tools,
             supports_stream=True,
             supports_reasoning=True,
-            supports_multimodal_input=True,
-            supports_multimodal_output=True,
-            supports_structured_output=True,
+            supports_multimodal_input=backend_capabilities.supports_multimodal_input,
+            supports_multimodal_output=backend_capabilities.supports_multimodal_input and self._resolved_endpoint_mode == "responses",
+            supports_structured_output=self._resolved_endpoint_mode == "responses",
             tier="tier1-guaranteed",
         )
         return self._resolved_endpoint_mode
@@ -319,36 +424,53 @@ class OpenAICompatibleProvider:
 
     @staticmethod
     def extract_model_name(payload: object) -> Optional[str]:
+        keys = (
+            "id",
+            "name",
+            "model",
+            "model_id",
+            "model_name",
+            "loaded_model",
+            "default_model",
+        )
+        visited: set[int] = set()
+
         def candidate(value: object) -> Optional[str]:
-            text = str(value or "").strip()
+            if not isinstance(value, str):
+                return None
+            text = value.strip()
             return text or None
 
-        def from_item(item: object) -> Optional[str]:
+        def walk(item: object) -> Optional[str]:
             if isinstance(item, dict):
-                for key in ("id", "name", "model"):
+                marker = id(item)
+                if marker in visited:
+                    return None
+                visited.add(marker)
+                for key in keys:
                     picked = candidate(item.get(key))
                     if picked:
                         return picked
-            return candidate(item)
-
-        if isinstance(payload, dict):
-            data = payload.get("data")
-            if isinstance(data, list):
-                for item in data:
-                    picked = from_item(item)
+                for value in item.values():
+                    if isinstance(value, (dict, list)):
+                        picked = walk(value)
+                        if picked:
+                            return picked
+                return None
+            if isinstance(item, list):
+                marker = id(item)
+                if marker in visited:
+                    return None
+                visited.add(marker)
+                for value in item:
+                    picked = walk(value)
                     if picked:
                         return picked
-            elif data is not None:
-                picked = from_item(data)
-                if picked:
-                    return picked
-            return from_item(payload)
+                return None
+            return None
 
-        if isinstance(payload, list):
-            for item in payload:
-                picked = from_item(item)
-                if picked:
-                    return picked
+        if isinstance(payload, (dict, list)):
+            return walk(payload)
         return None
 
     @staticmethod
@@ -546,6 +668,7 @@ class OpenAICompatibleProvider:
                     endpoint=self.models_endpoint,
                 )
             )
+        self._refresh_backend_profile(payload)
 
         model_name = self.extract_model_name(payload) or current.model_name
         if context_window is None:
@@ -816,6 +939,11 @@ class OpenAICompatibleProvider:
         if chunk_usage:
             out["usage"] = chunk_usage
         if not isinstance(choices, list) or not choices:
+            message = chunk.get("message")
+            if isinstance(message, dict):
+                out["content"] = str(message.get("content") or "")
+            if bool(chunk.get("done")):
+                out["finish_reason"] = str(chunk.get("done_reason") or "stop")
             return out
         choice = choices[0] if isinstance(choices[0], dict) else {}
         delta = choice.get("delta", {}) if isinstance(choice.get("delta"), dict) else {}
@@ -930,15 +1058,34 @@ class OpenAICompatibleProvider:
                 if status.state == "offline":
                     message = status.last_error or f"Model endpoint offline: {self.models_endpoint}"
                     raise RuntimeError(f"Model endpoint offline: {message}")
-                result = self.stream_completion(payload, stop_event, on_event, pass_id=pass_id, mode=mode)
+                normalized_payload = self._normalize_payload_for_backend(payload, mode=mode, pass_id=pass_id)
+                if not str(normalized_payload.get("model", "")).strip():
+                    model_name = str(status.model_name or "").strip()
+                    if model_name:
+                        normalized_payload = dict(normalized_payload)
+                        normalized_payload["model"] = model_name
+                self._enforce_model_integrity(normalized_payload, status, pass_id=pass_id)
+                payload = normalized_payload
+                result = self.stream_completion(normalized_payload, stop_event, on_event, pass_id=pass_id, mode=mode)
                 self._resolved_endpoint_mode = mode
                 self._compatibility.selected_endpoint_mode = mode
                 if mode == "responses":
                     self._compatibility.supports_responses = True
                 if mode == "chat":
                     self._compatibility.supports_chat = True
+                if self._backend_model_integrity_state != "violation":
+                    self._backend_model_integrity_state = "ok"
+                    self._backend_incompatibility_last = ""
                 return result
             except Exception as exc:
+                if looks_like_backend_model_fallback_error(str(exc)) and is_local_backend_profile(self._selected_backend_profile()):
+                    message = (
+                        "Backend attempted implicit model fallback/download during this request. "
+                        "Alphanus aborted to preserve model integrity. "
+                        "Load the intended model explicitly and retry."
+                    )
+                    self._record_backend_incompatibility(message, pass_id=pass_id)
+                    raise RuntimeError(message) from exc
                 if (
                     self.endpoint_mode == "auto"
                     and mode == "responses"
