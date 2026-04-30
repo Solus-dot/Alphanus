@@ -154,6 +154,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default="",
         help="Preferred endpoint mode",
     )
+    init_parser.add_argument(
+        "--backend-profile",
+        type=str,
+        choices=["auto", "mlx_vlm", "llamacpp", "ollama", "vllm", "lmstudio"],
+        default="",
+        help="Backend compatibility profile",
+    )
     init_parser.add_argument("--api-key", type=str, default="", help="Model API key (writes to ~/.alphanus/.env)")
     init_parser.add_argument("--api-key-env", type=str, default="", help="Environment variable name for model API key")
     init_parser.add_argument("--search-provider", type=str, choices=["tavily", "brave"], default="", help="Search provider")
@@ -285,6 +292,7 @@ def _apply_reset_scope(base: Dict[str, Any], *, section: str) -> Dict[str, Any]:
             "model_endpoint",
             "models_endpoint",
             "endpoint_mode",
+            "backend_profile",
             "api_key",
             "api_key_env",
             "auth_header_template",
@@ -378,6 +386,9 @@ def _run_init(args: argparse.Namespace) -> int:
     )
     models_endpoint_default = str(base.get("agent", {}).get("models_endpoint", DEFAULT_CONFIG["agent"]["models_endpoint"]))
     endpoint_mode_default = str(base.get("agent", {}).get("endpoint_mode", DEFAULT_CONFIG["agent"]["endpoint_mode"]))
+    backend_profile_default = str(
+        base.get("agent", {}).get("backend_profile", DEFAULT_CONFIG["agent"].get("backend_profile", "auto"))
+    )
     api_key_ref_default = str(base.get("agent", {}).get("api_key", DEFAULT_CONFIG["agent"]["api_key"]))
     api_key_env_default = str(base.get("agent", {}).get("api_key_env", DEFAULT_CONFIG["agent"]["api_key_env"]))
     search_provider_default = str(base.get("search", {}).get("provider", DEFAULT_CONFIG["search"]["provider"]))
@@ -390,6 +401,7 @@ def _run_init(args: argparse.Namespace) -> int:
     responses_endpoint = responses_endpoint_default
     models_endpoint = models_endpoint_default
     endpoint_mode = endpoint_mode_default
+    backend_profile = backend_profile_default
     api_key_env = api_key_env_default
     api_key_ref = api_key_ref_default
     api_key_value = ""
@@ -409,6 +421,7 @@ def _run_init(args: argparse.Namespace) -> int:
             )
             models_endpoint = str(getattr(args, "models_endpoint", "") or "").strip() or models_endpoint_default
             endpoint_mode = str(getattr(args, "endpoint_mode", "") or "").strip() or endpoint_mode_default
+            backend_profile = str(getattr(args, "backend_profile", "") or "").strip() or backend_profile_default
             api_key_env = str(getattr(args, "api_key_env", "") or "").strip() or api_key_env_default
             api_key_ref = f"env:{api_key_env}"
             api_key_value = str(getattr(args, "api_key", "") or "").strip()
@@ -447,6 +460,7 @@ def _run_init(args: argparse.Namespace) -> int:
                 responses_endpoint = str(DEFAULT_CONFIG["agent"]["responses_endpoint"])
                 models_endpoint = str(DEFAULT_CONFIG["agent"]["models_endpoint"])
                 endpoint_mode = str(DEFAULT_CONFIG["agent"]["endpoint_mode"])
+                backend_profile = str(DEFAULT_CONFIG["agent"].get("backend_profile", "auto"))
                 print(theme.muted("Applied local preset for /v1/responses, /v1/chat/completions, and /v1/models."))
             else:
                 base_url = _prompt_with_default(
@@ -478,6 +492,23 @@ def _run_init(args: argparse.Namespace) -> int:
                         ("chat", "force /v1/chat/completions"),
                     ],
                     default=endpoint_mode_default if endpoint_mode_default in {"auto", "responses", "chat"} else "auto",
+                )
+                backend_profile = _prompt_choice(
+                    theme,
+                    "Backend profile:",
+                    [
+                        ("auto", "detect backend and apply compatibility rewrites"),
+                        ("mlx_vlm", "MLX-VLM tuned multimodal compatibility"),
+                        ("llamacpp", "llama.cpp-style local backend"),
+                        ("ollama", "Ollama OpenAI-compatible backend"),
+                        ("vllm", "vLLM OpenAI-compatible backend"),
+                        ("lmstudio", "LM Studio OpenAI-compatible backend"),
+                    ],
+                    default=(
+                        backend_profile_default
+                        if backend_profile_default in {"auto", "mlx_vlm", "llamacpp", "ollama", "vllm", "lmstudio"}
+                        else "auto"
+                    ),
                 )
             api_key_env = _prompt_with_default(
                 "API key env var",
@@ -525,6 +556,7 @@ def _run_init(args: argparse.Namespace) -> int:
             "responses_endpoint": responses_endpoint,
             "models_endpoint": models_endpoint,
             "endpoint_mode": endpoint_mode,
+            "backend_profile": backend_profile,
             "api_key": api_key_ref,
             "api_key_env": api_key_env,
         }
@@ -548,6 +580,7 @@ def _run_init(args: argparse.Namespace) -> int:
         print(f"  {theme.label('Model endpoint:')} {normalized['agent']['model_endpoint']}")
         print(f"  {theme.label('Models endpoint:')} {normalized['agent']['models_endpoint']}")
         print(f"  {theme.label('Endpoint mode:')} {normalized['agent']['endpoint_mode']}")
+        print(f"  {theme.label('Backend profile:')} {normalized['agent']['backend_profile']}")
         print(f"  {theme.label('API key ref:')} {normalized['agent']['api_key']}")
         print(f"  {theme.label('Search provider:')} {normalized['search']['provider']}")
         print(f"  {theme.label('Theme:')} {normalized['tui']['theme']}")

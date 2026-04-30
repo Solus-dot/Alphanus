@@ -59,6 +59,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "responses_endpoint": "http://127.0.0.1:8080/v1/responses",
         "models_endpoint": "http://127.0.0.1:8080/v1/models",
         "endpoint_mode": "chat",
+        "backend_profile": "auto",
         "api_key": "env:ALPHANUS_API_KEY",
         "api_key_env": "ALPHANUS_API_KEY",
         "auth_header_template": "Authorization: Bearer {api_key}",
@@ -465,6 +466,17 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         _warn(warnings, f"agent.endpoint_mode: unsupported {endpoint_mode!r}, using 'auto'")
         endpoint_mode = "auto"
     agent_cfg["endpoint_mode"] = endpoint_mode
+    backend_profile = _coerce_string(
+        agent_cfg.get("backend_profile"),
+        str(default_agent.get("backend_profile", "auto")),
+        path="agent.backend_profile",
+        warnings=warnings,
+        allow_empty=False,
+    ).lower()
+    if backend_profile not in {"auto", "mlx_vlm", "llamacpp", "ollama", "vllm", "lmstudio"}:
+        _warn(warnings, f"agent.backend_profile: unsupported {backend_profile!r}, using 'auto'")
+        backend_profile = "auto"
+    agent_cfg["backend_profile"] = backend_profile
     api_key_value = _coerce_string(
         agent_cfg.get("api_key"),
         str(default_agent.get("api_key", "env:ALPHANUS_API_KEY")),

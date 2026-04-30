@@ -159,6 +159,7 @@ class Agent:
         required_env = provider_env.get(provider, "")
         search_ready = bool(os.environ.get(required_env, "").strip()) if required_env else False
         ready = self.ensure_ready(timeout_s=min(self.readiness_timeout_s, 3.0))
+        backend_info = self.llm_client.backend_profile_info()
         return {
             "agent": {
                 "base_url": self.llm_client.base_url,
@@ -169,6 +170,13 @@ class Agent:
                 "endpoint_policy_error": endpoint_error or "",
                 "auth_header_source": self.llm_client.auth_source,
                 "endpoint_mode": self.llm_client.endpoint_mode,
+                "backend_profile_requested": str(backend_info.get("requested", "auto")),
+                "backend_profile_detected": str(backend_info.get("detected", "unknown")),
+                "backend_profile_selected": str(backend_info.get("selected", "unknown")),
+                "backend_profile_reason": str(backend_info.get("reason", "")),
+                "backend_capabilities": backend_info.get("capabilities", {}),
+                "backend_model_integrity": str(backend_info.get("model_integrity", "unknown")),
+                "backend_incompatibility_last": str(backend_info.get("incompatibility_last", "")),
                 "compatibility_profile": self.llm_client.compatibility_profile(),
                 "fallback_events": self.llm_client.fallback_events(),
                 "runtime_profile": str(runtime_cfg.get("profile", "standard")),

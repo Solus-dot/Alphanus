@@ -157,6 +157,7 @@ class ProviderConfig:
     responses_endpoint: str
     models_endpoint: str
     endpoint_mode: str
+    backend_profile: str
     tls_verify: bool
     ca_bundle_path: str
     allow_cross_host: bool
@@ -196,6 +197,10 @@ class ProviderConfig:
             endpoint_mode=_coerce_string(
                 agent_cfg.get("endpoint_mode"),
                 "chat",
+            ).lower(),
+            backend_profile=_coerce_string(
+                agent_cfg.get("backend_profile"),
+                "auto",
             ).lower(),
             tls_verify=_coerce_bool(agent_cfg.get("tls_verify"), True),
             ca_bundle_path=_coerce_string(agent_cfg.get("ca_bundle_path"), ""),

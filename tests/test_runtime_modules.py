@@ -746,6 +746,40 @@ def test_llm_client_call_with_retry_retries_once_on_retryable_failure(mocker) ->
     assert any(event.get("type") == "info" and "Retrying request (1/1)" in str(event.get("text", "")) for event in events)
 
 
+def test_llm_client_call_with_retry_injects_status_model_when_payload_omits_model(mocker) -> None:
+    llm_client = LLMClient({"agent": {}})
+    expected = StreamPassResult(finish_reason="stop", content="ok")
+    mocker.patch.object(
+        llm_client.provider,
+        "_status_allows_immediate_send",
+        return_value=ModelStatus(state="online", model_name="mlx-community/Qwen2.5-VL-7B-Instruct-4bit"),
+    )
+    stream = mocker.patch.object(llm_client.provider, "stream_completion", return_value=expected)
+
+    result = llm_client.call_with_retry({"messages": []}, stop_event=None, on_event=None, pass_id="pass_1")
+
+    assert result == expected
+    sent_payload = stream.call_args.args[0]
+    assert sent_payload["model"] == "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"
+
+
+def test_llm_client_call_with_retry_keeps_explicit_model_override(mocker) -> None:
+    llm_client = LLMClient({"agent": {}})
+    expected = StreamPassResult(finish_reason="stop", content="ok")
+    mocker.patch.object(
+        llm_client.provider,
+        "_status_allows_immediate_send",
+        return_value=ModelStatus(state="online", model_name="mlx-community/Qwen2.5-VL-7B-Instruct-4bit"),
+    )
+    stream = mocker.patch.object(llm_client.provider, "stream_completion", return_value=expected)
+
+    result = llm_client.call_with_retry({"messages": [], "model": "custom-model"}, stop_event=None, on_event=None, pass_id="pass_1")
+
+    assert result == expected
+    sent_payload = stream.call_args.args[0]
+    assert sent_payload["model"] == "custom-model"
+
+
 def test_llm_client_build_payload_uses_responses_shape_when_forced() -> None:
     llm_client = LLMClient({"agent": {"endpoint_mode": "responses"}})
 
@@ -802,3 +836,67 @@ def test_llm_client_auto_mode_falls_back_from_responses_to_chat(mocker) -> None:
     assert result.content == "ok"
     assert calls[0].endswith("/v1/responses")
     assert calls[1].endswith("/v1/chat/completions")
+
+
+def test_llm_client_detects_backend_profile_from_models_payload() -> None:
+    llm_client = LLMClient({"agent": {"backend_profile": "auto"}})
+
+    llm_client.provider._refresh_backend_profile({"data": [{"id": "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"}]})
+    info = llm_client.backend_profile_info()
+
+    assert info["requested"] == "auto"
+    assert info["detected"] == "mlx_vlm"
+    assert info["selected"] == "mlx_vlm"
+
+
+def test_llm_client_rewrites_mlx_vlm_multimodal_payload(mocker) -> None:
+    llm_client = LLMClient({"agent": {"backend_profile": "mlx_vlm"}})
+    payload = llm_client.build_payload(
+        model_messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe this"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,ZmFrZQ=="}},
+                ],
+            }
+        ],
+        thinking=True,
+    )
+    expected = StreamPassResult(finish_reason="stop", content="ok")
+    mocker.patch.object(
+        llm_client.provider,
+        "_status_allows_immediate_send",
+        return_value=ModelStatus(state="online", model_name="mlx-community/Qwen2.5-VL-7B-Instruct-4bit"),
+    )
+    stream = mocker.patch.object(llm_client.provider, "stream_completion", return_value=expected)
+
+    result = llm_client.call_with_retry(payload, stop_event=None, on_event=None, pass_id="pass_1")
+
+    assert result == expected
+    sent = stream.call_args.args[0]
+    assert "chat_template_kwargs" not in sent
+    assert "stream_options" not in sent
+    assert sent["messages"][0]["content"][1]["image_url"] == "data:image/png;base64,ZmFrZQ=="
+
+
+def test_llm_client_fails_fast_on_local_backend_model_mismatch(mocker) -> None:
+    llm_client = LLMClient({"agent": {"backend_profile": "llamacpp"}})
+    mocker.patch.object(
+        llm_client.provider,
+        "_status_allows_immediate_send",
+        return_value=ModelStatus(state="online", model_name="qwen-3"),
+    )
+    mocker.patch.object(llm_client.provider, "stream_completion")
+
+    try:
+        llm_client.call_with_retry(
+            {"messages": [{"role": "user", "content": "hello"}], "model": "llava-1.5b"},
+            stop_event=None,
+            on_event=None,
+            pass_id="pass_1",
+        )
+        raise AssertionError("Expected model integrity mismatch error")
+    except RuntimeError as exc:
+        assert "Backend model mismatch" in str(exc)
+

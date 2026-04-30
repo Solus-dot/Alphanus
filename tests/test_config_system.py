@@ -41,6 +41,7 @@ def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
             "readiness_poll_s": 0,
             "max_action_depth": -8,
             "max_tokens": "0",
+            "backend_profile": "unsupported-backend",
         },
         "context": {"context_limit": 200, "safety_margin": 5000},
         "skills": {"strict_capability_policy": "bad"},
@@ -55,6 +56,7 @@ def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
     assert normalized["agent"]["readiness_poll_s"] == 0.05
     assert normalized["agent"]["max_action_depth"] == 1
     assert normalized["agent"]["max_tokens"] is None
+    assert normalized["agent"]["backend_profile"] == "auto"
     assert normalized["context"]["context_limit"] == 512
     assert normalized["context"]["safety_margin"] < normalized["context"]["context_limit"]
     assert normalized["skills"]["strict_capability_policy"] == DEFAULT_CONFIG["skills"]["strict_capability_policy"]
@@ -298,6 +300,7 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
 
     assert provider.connect_timeout_s == 3.0
     assert provider.per_turn_retries == 2
+    assert provider.backend_profile == "auto"
     assert provider.auth_header == "Authorization: Bearer demo"
     assert skills.python_executable == "/usr/bin/python3"
     assert ui.theme == "gruvbox-dark-soft"

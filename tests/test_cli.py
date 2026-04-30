@@ -236,6 +236,16 @@ def test_parser_accepts_init_theme_section_and_alias() -> None:
     assert args.theme == "catppuccin"
 
 
+def test_parser_accepts_backend_profile_flag() -> None:
+    parser = alphanus_cli._build_parser()
+
+    args = parser.parse_args(["init", "model", "--non-interactive", "--backend-profile", "mlx_vlm"])
+
+    assert args.command == "init"
+    assert args.section == "model"
+    assert args.backend_profile == "mlx_vlm"
+
+
 def test_doctor_json_output_is_machine_readable(monkeypatch, capsys, tmp_path) -> None:
     monkeypatch.setattr(
         alphanus_cli,

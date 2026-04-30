@@ -43,6 +43,7 @@ class LLMClient:
         self.models_endpoint = self.provider.models_endpoint
         self.base_url = self.provider.base_url
         self.endpoint_mode = self.provider.endpoint_mode
+        self.backend_profile = self.provider.backend_profile_requested
         self.allow_cross_host = self.provider.allow_cross_host
         self.request_timeout_s = self.provider.request_timeout_s
         self.readiness_timeout_s = self.provider.readiness_timeout_s
@@ -109,6 +110,9 @@ class LLMClient:
 
     def fallback_events(self) -> list[dict[str, object]]:
         return self.provider.fallback_events()
+
+    def backend_profile_info(self) -> Dict[str, object]:
+        return self.provider.backend_profile_info()
 
     @staticmethod
     def stop_requested(stop_event) -> bool:

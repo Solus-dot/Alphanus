@@ -3661,6 +3661,8 @@ def test_doctor_report_supports_brave_provider(mocker, runtime: SkillRuntime, mo
     assert report["search"]["provider"] == "brave"
     assert report["search"]["ready"] is True
     assert report["search"]["reason"] == ""
+    assert report["agent"]["backend_profile_requested"] == "auto"
+    assert report["agent"]["backend_profile_selected"] in {"unknown", "auto", "mlx_vlm", "llamacpp", "ollama", "vllm", "lmstudio"}
 
 
 def test_fetch_model_name_reads_first_model_id(mocker, runtime: SkillRuntime):
@@ -3891,6 +3893,17 @@ def test_reload_config_resets_model_status_cache(runtime: SkillRuntime):
 
 def test_fetch_model_name_accepts_top_level_model_field(runtime: SkillRuntime):
     assert Agent._extract_model_name({"model": "qwen2.5-coder-7b"}) == "qwen2.5-coder-7b"
+
+
+def test_fetch_model_name_accepts_nested_model_id_field(runtime: SkillRuntime):
+    assert (
+        Agent._extract_model_name({"models": [{"model_id": "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"}]})
+        == "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"
+    )
+
+
+def test_fetch_model_name_returns_none_when_models_list_is_empty(runtime: SkillRuntime):
+    assert Agent._extract_model_name({"object": "list", "data": []}) is None
 
 
 def test_extract_model_context_window_accepts_nested_metadata(runtime: SkillRuntime):
