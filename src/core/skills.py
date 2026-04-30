@@ -149,6 +149,8 @@ class RegisteredTool:
     module_path: Optional[Path] = None
     module_name: str = ""
     cwd: str = ""
+    command_template: str = ""
+    timeout_s: int = 30
 
 
 class SkillRuntime:
@@ -178,6 +180,8 @@ class SkillRuntime:
         self._all_skills: List[SkillManifest] = []
         self._skill_index: Dict[str, Dict[str, Any]] = {}
         self._tool_registry: Dict[str, RegisteredTool] = {}
+        self._skill_alias_index: Dict[str, str] = {}
+        self._skill_alias_collisions: Dict[str, Tuple[str, ...]] = {}
         self._list_skills_cache: Optional[Tuple[SkillManifest, ...]] = None
         self._enabled_skills_cache: Optional[Tuple[SkillManifest, ...]] = None
         self._skill_catalog_cache: Dict[int, str] = {}
@@ -332,8 +336,39 @@ class SkillRuntime:
             skill_entrypoints=self._skill_entrypoints,
             skill_runnable_scripts=self._skill_runnable_scripts,
         )
+        self._rebuild_skill_alias_index()
 
-    def _register_tool(self, tool_name: str, manifest: SkillManifest, spec: Dict[str, Any], **extra: Any) -> bool:
+    def _rebuild_skill_alias_index(self) -> None:
+        alias_map: Dict[str, List[str]] = {}
+        for skill in self.list_skills():
+            aliases = {
+                str(skill.id).strip(),
+                str(skill.name).strip(),
+                *(str(item).strip() for item in (getattr(skill, "aliases", []) or [])),
+            }
+            for alias in aliases:
+                key = alias.lower()
+                if not key:
+                    continue
+                alias_map.setdefault(key, []).append(skill.id)
+        self._skill_alias_index = {}
+        self._skill_alias_collisions = {}
+        for key, ids in alias_map.items():
+            unique_ids = tuple(sorted(dict.fromkeys(ids)))
+            if len(unique_ids) == 1:
+                self._skill_alias_index[key] = unique_ids[0]
+            elif len(unique_ids) > 1:
+                self._skill_alias_collisions[key] = unique_ids
+
+    def _register_tool(
+        self,
+        tool_name: str,
+        manifest: SkillManifest,
+        spec: Dict[str, Any],
+        *,
+        soft: bool = False,
+        **extra: Any,
+    ) -> bool:
         return SkillRegistry.register_tool(
             tool_registry=self._tool_registry,
             registered_tool_cls=RegisteredTool,
@@ -343,6 +378,7 @@ class SkillRuntime:
             append_unique=self._append_unique,
             spec=spec,
             extra=extra,
+            soft=soft,
         )
 
     @staticmethod
@@ -487,6 +523,39 @@ class SkillRuntime:
                     cwd=str(manifest.path),
                 ):
                     local_registered.append(tool_name)
+
+        for definition in list(getattr(manifest, "tool_definitions", []) or []):
+            if not isinstance(definition, dict):
+                continue
+            tool_name = str(definition.get("name", "")).strip()
+            if not tool_name:
+                continue
+            spec = definition.get("spec")
+            if not isinstance(spec, dict):
+                continue
+            command_template = str(definition.get("command", "")).strip()
+            if not command_template:
+                continue
+            cwd = str(definition.get("cwd", "skill")).strip().lower() or "skill"
+            if cwd not in {"workspace", "skill"}:
+                cwd = "skill"
+            timeout_raw = definition.get("timeout_s", 30)
+            try:
+                timeout_s = int(timeout_raw)
+            except Exception:
+                timeout_s = 30
+            if timeout_s <= 0:
+                timeout_s = 30
+            if self._register_tool(
+                tool_name,
+                manifest,
+                spec,
+                soft=True,
+                cwd=cwd,
+                command_template=command_template,
+                timeout_s=timeout_s,
+            ):
+                local_registered.append(tool_name)
 
         if manifest.required_tools:
             local_set = set(local_registered)
@@ -643,6 +712,13 @@ class SkillRuntime:
                 "user_invocable": bool(skill.user_invocable),
                 "model_invocable": not bool(skill.disable_model_invocation),
                 "validation_errors": list(skill.validation_errors),
+                "validation_warnings": list(getattr(skill, "validation_warnings", []) or []),
+                "aliases": list(getattr(skill, "aliases", []) or []),
+                "alias_conflicts": sorted(
+                    alias
+                    for alias, ids in self._skill_alias_collisions.items()
+                    if skill.id in ids
+                ),
             }
             for skill in self.list_skills()
         ]
@@ -670,13 +746,28 @@ class SkillRuntime:
         if exact is not None:
             return exact
         lowered = ref.lower()
+        collided_ids = self._skill_alias_collisions.get(lowered)
+        if collided_ids:
+            return None
+        alias_hit = self._skill_alias_index.get(lowered)
+        if alias_hit:
+            resolved = self.get_skill(alias_hit)
+            if resolved is not None:
+                return resolved
         for skill in self.list_skills():
             if skill.id.lower() == lowered or skill.name.lower() == lowered:
+                return skill
+            aliases = [str(item).strip().lower() for item in (getattr(skill, "aliases", []) or [])]
+            if lowered in aliases:
                 return skill
         prefix_matches = [
             skill
             for skill in self.list_skills()
-            if skill.id.lower().startswith(lowered) or skill.name.lower().startswith(lowered)
+            if (
+                skill.id.lower().startswith(lowered)
+                or skill.name.lower().startswith(lowered)
+                or any(str(item).strip().lower().startswith(lowered) for item in (getattr(skill, "aliases", []) or []))
+            )
         ]
         if len(prefix_matches) == 1:
             return prefix_matches[0]
@@ -688,6 +779,10 @@ class SkillRuntime:
             and (
                 re.sub(r"[^a-z0-9]+", "", skill.id.lower()) == normalized
                 or re.sub(r"[^a-z0-9]+", "", skill.name.lower()) == normalized
+                or any(
+                    re.sub(r"[^a-z0-9]+", "", str(item).strip().lower()) == normalized
+                    for item in (getattr(skill, "aliases", []) or [])
+                )
             )
         ]
         if len(fuzzy) == 1:
@@ -1090,7 +1185,11 @@ class SkillRuntime:
         key = str(name or "").strip()
         if not key:
             raise ValueError("Missing required argument: name")
-        skill = self.get_skill(key)
+        collided_ids = self._skill_alias_collisions.get(key.lower())
+        if collided_ids:
+            rendered = ", ".join(collided_ids[:4])
+            raise FileNotFoundError(f"Skill reference '{key}' is ambiguous ({rendered})")
+        skill = self.resolve_skill_reference(key)
         if skill is None or not skill.enabled or not skill.available:
             raise FileNotFoundError(f"Skill '{key}' not found")
         return skill

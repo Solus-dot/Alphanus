@@ -85,6 +85,7 @@ class SkillEntrypointDef:
     description: str
     command: str
     parameters: Dict[str, Any]
+    tool: str = "shell_command"
     intents: List[str] = field(default_factory=list)
     produces: List[str] = field(default_factory=list)
     install: List[str] = field(default_factory=list)
@@ -120,19 +121,25 @@ class SkillManifest:
     execution_allowed: bool = True
     adapter: str = "agentskills"
     validation_errors: List[str] = field(default_factory=list)
+    validation_warnings: List[str] = field(default_factory=list)
     frontmatter: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
     bundled_files: List[str] = field(default_factory=list)
+    aliases: List[str] = field(default_factory=list)
+    tool_definitions: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool = False) -> SkillManifest:
     frontmatter, prompt = extract_skill_doc(skill_doc, include_prompt=include_prompt)
+    warnings: List[str] = []
 
     skill_id = str(frontmatter.get("name", "")).strip()
     if not skill_id:
         raise ValueError("SKILL.md frontmatter requires 'name'")
-    if skill_id != child.name:
-        raise ValueError(f"SKILL.md name '{skill_id}' must match directory '{child.name}'")
+    aliases: List[str] = []
+    child_name = str(child.name).strip()
+    if child_name and child_name != skill_id:
+        aliases.append(child_name)
 
     description = str(frontmatter.get("description", "")).strip()
     if not description:
@@ -250,7 +257,10 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
             raise ValueError(f"SKILL.md execution.entrypoints[{idx}] missing command")
         tool = str(raw.get("tool", "shell_command")).strip() or "shell_command"
         if tool != "shell_command":
-            raise ValueError(f"SKILL.md execution.entrypoints[{idx}] unsupported tool '{tool}'")
+            warnings.append(
+                f"entrypoint '{name}' uses unsupported tool '{tool}'; normalized to shell_command"
+            )
+            tool = "shell_command"
         description = str(raw.get("description", "")).strip() or name
         parameters = raw.get("parameters")
         if parameters is None:
@@ -273,6 +283,7 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
                 description=description,
                 command=command,
                 parameters=parameters,
+                tool=tool,
                 intents=intents,
                 produces=produces_for_entry,
                 install=install,
@@ -306,8 +317,58 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         or tools_cfg_raw.get("required-tools")
     )
     raw_defs = metadata_tools_raw.get("definitions") or tools_cfg_raw.get("definitions") or []
-    if raw_defs:
-        raise ValueError("SKILL.md tools.definitions is not supported; use tools.py or execution.entrypoints")
+    if raw_defs and not isinstance(raw_defs, list):
+        raise ValueError("SKILL.md tools.definitions must be a list")
+    tool_definitions: List[Dict[str, Any]] = []
+    for idx, raw in enumerate(raw_defs or []):
+        if not isinstance(raw, dict):
+            warnings.append(f"tools.definitions[{idx}] must be a mapping; ignored")
+            continue
+        tool_name = str(raw.get("name", "")).strip()
+        if not tool_name:
+            warnings.append(f"tools.definitions[{idx}] missing name; ignored")
+            continue
+        tool_runtime = str(raw.get("tool", "shell_command")).strip() or "shell_command"
+        if tool_runtime != "shell_command":
+            warnings.append(
+                f"tool '{tool_name}' uses unsupported runtime tool '{tool_runtime}'; normalized to shell_command"
+            )
+        command = str(raw.get("command", "") or raw.get("run", "")).strip()
+        if not command:
+            warnings.append(f"tool '{tool_name}' missing command; ignored")
+            continue
+        parameters = raw.get("parameters")
+        if parameters is None:
+            parameters = {"type": "object", "properties": {}, "required": []}
+        if not isinstance(parameters, dict):
+            warnings.append(f"tool '{tool_name}' has non-object parameters schema; ignored")
+            continue
+        capability = str(raw.get("capability", "")).strip() or "skill_command"
+        description = str(raw.get("description", "")).strip() or tool_name
+        timeout_raw = raw.get("timeout-s", raw.get("timeout_s", 30))
+        try:
+            timeout_s = int(timeout_raw)
+        except Exception:
+            timeout_s = 30
+        if timeout_s <= 0:
+            timeout_s = 30
+        cwd = str(raw.get("cwd", "skill")).strip().lower() or "skill"
+        if cwd not in {"workspace", "skill"}:
+            warnings.append(f"tool '{tool_name}' has unsupported cwd '{cwd}'; defaulting to skill")
+            cwd = "skill"
+        tool_definitions.append(
+            {
+                "name": tool_name,
+                "spec": {
+                    "capability": capability,
+                    "description": description,
+                    "parameters": parameters,
+                },
+                "command": command,
+                "timeout_s": timeout_s,
+                "cwd": cwd,
+            }
+        )
     disable_model_invocation = _coerce_bool(
         frontmatter.get(
             "disable-model-invocation",
@@ -346,6 +407,9 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         user_invocable=user_invocable,
         format=adapter,
         adapter=adapter,
+        validation_warnings=warnings,
         frontmatter=dict(frontmatter),
         metadata=dict(metadata_raw),
+        aliases=_dedupe(aliases),
+        tool_definitions=tool_definitions,
     )

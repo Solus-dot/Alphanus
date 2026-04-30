@@ -49,11 +49,13 @@ class SkillRegistry:
         append_unique: Callable[[List[str], str], None],
         spec: Dict[str, Any],
         extra: Dict[str, Any],
+        soft: bool = False,
     ) -> bool:
+        warning_sink = manifest.validation_warnings if soft else manifest.validation_errors
         if tool_name in tool_registry:
             prev = tool_registry[tool_name]
             append_unique(
-                manifest.validation_errors,
+                warning_sink,
                 f"duplicate tool '{tool_name}' already registered by {getattr(prev, 'skill_id', '')}",
             )
             return False
@@ -62,7 +64,7 @@ class SkillRegistry:
         description = str(spec.get("description", "")).strip()
         parameters = spec.get("parameters")
         if not capability or not description or not isinstance(parameters, dict):
-            append_unique(manifest.validation_errors, f"invalid tool spec '{tool_name}'")
+            append_unique(warning_sink, f"invalid tool spec '{tool_name}'")
             return False
 
         tool_registry[tool_name] = registered_tool_cls(

@@ -1407,7 +1407,7 @@ Closing note.
     assert block.count("```") % 2 == 0
 
 
-def test_agentskill_name_must_match_directory(tmp_path: Path):
+def test_agentskill_name_aliases_directory_when_names_differ(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -1432,7 +1432,62 @@ Body
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
-    assert runtime.list_skills() == []
+    skill = runtime.get_skill("wrong-name")
+    assert skill is not None
+    assert "s1" in skill.aliases
+    assert runtime.resolve_skill_reference("s1") is skill
+
+
+def test_ambiguous_skill_alias_is_reported_and_not_resolved(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "alpha").mkdir(parents=True)
+    (skills / "beta").mkdir(parents=True)
+
+    (skills / "alpha" / "SKILL.md").write_text(
+        """
+---
+name: shared
+description: alpha
+---
+Alpha
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "beta" / "SKILL.md").write_text(
+        """
+---
+name: alpha
+description: beta
+---
+Beta
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    ctx = SkillContext(
+        user_input="load",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+    with pytest.raises(FileNotFoundError):
+        runtime.skill_view("alpha", "", ctx)
+    report = runtime.skill_health_report()
+    alpha_row = next(item for item in report if item["id"] == "shared")
+    beta_row = next(item for item in report if item["id"] == "alpha")
+    assert "alpha" in alpha_row["aliases"]
+    assert "alpha" in alpha_row["alias_conflicts"]
+    assert "alpha" in beta_row["alias_conflicts"]
 
 
 def test_agentskill_required_tools_missing_fails_load(tmp_path: Path):
@@ -1479,7 +1534,7 @@ def execute(tool_name, args, env):
     assert listed[0].validation_errors == ["missing required tools: create_file"]
 
 
-def test_command_definition_manifest_is_rejected(tmp_path: Path):
+def test_command_definition_manifest_registers_and_executes(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -1500,7 +1555,7 @@ tools:
     - name: echo_text
       capability: utility_echo
       description: Echo text.
-      command: python3 scripts/echo_text.py
+      command: python3 scripts/echo_text.py {text}
       parameters:
         type: object
         properties:
@@ -1516,13 +1571,10 @@ Echo
     (skills / "echo-skill" / "scripts" / "echo_text.py").write_text(
         """
 import json
-import os
 import sys
 
 def main():
-    raw = os.getenv("ALPHANUS_TOOL_ARGS_JSON") or sys.stdin.read() or "{}"
-    args = json.loads(raw)
-    out = {"ok": True, "data": {"text": args["text"]}, "error": None, "meta": {}}
+    out = {"ok": True, "data": {"text": sys.argv[1]}, "error": None, "meta": {}}
     print(json.dumps(out))
     return 0
 
@@ -1536,10 +1588,10 @@ if __name__ == "__main__":
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"capabilities": {"shell_require_confirmation": False, "dangerously_skip_permissions": True}},
     )
     skill = runtime.get_skill("echo-skill")
-    assert skill is None
-    assert runtime.list_skills() == []
+    assert skill is not None
 
     ctx = SkillContext(
         user_input="echo this",
@@ -1548,9 +1600,61 @@ if __name__ == "__main__":
         workspace_root=str(ws),
         memory_hits=[],
     )
-    out = runtime.execute_tool_call("echo_text", {"text": "hello"}, selected=[], ctx=ctx)
-    assert out["ok"] is False
-    assert out["error"]["code"] == "E_UNSUPPORTED"
+    out = runtime.execute_tool_call("echo_text", {"text": "hello"}, selected=[skill], ctx=ctx)
+    assert out["ok"] is True
+    assert out["data"]["text"] == "hello"
+
+
+def test_entrypoint_non_shell_tool_is_normalized_and_runs(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "report-pdf" / "scripts").mkdir(parents=True)
+
+    (skills / "report-pdf" / "SKILL.md").write_text(
+        """
+---
+name: report-pdf
+description: Create report files.
+execution:
+  entrypoints:
+    - name: create_report
+      tool: run_checks
+      command: python3 {skill_root}/scripts/create_report.py {workspace_root}/report.txt
+      parameters:
+        type: object
+        properties: {}
+---
+Create reports.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "report-pdf" / "scripts" / "create_report.py").write_text(
+        "from pathlib import Path\nimport sys\nPath(sys.argv[1]).write_text('ok', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"capabilities": {"shell_require_confirmation": False, "dangerously_skip_permissions": True}},
+    )
+    skill = runtime.get_skill("report-pdf")
+    assert skill is not None
+    assert any("normalized to shell_command" in msg for msg in skill.validation_warnings)
+    ctx = SkillContext(
+        user_input="create report",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+    out = runtime.execute_tool_call("run_skill", {"entrypoint": "create_report"}, selected=[skill], ctx=ctx)
+    assert out["ok"] is True
+    assert (ws / "report.txt").read_text(encoding="utf-8") == "ok"
 
 
 def test_skill_prompt_is_loaded_lazily(tmp_path: Path):
@@ -1931,7 +2035,7 @@ Generate the report through the compact execution contract.
     assert (ws / "compact-report.txt").read_text(encoding="utf-8") == "compact"
 
 
-def test_frontmatter_metadata_command_tool_is_blocked(tmp_path: Path):
+def test_frontmatter_metadata_command_tool_is_supported(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -1959,7 +2063,7 @@ metadata:
       - name: echo_text
         capability: utility_echo
         description: Echo text.
-        command: python3 scripts/echo_text.py
+        command: python3 scripts/echo_text.py {text}
         parameters:
           type: object
           properties:
@@ -1975,13 +2079,10 @@ Echo
     (skills / "meta-skill" / "scripts" / "echo_text.py").write_text(
         """
 import json
-import os
 import sys
 
 def main():
-    raw = os.getenv("ALPHANUS_TOOL_ARGS_JSON") or sys.stdin.read() or "{}"
-    args = json.loads(raw)
-    print(json.dumps({"text": args["text"]}))
+    print(json.dumps({"text": sys.argv[1]}))
     return 0
 
 if __name__ == "__main__":
@@ -1994,13 +2095,23 @@ if __name__ == "__main__":
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"capabilities": {"shell_require_confirmation": False, "dangerously_skip_permissions": True}},
     )
     skill = runtime.get_skill("meta-skill")
-    assert skill is None
-    assert runtime.list_skills() == []
+    assert skill is not None
+    ctx = SkillContext(
+        user_input="echo",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+    out = runtime.execute_tool_call("echo_text", {"text": "hello"}, selected=[skill], ctx=ctx)
+    assert out["ok"] is True
+    assert out["data"]["text"] == "hello"
 
 
-def test_unsupported_command_definition_never_invokes_subprocess(tmp_path: Path, monkeypatch):
+def test_command_definition_non_json_output_returns_stdout(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -2041,9 +2152,10 @@ print("definitely not json")
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"capabilities": {"shell_require_confirmation": False, "dangerously_skip_permissions": True}},
     )
     skill = runtime.get_skill("bad-output")
-    assert skill is None
+    assert skill is not None
 
     ctx = SkillContext(
         user_input="bad",
@@ -2052,22 +2164,12 @@ print("definitely not json")
         workspace_root=str(ws),
         memory_hits=[],
     )
-    called = False
-
-    def fail_run(*args, **kwargs):
-        nonlocal called
-        called = True
-        raise AssertionError("subprocess.run should not be called for disabled command tools")
-
-    monkeypatch.setattr(skills_module.subprocess, "run", fail_run)
-
-    out = runtime.execute_tool_call("bad_tool", {}, selected=[], ctx=ctx)
-    assert out["ok"] is False
-    assert out["error"]["code"] == "E_UNSUPPORTED"
-    assert called is False
+    out = runtime.execute_tool_call("bad_tool", {}, selected=[skill], ctx=ctx)
+    assert out["ok"] is True
+    assert "definitely not json" in out["data"]["stdout"]
 
 
-def test_command_tool_timeout_definition_manifest_is_rejected(tmp_path: Path):
+def test_command_tool_timeout_definition_reports_timeout(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -2111,10 +2213,20 @@ time.sleep(2)
         skills_dir=str(skills),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"capabilities": {"shell_require_confirmation": False, "dangerously_skip_permissions": True}},
     )
     skill = runtime.get_skill("slow-skill")
-    assert skill is None
-    assert runtime.list_skills() == []
+    assert skill is not None
+    ctx = SkillContext(
+        user_input="wait",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+    out = runtime.execute_tool_call("slow_tool", {}, selected=[skill], ctx=ctx)
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_TIMEOUT"
 
 
 def test_skill_health_report_includes_provenance(tmp_path: Path):

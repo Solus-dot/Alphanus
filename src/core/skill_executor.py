@@ -45,11 +45,52 @@ class SkillExecutor:
             return env.request_user_input(args)
         if reg.name == self._run_skill_tool_name:
             return self.execute_run_skill_tool(args, env)
+        if str(getattr(reg, "command_template", "")).strip():
+            return self.execute_registered_command_tool(reg, args, env)
         if reg.module is None and reg.module_path:
             reg.module = runtime._load_module(reg.module_path, reg.module_name or f"alphanus_tools_{reg.skill_id}")
         if reg.module is None or not hasattr(reg.module, "execute"):
             raise self._protocol_error_cls(f"Tool '{reg.name}' has no callable execute() handler")
         return reg.module.execute(reg.name, args, env)
+
+    def execute_registered_command_tool(self, reg, args: Dict[str, Any], env) -> Dict[str, Any]:
+        runtime = self.runtime
+        skill = runtime.get_skill(str(getattr(reg, "skill_id", "")).strip())
+        if skill is None or not skill.path:
+            raise FileNotFoundError("Selected skill root is unavailable")
+        template_values: Dict[str, Any] = {
+            "workspace_root": str(runtime.workspace.workspace_root),
+            "skill_root": str(skill.path),
+        }
+        template_values.update(args)
+        command = self.resolve_entrypoint_placeholders(str(reg.command_template), template_values)
+        timeout_s = max(1, int(getattr(reg, "timeout_s", 30) or 30))
+        cwd_mode = str(getattr(reg, "cwd", "skill")).strip().lower() or "skill"
+        command_cwd = str(skill.path) if cwd_mode == "skill" else str(runtime.workspace.workspace_root)
+        run_data = self.run_shell_workflow_command(command, env, timeout_s, cwd=command_cwd)
+        stdout = str(run_data.get("stdout", "") or "").strip()
+        if stdout:
+            candidate = stdout.splitlines()[-1].strip()
+            try:
+                parsed = json.loads(candidate)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                if {"ok", "data", "error"}.issubset(parsed.keys()):
+                    return parsed
+                parsed.setdefault("skill_id", skill.id)
+                parsed.setdefault("tool_name", reg.name)
+                parsed.setdefault("command", command)
+                return parsed
+        return {
+            "skill_id": skill.id,
+            "tool_name": reg.name,
+            "command": command,
+            "stdout": run_data.get("stdout", ""),
+            "stderr": run_data.get("stderr", ""),
+            "returncode": run_data.get("returncode", 0),
+            "cwd": run_data.get("cwd", ""),
+        }
 
     def execute_tool_call(
         self,
@@ -259,4 +300,3 @@ class SkillExecutor:
             out["meta"] = meta
             return out
         return self._ok(result, duration_ms)
-
