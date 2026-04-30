@@ -45,3 +45,23 @@ def test_non_strict_local_backends_allow_model_switch(mocker) -> None:
 
         assert result == expected
         stream.assert_called_once()
+
+
+def test_non_strict_model_switch_sets_integrity_state_ok(mocker) -> None:
+    llm_client = LLMClient({"agent": {"backend_profile": "ollama"}})
+    expected = StreamPassResult(finish_reason="stop", content="ok")
+    mocker.patch.object(
+        llm_client.provider,
+        "_status_allows_immediate_send",
+        return_value=ModelStatus(state="online", model_name="qwen-3"),
+    )
+    mocker.patch.object(llm_client.provider, "stream_completion", return_value=expected)
+
+    llm_client.call_with_retry(
+        {"messages": [{"role": "user", "content": "hello"}], "model": "llava-1.5b"},
+        stop_event=None,
+        on_event=None,
+        pass_id="pass_state_ok",
+    )
+
+    assert llm_client.backend_profile_info()["model_integrity"] == "ok"
