@@ -370,6 +370,18 @@ uv run pyright
 uv run vulture src tests
 ```
 
+Autoresearch-style optimization loop (whole program, functionality-gated):
+
+```bash
+# initialize baseline
+uv run python tools/autoresearch_optimize.py init --description "baseline"
+
+# run after each refactor attempt
+uv run python tools/autoresearch_optimize.py evaluate --description "simplify X"
+```
+
+The loop keeps changes only when tests pass and tracked LOC decreases. See `optimization/program.md` for the workflow.
+
 ---
 
 ## Status and Scope
