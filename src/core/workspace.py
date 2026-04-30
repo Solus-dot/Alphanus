@@ -702,17 +702,33 @@ class WorkspaceManager:
         line_number: int,
         before_context: int,
         after_context: int,
+        line_cache: Optional[dict[str, Optional[list[str]]]] = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         before_n = max(0, int(before_context))
         after_n = max(0, int(after_context))
         if before_n == 0 and after_n == 0:
             return [], []
+        cache_key = str(file_path)
+        if line_cache is not None and cache_key in line_cache:
+            cached_lines = line_cache[cache_key]
+            if cached_lines is None:
+                return [], []
+            lines = cached_lines
+        else:
+            try:
+                resolved = self._resolve_read_path(file_path)
+                loaded_lines = resolved.read_text(encoding="utf-8").splitlines()
+            except (PermissionError, FileNotFoundError, UnicodeDecodeError, OSError):
+                if line_cache is not None:
+                    line_cache[cache_key] = None
+                return [], []
+            if line_cache is not None:
+                line_cache[cache_key] = loaded_lines
+            lines = loaded_lines
         try:
-            resolved = self._resolve_read_path(file_path)
-            lines = resolved.read_text(encoding="utf-8").splitlines()
-        except (PermissionError, FileNotFoundError, UnicodeDecodeError, OSError):
+            idx = max(0, int(line_number) - 1)
+        except Exception:
             return [], []
-        idx = max(0, int(line_number) - 1)
         before_start = max(0, idx - before_n)
         after_end = min(len(lines), idx + 1 + after_n)
         before_rows = [
@@ -788,6 +804,8 @@ class WorkspaceManager:
         argv.extend([needle, str(target)])
 
         results: List[dict[str, Any]] = []
+        filepath_cache: dict[str, str] = {}
+        context_line_cache: dict[str, Optional[list[str]]] = {}
         truncated = False
         terminated_early = False
         proc = subprocess.Popen(
@@ -808,6 +826,11 @@ class WorkspaceManager:
                     continue
                 data = event.get("data") or {}
                 path_data = data.get("path") or {}
+                raw_path = str(path_data.get("text", ""))
+                filepath = filepath_cache.get(raw_path)
+                if filepath is None:
+                    filepath = self._search_result_filepath(raw_path)
+                    filepath_cache[raw_path] = filepath
                 lines_data = data.get("lines") or {}
                 submatches = []
                 for match in data.get("submatches") or []:
@@ -821,7 +844,7 @@ class WorkspaceManager:
                     )
                 results.append(
                     {
-                        "filepath": self._search_result_filepath(str(path_data.get("text", ""))),
+                        "filepath": filepath,
                         "line_number": int(data.get("line_number", 0)),
                         "line": str(lines_data.get("text", "")).rstrip("\n"),
                         "submatches": submatches,
@@ -833,6 +856,7 @@ class WorkspaceManager:
                         line_number=int(results[-1]["line_number"]),
                         before_context=before_context,
                         after_context=after_context,
+                        line_cache=context_line_cache,
                     )
                     results[-1]["before_context"] = before_rows
                     results[-1]["after_context"] = after_rows

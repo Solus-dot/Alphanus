@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import io
 import json
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 from core.memory import LexicalMemory
 from core.skills import SkillContext, SkillRuntime
@@ -761,6 +761,68 @@ def test_workspace_search_code_tolerates_rg_io_exit_with_partial_results(tmp_pat
     assert result["backend"] == "rg"
     assert result["count"] == 1
     assert result["results"][0]["filepath"].endswith("src/app.py")
+
+
+def test_workspace_search_code_reuses_context_lines_for_same_file(tmp_path: Path, monkeypatch):
+    manager = WorkspaceManager(str(tmp_path / "ws"), home_root=str(tmp_path / "home"))
+    (manager.workspace_root / "src").mkdir(parents=True)
+    (manager.workspace_root / "src" / "app.py").write_text(
+        "def greet_one(name):\n    return name\n\ndef greet_two(name):\n    return name\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("core.workspace.shutil.which", lambda name: "/usr/bin/rg" if name == "rg" else None)
+
+    match_one = {
+        "type": "match",
+        "data": {
+            "path": {"text": "src/app.py"},
+            "lines": {"text": "def greet_one(name):\n"},
+            "line_number": 1,
+            "submatches": [{"match": {"text": "greet_"}, "start": 4, "end": 10}],
+        },
+    }
+    match_two = {
+        "type": "match",
+        "data": {
+            "path": {"text": "src/app.py"},
+            "lines": {"text": "def greet_two(name):\n"},
+            "line_number": 4,
+            "submatches": [{"match": {"text": "greet_"}, "start": 4, "end": 10}],
+        },
+    }
+
+    class FakePopen:
+        def __init__(self, *args, **kwargs):
+            self.stdout = io.StringIO(json.dumps(match_one) + "\n" + json.dumps(match_two) + "\n")
+            self.stderr = io.StringIO("")
+            self.returncode = 0
+
+        def terminate(self):
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    resolve_calls: list[str] = []
+    original_resolve_read_path = manager._resolve_read_path
+
+    def _tracking_resolve(path: str, extra_allowed_roots=None):
+        resolved = original_resolve_read_path(path, extra_allowed_roots=extra_allowed_roots)
+        if str(path).endswith("src/app.py"):
+            resolve_calls.append(str(path))
+        return resolved
+
+    monkeypatch.setattr(manager, "_resolve_read_path", _tracking_resolve)
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+
+    result = manager.search_code("greet_", path="src", glob="*.py", before_context=1, after_context=1)
+
+    assert result["backend"] == "rg"
+    assert result["count"] == 2
+    assert len(resolve_calls) == 1
 
 
 def test_workspace_ops_run_checks_rejects_non_verification_commands(tmp_path: Path):
