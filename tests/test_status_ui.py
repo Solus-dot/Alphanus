@@ -58,6 +58,23 @@ def test_topbar_right_handles_missing_model_usage() -> None:
     assert "—" in right
 
 
+def test_topbar_right_includes_backend_profile_and_integrity_when_present() -> None:
+    right = topbar_right(
+        endpoint="http://127.0.0.1:8080/v1/chat/completions",
+        context_tokens=512,
+        context_window=8192,
+        width=180,
+        endpoint_state="online",
+        backend_profile="mlx_vlm",
+        model_integrity="violation",
+    )
+
+    assert "be:" in right
+    assert "mlx_vlm" in right
+    assert "int:" in right
+    assert "fail" in right
+
+
 def test_sidebar_renderers_include_tree_and_inspector_details() -> None:
     tree = ConvTree()
     turn = tree.add_turn("hello")

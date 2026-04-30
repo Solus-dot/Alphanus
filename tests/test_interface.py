@@ -1332,7 +1332,7 @@ def test_current_model_refresh_interval_is_adaptive() -> None:
     assert tui._current_model_refresh_interval() == 2.0
 
 
-def test_apply_model_status_refresh_clears_model_name_when_offline() -> None:
+def test_apply_model_status_refresh_keeps_model_name_when_offline() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._status_runtime = StatusRuntimeState(
         model_status=ModelStatus(
@@ -1362,7 +1362,7 @@ def test_apply_model_status_refresh_clears_model_name_when_offline() -> None:
 
     state = tui._status_runtime
     assert state.model_status.state == "offline"
-    assert state.model_name is None
+    assert state.model_name == "qwen-stale"
     assert state.model_context_window == 8192
     assert state.refresh_fast_until > 0.0
     assert updates == ["status", "topbar"]

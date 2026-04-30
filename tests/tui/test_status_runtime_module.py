@@ -73,3 +73,14 @@ def test_apply_model_status_updates_host_views() -> None:
     assert host._status_runtime.model_context_window == 8192
     assert host.update_status_calls == 1
     assert host.update_topbar_calls == 1
+
+
+def test_apply_model_status_keeps_last_known_model_when_offline() -> None:
+    host = _Host()
+    host._status_runtime.model_name = "qwen"
+    host._status_runtime.model_context_window = 8192
+
+    apply_model_status(host, ModelStatus(state="offline", model_name=None, context_window=None))
+
+    assert host._status_runtime.model_name == "qwen"
+    assert host._status_runtime.model_context_window == 8192

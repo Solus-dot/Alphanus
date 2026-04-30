@@ -106,6 +106,8 @@ def topbar_right(
     width: int,
     endpoint_state: str = "unknown",
     collaboration_mode: str = "execute",
+    backend_profile: str = "",
+    model_integrity: str = "unknown",
     colors: Optional[dict[str, str]] = None,
 ) -> str:
     theme = _theme_colors(colors)
@@ -117,8 +119,18 @@ def topbar_right(
     if short_endpoint:
         endpoint_markup = f"[{theme['muted']}]{esc(_truncate(short_endpoint, 22 if width < 140 else 28))}[/{theme['muted']}]"
     mode_label = "plan" if str(collaboration_mode or "").strip().lower() == "plan" else "execute"
+    backend = str(backend_profile or "").strip().lower()
+    backend_markup = ""
+    if backend and backend not in {"auto", "unknown"} and width >= 120:
+        backend_markup = f"[dim]be:[/dim] [{theme['accent']}]{esc(_truncate(backend, 12))}[/{theme['accent']}]"
+    integrity = str(model_integrity or "").strip().lower()
+    integrity_markup = ""
+    if integrity == "violation":
+        integrity_markup = f"[dim]int:[/dim] [{theme['error']}]fail[/{theme['error']}]"
     return _join_topbar_segments(
         endpoint_markup,
+        backend_markup,
+        integrity_markup,
         _endpoint_state_markup(endpoint_state, width=width, colors=theme),
         f"[dim]ctx:[/dim] {ctx_markup}",
         f"[dim]mode:[/dim] [{theme['accent']}]{mode_label}[/{theme['accent']}]",
