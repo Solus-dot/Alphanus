@@ -148,40 +148,48 @@ class LexicalMemory:
         ordered_ids: List[int] = []
 
         try:
-            lines = self.storage_path.read_text(encoding="utf-8").splitlines()
+            handle = self.storage_path.open("r", encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             self.memories = []
             self._next_id = 1
             self._load_recovery_count += 1
             return
 
-        for line in lines:
-            text = line.strip()
-            if not text:
-                continue
-            try:
-                record = json.loads(text)
-            except json.JSONDecodeError:
-                self._load_recovery_count += 1
-                continue
-            if not isinstance(record, dict):
-                self._load_recovery_count += 1
-                continue
+        try:
+            for line in handle:
+                text = line.strip()
+                if not text:
+                    continue
+                try:
+                    record = json.loads(text)
+                except json.JSONDecodeError:
+                    self._load_recovery_count += 1
+                    continue
+                if not isinstance(record, dict):
+                    self._load_recovery_count += 1
+                    continue
 
-            schema_version = str(record.get("schema_version", "")).strip()
-            if schema_version != MEMORY_STORAGE_SCHEMA_VERSION:
-                self._load_unsupported_count += 1
-                continue
+                schema_version = str(record.get("schema_version", "")).strip()
+                if schema_version != MEMORY_STORAGE_SCHEMA_VERSION:
+                    self._load_unsupported_count += 1
+                    continue
 
-            try:
-                item = self._record_to_item(record)
-            except (KeyError, TypeError, ValueError):
-                self._load_recovery_count += 1
-                continue
+                try:
+                    item = self._record_to_item(record)
+                except (KeyError, TypeError, ValueError):
+                    self._load_recovery_count += 1
+                    continue
 
-            if item.id not in loaded_by_id:
-                ordered_ids.append(item.id)
-            loaded_by_id[item.id] = item
+                if item.id not in loaded_by_id:
+                    ordered_ids.append(item.id)
+                loaded_by_id[item.id] = item
+        except (OSError, UnicodeDecodeError):
+            self.memories = []
+            self._next_id = 1
+            self._load_recovery_count += 1
+            return
+        finally:
+            handle.close()
 
         self.memories = [loaded_by_id[memory_id] for memory_id in ordered_ids if memory_id in loaded_by_id]
         self._next_id = max((m.id for m in self.memories), default=0) + 1
@@ -211,15 +219,13 @@ class LexicalMemory:
                 os.unlink(tmp)
 
     def _save(self) -> None:
-        records = [self._item_to_record(item) for item in self.memories]
-        payload = "\n".join(json.dumps(record, sort_keys=True, ensure_ascii=False) for record in records)
-        if payload:
-            payload += "\n"
-
         fd, tmp = tempfile.mkstemp(prefix=self.storage_path.name + ".", dir=str(self.storage_path.parent))
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(payload)
+                for item in self.memories:
+                    record = self._item_to_record(item)
+                    handle.write(json.dumps(record, sort_keys=True, ensure_ascii=False))
+                    handle.write("\n")
             # Snapshot the currently committed primary file into backups first,
             # then atomically promote the new snapshot.
             self._rotate_backups()
