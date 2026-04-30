@@ -125,7 +125,7 @@ def on_config_editor_close(app: Any, result: Optional[Dict[str, Any]], *, config
     refreshed_status = app.agent.get_model_status()
     app._status_runtime = status_runtime_state_cls(
         model_status=refreshed_status,
-        model_name=refreshed_status.model_name if refreshed_status.state != "offline" else None,
+        model_name=str(refreshed_status.model_name or "").strip() or None,
         model_context_window=(
             refreshed_status.context_window
             if isinstance(refreshed_status.context_window, int) and refreshed_status.context_window > 0

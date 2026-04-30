@@ -72,7 +72,7 @@ def initialize_shell_state(app: Any, *, agent: Any, debug: bool) -> None:
     initial_status = app.agent.get_model_status()
     app._status_runtime = StatusRuntimeState(
         model_status=initial_status,
-        model_name=initial_status.model_name if initial_status.state != "offline" else None,
+        model_name=str(initial_status.model_name or "").strip() or None,
         model_context_window=(
             initial_status.context_window
             if isinstance(initial_status.context_window, int) and initial_status.context_window > 0
