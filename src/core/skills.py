@@ -182,6 +182,9 @@ class SkillRuntime:
         self._tool_registry: Dict[str, RegisteredTool] = {}
         self._skill_alias_index: Dict[str, str] = {}
         self._skill_alias_collisions: Dict[str, Tuple[str, ...]] = {}
+        self._skill_prefix_index: Dict[str, str] = {}
+        self._skill_fuzzy_index: Dict[str, str] = {}
+        self._skill_fuzzy_collisions: Dict[str, Tuple[str, ...]] = {}
         self._list_skills_cache: Optional[Tuple[SkillManifest, ...]] = None
         self._enabled_skills_cache: Optional[Tuple[SkillManifest, ...]] = None
         self._skill_catalog_cache: Dict[int, str] = {}
@@ -340,6 +343,8 @@ class SkillRuntime:
 
     def _rebuild_skill_alias_index(self) -> None:
         alias_map: Dict[str, List[str]] = {}
+        prefix_map: Dict[str, List[str]] = {}
+        fuzzy_map: Dict[str, List[str]] = {}
         for skill in self.list_skills():
             aliases = {
                 str(skill.id).strip(),
@@ -351,6 +356,11 @@ class SkillRuntime:
                 if not key:
                     continue
                 alias_map.setdefault(key, []).append(skill.id)
+                for idx in range(1, len(key) + 1):
+                    prefix_map.setdefault(key[:idx], []).append(skill.id)
+                normalized = re.sub(r"[^a-z0-9]+", "", key)
+                if normalized:
+                    fuzzy_map.setdefault(normalized, []).append(skill.id)
         self._skill_alias_index = {}
         self._skill_alias_collisions = {}
         for key, ids in alias_map.items():
@@ -359,6 +369,19 @@ class SkillRuntime:
                 self._skill_alias_index[key] = unique_ids[0]
             elif len(unique_ids) > 1:
                 self._skill_alias_collisions[key] = unique_ids
+        self._skill_prefix_index = {
+            key: unique_ids[0]
+            for key, ids in prefix_map.items()
+            if len((unique_ids := tuple(sorted(dict.fromkeys(ids))))) == 1
+        }
+        self._skill_fuzzy_index = {}
+        self._skill_fuzzy_collisions = {}
+        for key, ids in fuzzy_map.items():
+            unique_ids = tuple(sorted(dict.fromkeys(ids)))
+            if len(unique_ids) == 1:
+                self._skill_fuzzy_index[key] = unique_ids[0]
+            elif len(unique_ids) > 1:
+                self._skill_fuzzy_collisions[key] = unique_ids
 
     def _register_tool(
         self,
@@ -754,39 +777,20 @@ class SkillRuntime:
             resolved = self.get_skill(alias_hit)
             if resolved is not None:
                 return resolved
-        for skill in self.list_skills():
-            if skill.id.lower() == lowered or skill.name.lower() == lowered:
-                return skill
-            aliases = [str(item).strip().lower() for item in (getattr(skill, "aliases", []) or [])]
-            if lowered in aliases:
-                return skill
-        prefix_matches = [
-            skill
-            for skill in self.list_skills()
-            if (
-                skill.id.lower().startswith(lowered)
-                or skill.name.lower().startswith(lowered)
-                or any(str(item).strip().lower().startswith(lowered) for item in (getattr(skill, "aliases", []) or []))
-            )
-        ]
-        if len(prefix_matches) == 1:
-            return prefix_matches[0]
+        prefix_hit = self._skill_prefix_index.get(lowered)
+        if prefix_hit:
+            resolved = self.get_skill(prefix_hit)
+            if resolved is not None:
+                return resolved
         normalized = re.sub(r"[^a-z0-9]+", "", lowered)
-        fuzzy = [
-            skill
-            for skill in self.list_skills()
-            if normalized
-            and (
-                re.sub(r"[^a-z0-9]+", "", skill.id.lower()) == normalized
-                or re.sub(r"[^a-z0-9]+", "", skill.name.lower()) == normalized
-                or any(
-                    re.sub(r"[^a-z0-9]+", "", str(item).strip().lower()) == normalized
-                    for item in (getattr(skill, "aliases", []) or [])
-                )
-            )
-        ]
-        if len(fuzzy) == 1:
-            return fuzzy[0]
+        if normalized:
+            if normalized in self._skill_fuzzy_collisions:
+                return None
+            fuzzy_hit = self._skill_fuzzy_index.get(normalized)
+            if fuzzy_hit:
+                resolved = self.get_skill(fuzzy_hit)
+                if resolved is not None:
+                    return resolved
         return None
 
     @staticmethod
