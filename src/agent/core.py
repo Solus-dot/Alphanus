@@ -4,8 +4,10 @@ import os
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from agent.classifier import TurnClassifier
+from agent.config_values import coerce_int, get_json_object
 from agent.context import ContextWindowManager
 from agent.harness_metrics import HarnessMetrics
 from agent.llm_client import LLMClient
@@ -15,18 +17,18 @@ from agent.prompts import build_system_prompt
 from agent.runtime_hooks import AgentTurnRuntimeHooks
 from agent.telemetry import TelemetryEmitter
 from core.configuration import validate_endpoint_policy
-from core.message_types import ChatMessage
+from core.message_types import ChatMessage, JsonObject
 from core.skills import SkillRuntime
-from core.types import AgentTurnResult, JsonObject, ModelStatus, ShellConfirmationFn
+from core.types import AgentTurnResult, ModelStatus, ShellConfirmationFn
 
 
 class Agent:
-    def __init__(self, config: JsonObject, skill_runtime: SkillRuntime, debug: bool = False) -> None:
+    def __init__(self, config: dict[str, Any], skill_runtime: SkillRuntime, debug: bool = False) -> None:
         self.skill_runtime = skill_runtime
         self.debug = debug
         self.telemetry = TelemetryEmitter()
         self.harness_metrics = HarnessMetrics()
-        self.system_prompt = build_system_prompt(self.skill_runtime.workspace.workspace_root)
+        self.system_prompt = build_system_prompt(str(self.skill_runtime.workspace.workspace_root))
         self.context_mgr = ContextWindowManager()
         self.llm_client = LLMClient(config, debug=debug, telemetry=self.telemetry)
         self.classifier = TurnClassifier(config, skill_runtime, self.llm_client, telemetry=self.telemetry)
@@ -80,16 +82,16 @@ class Agent:
     def auth_header(self) -> str | None:
         return self.llm_client.auth_header
 
-    def reload_config(self, config: JsonObject) -> None:
+    def reload_config(self, config: dict[str, Any]) -> None:
         self.config = config
         self.skill_runtime.reload_config(config)
         self.skill_runtime.refresh_process_env()
         self.skill_runtime.load_skills()
-        context_cfg = config.get("context", {}) if isinstance(config.get("context"), dict) else {}
-        self.context_mgr.context_limit = int(context_cfg.get("context_limit", 8192))
-        self.context_mgr.keep_last_n = int(context_cfg.get("keep_last_n", 10))
-        self.context_mgr.safety_margin = int(context_cfg.get("safety_margin", 500))
-        self.system_prompt = build_system_prompt(self.skill_runtime.workspace.workspace_root)
+        context_cfg = get_json_object(config, "context")
+        self.context_mgr.context_limit = coerce_int(context_cfg.get("context_limit", 8192), 8192, minimum=1)
+        self.context_mgr.keep_last_n = coerce_int(context_cfg.get("keep_last_n", 10), 10, minimum=1)
+        self.context_mgr.safety_margin = coerce_int(context_cfg.get("safety_margin", 500), 500, minimum=0)
+        self.system_prompt = build_system_prompt(str(self.skill_runtime.workspace.workspace_root))
         self.llm_client.reload_config(config)
         self.classifier.reload_config(config)
         self.classifier.bind_runtime_hooks(self._runtime_hooks)
@@ -109,7 +111,7 @@ class Agent:
         self.readiness_timeout_s = self.llm_client.readiness_timeout_s
 
     def ensure_ready(
-        self, stop_event=None, on_event: Callable[[JsonObject], None] | None = None, timeout_s: float | None = None
+        self, stop_event=None, on_event: Callable[[dict[str, Any]], None] | None = None, timeout_s: float | None = None
     ) -> bool | None:
         return self.llm_client.ensure_ready(stop_event=stop_event, on_event=on_event, timeout_s=timeout_s)
 
@@ -151,9 +153,9 @@ class Agent:
         endpoint_error = self._validate_endpoints()
         workspace_root = Path(self.skill_runtime.workspace.workspace_root)
         memory_stats = self.skill_runtime.memory.stats()
-        runtime_cfg = config_obj.get("runtime", {}) if isinstance(config_obj.get("runtime"), dict) else {}
-        capabilities_cfg = config_obj.get("capabilities", {}) if isinstance(config_obj.get("capabilities"), dict) else {}
-        search_cfg = config_obj.get("search", {}) if isinstance(config_obj.get("search"), dict) else {}
+        runtime_cfg = get_json_object(config_obj, "runtime")
+        capabilities_cfg = get_json_object(config_obj, "capabilities")
+        search_cfg = get_json_object(config_obj, "search")
         provider = str(search_cfg.get("provider", "tavily")).strip().lower() or "tavily"
         provider_env = {"tavily": "TAVILY_API_KEY", "brave": "BRAVE_SEARCH_API_KEY"}
         required_env = provider_env.get(provider, "")
@@ -254,7 +256,7 @@ class Agent:
     def _call_with_retry(self, payload: JsonObject, stop_event, on_event, pass_id: str):
         return self.llm_client.call_with_retry(payload, stop_event, on_event, pass_id)
 
-    def _tool_call_args_for_history(self, args: dict[str, object]) -> dict[str, object]:
+    def _tool_call_args_for_history(self, args: JsonObject) -> JsonObject:
         return self.orchestrator.tool_call_args_for_history(args)
 
     def _record_and_return(self, result: AgentTurnResult) -> AgentTurnResult:

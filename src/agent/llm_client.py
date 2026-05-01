@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
+from typing import Any, cast
 
+from agent.config_values import coerce_int, get_json_object
 from agent.provider import OpenAICompatibleProvider
 from agent.telemetry import TelemetryEmitter
 from core.message_types import ChatMessage
+from core.message_types import JsonObject as MessageJsonObject
 from core.runtime_config import ProviderConfig
 from core.streaming import stream_chat_completions as _stream_chat_completions
 from core.types import JsonObject, ModelStatus, StreamPassResult
@@ -17,7 +20,7 @@ class LLMClient:
     ONLINE_STATUS_TTL_S = OpenAICompatibleProvider.ONLINE_STATUS_TTL_S
     OFFLINE_STATUS_TTL_S = OpenAICompatibleProvider.OFFLINE_STATUS_TTL_S
 
-    def __init__(self, config: JsonObject, debug: bool = False, telemetry: TelemetryEmitter | None = None) -> None:
+    def __init__(self, config: dict[str, Any], debug: bool = False, telemetry: TelemetryEmitter | None = None) -> None:
         self.debug = debug
         self.telemetry = telemetry or TelemetryEmitter()
         self.auth_header = None
@@ -25,9 +28,9 @@ class LLMClient:
         self.auth_source = "none"
         self.reload_config(config)
 
-    def reload_config(self, config: JsonObject) -> None:
+    def reload_config(self, config: dict[str, Any]) -> None:
         self.config = config
-        agent_cfg = config.get("agent", {}) if isinstance(config.get("agent"), dict) else {}
+        agent_cfg = get_json_object(config, "agent")
         self.provider_config = ProviderConfig.from_config(config, auth_header=self._resolve_auth_header(config))
         self.provider = OpenAICompatibleProvider(
             self.provider_config,
@@ -54,10 +57,10 @@ class LLMClient:
         self.classifier_model = str(agent_cfg.get("classifier_model", "")).strip()
         self.classifier_use_primary_model = bool(agent_cfg.get("classifier_use_primary_model", True))
         self.enable_structured_classification = bool(agent_cfg.get("enable_structured_classification", True))
-        self.max_classifier_tokens = max(32, int(agent_cfg.get("max_classifier_tokens", 256)))
+        self.max_classifier_tokens = coerce_int(agent_cfg.get("max_classifier_tokens", 256), 256, minimum=32)
 
-    def _resolve_auth_header(self, config: JsonObject) -> str | None:
-        agent_cfg = config.get("agent", {}) if isinstance(config.get("agent"), dict) else {}
+    def _resolve_auth_header(self, config: dict[str, Any]) -> str | None:
+        agent_cfg = get_json_object(config, "agent")
         api_key_ref = str(agent_cfg.get("api_key", "")).strip()
         api_key_env = str(agent_cfg.get("api_key_env", "ALPHANUS_API_KEY")).strip() or "ALPHANUS_API_KEY"
         auth_template = (
@@ -191,8 +194,9 @@ class LLMClient:
         max_tokens_override: int | None = None,
         model_override: str = "",
     ) -> JsonObject:
+        message_payload = cast(list[MessageJsonObject], model_messages)
         return self.provider.build_payload(
-            model_messages=model_messages,
+            model_messages=message_payload,
             thinking=thinking,
             tools=tools,
             max_tokens_override=max_tokens_override,
@@ -200,7 +204,8 @@ class LLMClient:
         )
 
     def call_with_retry(self, payload: JsonObject, stop_event, on_event, pass_id: str) -> StreamPassResult:
-        return self.provider.call_with_retry(payload, stop_event, on_event, pass_id=pass_id)
+        payload_obj = cast(dict[str, object], payload)
+        return self.provider.call_with_retry(payload_obj, stop_event, on_event, pass_id=pass_id)
 
     @staticmethod
     def _emit(on_event: Callable[[JsonObject], None] | None, event: JsonObject) -> None:
