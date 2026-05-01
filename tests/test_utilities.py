@@ -79,9 +79,11 @@ def test_get_weather_preserves_structured_network_error_in_runtime(mocker, tmp_p
     assert skill is not None
 
     reg = runtime._tool_registry["get_weather"]
-    module = runtime._load_module(reg.module_path, reg.module_name or "utilities_tools")  # noqa: SLF001
-    reg.module = module
+    module_path = reg.module_path
+    assert module_path is not None
+    module = runtime._load_module(module_path, reg.module_name or "utilities_tools")  # noqa: SLF001
     assert module is not None
+    reg.module = module
     mocker.patch.object(module.urllib.request, "urlopen", side_effect=urllib.error.URLError("offline"))
 
     out = runtime.execute_tool_call(
@@ -103,9 +105,11 @@ def test_open_url_preserves_browser_failure_message_in_runtime(mocker, tmp_path:
     assert skill is not None
 
     reg = runtime._tool_registry["open_url"]
-    module = runtime._load_module(reg.module_path, reg.module_name or "utilities_tools")  # noqa: SLF001
-    reg.module = module
+    module_path = reg.module_path
+    assert module_path is not None
+    module = runtime._load_module(module_path, reg.module_name or "utilities_tools")  # noqa: SLF001
     assert module is not None
+    reg.module = module
     mocker.patch.object(module.webbrowser, "open", return_value=False)
 
     out = runtime.execute_tool_call(
@@ -139,9 +143,11 @@ def test_open_url_accepts_file_urls_in_runtime(mocker, tmp_path: Path):
     assert skill is not None
 
     reg = runtime._tool_registry["open_url"]
-    module = runtime._load_module(reg.module_path, reg.module_name or "utilities_tools")  # noqa: SLF001
-    reg.module = module
+    module_path = reg.module_path
+    assert module_path is not None
+    module = runtime._load_module(module_path, reg.module_name or "utilities_tools")  # noqa: SLF001
     assert module is not None
+    reg.module = module
     opened_urls: list[str] = []
 
     def _capture_open(url: str, new: int = 0):

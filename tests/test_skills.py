@@ -2507,11 +2507,13 @@ Ask for clarification when needed.
         {"question": "Choose one", "options": ["a", "b"]},
         selected=[skill],
         ctx=ctx,
-        request_user_input=lambda args: {
-            "question": args["question"],
-            "options": list(args.get("options", [])),
-            "awaiting_user_input": True,
-        },
+        request_user_input=lambda args: (
+            lambda raw_options: {
+                "question": args["question"],
+                "options": list(raw_options) if isinstance(raw_options, list) else [],
+                "awaiting_user_input": True,
+            }
+        )(args.get("options")),
     )
 
     assert out["ok"] is True

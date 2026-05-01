@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from typing import cast
 
 from agent.core import Agent
 from core.memory import LexicalMemory
+from core.message_types import ChatMessage
 from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
 
@@ -202,10 +204,13 @@ def test_shell_confirmation_reuses_recent_assistant_action_context(mocker, tmp_p
 
     mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
 
-    history_messages = [
+    history_messages = cast(
+        list[ChatMessage],
+        [
         {"role": "user", "content": "how do i check my go version"},
         {"role": "assistant", "content": "I can run `go version` in the workspace if you want."},
-    ]
+        ],
+    )
 
     ctx = agent._build_skill_context("Yeah check my version", [], [], history_messages)
     ctx.loaded_skill_ids = ["shell-ops"]

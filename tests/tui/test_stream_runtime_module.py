@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import queue
+from collections.abc import Callable
 from types import SimpleNamespace
+from typing import Any
 
 from core.types import AgentTurnResult
 from tui.stream_runtime import (
@@ -20,6 +22,18 @@ class _Turn:
 
 
 class _App:
+    _stream_runtime: StreamRuntimeState | None
+    _stop_event: Any
+    _reasoning_open: bool
+    _show_tool_details: bool
+    _handle_content_token: Callable[..., Any]
+    _write_assistant_bar_line: Callable[..., Any]
+    _write_code_block: Callable[..., Any]
+    _clear_partial_preview: Callable[..., Any]
+    _show_tool_result_line: Callable[..., Any]
+    _take_pending_tool_detail: Callable[..., Any]
+    _write_tool_lifecycle_block: Callable[..., Any]
+
     def __init__(self) -> None:
         self.streaming = False
         self._auto_follow_stream = False
@@ -38,6 +52,15 @@ class _App:
         self._last_scroll = 0.0
         self._scroll_interval = 999.0
         self._live_preview = SimpleNamespace(reset=lambda: None)
+        self._reasoning_open = False
+        self._show_tool_details = True
+        self._handle_content_token = lambda *_args, **_kwargs: None
+        self._write_assistant_bar_line = lambda *_args, **_kwargs: None
+        self._write_code_block = lambda *_args, **_kwargs: None
+        self._clear_partial_preview = lambda: None
+        self._show_tool_result_line = lambda *_args, **_kwargs: True
+        self._take_pending_tool_detail = lambda *_args, **_kwargs: ""
+        self._write_tool_lifecycle_block = lambda *_args, **_kwargs: None
 
     def _write(self, _markup: str) -> None:
         return None
@@ -99,12 +122,14 @@ def test_enqueue_event_creates_queue_and_schedules_drain_for_notable_events() ->
 
 def test_drain_events_processes_usage_event() -> None:
     app = _App()
+    assert app._stream_runtime is not None
     app._stream_runtime.event_queue = queue.SimpleQueue()
     app._stream_runtime.event_queue.put({"type": "usage", "usage": {"prompt_tokens": 5}})
 
     drain_events(app)
 
     assert app._usage_updates == 1
+    assert app._stream_runtime is not None
     assert app._stream_runtime.drain_active is False
 
 
@@ -113,6 +138,7 @@ def test_drain_events_ignores_content_events_after_stop_requested() -> None:
     app._stop_event = SimpleNamespace(is_set=lambda: True)
     handled: list[str] = []
     app._handle_content_token = lambda token, update_partial=True: handled.append(token)
+    assert app._stream_runtime is not None
     app._stream_runtime.event_queue = queue.SimpleQueue()
     app._stream_runtime.event_queue.put({"type": "content_token", "text": "still streaming"})
 
@@ -137,6 +163,7 @@ def test_drain_events_keeps_tool_result_events_after_stop_requested() -> None:
     app._show_tool_result_line = lambda name, ok: events.append(f"line:{name}:{ok}") or True
     app._take_pending_tool_detail = lambda _name: ""
     app._write_tool_lifecycle_block = lambda name, ok, detail="": events.append(f"lifecycle:{name}:{ok}")
+    assert app._stream_runtime is not None
     app._stream_runtime.event_queue = queue.SimpleQueue()
     app._stream_runtime.event_queue.put(
         {"type": "tool_result", "name": "create_file", "result": {"ok": True, "data": {}, "error": None, "meta": {}}}

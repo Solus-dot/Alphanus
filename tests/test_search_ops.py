@@ -4,8 +4,10 @@ import importlib.util
 import io
 import json
 import urllib.error
+from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -38,6 +40,12 @@ def _load_search_module():
 
 def _env(provider: str = "tavily"):
     return SimpleNamespace(config={"search": {"provider": provider}})
+
+
+def _location_headers(location: str) -> Message:
+    headers = Message()
+    headers["Location"] = location
+    return headers
 
 
 def test_web_search_calls_tavily_and_normalizes_results(mocker, monkeypatch):
@@ -339,7 +347,7 @@ def test_web_search_retries_retryable_http_error(mocker, monkeypatch):
                 req.full_url,
                 503,
                 "Service Unavailable",
-                hdrs=None,
+                hdrs=cast(Message, Message()),
                 fp=io.BytesIO(b"{}"),
             )
         return _Resp()
@@ -377,7 +385,7 @@ def test_fetch_url_blocks_redirect_to_private_network_host(mocker):
             req.full_url,
             302,
             "Found",
-            hdrs={"Location": "http://127.0.0.1/admin"},
+            hdrs=cast(Message, _location_headers("http://127.0.0.1/admin")),
             fp=io.BytesIO(b""),
         )
 
@@ -425,7 +433,7 @@ def test_fetch_url_follows_safe_redirect_chain(mocker):
                 req.full_url,
                 302,
                 "Found",
-                hdrs={"Location": "/final"},
+                hdrs=cast(Message, _location_headers("/final")),
                 fp=io.BytesIO(b""),
             )
         if req.full_url == "https://example.com/final":

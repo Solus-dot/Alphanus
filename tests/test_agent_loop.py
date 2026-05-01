@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# pyright: reportAttributeAccessIssue=false, reportArgumentType=false, reportIndexIssue=false, reportOptionalMemberAccess=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportCallIssue=false
 import io
 import json
 import threading
@@ -4124,6 +4125,55 @@ def test_reload_config_rebuilds_context_manager(runtime: SkillRuntime):
     assert agent.context_mgr.context_limit == 4096
     assert agent.context_mgr.keep_last_n == 4
     assert agent.context_mgr.safety_margin == 200
+
+
+def test_reload_config_coerces_invalid_numeric_values(runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+        },
+        "context": {"context_limit": 8192, "keep_last_n": 10, "safety_margin": 500},
+    }
+    agent = Agent(cfg, runtime)
+
+    agent.reload_config(
+        {
+            "agent": {
+                **cfg["agent"],
+                "max_action_depth": "invalid",
+                "max_tool_result_chars": None,
+                "max_reasoning_chars": "-20",
+                "context_budget_max_tokens": "not-an-int",
+                "max_classifier_tokens": "bad",
+                "tool_budgets": {
+                    "web_search": "bad-value",
+                    "fetch_url": 0,
+                    "recall_memory": -4,
+                    "custom_lookup": "7",
+                },
+            },
+            "context": {"context_limit": "bad", "keep_last_n": 0, "safety_margin": "-3"},
+        }
+    )
+
+    assert agent.context_mgr.context_limit == 8192
+    assert agent.context_mgr.keep_last_n == 1
+    assert agent.context_mgr.safety_margin == 0
+    assert agent.llm_client.max_classifier_tokens == 256
+    assert agent.orchestrator.max_action_depth == 10
+    assert agent.orchestrator.max_tool_result_chars == 12000
+    assert agent.orchestrator.max_reasoning_chars == 0
+    assert agent.orchestrator.context_budget_max_tokens == 1024
+    assert agent.orchestrator.default_tool_budgets["web_search"] == 2
+    assert agent.orchestrator.default_tool_budgets["fetch_url"] == 1
+    assert agent.orchestrator.default_tool_budgets["recall_memory"] == 1
+    assert agent.orchestrator.default_tool_budgets["custom_lookup"] == 7
 
 
 def test_run_turn_fails_fast_when_cached_status_is_freshly_offline(mocker, runtime: SkillRuntime):

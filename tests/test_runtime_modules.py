@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# pyright: reportAttributeAccessIssue=false, reportArgumentType=false, reportIndexIssue=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportCallIssue=false
 import json
 from pathlib import Path
 

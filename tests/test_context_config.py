@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# pyright: reportAttributeAccessIssue=false, reportArgumentType=false, reportTypedDictNotRequiredAccess=false, reportOptionalMemberAccess=false
 from agent.context import ContextWindowManager
 from core.configuration import DEFAULT_CONFIG, deep_merge
 
