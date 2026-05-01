@@ -5,13 +5,14 @@ import logging
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 from agent.llm_client import LLMClient
 from agent.runtime_hooks import TurnRuntimeHooks
 from agent.telemetry import TelemetryEmitter
-from core.message_types import ChatMessage, JSONValue, MessageContentPart
+from core.message_types import ChatMessage, JsonObject, JSONValue, MessageContentPart
 from core.skills import SkillContext, SkillRuntime
-from core.types import JsonObject, TurnClassification
+from core.types import TurnClassification
 
 _EXPLICIT_PATH_PATTERN = re.compile(
     r'(?P<quoted>(?P<quote>["\'`])(?P<quoted_path>(?:~/|/)[^"\'`]+?)(?P=quote))'
@@ -38,7 +39,7 @@ _WORKSPACE_ABS_PATH_RE = re.compile(r"(?<![:/\w])(?:~/|/)[^\s\"'`]+")
 class TurnClassifier:
     def __init__(
         self,
-        config: dict[str, object],
+        config: dict[str, Any],
         skill_runtime: SkillRuntime,
         llm_client: LLMClient,
         telemetry: TelemetryEmitter | None = None,
@@ -50,7 +51,7 @@ class TurnClassifier:
         self.telemetry = telemetry or TelemetryEmitter()
         self._runtime_hooks = runtime_hooks
 
-    def reload_config(self, config: dict[str, object]) -> None:
+    def reload_config(self, config: dict[str, Any]) -> None:
         self.config = config
 
     def bind_runtime_hooks(self, runtime_hooks: TurnRuntimeHooks | None) -> None:
@@ -334,6 +335,8 @@ class TurnClassifier:
         except Exception as exc:
             self.telemetry.emit("workspace_action_outcome_classification_failed", error=str(exc))
             return fallback
+        if result is None:
+            return fallback
         parsed = self._parse_json_object(result.content)
         outcome = str(parsed.get("outcome", "")).strip().lower()
         if outcome in {"completed_with_evidence", "declined_or_blocked", "needs_clarification", "not_completed"}:
@@ -388,6 +391,8 @@ class TurnClassifier:
             result = self.call_with_retry(payload, stop_event, None, pass_id="turn_classify")
         except Exception as exc:
             self.telemetry.emit("turn_classification_failed", error=str(exc))
+            return seed
+        if result is None:
             return seed
         parsed = self._parse_json_object(result.content)
         if not parsed:

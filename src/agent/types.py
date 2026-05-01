@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, cast
 
 from core.message_types import ChatMessage, JSONValue, ToolCallDelta, ToolCallUpdate
 from core.skill_parser import SkillManifest
@@ -220,16 +220,20 @@ class ToolCallAccumulator:
                     arguments="",
                 ),
             )
-            if delta.get("id"):
-                item.call_id = str(delta["id"])
-            if delta.get("type"):
-                item.call_type = str(delta["type"])
+            delta_id = delta.get("id")
+            if delta_id:
+                item.call_id = str(delta_id)
+            delta_type = delta.get("type")
+            if delta_type:
+                item.call_type = str(delta_type)
             fn_delta = delta.get("function") or {}
             if isinstance(fn_delta, dict):
-                if fn_delta.get("name"):
-                    item.name += str(fn_delta["name"])
-                if fn_delta.get("arguments"):
-                    item.arguments += str(fn_delta["arguments"])
+                fn_name = fn_delta.get("name")
+                if fn_name:
+                    item.name += str(fn_name)
+                fn_arguments = fn_delta.get("arguments")
+                if fn_arguments:
+                    item.arguments += str(fn_arguments)
             updates.append(
                 {
                     "index": index,
@@ -247,7 +251,8 @@ class ToolCallAccumulator:
             item = self._items[index]
             raw_args = item.arguments
             try:
-                args = json.loads(raw_args) if raw_args.strip() else {}
+                loaded = json.loads(raw_args) if raw_args.strip() else {}
+                args = loaded if isinstance(loaded, dict) else {"_raw": raw_args}
             except json.JSONDecodeError:
                 args = {"_raw": raw_args}
             calls.append(
@@ -256,7 +261,7 @@ class ToolCallAccumulator:
                     index=index,
                     id=item.call_id or f"call_{index}",
                     name=item.name.strip(),
-                    arguments=args,
+                    arguments=cast(dict[str, JSONValue], args),
                 )
             )
         return calls

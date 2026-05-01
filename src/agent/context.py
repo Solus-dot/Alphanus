@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from core.message_types import ChatMessage, JSONValue, MessageContentPart
+from typing import cast
+
+from core.message_types import ChatMessage, JSONValue, MessageContentPart, ToolCallDelta, ToolFunctionCall
 
 
 class ContextWindowManager:
@@ -33,8 +35,9 @@ class ContextWindowManager:
                 chars += ContextWindowManager._STRUCTURED_PART_OVERHEAD
         else:
             chars += len(str(content))
-        if message.get("tool_calls"):
-            chars += len(str(message["tool_calls"]))
+        raw_tool_calls = message.get("tool_calls")
+        if raw_tool_calls:
+            chars += len(str(raw_tool_calls))
         return chars
 
     @staticmethod
@@ -98,7 +101,7 @@ class ContextWindowManager:
                         compacted_parts.append({"type": "text", "text": "[user message omitted]"})
                         omitted_text = True
                     continue
-                compacted_parts.append(dict(part))
+                compacted_parts.append(cast(MessageContentPart, dict(part)))
             if compacted_parts:
                 return compacted_parts
 
@@ -178,18 +181,17 @@ class ContextWindowManager:
 
         out: list[ChatMessage] = []
         for message in messages:
-            copied = dict(message)
+            copied = cast(ChatMessage, dict(message))
             raw_tool_calls = copied.get("tool_calls")
             if isinstance(raw_tool_calls, list):
-                copied_calls: list[dict[str, object]] = []
+                copied_calls: list[ToolCallDelta] = []
                 for call in raw_tool_calls:
                     if not isinstance(call, dict):
-                        copied_calls.append(call)
                         continue
-                    call_copy = dict(call)
+                    call_copy = cast(ToolCallDelta, dict(call))
                     fn = call_copy.get("function")
                     if isinstance(fn, dict):
-                        call_copy["function"] = dict(fn)
+                        call_copy["function"] = cast(ToolFunctionCall, dict(fn))
                     copied_calls.append(call_copy)
                 copied["tool_calls"] = copied_calls
             out.append(copied)

@@ -5,9 +5,10 @@ import logging
 import time
 import urllib.parse
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 from agent.classifier import TurnClassifier
+from agent.config_values import coerce_int, get_json_object
 from agent.evidence_guard import EvidenceGuard
 from agent.finalization_engine import FinalizationEngine
 from agent.llm_client import LLMClient
@@ -16,7 +17,7 @@ from agent.runtime_hooks import TurnRuntimeHooks
 from agent.telemetry import TelemetryEmitter
 from agent.tool_execution_engine import ToolExecutionEngine
 from agent.turn_policy_engine import TurnPolicyEngine
-from core.message_types import ChatMessage
+from core.message_types import ChatMessage, JSONValue
 from core.skill_parser import SkillManifest
 from core.skills import SkillRuntime
 from core.types import (
@@ -85,28 +86,31 @@ class TurnOrchestrator:
             return hooks.select_skills(ctx, stop_event)
         return self._default_select_skills(ctx, stop_event)
 
-    def reload_config(self, config: JsonObject) -> None:
+    def reload_config(self, config: dict[str, Any]) -> None:
         self.config = config
-        agent_cfg = config.get("agent", {}) if isinstance(config.get("agent"), dict) else {}
-        self.max_action_depth = int(agent_cfg.get("max_action_depth", 10))
-        self.max_tool_result_chars = int(agent_cfg.get("max_tool_result_chars", 12000))
-        self.max_reasoning_chars = max(0, int(agent_cfg.get("max_reasoning_chars", 20000)))
+        agent_cfg = get_json_object(config, "agent")
+        self.max_action_depth = coerce_int(agent_cfg.get("max_action_depth", 10), 10, minimum=1)
+        self.max_tool_result_chars = coerce_int(agent_cfg.get("max_tool_result_chars", 12000), 12000, minimum=0)
+        self.max_reasoning_chars = coerce_int(agent_cfg.get("max_reasoning_chars", 20000), 20000, minimum=0)
         self.compact_tool_results_in_history = bool(agent_cfg.get("compact_tool_results_in_history", False))
         compact_tools = agent_cfg.get("compact_tool_result_tools", [])
         if isinstance(compact_tools, list):
             self.compact_tool_result_tools = {str(name).strip() for name in compact_tools if str(name).strip()}
         else:
             self.compact_tool_result_tools = set()
-        self.context_budget_max_tokens = int(agent_cfg.get("context_budget_max_tokens", self.llm_client.default_max_tokens or 1024))
+        context_budget_default = coerce_int(self.llm_client.default_max_tokens, 1024, minimum=128)
+        self.context_budget_max_tokens = coerce_int(
+            agent_cfg.get("context_budget_max_tokens", context_budget_default),
+            context_budget_default,
+            minimum=128,
+        )
         self.default_tool_budgets = {"web_search": 2, "fetch_url": 2, "recall_memory": 2}
         budgets = agent_cfg.get("tool_budgets", {})
         if isinstance(budgets, dict):
             for key, value in budgets.items():
-                try:
-                    self.default_tool_budgets[str(key)] = max(1, int(value))
-                except Exception as exc:
-                    logging.debug("Invalid tool budget for %s: %s", key, exc)
-                    continue
+                tool_name = str(key)
+                fallback = self.default_tool_budgets.get(tool_name, 1)
+                self.default_tool_budgets[tool_name] = coerce_int(value, fallback, minimum=1)
         self.sanitizer = OutputSanitizer(self.max_reasoning_chars)
         self.policy_engine = TurnPolicyEngine(self.skill_runtime, self.default_tool_budgets)
         self.evidence_guard = EvidenceGuard(self.skill_runtime)
@@ -127,12 +131,12 @@ class TurnOrchestrator:
     def _trace_list(state: TurnState, key: str) -> list[dict[str, object]]:
         existing = state.trace_data.get(key)
         if isinstance(existing, list):
-            return [item for item in existing if isinstance(item, dict)]
+            return [cast(dict[str, object], item) for item in existing if isinstance(item, dict)]
         return []
 
     @staticmethod
     def _set_trace_list(state: TurnState, key: str, rows: list[dict[str, object]]) -> None:
-        state.trace_data[key] = rows
+        state.trace_data[key] = cast(JSONValue, rows)
 
     def _trace_add(self, state: TurnState, key: str, row: dict[str, object]) -> None:
         rows = self._trace_list(state, key)
@@ -161,26 +165,28 @@ class TurnOrchestrator:
             return self.truncate_text(value, self.max_tool_result_chars)
         if isinstance(value, list):
             max_items = 80
-            out = [self.compact_jsonish(item, depth + 1) for item in value[:max_items]]
+            list_out: list[object] = [self.compact_jsonish(item, depth + 1) for item in value[:max_items]]
             if len(value) > max_items:
-                out.append(f"... [{len(value) - max_items} more items truncated]")
-            return out
+                list_out.append(f"... [{len(value) - max_items} more items truncated]")
+            return list_out
         if isinstance(value, dict):
             max_keys = 120
-            out: dict[str, object] = {}
+            dict_out: dict[str, object] = {}
             items = list(value.items())
             for key, item in items[:max_keys]:
-                out[str(key)] = self.compact_jsonish(item, depth + 1)
+                dict_out[str(key)] = self.compact_jsonish(item, depth + 1)
             if len(items) > max_keys:
-                out["__truncated_keys__"] = len(items) - max_keys
-            return out
+                dict_out["__truncated_keys__"] = len(items) - max_keys
+            return dict_out
         return value
 
     def compact_tool_result(self, result: JsonObject) -> JsonObject:
         if self.max_tool_result_chars <= 0:
             return result
         compacted = self.compact_jsonish(result)
-        return compacted if isinstance(compacted, dict) else {"value": compacted}
+        if isinstance(compacted, dict):
+            return cast(JsonObject, compacted)
+        return {"value": cast(JSONValue, compacted)}
 
     def tool_result_for_history(self, tool_name: str, result: JsonObject) -> JsonObject:
         if not self.compact_tool_results_in_history:
@@ -192,7 +198,7 @@ class TurnOrchestrator:
     def tool_call_args_for_history(self, args: JsonObject) -> JsonObject:
         if not isinstance(args, dict):
             return {}
-        out: dict[str, object] = {}
+        out: JsonObject = {}
         for key, value in args.items():
             if isinstance(value, str):
                 if len(value) <= 1200:
@@ -203,7 +209,7 @@ class TurnOrchestrator:
                 else:
                     out[key] = value[:1200] + f"...[truncated {len(value) - 1200} chars]"
             else:
-                out[key] = self.compact_jsonish(value)
+                out[key] = cast(JSONValue, self.compact_jsonish(value))
         return out
 
     @staticmethod
@@ -254,8 +260,9 @@ class TurnOrchestrator:
             "name": call.name,
             "content": self.safe_json_dumps(self.tool_result_for_history(call.name, result)),
         }
-        state.dynamic_history.append(tool_message)
-        state.skill_exchanges.append(tool_message)
+        tool_chat_message = cast(ChatMessage, tool_message)
+        state.dynamic_history.append(tool_chat_message)
+        state.skill_exchanges.append(tool_chat_message)
         self.record_tool_effects(state, call, result, policy_blocked=True)
         self._trace_add(
             state,
@@ -438,7 +445,8 @@ class TurnOrchestrator:
         )
 
     def build_turn_journal(self, state: TurnState, result: AgentTurnResult) -> JsonObject:
-        started_at = float(state.trace_data.get("started_at", state.telemetry.started_at) or state.telemetry.started_at)
+        started_raw = state.trace_data.get("started_at", state.telemetry.started_at)
+        started_at = float(started_raw) if isinstance(started_raw, (int, float)) else float(state.telemetry.started_at)
         finished_at = time.time()
         elapsed_ms = max(0, int((finished_at - started_at) * 1000))
         pass_first_tokens: list[int] = []
@@ -481,9 +489,9 @@ class TurnOrchestrator:
             },
             "tool_loop_depth": tool_loop_depth,
             "turn_trace": {
-                "passes": self._trace_list(state, "passes"),
-                "tool_calls": self._trace_list(state, "tool_calls"),
-                "tool_results": self._trace_list(state, "tool_results"),
+                "passes": cast(JSONValue, self._trace_list(state, "passes")),
+                "tool_calls": cast(JSONValue, self._trace_list(state, "tool_calls")),
+                "tool_results": cast(JSONValue, self._trace_list(state, "tool_results")),
             },
         }
 
@@ -610,7 +618,8 @@ class TurnOrchestrator:
                 result_obj = record.result if isinstance(record.result, dict) else {}
                 if bool(result_obj.get("ok")):
                     continue
-                error_obj = result_obj.get("error") if isinstance(result_obj.get("error"), dict) else {}
+                raw_error = result_obj.get("error")
+                error_obj = raw_error if isinstance(raw_error, dict) else {}
                 code = safe_snippet(str(error_obj.get("code", "")).strip(), limit=48)
                 message = safe_snippet(str(error_obj.get("message", "")).strip(), limit=240)
                 if code or message:
@@ -658,7 +667,8 @@ class TurnOrchestrator:
             failure_detail = ""
             if latest_failure is not None:
                 result_obj = latest_failure.result if isinstance(latest_failure.result, dict) else {}
-                error_obj = result_obj.get("error") if isinstance(result_obj.get("error"), dict) else {}
+                raw_error = result_obj.get("error")
+                error_obj = raw_error if isinstance(raw_error, dict) else {}
                 code = safe_snippet(str(error_obj.get("code", "")).strip(), limit=48)
                 message = safe_snippet(str(error_obj.get("message", "")).strip(), limit=180)
                 tool_name = safe_snippet(latest_failure.name, limit=64)
@@ -692,7 +702,8 @@ class TurnOrchestrator:
             }
             if latest_failure is not None:
                 result_obj = latest_failure.result if isinstance(latest_failure.result, dict) else {}
-                error_obj = result_obj.get("error") if isinstance(result_obj.get("error"), dict) else {}
+                raw_error = result_obj.get("error")
+                error_obj = raw_error if isinstance(raw_error, dict) else {}
                 fallback_context["latest_failure"] = {
                     "tool": safe_snippet(latest_failure.name, limit=64),
                     "code": safe_snippet(str(error_obj.get("code", "")).strip(), limit=48),
@@ -762,6 +773,8 @@ class TurnOrchestrator:
                     None,
                     pass_id=f"{pass_id}_fallback_writer",
                 )
+                if fallback_stream is None:
+                    raise RuntimeError("fallback writer returned no stream result")
                 if fallback_stream.finish_reason == "cancelled":
                     return AgentTurnResult(
                         status="cancelled",
@@ -796,7 +809,7 @@ class TurnOrchestrator:
         first_result = coerce_result(first, state.full_reasoning)
         if first_result.status != "done":
             return first_result
-        leaked_markup = self.sanitizer.contains_tool_markup(first.content)
+        leaked_markup = self.sanitizer.contains_tool_markup(first_result.content)
         if first_result.content.strip() and not leaked_markup:
             return first_result
         state.telemetry.finalization_attempts += 1
@@ -814,7 +827,7 @@ class TurnOrchestrator:
         second_result = coerce_result(second, first_result.reasoning)
         if second_result.status != "done":
             return second_result
-        if second_result.content.strip() and not self.sanitizer.contains_tool_markup(second.content):
+        if second_result.content.strip() and not self.sanitizer.contains_tool_markup(second_result.content):
             return second_result
 
         state.telemetry.finalization_attempts += 1
@@ -830,7 +843,7 @@ class TurnOrchestrator:
         third_result = coerce_result(third, second_result.reasoning)
         if third_result.status != "done":
             return third_result
-        if third_result.content.strip() and not self.sanitizer.contains_tool_markup(third.content):
+        if third_result.content.strip() and not self.sanitizer.contains_tool_markup(third_result.content):
             return third_result
 
         state.telemetry.finalization_fallback_applied = True
@@ -851,7 +864,24 @@ class TurnOrchestrator:
         branch_labels = branch_labels or []
         attachments = attachments or []
         ctx = self.build_skill_context(user_input, branch_labels, attachments, history_messages, loaded_skill_ids or [])
-        classification, selected = self.select_skills(ctx, stop_event)
+        if ctx is None:
+            ctx = self.classifier.build_skill_context(
+                user_input,
+                branch_labels,
+                attachments,
+                history_messages,
+                loaded_skill_ids or [],
+            )
+        selection = self.select_skills(ctx, stop_event)
+        if (
+            not isinstance(selection, tuple)
+            or len(selection) != 2
+            or not isinstance(selection[1], list)
+        ):
+            classification = self.classify_context(ctx, stop_event=stop_event)
+            selected = self.skill_runtime.select_skills(ctx)
+        else:
+            classification, selected = selection
         return self.build_turn_state(
             ctx,
             selected,
@@ -965,8 +995,20 @@ class TurnOrchestrator:
                     error=message,
                 )
 
+        if stream_result is None:
+            return AgentTurnResult(
+                status="cancelled",
+                content="",
+                reasoning=state.full_reasoning,
+                skill_exchanges=state.skill_exchanges,
+            )
+
         pass_trace["completed_at"] = time.time()
-        pass_trace["duration_ms"] = max(0, int((float(pass_trace["completed_at"]) - float(pass_trace["started_at"])) * 1000))
+        completed_at_raw = pass_trace.get("completed_at")
+        started_at_raw = pass_trace.get("started_at")
+        completed_at = float(completed_at_raw) if isinstance(completed_at_raw, (int, float)) else time.time()
+        started_at = float(started_at_raw) if isinstance(started_at_raw, (int, float)) else completed_at
+        pass_trace["duration_ms"] = max(0, int((completed_at - started_at) * 1000))
         pass_trace["finish_reason"] = stream_result.finish_reason
         pass_trace["usage"] = dict(getattr(stream_result, "usage", {}) or {})
         pass_trace["first_token_latency_ms"] = getattr(stream_result, "first_token_latency_ms", None)
@@ -1044,8 +1086,9 @@ class TurnOrchestrator:
                 for call in stream_result.tool_calls
             ],
         }
-        state.dynamic_history.append(assistant_msg)
-        state.skill_exchanges.append(assistant_msg)
+        assistant_chat_message = cast(ChatMessage, assistant_msg)
+        state.dynamic_history.append(assistant_chat_message)
+        state.skill_exchanges.append(assistant_chat_message)
 
         force_finalize_reason = ""
         state.action_depth += 1
@@ -1205,8 +1248,9 @@ class TurnOrchestrator:
                 "name": call.name,
                 "content": self.safe_json_dumps(self.tool_result_for_history(call.name, result)),
             }
-            state.dynamic_history.append(tool_message)
-            state.skill_exchanges.append(tool_message)
+            tool_chat_message = cast(ChatMessage, tool_message)
+            state.dynamic_history.append(tool_chat_message)
+            state.skill_exchanges.append(tool_chat_message)
             self.record_tool_effects(state, call, result)
             self._trace_add(
                 state,
@@ -1549,7 +1593,7 @@ def request_user_input_passthrough(args: JsonObject) -> JsonObject:
     normalized_options = [str(item).strip() for item in options if str(item).strip()] if isinstance(options, list) else []
     return {
         "question": question,
-        "options": normalized_options,
+        "options": cast(JSONValue, normalized_options),
         "header": str(args.get("header", "")).strip(),
         "awaiting_user_input": True,
     }

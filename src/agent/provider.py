@@ -6,8 +6,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import Literal, cast
 
 from agent.backend_profiles import (
     AUTO_BACKEND_PROFILE,
@@ -20,6 +21,7 @@ from agent.backend_profiles import (
     rewrite_payload_for_profile,
 )
 from agent.telemetry import TelemetryEmitter
+from core.message_types import JSONValue, ToolCallDelta
 from core.runtime_config import ProviderConfig
 from core.streaming import build_ssl_context, should_retry
 from core.streaming import stream_chat_completions as core_stream_chat_completions
@@ -348,16 +350,18 @@ class OpenAICompatibleProvider:
         if isinstance(template, dict):
             thinking = bool(template.get("enable_thinking"))
         max_tokens_override = None
-        if isinstance(payload.get("max_output_tokens"), (int, float)):
-            max_tokens_override = int(payload["max_output_tokens"])
-        elif isinstance(payload.get("max_tokens"), (int, float)):
-            max_tokens_override = int(payload["max_tokens"])
+        max_output_tokens = payload.get("max_output_tokens")
+        max_tokens = payload.get("max_tokens")
+        if isinstance(max_output_tokens, (int, float)):
+            max_tokens_override = int(max_output_tokens)
+        elif isinstance(max_tokens, (int, float)):
+            max_tokens_override = int(max_tokens)
         model_override = str(payload.get("model", "")).strip()
         converted_tools: list[JsonObject] | None = None
         if tools is not None:
             converted_tools = self._chat_tools_to_responses(tools) if mode == "responses" else self._responses_tools_to_chat(tools)
         return self.build_payload(
-            model_messages=message_list,  # type: ignore[arg-type]
+            model_messages=cast(list[JsonObject], message_list),
             thinking=thinking,
             tools=converted_tools,
             max_tokens_override=max_tokens_override,
@@ -379,13 +383,13 @@ class OpenAICompatibleProvider:
         limit = self.default_max_tokens if max_tokens_override is None else max_tokens_override
         if selected_mode == "responses":
             payload: JsonObject = {
-                "input": model_messages,
+                "input": cast(JSONValue, model_messages),
                 "stream": True,
             }
             if limit is not None and int(limit) > 0:
                 payload["max_output_tokens"] = int(limit)
             if tools:
-                payload["tools"] = self._chat_tools_to_responses(tools)
+                payload["tools"] = cast(JSONValue, self._chat_tools_to_responses(tools))
                 payload["tool_choice"] = "auto"
             if model_override.strip():
                 payload["model"] = model_override.strip()
@@ -393,8 +397,8 @@ class OpenAICompatibleProvider:
                 payload["reasoning"] = {"summary": "auto"}
             return payload
 
-        payload = {
-            "messages": model_messages,
+        payload: JsonObject = {
+            "messages": cast(JSONValue, model_messages),
             "stream": True,
             "stream_options": {"include_usage": True},
             "chat_template_kwargs": {"enable_thinking": bool(thinking)},
@@ -402,7 +406,7 @@ class OpenAICompatibleProvider:
         if limit is not None and int(limit) > 0:
             payload["max_tokens"] = int(limit)
         if tools:
-            payload["tools"] = tools
+            payload["tools"] = cast(JSONValue, tools)
             payload["tool_choice"] = "auto"
         if model_override.strip():
             payload["model"] = model_override.strip()
@@ -620,7 +624,7 @@ class OpenAICompatibleProvider:
         self._ready_checked = self._model_status.state == "online"
         return self.get_model_status()
 
-    def _model_status_error_state(self, exc: Exception) -> str:
+    def _model_status_error_state(self, exc: Exception) -> Literal["offline", "unknown"]:
         if isinstance(exc, urllib.error.HTTPError):
             return "offline"
         if isinstance(exc, urllib.error.URLError):
@@ -824,7 +828,9 @@ class OpenAICompatibleProvider:
         endpoint = self.responses_endpoint if mode == "responses" else self.model_endpoint
         self.telemetry.emit("chat_pass_start", pass_id=pass_id, endpoint=endpoint, payload=payload, mode=mode)
 
-        for chunk in self._stream_chat_completions(
+        stream_chunks = cast(
+            Iterable[dict[str, object]],
+            self._stream_chat_completions(
             endpoint=endpoint,
             payload=payload,
             timeout_s=self.request_timeout_s,
@@ -832,21 +838,25 @@ class OpenAICompatibleProvider:
             ssl_context=self.ssl_context,
             stop_event=stop_event,
             on_debug_event=lambda event: self.telemetry.emit("http_stream", pass_id=pass_id, **event),
-        ):
+            ),
+        )
+        for chunk in stream_chunks:
             if self.stop_requested(stop_event):
                 self.telemetry.emit("chat_pass_cancelled", pass_id=pass_id)
                 return StreamPassResult(finish_reason="cancelled")
-            parsed = self._parse_responses_chunk(chunk, tool_acc) if mode == "responses" else self._parse_chat_chunk(chunk, tool_acc)
-            if parsed["usage"]:
-                usage = parsed["usage"]
+            parsed_chunk = cast(dict[str, object], chunk)
+            parsed = self._parse_responses_chunk(parsed_chunk, tool_acc) if mode == "responses" else self._parse_chat_chunk(parsed_chunk, tool_acc)
+            parsed_usage = parsed["usage"]
+            if isinstance(parsed_usage, dict) and parsed_usage:
+                usage = {str(k): int(v) for k, v in parsed_usage.items() if isinstance(v, (int, float))}
                 self._emit(on_event, {"type": "usage", "usage": dict(usage)})
-            reasoning = parsed["reasoning"]
+            reasoning = str(parsed.get("reasoning") or "")
             if reasoning:
                 if first_output_at is None:
                     first_output_at = time.time()
                 reasoning_parts.append(reasoning)
                 self._emit(on_event, {"type": "reasoning_token", "text": reasoning})
-            content = parsed["content"]
+            content = str(parsed.get("content") or "")
             if content:
                 if first_output_at is None:
                     first_output_at = time.time()
@@ -864,7 +874,8 @@ class OpenAICompatibleProvider:
                 if not suppress_content_stream:
                     self._emit(on_event, {"type": "content_token", "text": content})
 
-            tool_deltas = parsed["tool_deltas"]
+            tool_deltas_raw = parsed.get("tool_deltas")
+            tool_deltas = cast(list[ToolCallDelta], tool_deltas_raw) if isinstance(tool_deltas_raw, list) else []
             if tool_deltas:
                 if first_output_at is None:
                     first_output_at = time.time()
@@ -882,8 +893,9 @@ class OpenAICompatibleProvider:
                             "raw_arguments": update.get("raw_arguments") or "",
                         },
                     )
-            if parsed["finish_reason"]:
-                finish_reason = parsed["finish_reason"]
+            parsed_finish_reason = str(parsed.get("finish_reason") or "")
+            if parsed_finish_reason:
+                finish_reason = parsed_finish_reason
 
         tool_calls = tool_acc.finalize()
         if tool_calls and finish_reason not in {"tool_calls", "cancelled"}:
@@ -978,10 +990,13 @@ class OpenAICompatibleProvider:
             return out
 
         if event_type == "response.output_item.added":
-            item = chunk.get("item") if isinstance(chunk.get("item"), dict) else {}
+            raw_item = chunk.get("item")
+            item = raw_item if isinstance(raw_item, dict) else {}
             item_type = str(item.get("type") or "")
             if item_type in {"function_call", "tool_call"}:
-                index = int(chunk.get("output_index") or item.get("index") or 0)
+                output_index = chunk.get("output_index")
+                item_index = item.get("index")
+                index = int(output_index) if isinstance(output_index, (int, float, str)) and str(output_index).strip() else int(item_index) if isinstance(item_index, (int, float, str)) and str(item_index).strip() else 0
                 function_name = str(item.get("name") or item.get("function_name") or "").strip()
                 call_id = str(item.get("call_id") or item.get("id") or "").strip()
                 args = str(item.get("arguments") or "")
@@ -996,7 +1011,8 @@ class OpenAICompatibleProvider:
             return out
 
         if event_type == "response.function_call_arguments.delta":
-            index = int(chunk.get("output_index") or 0)
+            output_index = chunk.get("output_index")
+            index = int(output_index) if isinstance(output_index, (int, float, str)) and str(output_index).strip() else 0
             call_id = str(chunk.get("call_id") or chunk.get("item_id") or "").strip()
             delta = str(chunk.get("delta") or "")
             out["tool_deltas"] = [
@@ -1010,7 +1026,8 @@ class OpenAICompatibleProvider:
             return out
 
         if event_type in {"response.completed", "response.incomplete", "response.failed"}:
-            response_obj = chunk.get("response") if isinstance(chunk.get("response"), dict) else {}
+            raw_response = chunk.get("response")
+            response_obj = raw_response if isinstance(raw_response, dict) else {}
             usage = self._normalize_usage(response_obj.get("usage"))
             if usage:
                 out["usage"] = usage
@@ -1023,9 +1040,12 @@ class OpenAICompatibleProvider:
             return out
 
         if event_type == "response.output_item.done":
-            item = chunk.get("item") if isinstance(chunk.get("item"), dict) else {}
+            raw_item = chunk.get("item")
+            item = raw_item if isinstance(raw_item, dict) else {}
             if str(item.get("type") or "") in {"function_call", "tool_call"}:
-                index = int(chunk.get("output_index") or item.get("index") or 0)
+                output_index = chunk.get("output_index")
+                item_index = item.get("index")
+                index = int(output_index) if isinstance(output_index, (int, float, str)) and str(output_index).strip() else int(item_index) if isinstance(item_index, (int, float, str)) and str(item_index).strip() else 0
                 call_id = str(item.get("call_id") or item.get("id") or "").strip()
                 args = str(item.get("arguments") or "")
                 if args:
@@ -1106,7 +1126,7 @@ class OpenAICompatibleProvider:
                             "text": "Responses endpoint unsupported for this backend; falling back to chat completions.",
                         },
                     )
-                    payload = self._payload_to_mode(payload, "chat")
+                    payload = cast(dict[str, object], self._payload_to_mode(payload, "chat"))
                     continue
                 if self._is_transport_failure(exc):
                     self.mark_model_transport_failure(exc)
