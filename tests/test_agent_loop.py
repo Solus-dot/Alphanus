@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import io
+import json
 import threading
 import time
 import urllib.error
@@ -12,15 +12,15 @@ import pytest
 
 from agent.core import Agent
 from agent.policies import PromptPolicyRenderer
-from core.types import ModelStatus, TurnClassification, TurnPolicySnapshot
 from core.memory import LexicalMemory
 from core.skills import SkillContext, SkillRuntime
+from core.types import ModelStatus, TurnClassification, TurnPolicySnapshot
 from core.workspace import WorkspaceManager
 
 
 class FakeResponse:
     def __init__(self, lines):
-        self.lines = [l.encode("utf-8") for l in lines]
+        self.lines = [line.encode("utf-8") for line in lines]
         self.status = 200
 
     def __enter__(self):
@@ -132,7 +132,7 @@ def test_agent_tool_call_loop(mocker, runtime: SkillRuntime):
             # First completion emits tool_calls.
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\\"a.txt\\\", \\\"content\\\": \\\"hello\\\"}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\"a.txt\\", \\"content\\": \\"hello\\"}"}}]}}]}',
                     'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                     "data: [DONE]",
                 ]
@@ -237,7 +237,7 @@ def test_agent_journal_contains_turn_trace_payload_and_tools(mocker, runtime: Sk
         if len(chat_reqs) == 1:
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\\"trace.txt\\\", \\\"content\\\": \\\"hello\\\"}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\"trace.txt\\", \\"content\\": \\"hello\\"}"}}]}}]}',
                     'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                     "data: [DONE]",
                 ]
@@ -586,7 +586,7 @@ def test_image_turn_retries_with_latest_user_only_after_tokenize_failure(mocker,
                 {"type": "text", "text": "[Attachments: image.png (image)]\n\nWhat do you see?"},
                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,ZmFrZQ=="}},
             ],
-        }
+        },
     ]
 
 
@@ -675,7 +675,7 @@ def test_agent_requests_final_answer_if_post_tool_content_empty(mocker, runtime:
         if len(chat_reqs) == 1:
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\\"a.txt\\\", \\\"content\\\": \\\"hello\\\"}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\"a.txt\\", \\"content\\": \\"hello\\"}"}}]}}]}',
                     'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                     "data: [DONE]",
                 ]
@@ -752,7 +752,7 @@ def test_agent_does_not_finish_after_helper_file_for_opaque_artifact_request(moc
         if len(chat_reqs) == 1:
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\\"northstar-proposal.js\\\", \\\"content\\\": \\\"console.log(1)\\\"}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\"northstar-proposal.js\\", \\"content\\": \\"console.log(1)\\"}"}}]}}]}',
                     'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                     "data: [DONE]",
                 ]
@@ -977,7 +977,9 @@ def test_contextual_followup_seed_reuses_immediate_prior_skill_context(runtime: 
 def test_confirmation_workspace_action_retries_instead_of_accepting_manual_terminal_advice(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
-    mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation"))
+    mocker.patch.object(
+        agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation")
+    )
 
     calls = []
 
@@ -1004,7 +1006,19 @@ def test_confirmation_workspace_action_retries_instead_of_accepting_manual_termi
                     "finish_reason": "tool_calls",
                     "content": "",
                     "reasoning": "",
-                    "tool_calls": [type("Call", (), {"stream_id": "2", "index": 0, "id": "call_2", "name": "create_file", "arguments": {"filepath": "notes.txt", "content": "hello"}})()],
+                    "tool_calls": [
+                        type(
+                            "Call",
+                            (),
+                            {
+                                "stream_id": "2",
+                                "index": 0,
+                                "id": "call_2",
+                                "name": "create_file",
+                                "arguments": {"filepath": "notes.txt", "content": "hello"},
+                            },
+                        )()
+                    ],
                 },
             )()
         if pass_id == "pass_3":
@@ -1041,7 +1055,9 @@ def test_confirmation_workspace_action_retries_instead_of_accepting_manual_termi
 def test_confirmation_workspace_action_rejects_manual_terminal_advice_after_retry(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
-    mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation"))
+    mocker.patch.object(
+        agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation")
+    )
 
     calls = []
     outcome_calls = {"pass_1_workspace_action_outcome": 0, "pass_2_workspace_action_outcome": 0}
@@ -1094,7 +1110,9 @@ def test_confirmation_workspace_action_rejects_manual_terminal_advice_after_retr
 def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_use(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
-    mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation"))
+    mocker.patch.object(
+        agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation")
+    )
 
     calls = []
     outcome_calls = {"pass_1_workspace_action_outcome": 0, "pass_2_workspace_action_outcome": 0}
@@ -1147,7 +1165,9 @@ def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_u
 def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_success_claim(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
-    mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation"))
+    mocker.patch.object(
+        agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation")
+    )
 
     calls = []
     outcome_calls = {"pass_2_workspace_action_outcome": 0, "pass_3_workspace_action_outcome": 0}
@@ -1162,7 +1182,13 @@ def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_s
                     "finish_reason": "tool_calls",
                     "content": "",
                     "reasoning": "",
-                    "tool_calls": [type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "read_file", "arguments": {"filepath": "foo.txt"}})()],
+                    "tool_calls": [
+                        type(
+                            "Call",
+                            (),
+                            {"stream_id": "1", "index": 0, "id": "call_1", "name": "read_file", "arguments": {"filepath": "foo.txt"}},
+                        )()
+                    ],
                 },
             )()
         if pass_id == "pass_2_workspace_action_outcome":
@@ -1246,7 +1272,13 @@ def test_workspace_action_preserves_policy_blocked_reply_when_outcome_classifier
                     "finish_reason": "tool_calls",
                     "content": "",
                     "reasoning": "",
-                    "tool_calls": [type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "shell_command", "arguments": {"command": "rm -rf ."}})()],
+                    "tool_calls": [
+                        type(
+                            "Call",
+                            (),
+                            {"stream_id": "1", "index": 0, "id": "call_1", "name": "shell_command", "arguments": {"command": "rm -rf ."}},
+                        )()
+                    ],
                 },
             )()
         if pass_id in {"pass_2", "pass_3"}:
@@ -1299,7 +1331,13 @@ def test_workspace_action_classifier_failure_does_not_accept_manual_shell_advice
                     "finish_reason": "tool_calls",
                     "content": "",
                     "reasoning": "",
-                    "tool_calls": [type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "shell_command", "arguments": {"command": "rm -rf ."}})()],
+                    "tool_calls": [
+                        type(
+                            "Call",
+                            (),
+                            {"stream_id": "1", "index": 0, "id": "call_1", "name": "shell_command", "arguments": {"command": "rm -rf ."}},
+                        )()
+                    ],
                 },
             )()
         if pass_id == "pass_2":
@@ -1350,11 +1388,15 @@ def test_workspace_action_classifier_failure_does_not_accept_manual_shell_advice
     assert result.status == "done"
     assert "couldn't complete that workspace action" in result.content.lower()
     assert "rm -rf" not in result.content.lower()
-    assert calls == ["pass_1", "pass_2", "pass_2_workspace_action_outcome", "pass_3", "pass_3_workspace_action_outcome", "pass_3_final", "pass_3_workspace_action_outcome"]
-
-
-
-
+    assert calls == [
+        "pass_1",
+        "pass_2",
+        "pass_2_workspace_action_outcome",
+        "pass_3",
+        "pass_3_workspace_action_outcome",
+        "pass_3_final",
+        "pass_3_workspace_action_outcome",
+    ]
 
 
 def test_run_turn_allows_same_host_endpoints_with_different_ports(mocker, runtime: SkillRuntime):
@@ -1655,7 +1697,11 @@ def test_workspace_scaffold_does_not_stop_after_create_directory(mocker, runtime
                     "content": "",
                     "reasoning": "",
                     "tool_calls": [
-                        type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "create_directory", "arguments": {"path": "arjun"}})(),
+                        type(
+                            "Call",
+                            (),
+                            {"stream_id": "1", "index": 0, "id": "call_1", "name": "create_directory", "arguments": {"path": "arjun"}},
+                        )(),
                     ],
                 },
             )()
@@ -1668,9 +1714,39 @@ def test_workspace_scaffold_does_not_stop_after_create_directory(mocker, runtime
                     "content": "",
                     "reasoning": "",
                     "tool_calls": [
-                        type("Call", (), {"stream_id": "2", "index": 0, "id": "call_2", "name": "create_file", "arguments": {"filepath": "arjun/index.html", "content": "<html></html>"}})(),
-                        type("Call", (), {"stream_id": "2", "index": 1, "id": "call_3", "name": "create_file", "arguments": {"filepath": "arjun/styles.css", "content": "body{}"}})(),
-                        type("Call", (), {"stream_id": "2", "index": 2, "id": "call_4", "name": "create_file", "arguments": {"filepath": "arjun/script.js", "content": "console.log(1)\n"}})(),
+                        type(
+                            "Call",
+                            (),
+                            {
+                                "stream_id": "2",
+                                "index": 0,
+                                "id": "call_2",
+                                "name": "create_file",
+                                "arguments": {"filepath": "arjun/index.html", "content": "<html></html>"},
+                            },
+                        )(),
+                        type(
+                            "Call",
+                            (),
+                            {
+                                "stream_id": "2",
+                                "index": 1,
+                                "id": "call_3",
+                                "name": "create_file",
+                                "arguments": {"filepath": "arjun/styles.css", "content": "body{}"},
+                            },
+                        )(),
+                        type(
+                            "Call",
+                            (),
+                            {
+                                "stream_id": "2",
+                                "index": 2,
+                                "id": "call_4",
+                                "name": "create_file",
+                                "arguments": {"filepath": "arjun/script.js", "content": "console.log(1)\n"},
+                            },
+                        )(),
                     ],
                 },
             )()
@@ -1726,7 +1802,11 @@ def test_workspace_folder_and_single_file_does_not_stop_after_create_directory(m
                     "content": "",
                     "reasoning": "",
                     "tool_calls": [
-                        type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "create_directory", "arguments": {"path": "hvb"}})(),
+                        type(
+                            "Call",
+                            (),
+                            {"stream_id": "1", "index": 0, "id": "call_1", "name": "create_directory", "arguments": {"path": "hvb"}},
+                        )(),
                     ],
                 },
             )()
@@ -1739,7 +1819,17 @@ def test_workspace_folder_and_single_file_does_not_stop_after_create_directory(m
                     "content": "",
                     "reasoning": "",
                     "tool_calls": [
-                        type("Call", (), {"stream_id": "2", "index": 0, "id": "call_2", "name": "create_file", "arguments": {"filepath": "hvb/insertion_sort.py", "content": "def insertion_sort(arr):\n    return arr\n"}})(),
+                        type(
+                            "Call",
+                            (),
+                            {
+                                "stream_id": "2",
+                                "index": 0,
+                                "id": "call_2",
+                                "name": "create_file",
+                                "arguments": {"filepath": "hvb/insertion_sort.py", "content": "def insertion_sort(arr):\n    return arr\n"},
+                            },
+                        )(),
                     ],
                 },
             )()
@@ -1795,7 +1885,17 @@ def test_workspace_readback_request_does_not_stop_after_create_file(mocker, runt
                     "content": "",
                     "reasoning": "",
                     "tool_calls": [
-                        type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "create_file", "arguments": {"filepath": "notes.txt", "content": "alpha"}})(),
+                        type(
+                            "Call",
+                            (),
+                            {
+                                "stream_id": "1",
+                                "index": 0,
+                                "id": "call_1",
+                                "name": "create_file",
+                                "arguments": {"filepath": "notes.txt", "content": "alpha"},
+                            },
+                        )(),
                     ],
                 },
             )()
@@ -1808,7 +1908,11 @@ def test_workspace_readback_request_does_not_stop_after_create_file(mocker, runt
                     "content": "",
                     "reasoning": "",
                     "tool_calls": [
-                        type("Call", (), {"stream_id": "2", "index": 0, "id": "call_2", "name": "read_file", "arguments": {"filepath": "notes.txt"}})(),
+                        type(
+                            "Call",
+                            (),
+                            {"stream_id": "2", "index": 0, "id": "call_2", "name": "read_file", "arguments": {"filepath": "notes.txt"}},
+                        )(),
                     ],
                 },
             )()
@@ -1849,12 +1953,6 @@ def test_workspace_readback_request_does_not_stop_after_create_file(mocker, runt
     assert calls == ["pass_1", "pass_2", "pass_3"]
 
 
-
-
-
-
-
-
 def test_local_workspace_tasks_prefer_workspace_tools_but_still_block_fetch_tools(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
@@ -1875,8 +1973,22 @@ def test_local_workspace_tasks_prefer_workspace_tools_but_still_block_fetch_tool
                     "content": "",
                     "reasoning": "",
                     "tool_calls": [
-                        type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "shell_command", "arguments": {"command": "mkdir -p 1738"}})(),
-                        type("Call", (), {"stream_id": "1", "index": 1, "id": "call_2", "name": "fetch_url", "arguments": {"url": "/tmp/index.html"}})(),
+                        type(
+                            "Call",
+                            (),
+                            {
+                                "stream_id": "1",
+                                "index": 0,
+                                "id": "call_1",
+                                "name": "shell_command",
+                                "arguments": {"command": "mkdir -p 1738"},
+                            },
+                        )(),
+                        type(
+                            "Call",
+                            (),
+                            {"stream_id": "1", "index": 1, "id": "call_2", "name": "fetch_url", "arguments": {"url": "/tmp/index.html"}},
+                        )(),
                     ],
                 },
             )()
@@ -1889,9 +2001,33 @@ def test_local_workspace_tasks_prefer_workspace_tools_but_still_block_fetch_tool
                     "content": "",
                     "reasoning": "",
                     "tool_calls": [
-                        type("Call", (), {"stream_id": "2", "index": 0, "id": "call_3", "name": "create_directory", "arguments": {"path": "1738"}})(),
-                        type("Call", (), {"stream_id": "2", "index": 1, "id": "call_4", "name": "create_file", "arguments": {"filepath": "1738/index.html", "content": "<html></html>"}})(),
-                        type("Call", (), {"stream_id": "2", "index": 2, "id": "call_5", "name": "create_file", "arguments": {"filepath": "1738/script.js", "content": "console.log(1)\n"}})(),
+                        type(
+                            "Call",
+                            (),
+                            {"stream_id": "2", "index": 0, "id": "call_3", "name": "create_directory", "arguments": {"path": "1738"}},
+                        )(),
+                        type(
+                            "Call",
+                            (),
+                            {
+                                "stream_id": "2",
+                                "index": 1,
+                                "id": "call_4",
+                                "name": "create_file",
+                                "arguments": {"filepath": "1738/index.html", "content": "<html></html>"},
+                            },
+                        )(),
+                        type(
+                            "Call",
+                            (),
+                            {
+                                "stream_id": "2",
+                                "index": 2,
+                                "id": "call_5",
+                                "name": "create_file",
+                                "arguments": {"filepath": "1738/script.js", "content": "console.log(1)\n"},
+                            },
+                        )(),
                     ],
                 },
             )()
@@ -2006,7 +2142,17 @@ def test_workspace_action_accepts_successful_mutating_shell_command(mocker, runt
                     "content": "",
                     "reasoning": "",
                     "tool_calls": [
-                        type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "shell_command", "arguments": {"command": "mkdir -p 1738"}})(),
+                        type(
+                            "Call",
+                            (),
+                            {
+                                "stream_id": "1",
+                                "index": 0,
+                                "id": "call_1",
+                                "name": "shell_command",
+                                "arguments": {"command": "mkdir -p 1738"},
+                            },
+                        )(),
                     ],
                 },
             )()
@@ -2074,7 +2220,17 @@ def test_workspace_action_does_not_fingerprint_around_shell_command(mocker, runt
                     "content": "",
                     "reasoning": "",
                     "tool_calls": [
-                        type("Call", (), {"stream_id": "1", "index": 0, "id": "call_1", "name": "shell_command", "arguments": {"command": "mkdir -p 1738"}})(),
+                        type(
+                            "Call",
+                            (),
+                            {
+                                "stream_id": "1",
+                                "index": 0,
+                                "id": "call_1",
+                                "name": "shell_command",
+                                "arguments": {"command": "mkdir -p 1738"},
+                            },
+                        )(),
                     ],
                 },
             )()
@@ -2295,7 +2451,7 @@ def test_finalization_sanitizes_failed_tool_error_context(mocker, runtime: Skill
         if len(chat_payloads) == 1:
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"fetch_url","arguments":"{\\"url\\": \\\"https://example.com\\\"}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"fetch_url","arguments":"{\\"url\\": \\"https://example.com\\"}"}}]}}]}',
                     'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                     "data: [DONE]",
                 ]
@@ -2531,10 +2687,7 @@ def test_main_pass_tool_markup_forces_clean_finalization(mocker, runtime: SkillR
     assert "<tool_call>" not in result.content
     assert "misformatted the previous reply" in result.content
     assert len(chat_reqs) == 2
-    assert not any(
-        evt.get("type") == "content_token" and "<tool_call>" in str(evt.get("text", ""))
-        for evt in events
-    )
+    assert not any(evt.get("type") == "content_token" and "<tool_call>" in str(evt.get("text", "")) for evt in events)
 
 
 def test_search_failures_return_safe_non_speculative_answer(mocker, runtime: SkillRuntime):
@@ -2600,7 +2753,7 @@ def execute(tool_name, args, env):
         if len(chat_reqs) <= 2:
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"meta latest acquisitions\\\"}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\"meta latest acquisitions\\"}"}}]}}]}',
                     'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                     "data: [DONE]",
                 ]
@@ -2697,7 +2850,7 @@ def execute(tool_name, args, env):
         if len(chat_reqs) in {1, 2}:
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"meta latest acquisitions\\\"}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\"meta latest acquisitions\\"}"}}]}}]}',
                     'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                     "data: [DONE]",
                 ]
@@ -2798,7 +2951,7 @@ def execute(tool_name, args, env):
         if len(chat_reqs) == 2:
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"meta latest acquisitions\\\"}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\"meta latest acquisitions\\"}"}}]}}]}',
                     'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                     "data: [DONE]",
                 ]
@@ -2895,7 +3048,7 @@ def execute(tool_name, args, env):
         if len(chat_reqs) == 2:
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"meta latest acquisitions\\\"}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\"meta latest acquisitions\\"}"}}]}}]}',
                     'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                     "data: [DONE]",
                 ]
@@ -2986,7 +3139,7 @@ def execute(tool_name, args, env):
             assert "web_search" in tool_names
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"meta latest acquisitions\\\"}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\"meta latest acquisitions\\"}"}}]}}]}',
                     'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                     "data: [DONE]",
                 ]
@@ -3072,7 +3225,7 @@ def execute(tool_name, args, env):
         if len(chat_reqs) == 1:
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"skill_view","arguments":"{\\"name\\": \\\"search-ops\\\", \\\"file_path\\\": \\\"\\\"}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"skill_view","arguments":"{\\"name\\": \\"search-ops\\", \\"file_path\\": \\"\\"}"}}]}}]}',
                     'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                     "data: [DONE]",
                 ]
@@ -3091,7 +3244,7 @@ def execute(tool_name, args, env):
             assert "You must call web_search before answering." in system_message
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"latest acquisitions\\\"}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\"latest acquisitions\\"}"}}]}}]}',
                     'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                     "data: [DONE]",
                 ]
@@ -3277,7 +3430,7 @@ def test_agent_infers_tool_calls_when_finish_reason_missing(mocker, runtime: Ski
             # Backend bug: emits tool_calls but final reason is "stop".
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\\"a.txt\\\", \\\"content\\\": \\\"hello\\\"}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\"a.txt\\", \\"content\\": \\"hello\\"}"}}]}}]}',
                     'data: {"choices":[{"finish_reason":"stop"}]}',
                     "data: [DONE]",
                 ]
@@ -3331,7 +3484,7 @@ def test_agent_emits_unique_tool_stream_ids_per_pass(mocker, runtime: SkillRunti
         if len(chat_reqs) == 1:
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\\"a.txt\\\", \\\"content\\\": \\\"hello\\\"}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\"a.txt\\", \\"content\\": \\"hello\\"}"}}]}}]}',
                     'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                     "data: [DONE]",
                 ]
@@ -3339,7 +3492,7 @@ def test_agent_emits_unique_tool_stream_ids_per_pass(mocker, runtime: SkillRunti
         if len(chat_reqs) == 2:
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\\"b.txt\\\", \\\"content\\\": \\\"world\\\"}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\"b.txt\\", \\"content\\": \\"world\\"}"}}]}}]}',
                     'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                     "data: [DONE]",
                 ]
@@ -3399,7 +3552,7 @@ def test_tool_result_history_not_compacted_by_default(mocker, runtime: SkillRunt
         if len(chat_reqs) == 1:
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\\"a.txt\\\", \\\"content\\\": \\\"hello\\\"}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\"a.txt\\", \\"content\\": \\"hello\\"}"}}]}}]}',
                     'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                     "data: [DONE]",
                 ]
@@ -3463,7 +3616,7 @@ def test_tool_result_history_compaction_can_be_gated_by_tool_name(mocker, runtim
         if len(chat_reqs) == 1:
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\\"a.txt\\\", \\\"content\\\": \\\"hello\\\"}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\"a.txt\\", \\"content\\": \\"hello\\"}"}}]}}]}',
                     'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                     "data: [DONE]",
                 ]
@@ -4098,7 +4251,9 @@ def test_local_connection_refused_is_not_retried(mocker, runtime: SkillRuntime):
     def boom(*_args, **_kwargs):
         raise urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
 
-    mocker.patch.object(agent.llm_client.provider, "_status_allows_immediate_send", return_value=ModelStatus(state="online", endpoint=agent.models_endpoint))
+    mocker.patch.object(
+        agent.llm_client.provider, "_status_allows_immediate_send", return_value=ModelStatus(state="online", endpoint=agent.models_endpoint)
+    )
     mocker.patch("agent.llm_client.stream_chat_completions", side_effect=boom)
 
     with pytest.raises(Exception):
@@ -4112,7 +4267,9 @@ def test_local_connection_refused_is_not_retried(mocker, runtime: SkillRuntime):
 def test_retryable_transport_error_still_runs_readiness_poll_after_offline_probe(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     events: list[dict] = []
-    mocker.patch.object(agent.llm_client.provider, "_status_allows_immediate_send", return_value=ModelStatus(state="online", endpoint=agent.models_endpoint))
+    mocker.patch.object(
+        agent.llm_client.provider, "_status_allows_immediate_send", return_value=ModelStatus(state="online", endpoint=agent.models_endpoint)
+    )
     stream = mocker.patch(
         "agent.llm_client.stream_chat_completions",
         side_effect=urllib.error.URLError(TimeoutError("timed out")),
@@ -4259,7 +4416,7 @@ def execute(tool_name, args, env):
         if len(chat_reqs) == 1:
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\\"iran current situation\\\"}"}}]}}]}',
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\"iran current situation\\"}"}}]}}]}',
                     'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                     "data: [DONE]",
                 ]
@@ -4448,7 +4605,7 @@ Ask a follow-up before continuing.
         chat_reqs.append(req)
         return FakeResponse(
             [
-                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"request_user_input","arguments":"{\\"question\\": \\\"Pick a format\\\", \\\"options\\\": [\\\"pdf\\\", \\\"docx\\\"]}"}}]}}]}',
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"request_user_input","arguments":"{\\"question\\": \\"Pick a format\\", \\"options\\": [\\"pdf\\", \\"docx\\"]}"}}]}}]}',
                 'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                 "data: [DONE]",
             ]
@@ -4515,7 +4672,7 @@ Ask a follow-up before continuing.
             return FakeResponse([])
         return FakeResponse(
             [
-                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"request_user_input","arguments":"{\\"question\\": \\\"Pick a format\\\", \\\"options\\\": [\\\"pdf\\\", \\\"docx\\\"]}"}},{"index":1,"id":"call_2","type":"function","function":{"name":"skill_view","arguments":"{\\"name\\": \\\"asker\\\", \\\"file_path\\": \\\"SKILL.md\\"}"}}]}}]}',
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"request_user_input","arguments":"{\\"question\\": \\"Pick a format\\", \\"options\\": [\\"pdf\\", \\"docx\\"]}"}},{"index":1,"id":"call_2","type":"function","function":{"name":"skill_view","arguments":"{\\"name\\": \\"asker\\", \\"file_path\\": \\"SKILL.md\\"}"}}]}}]}',
                 'data: {"choices":[{"finish_reason":"tool_calls"}]}',
                 "data: [DONE]",
             ]
@@ -4533,7 +4690,6 @@ Ask a follow-up before continuing.
     assert result.status == "done"
     assert result.content == "Pick a format\nOptions: pdf | docx"
     assert calls_seen == ["request_user_input"]
-
 
 
 def test_run_turn_allows_shell_command_for_environment_question(mocker, runtime: SkillRuntime):

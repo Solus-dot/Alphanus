@@ -89,8 +89,6 @@ class TurnPolicyEngine:
             prefer_local_workspace_tools=state.prefer_local_workspace_tools,
             shell_tool_exposed="shell_command" in turn_tool_names,
             collaboration_mode=(
-                "plan"
-                if str(getattr(state, "collaboration_mode", "execute") or "").strip().lower() == "plan"
-                else "execute"
+                "plan" if str(getattr(state, "collaboration_mode", "execute") or "").strip().lower() == "plan" else "execute"
             ),
         )

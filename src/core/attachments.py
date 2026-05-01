@@ -3,9 +3,8 @@ from __future__ import annotations
 import base64
 import os
 from pathlib import Path
-from typing import Dict, List, Tuple
 
-IMAGE_MIME: Dict[str, str] = {
+IMAGE_MIME: dict[str, str] = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".png": "image/png",
@@ -67,7 +66,7 @@ def classify_attachment(path: str) -> str:
     return "unknown"
 
 
-def encode_image(path: str) -> Tuple[str, str]:
+def encode_image(path: str) -> tuple[str, str]:
     ext = Path(path).suffix.lower()
     mime = IMAGE_MIME.get(ext, "image/jpeg")
     with open(path, "rb") as handle:
@@ -82,13 +81,13 @@ def read_text_file(path: str) -> str:
         return Path(path).read_text(encoding="latin-1")
 
 
-def build_content(text: str, attachments: List[Tuple[str, str]]):
+def build_content(text: str, attachments: list[tuple[str, str]]):
     if not attachments:
         return text
 
     image_parts = []
     prefix = ""
-    summary_items: List[str] = []
+    summary_items: list[str] = []
     for path, kind in attachments:
         name = os.path.basename(path)
         summary_items.append(f"{name} ({kind})")

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 def _compact(value: Any, depth: int = 0) -> Any:
@@ -24,7 +24,7 @@ def _compact(value: Any, depth: int = 0) -> Any:
         return items
     if isinstance(value, dict):
         items = list(value.items())
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
         for key, item in items[:80]:
             out[str(key)] = _compact(item, depth + 1)
         if len(items) > 80:
@@ -36,7 +36,7 @@ def _compact(value: Any, depth: int = 0) -> Any:
 class JsonLineFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": datetime.now(UTC).isoformat(),
             "level": record.levelname.lower(),
             "logger": record.name,
             "message": record.getMessage(),
@@ -50,7 +50,7 @@ class JsonLineFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 
-def configure_logging(config: Dict[str, Any]) -> logging.Logger:
+def configure_logging(config: dict[str, Any]) -> logging.Logger:
     logging_cfg = config.get("logging", {}) if isinstance(config.get("logging"), dict) else {}
     level_name = str(logging_cfg.get("level", "INFO")).strip().upper() or "INFO"
     level = getattr(logging, level_name, logging.INFO)
@@ -81,7 +81,7 @@ def configure_logging(config: Dict[str, Any]) -> logging.Logger:
 
 
 class TelemetryEmitter:
-    def __init__(self, logger: Optional[logging.Logger] = None) -> None:
+    def __init__(self, logger: logging.Logger | None = None) -> None:
         self.logger = logger or logging.getLogger("alphanus")
 
     def emit(self, event_name: str, **payload: Any) -> None:

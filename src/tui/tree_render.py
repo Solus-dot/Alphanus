@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from typing import List, Tuple
-
 from core.conv_tree import ConvTree, Turn
 
-TreeRow = Tuple[str, str, bool]
+TreeRow = tuple[str, str, bool]
 
 
 def _status_marker(node: Turn) -> str:
@@ -18,9 +16,9 @@ def _status_marker(node: Turn) -> str:
     return "✓"
 
 
-def render_tree_rows(tree: ConvTree, width: int = 80) -> List[TreeRow]:
+def render_tree_rows(tree: ConvTree, width: int = 80) -> list[TreeRow]:
     active_ids = {turn.id for turn in tree.active_path}
-    rows: List[TreeRow] = [("● [root]", "root", True)]
+    rows: list[TreeRow] = [("● [root]", "root", True)]
 
     def dot(node_id: str) -> str:
         if node_id == tree.current_id:

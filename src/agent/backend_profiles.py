@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 AUTO_BACKEND_PROFILE = "auto"
 UNKNOWN_BACKEND_PROFILE = "unknown"
@@ -155,16 +154,14 @@ def detect_backend_profile(
     model_endpoint: str,
     responses_endpoint: str,
     models_endpoint: str,
-    models_payload: Optional[object] = None,
+    models_payload: object | None = None,
 ) -> tuple[str, str]:
     requested_normalized = normalize_backend_profile(requested)
     if requested_normalized != AUTO_BACKEND_PROFILE:
         return requested_normalized, "manual override"
 
     endpoints_blob = " ".join(
-        part.lower()
-        for part in (base_url, model_endpoint, responses_endpoint, models_endpoint)
-        if str(part or "").strip()
+        part.lower() for part in (base_url, model_endpoint, responses_endpoint, models_endpoint) if str(part or "").strip()
     )
     if "ollama" in endpoints_blob or ":11434" in endpoints_blob:
         return "ollama", "endpoint fingerprint"

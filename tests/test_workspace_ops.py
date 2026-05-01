@@ -686,7 +686,9 @@ def test_workspace_search_code_uses_direct_rg_without_prelisting_workspace_files
     manager = WorkspaceManager(str(tmp_path / "ws"), home_root=str(tmp_path / "home"))
     (manager.workspace_root / "src").mkdir(parents=True)
     (manager.workspace_root / "src" / "app.py").write_text("def greet(name):\n    return f'hello {name}'\n", encoding="utf-8")
-    monkeypatch.setattr(manager, "_iter_searchable_files", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not pre-list files")))
+    monkeypatch.setattr(
+        manager, "_iter_searchable_files", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not pre-list files"))
+    )
     monkeypatch.setattr("core.workspace.shutil.which", lambda name: "/usr/bin/rg" if name == "rg" else None)
 
     match_event = {

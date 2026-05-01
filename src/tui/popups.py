@@ -1,7 +1,7 @@
 import json
-from pathlib import Path
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any
 
 from rich.markup import escape as esc
 from rich.text import Text
@@ -84,7 +84,7 @@ class CodeViewerModal(ModalScreen[None]):
     def __init__(
         self,
         code: str,
-        language: Optional[str],
+        language: str | None,
         title: str = "Code Block",
         *,
         syntax_theme: str = "dracula",
@@ -130,7 +130,7 @@ class CodeViewerModal(ModalScreen[None]):
         self.action_cancel()
 
 
-class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
+class ConfigEditorModal(ModalScreen[dict[str, Any] | None]):
     CSS = """
     ConfigEditorModal {
         align: center middle;
@@ -253,9 +253,7 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError as exc:
-            self.query_one("#config-modal-error", Static).update(
-                f"Invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}"
-            )
+            self.query_one("#config-modal-error", Static).update(f"Invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}")
             return
 
         if not isinstance(parsed, dict):
@@ -266,7 +264,7 @@ class ConfigEditorModal(ModalScreen[Optional[Dict[str, Any]]]):
         self.dismiss({"config": parsed, "text": formatted})
 
 
-class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
+class SessionManagerModal(ModalScreen[dict[str, str] | None]):
     CSS = """
     SessionManagerModal {
         align: center middle;
@@ -392,11 +390,7 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
         text_color = str(theme_color("text", DEFAULT_TEXT_COLOR)) if callable(theme_color) else DEFAULT_TEXT_COLOR
         options: list[Option] = []
         for index, session in enumerate(self._sessions, start=1):
-            marker = (
-                f"[bold {accent}]active[/bold {accent}]"
-                if session.is_active
-                else f"[{subtle}]saved[/{subtle}]"
-            )
+            marker = f"[bold {accent}]active[/bold {accent}]" if session.is_active else f"[{subtle}]saved[/{subtle}]"
             title = (
                 f"[bold {accent}]{esc(session.title)}[/bold {accent}]"
                 if session.is_active
@@ -445,9 +439,7 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
         if not self._sessions:
             return
         button = self.query_one("#session-delete", Button)
-        confirming = bool(
-            self._pending_delete_session_id and self._pending_delete_session_id == self._selected_session_id()
-        )
+        confirming = bool(self._pending_delete_session_id and self._pending_delete_session_id == self._selected_session_id())
         button.label = Text("Confirm Delete [D]") if confirming else Text("Delete Selected Session [D]")
         button.variant = "error" if confirming else "default"
 
@@ -495,7 +487,7 @@ class SessionManagerModal(ModalScreen[Optional[Dict[str, str]]]):
         self._sync_delete_button()
 
 
-class SessionNameModal(ModalScreen[Optional[Dict[str, str]]]):
+class SessionNameModal(ModalScreen[dict[str, str] | None]):
     CSS = """
     SessionNameModal {
         align: center middle;
@@ -611,13 +603,14 @@ class SessionNameModal(ModalScreen[Optional[Dict[str, str]]]):
     def _name_submitted(self, _event: Input.Submitted) -> None:
         self.action_create()
 
+
 @dataclass(frozen=True)
 class PickerItem:
     id: str
     prompt: str
 
 
-class SelectionPickerModal(ModalScreen[Optional[Dict[str, str]]]):
+class SelectionPickerModal(ModalScreen[dict[str, str] | None]):
     CSS = """
     SelectionPickerModal {
         align: center middle;
@@ -794,7 +787,7 @@ class CommandPaletteItem:
     rank: int = 0
 
 
-class CommandPaletteModal(ModalScreen[Optional[Dict[str, str]]]):
+class CommandPaletteModal(ModalScreen[dict[str, str] | None]):
     CSS = """
     CommandPaletteModal {
         align: center middle;
@@ -918,7 +911,7 @@ class CommandPaletteModal(ModalScreen[Optional[Dict[str, str]]]):
         self._refresh_options("")
         self.query_one("#command-palette-query", Input).focus()
 
-    def _score_item(self, item: CommandPaletteItem, query: str) -> Optional[tuple[int, int, int, str]]:
+    def _score_item(self, item: CommandPaletteItem, query: str) -> tuple[int, int, int, str] | None:
         q = query.strip().lower()
         search = item.search_text.lower()
         prompt = item.prompt.lower()

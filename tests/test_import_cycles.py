@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 WATCHED_PACKAGES = {"core", "agent"}
 
@@ -16,11 +15,7 @@ def _module_name(path: Path) -> str:
 
 
 def _build_import_graph() -> dict[str, set[str]]:
-    modules = {
-        _module_name(path): path
-        for package in WATCHED_PACKAGES
-        for path in (SRC_ROOT / package).glob("*.py")
-    }
+    modules = {_module_name(path): path for package in WATCHED_PACKAGES for path in (SRC_ROOT / package).glob("*.py")}
     graph = {module: set() for module in modules}
 
     for module, path in modules.items():

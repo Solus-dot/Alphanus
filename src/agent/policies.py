@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import re
-from typing import List
 
-from core.skills import SkillContext, SkillRuntime
 from core.skill_parser import SkillManifest
-
+from core.skills import SkillContext, SkillRuntime
 from core.types import TurnPolicySnapshot
 
 
@@ -67,7 +65,7 @@ class OutputSanitizer:
         text = _THINK_BLOCK_RE.sub("", text)
         text = _TOOL_CALL_BLOCK_RE.sub("", text)
         text = _THINK_TAG_RE.sub("", text)
-        kept: List[str] = []
+        kept: list[str] = []
         for line in text.splitlines():
             stripped = line.strip()
             if _THINK_LINE_RE.fullmatch(stripped):
@@ -83,7 +81,7 @@ class OutputSanitizer:
             if _PARAMETER_CLOSE_RE.fullmatch(stripped):
                 continue
             kept.append(line)
-        deduped: List[str] = []
+        deduped: list[str] = []
         previous = None
         for line in kept:
             stripped = line.strip()
@@ -106,7 +104,7 @@ class PromptPolicyRenderer:
         self.skill_runtime = skill_runtime
         self.context_limit = max(1, int(context_limit))
 
-    def compose_system_content(self, selected: List[SkillManifest], ctx: SkillContext) -> str:
+    def compose_system_content(self, selected: list[SkillManifest], ctx: SkillContext) -> str:
         parts = [self.system_prompt]
         skill_index = self.skill_runtime.compose_skill_index()
         if skill_index:
@@ -122,7 +120,7 @@ class PromptPolicyRenderer:
         return "\n\n".join(part.strip() for part in parts if part and part.strip())
 
     def render_policy_rules(self, snapshot: TurnPolicySnapshot) -> str:
-        blocks: List[str] = []
+        blocks: list[str] = []
         if str(getattr(snapshot, "collaboration_mode", "execute") or "").strip().lower() == "plan":
             blocks.append(
                 "Plan mode rule:\n"

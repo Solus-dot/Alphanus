@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import logging
-
 import json
+import logging
 import select
 import ssl
 import time
 import urllib.error
 import urllib.request
-from typing import Callable, Dict, Generator, Optional
-
+from collections.abc import Callable, Generator
 
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 RETRYABLE_URL_ERRORS = (TimeoutError, ConnectionResetError)
@@ -17,13 +15,13 @@ STREAM_POLL_TIMEOUT_S = 0.25
 
 
 class StreamError(Exception):
-    def __init__(self, message: str, status_code: Optional[int] = None, retryable: bool = False):
+    def __init__(self, message: str, status_code: int | None = None, retryable: bool = False):
         super().__init__(message)
         self.status_code = status_code
         self.retryable = retryable
 
 
-def build_ssl_context(tls_verify: bool = True, ca_bundle_path: Optional[str] = None) -> Optional[ssl.SSLContext]:
+def build_ssl_context(tls_verify: bool = True, ca_bundle_path: str | None = None) -> ssl.SSLContext | None:
     if tls_verify and not ca_bundle_path:
         return None
     context = ssl.create_default_context(cafile=ca_bundle_path)
@@ -71,13 +69,13 @@ def _extract_stream_socket(resp):
 
 def stream_chat_completions(
     endpoint: str,
-    payload: Dict,
+    payload: dict,
     timeout_s: float,
-    headers: Optional[Dict[str, str]] = None,
-    ssl_context: Optional[ssl.SSLContext] = None,
+    headers: dict[str, str] | None = None,
+    ssl_context: ssl.SSLContext | None = None,
     stop_event=None,
-    on_debug_event: Optional[Callable[[Dict], None]] = None,
-) -> Generator[Dict, None, None]:
+    on_debug_event: Callable[[dict], None] | None = None,
+) -> Generator[dict, None, None]:
     body = json.dumps(payload).encode("utf-8")
     req_headers = {"Content-Type": "application/json"}
     if headers:

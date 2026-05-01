@@ -6,8 +6,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
 
 from agent.backend_profiles import (
     AUTO_BACKEND_PROFILE,
@@ -19,10 +19,10 @@ from agent.backend_profiles import (
     profile_capabilities,
     rewrite_payload_for_profile,
 )
-from core.runtime_config import ProviderConfig
-from core.streaming import build_ssl_context, should_retry, stream_chat_completions as core_stream_chat_completions
-
 from agent.telemetry import TelemetryEmitter
+from core.runtime_config import ProviderConfig
+from core.streaming import build_ssl_context, should_retry
+from core.streaming import stream_chat_completions as core_stream_chat_completions
 from core.types import JsonObject, ModelStatus, StreamPassResult, ToolCallAccumulator
 
 
@@ -64,6 +64,7 @@ class ProviderCompatibilityProfile:
             "tier": self.tier,
         }
 
+
 class OpenAICompatibleProvider:
     ONLINE_STATUS_TTL_S = 5.0
     OFFLINE_STATUS_TTL_S = 2.0
@@ -72,9 +73,9 @@ class OpenAICompatibleProvider:
         self,
         config: ProviderConfig,
         *,
-        telemetry: Optional[TelemetryEmitter] = None,
+        telemetry: TelemetryEmitter | None = None,
         debug: bool = False,
-        stream_chat_completions_fn: Optional[Callable[..., object]] = None,
+        stream_chat_completions_fn: Callable[..., object] | None = None,
     ) -> None:
         self.debug = debug
         self.telemetry = telemetry or TelemetryEmitter()
@@ -164,7 +165,7 @@ class OpenAICompatibleProvider:
             payload["pass_id"] = pass_id
         self.telemetry.emit("backend_model_integrity_violation", **payload)
 
-    def _refresh_backend_profile(self, models_payload: Optional[object]) -> None:
+    def _refresh_backend_profile(self, models_payload: object | None) -> None:
         detected, reason = detect_backend_profile(
             requested=self.backend_profile_requested,
             base_url=self.base_url,
@@ -352,7 +353,7 @@ class OpenAICompatibleProvider:
         elif isinstance(payload.get("max_tokens"), (int, float)):
             max_tokens_override = int(payload["max_tokens"])
         model_override = str(payload.get("model", "")).strip()
-        converted_tools: Optional[list[JsonObject]] = None
+        converted_tools: list[JsonObject] | None = None
         if tools is not None:
             converted_tools = self._chat_tools_to_responses(tools) if mode == "responses" else self._responses_tools_to_chat(tools)
         return self.build_payload(
@@ -369,10 +370,10 @@ class OpenAICompatibleProvider:
         *,
         model_messages: list[JsonObject],
         thinking: bool,
-        tools: Optional[list[JsonObject]] = None,
-        max_tokens_override: Optional[int] = None,
+        tools: list[JsonObject] | None = None,
+        max_tokens_override: int | None = None,
         model_override: str = "",
-        mode: Optional[str] = None,
+        mode: str | None = None,
     ) -> JsonObject:
         selected_mode = mode if mode in {"responses", "chat"} else self._select_endpoint_mode()
         limit = self.default_max_tokens if max_tokens_override is None else max_tokens_override
@@ -423,7 +424,7 @@ class OpenAICompatibleProvider:
         return not OpenAICompatibleProvider.stop_requested(stop_event)
 
     @staticmethod
-    def extract_model_name(payload: object) -> Optional[str]:
+    def extract_model_name(payload: object) -> str | None:
         keys = (
             "id",
             "name",
@@ -435,13 +436,13 @@ class OpenAICompatibleProvider:
         )
         visited: set[int] = set()
 
-        def candidate(value: object) -> Optional[str]:
+        def candidate(value: object) -> str | None:
             if not isinstance(value, str):
                 return None
             text = value.strip()
             return text or None
 
-        def walk(item: object) -> Optional[str]:
+        def walk(item: object) -> str | None:
             if isinstance(item, dict):
                 marker = id(item)
                 if marker in visited:
@@ -474,7 +475,7 @@ class OpenAICompatibleProvider:
         return None
 
     @staticmethod
-    def extract_model_context_window(payload: object) -> Optional[int]:
+    def extract_model_context_window(payload: object) -> int | None:
         context_keys = (
             "context_length",
             "context_window",
@@ -487,7 +488,7 @@ class OpenAICompatibleProvider:
         )
         visited: set[int] = set()
 
-        def candidate_int(value: object) -> Optional[int]:
+        def candidate_int(value: object) -> int | None:
             if isinstance(value, bool):
                 return None
             if isinstance(value, int):
@@ -503,7 +504,7 @@ class OpenAICompatibleProvider:
                 return parsed if parsed > 0 else None
             return None
 
-        def from_item(item: object) -> Optional[int]:
+        def from_item(item: object) -> int | None:
             if isinstance(item, dict):
                 marker = id(item)
                 if marker in visited:
@@ -574,7 +575,7 @@ class OpenAICompatibleProvider:
             path = "/slots"
         return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
 
-    def fetch_json(self, url: str, timeout_s: Optional[float] = None) -> object:
+    def fetch_json(self, url: str, timeout_s: float | None = None) -> object:
         request = urllib.request.Request(url, headers=self.headers(), method="GET")
         timeout = self.connect_timeout_s if timeout_s is None else max(0.1, float(timeout_s))
         with urllib.request.urlopen(request, timeout=timeout, context=self.ssl_context) as response:
@@ -583,7 +584,7 @@ class OpenAICompatibleProvider:
                 return {}
             return json.loads(raw)
 
-    def list_models(self, timeout_s: Optional[float] = None) -> object:
+    def list_models(self, timeout_s: float | None = None) -> object:
         return self.fetch_json(self.models_endpoint, timeout_s=timeout_s)
 
     def get_model_status(self) -> ModelStatus:
@@ -598,7 +599,7 @@ class OpenAICompatibleProvider:
             endpoint=status.endpoint,
         )
 
-    def is_model_status_fresh(self, status: Optional[ModelStatus] = None, *, now: Optional[float] = None) -> bool:
+    def is_model_status_fresh(self, status: ModelStatus | None = None, *, now: float | None = None) -> bool:
         current_status = self.get_model_status() if status is None else status
         return current_status.is_fresh(
             now=now,
@@ -628,7 +629,7 @@ class OpenAICompatibleProvider:
             return "offline"
         return "unknown"
 
-    def refresh_model_status(self, timeout_s: Optional[float] = None, force: bool = False) -> ModelStatus:
+    def refresh_model_status(self, timeout_s: float | None = None, force: bool = False) -> ModelStatus:
         current = self.get_model_status()
         if not force and self.is_model_status_fresh(current):
             return current
@@ -636,7 +637,7 @@ class OpenAICompatibleProvider:
         now = time.monotonic()
         deadline = None if timeout_s is None else now + max(0.0, float(timeout_s))
 
-        def remaining_timeout() -> Optional[float]:
+        def remaining_timeout() -> float | None:
             if deadline is None:
                 return None
             remaining = deadline - time.monotonic()
@@ -712,9 +713,9 @@ class OpenAICompatibleProvider:
     def check_ready(
         self,
         stop_event=None,
-        on_event: Optional[Callable[[JsonObject], None]] = None,
-        timeout_s: Optional[float] = None,
-    ) -> Optional[bool]:
+        on_event: Callable[[JsonObject], None] | None = None,
+        timeout_s: float | None = None,
+    ) -> bool | None:
         timeout = self.readiness_timeout_s if timeout_s is None else max(0.0, float(timeout_s))
         deadline = time.monotonic() + timeout
         attempt_timeout = min(self.connect_timeout_s, 1.0)
@@ -776,7 +777,7 @@ class OpenAICompatibleProvider:
     def _is_transport_failure(exc: Exception) -> bool:
         return getattr(exc, "status_code", None) is None
 
-    def complete(self, payload: dict[str, object], timeout_s: Optional[float] = None) -> dict[str, object]:
+    def complete(self, payload: dict[str, object], timeout_s: float | None = None) -> dict[str, object]:
         request = urllib.request.Request(
             self.model_endpoint,
             headers={"Content-Type": "application/json", **self.headers()},
@@ -792,9 +793,9 @@ class OpenAICompatibleProvider:
         self,
         payload: dict[str, object],
         stop_event,
-        on_event: Optional[Callable[[JsonObject], None]],
+        on_event: Callable[[JsonObject], None] | None,
         pass_id: str,
-        mode: Optional[str] = None,
+        mode: str | None = None,
     ) -> StreamPassResult:
         selected_mode = mode if mode in {"responses", "chat"} else self._select_endpoint_mode()
         return self._stream_one_pass(payload, stop_event, on_event, pass_id, selected_mode)
@@ -803,7 +804,7 @@ class OpenAICompatibleProvider:
         self,
         payload: dict[str, object],
         stop_event,
-        on_event: Optional[Callable[[JsonObject], None]],
+        on_event: Callable[[JsonObject], None] | None,
         pass_id: str,
         mode: str,
     ) -> StreamPassResult:
@@ -811,15 +812,15 @@ class OpenAICompatibleProvider:
             self.telemetry.emit("chat_pass_cancelled", pass_id=pass_id)
             return StreamPassResult(finish_reason="cancelled")
 
-        content_parts: List[str] = []
-        reasoning_parts: List[str] = []
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
         finish_reason = "stop"
         tool_acc = ToolCallAccumulator(pass_id=pass_id)
         tool_phase_started = False
         suppress_content_stream = False
-        usage: Dict[str, int] = {}
+        usage: dict[str, int] = {}
         stream_started_at = time.time()
-        first_output_at: Optional[float] = None
+        first_output_at: float | None = None
         endpoint = self.responses_endpoint if mode == "responses" else self.model_endpoint
         self.telemetry.emit("chat_pass_start", pass_id=pass_id, endpoint=endpoint, payload=payload, mode=mode)
 
@@ -835,11 +836,7 @@ class OpenAICompatibleProvider:
             if self.stop_requested(stop_event):
                 self.telemetry.emit("chat_pass_cancelled", pass_id=pass_id)
                 return StreamPassResult(finish_reason="cancelled")
-            parsed = (
-                self._parse_responses_chunk(chunk, tool_acc)
-                if mode == "responses"
-                else self._parse_chat_chunk(chunk, tool_acc)
-            )
+            parsed = self._parse_responses_chunk(chunk, tool_acc) if mode == "responses" else self._parse_chat_chunk(chunk, tool_acc)
             if parsed["usage"]:
                 usage = parsed["usage"]
                 self._emit(on_event, {"type": "usage", "usage": dict(usage)})
@@ -904,7 +901,7 @@ class OpenAICompatibleProvider:
             reasoning="".join(reasoning_parts),
             tool_calls=[{"id": call.id, "name": call.name, "arguments": call.arguments} for call in tool_calls],
         )
-        first_token_latency_ms: Optional[int] = None
+        first_token_latency_ms: int | None = None
         if first_output_at is not None:
             first_token_latency_ms = max(0, int((first_output_at - stream_started_at) * 1000))
         return StreamPassResult(
@@ -917,10 +914,10 @@ class OpenAICompatibleProvider:
         )
 
     @staticmethod
-    def _normalize_usage(payload: object) -> Dict[str, int]:
+    def _normalize_usage(payload: object) -> dict[str, int]:
         if not isinstance(payload, dict):
             return {}
-        usage: Dict[str, int] = {}
+        usage: dict[str, int] = {}
         for key, value in payload.items():
             if isinstance(value, (int, float)):
                 usage[str(key)] = int(value)
@@ -1086,12 +1083,7 @@ class OpenAICompatibleProvider:
                     )
                     self._record_backend_incompatibility(message, pass_id=pass_id)
                     raise RuntimeError(message) from exc
-                if (
-                    self.endpoint_mode == "auto"
-                    and mode == "responses"
-                    and not fallback_attempted
-                    and self._is_endpoint_unsupported(exc)
-                ):
+                if self.endpoint_mode == "auto" and mode == "responses" and not fallback_attempted and self._is_endpoint_unsupported(exc):
                     fallback_attempted = True
                     mode = "chat"
                     self._resolved_endpoint_mode = "chat"
@@ -1142,7 +1134,7 @@ class OpenAICompatibleProvider:
                 raise
 
     @staticmethod
-    def _emit(on_event: Optional[Callable[[JsonObject], None]], event: JsonObject) -> None:
+    def _emit(on_event: Callable[[JsonObject], None] | None, event: JsonObject) -> None:
         if not on_event:
             return
         try:

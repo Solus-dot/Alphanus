@@ -74,9 +74,7 @@ def initialize_shell_state(app: Any, *, agent: Any, debug: bool) -> None:
         model_status=initial_status,
         model_name=str(initial_status.model_name or "").strip() or None,
         model_context_window=(
-            initial_status.context_window
-            if isinstance(initial_status.context_window, int) and initial_status.context_window > 0
-            else None
+            initial_status.context_window if isinstance(initial_status.context_window, int) and initial_status.context_window > 0 else None
         ),
     )
 

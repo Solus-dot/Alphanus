@@ -7,11 +7,11 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
-from alphanus_paths import get_app_paths
 from agent.core import Agent
 from agent.telemetry import configure_logging
+from alphanus_paths import get_app_paths
 from core.configuration import (
     DEFAULT_CONFIG,
     config_for_editor_view,
@@ -22,13 +22,12 @@ from core.configuration import (
     resolve_path,
     validate_endpoint_policy,
 )
-from core.theme_catalog import BUILTIN_THEME_IDS, DEFAULT_THEME_ID, THEME_ALIASES, normalize_theme_id
 from core.memory import LexicalMemory
 from core.skills import SkillRuntime
+from core.theme_catalog import BUILTIN_THEME_IDS, DEFAULT_THEME_ID, THEME_ALIASES, normalize_theme_id
 from core.workspace import WorkspaceManager
 from tui.interface import AlphanusTUI
 from tui.themes import theme_spec
-
 
 INIT_SECTIONS = ("all", "workspace", "model", "search", "theme")
 
@@ -181,7 +180,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _load_runtime_config(app_paths: Any, args: argparse.Namespace) -> tuple[Dict[str, Any], list[str]]:
+def _load_runtime_config(app_paths: Any, args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
     load_dotenv(app_paths.dotenv_path)
     config_path = app_paths.config_path
     if not config_path.exists():
@@ -206,7 +205,9 @@ def _load_runtime_config(app_paths: Any, args: argparse.Namespace) -> tuple[Dict
     return config, config_warnings
 
 
-def _build_agent_runtime(app_paths: Any, config: Dict[str, Any], *, debug: bool) -> tuple[WorkspaceManager, LexicalMemory, SkillRuntime, Agent]:
+def _build_agent_runtime(
+    app_paths: Any, config: dict[str, Any], *, debug: bool
+) -> tuple[WorkspaceManager, LexicalMemory, SkillRuntime, Agent]:
     workspace_root = resolve_path(config["workspace"]["path"], app_paths.state_root)
     workspace = WorkspaceManager(workspace_root=workspace_root)
     memory_path = str((Path(app_paths.state_root).resolve() / "memory" / "events.jsonl").resolve())
@@ -273,7 +274,7 @@ def _section_selected(section: str, name: str) -> bool:
     return section == "all" or section == name
 
 
-def _apply_reset_scope(base: Dict[str, Any], *, section: str) -> Dict[str, Any]:
+def _apply_reset_scope(base: dict[str, Any], *, section: str) -> dict[str, Any]:
     if section == "all":
         return copy.deepcopy(DEFAULT_CONFIG)
 
@@ -367,7 +368,7 @@ def _run_init(args: argparse.Namespace) -> int:
     state_root = Path(app_paths.state_root)
     state_root.mkdir(parents=True, exist_ok=True)
 
-    base: Dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG)
+    base: dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG)
     existing_warnings: list[str] = []
     if app_paths.config_path.exists():
         try:
@@ -381,14 +382,10 @@ def _run_init(args: argparse.Namespace) -> int:
     workspace_default = str(base.get("workspace", {}).get("path", DEFAULT_CONFIG["workspace"]["path"]))
     base_url_default = str(base.get("agent", {}).get("base_url", DEFAULT_CONFIG["agent"]["base_url"]))
     model_endpoint_default = str(base.get("agent", {}).get("model_endpoint", DEFAULT_CONFIG["agent"]["model_endpoint"]))
-    responses_endpoint_default = str(
-        base.get("agent", {}).get("responses_endpoint", DEFAULT_CONFIG["agent"]["responses_endpoint"])
-    )
+    responses_endpoint_default = str(base.get("agent", {}).get("responses_endpoint", DEFAULT_CONFIG["agent"]["responses_endpoint"]))
     models_endpoint_default = str(base.get("agent", {}).get("models_endpoint", DEFAULT_CONFIG["agent"]["models_endpoint"]))
     endpoint_mode_default = str(base.get("agent", {}).get("endpoint_mode", DEFAULT_CONFIG["agent"]["endpoint_mode"]))
-    backend_profile_default = str(
-        base.get("agent", {}).get("backend_profile", DEFAULT_CONFIG["agent"].get("backend_profile", "auto"))
-    )
+    backend_profile_default = str(base.get("agent", {}).get("backend_profile", DEFAULT_CONFIG["agent"].get("backend_profile", "auto")))
     api_key_ref_default = str(base.get("agent", {}).get("api_key", DEFAULT_CONFIG["agent"]["api_key"]))
     api_key_env_default = str(base.get("agent", {}).get("api_key_env", DEFAULT_CONFIG["agent"]["api_key_env"]))
     search_provider_default = str(base.get("search", {}).get("provider", DEFAULT_CONFIG["search"]["provider"]))
@@ -416,9 +413,7 @@ def _run_init(args: argparse.Namespace) -> int:
         if _section_selected(section, "model"):
             base_url = str(getattr(args, "base_url", "") or "").strip() or base_url_default
             model_endpoint = str(getattr(args, "model_endpoint", "") or "").strip() or model_endpoint_default
-            responses_endpoint = (
-                str(getattr(args, "responses_endpoint", "") or "").strip() or responses_endpoint_default
-            )
+            responses_endpoint = str(getattr(args, "responses_endpoint", "") or "").strip() or responses_endpoint_default
             models_endpoint = str(getattr(args, "models_endpoint", "") or "").strip() or models_endpoint_default
             endpoint_mode = str(getattr(args, "endpoint_mode", "") or "").strip() or endpoint_mode_default
             backend_profile = str(getattr(args, "backend_profile", "") or "").strip() or backend_profile_default
@@ -516,9 +511,7 @@ def _run_init(args: argparse.Namespace) -> int:
                 hint=theme.muted("where init stores the provider key"),
             )
             api_key_ref = f"env:{api_key_env.strip() or 'ALPHANUS_API_KEY'}"
-            api_key_value = getpass.getpass(
-                "API key (stored in ~/.alphanus/.env; leave blank to keep current): "
-            ).strip()
+            api_key_value = getpass.getpass("API key (stored in ~/.alphanus/.env; leave blank to keep current): ").strip()
             step_index += 1
             print("")
         if _section_selected(section, "search"):
@@ -546,7 +539,7 @@ def _run_init(args: argparse.Namespace) -> int:
             ui_theme, _ = normalize_theme_id(selected_theme, default=theme_default)
             print("")
 
-    updates: Dict[str, Any] = {}
+    updates: dict[str, Any] = {}
     if _section_selected(section, "workspace"):
         updates["workspace"] = {"path": workspace_path}
     if _section_selected(section, "model"):

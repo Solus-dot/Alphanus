@@ -4,7 +4,14 @@ import queue
 from types import SimpleNamespace
 
 from core.types import AgentTurnResult
-from tui.stream_runtime import StreamRuntimeState, drain_events, enqueue_event, finish_turn_stream, start_turn_stream, visible_reasoning_text
+from tui.stream_runtime import (
+    StreamRuntimeState,
+    drain_events,
+    enqueue_event,
+    finish_turn_stream,
+    start_turn_stream,
+    visible_reasoning_text,
+)
 
 
 class _Turn:

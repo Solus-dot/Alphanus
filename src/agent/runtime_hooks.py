@@ -7,8 +7,7 @@ from core.types import JsonObject
 
 
 class TurnRuntimeHooks(Protocol):
-    def call_with_retry(self, payload: JsonObject, stop_event, on_event, pass_id: str):
-        ...
+    def call_with_retry(self, payload: JsonObject, stop_event, on_event, pass_id: str): ...
 
     def build_skill_context(
         self,
@@ -17,14 +16,11 @@ class TurnRuntimeHooks(Protocol):
         attachments: list[str],
         history_messages: list[ChatMessage] | None = None,
         loaded_skill_ids: list[str] | None = None,
-    ):
-        ...
+    ): ...
 
-    def classify_context(self, ctx, stop_event=None):
-        ...
+    def classify_context(self, ctx, stop_event=None): ...
 
-    def select_skills(self, ctx, stop_event):
-        ...
+    def select_skills(self, ctx, stop_event): ...
 
 
 class AgentTurnRuntimeHooks:
@@ -55,4 +51,3 @@ class AgentTurnRuntimeHooks:
 
     def select_skills(self, ctx, stop_event):
         return self.agent._select_turn(ctx, stop_event)
-

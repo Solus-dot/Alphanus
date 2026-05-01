@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, List, Tuple
+from typing import Any
 
 from rich.markup import escape as esc
 from textual.widgets import Static
@@ -58,7 +58,7 @@ def write_turn_user(app: Any, turn: Turn, accent_color: str = DEFAULT_ACCENT_COL
 
 
 def write_skill_exchanges(app: Any, turn: Turn) -> None:
-    pending_details: List[Tuple[str, str]] = []
+    pending_details: list[tuple[str, str]] = []
     for msg in turn.skill_exchanges:
         if msg.get("role") == "assistant" and msg.get("tool_calls"):
             if not app._show_tool_details:

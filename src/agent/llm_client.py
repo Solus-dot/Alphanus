@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import os
-from typing import Callable, Dict, Optional
-
-from core.message_types import ChatMessage
-from core.runtime_config import ProviderConfig
-from core.streaming import stream_chat_completions as _stream_chat_completions
+from collections.abc import Callable
 
 from agent.provider import OpenAICompatibleProvider
 from agent.telemetry import TelemetryEmitter
+from core.message_types import ChatMessage
+from core.runtime_config import ProviderConfig
+from core.streaming import stream_chat_completions as _stream_chat_completions
 from core.types import JsonObject, ModelStatus, StreamPassResult
 
 stream_chat_completions = _stream_chat_completions
@@ -18,7 +17,7 @@ class LLMClient:
     ONLINE_STATUS_TTL_S = OpenAICompatibleProvider.ONLINE_STATUS_TTL_S
     OFFLINE_STATUS_TTL_S = OpenAICompatibleProvider.OFFLINE_STATUS_TTL_S
 
-    def __init__(self, config: JsonObject, debug: bool = False, telemetry: Optional[TelemetryEmitter] = None) -> None:
+    def __init__(self, config: JsonObject, debug: bool = False, telemetry: TelemetryEmitter | None = None) -> None:
         self.debug = debug
         self.telemetry = telemetry or TelemetryEmitter()
         self.auth_header = None
@@ -57,20 +56,15 @@ class LLMClient:
         self.enable_structured_classification = bool(agent_cfg.get("enable_structured_classification", True))
         self.max_classifier_tokens = max(32, int(agent_cfg.get("max_classifier_tokens", 256)))
 
-    def _resolve_auth_header(self, config: JsonObject) -> Optional[str]:
+    def _resolve_auth_header(self, config: JsonObject) -> str | None:
         agent_cfg = config.get("agent", {}) if isinstance(config.get("agent"), dict) else {}
         api_key_ref = str(agent_cfg.get("api_key", "")).strip()
         api_key_env = str(agent_cfg.get("api_key_env", "ALPHANUS_API_KEY")).strip() or "ALPHANUS_API_KEY"
         auth_template = (
-            str(agent_cfg.get("auth_header_template", "Authorization: Bearer {api_key}")).strip()
-            or "Authorization: Bearer {api_key}"
+            str(agent_cfg.get("auth_header_template", "Authorization: Bearer {api_key}")).strip() or "Authorization: Bearer {api_key}"
         )
 
-        explicit_header = (
-            os.environ.get("ALPHANUS_AUTH_HEADER", "").strip()
-            or os.environ.get("AUTH_HEADER", "").strip()
-            or ""
-        )
+        explicit_header = os.environ.get("ALPHANUS_AUTH_HEADER", "").strip() or os.environ.get("AUTH_HEADER", "").strip() or ""
         if api_key_ref.lower().startswith("env:"):
             env_name = api_key_ref[4:].strip()
             key = os.environ.get(env_name, "").strip() if env_name else ""
@@ -102,16 +96,16 @@ class LLMClient:
     def _ready_checked(self, value: bool) -> None:
         self.provider._ready_checked = bool(value)
 
-    def headers(self) -> Dict[str, str]:
+    def headers(self) -> dict[str, str]:
         return self.provider.headers()
 
-    def compatibility_profile(self) -> Dict[str, object]:
+    def compatibility_profile(self) -> dict[str, object]:
         return self.provider.compatibility_profile()
 
     def fallback_events(self) -> list[dict[str, object]]:
         return self.provider.fallback_events()
 
-    def backend_profile_info(self) -> Dict[str, object]:
+    def backend_profile_info(self) -> dict[str, object]:
         return self.provider.backend_profile_info()
 
     @staticmethod
@@ -123,18 +117,18 @@ class LLMClient:
         return OpenAICompatibleProvider.sleep_with_stop(duration_s, stop_event)
 
     @staticmethod
-    def extract_model_name(payload: object) -> Optional[str]:
+    def extract_model_name(payload: object) -> str | None:
         return OpenAICompatibleProvider.extract_model_name(payload)
 
     @staticmethod
-    def extract_model_context_window(payload: object) -> Optional[int]:
+    def extract_model_context_window(payload: object) -> int | None:
         return OpenAICompatibleProvider.extract_model_context_window(payload)
 
     @staticmethod
     def props_endpoint_from_models_endpoint(models_endpoint: str) -> str:
         return OpenAICompatibleProvider.props_endpoint_from_models_endpoint(models_endpoint)
 
-    def fetch_json(self, url: str, timeout_s: Optional[float] = None) -> object:
+    def fetch_json(self, url: str, timeout_s: float | None = None) -> object:
         return self.provider.fetch_json(url, timeout_s=timeout_s)
 
     def get_model_status(self) -> ModelStatus:
@@ -143,25 +137,25 @@ class LLMClient:
     def _store_model_status(self, status: ModelStatus) -> ModelStatus:
         return self.provider._store_model_status(status)
 
-    def is_model_status_fresh(self, status: Optional[ModelStatus] = None, *, now: Optional[float] = None) -> bool:
+    def is_model_status_fresh(self, status: ModelStatus | None = None, *, now: float | None = None) -> bool:
         return self.provider.is_model_status_fresh(status, now=now)
 
-    def refresh_model_status(self, timeout_s: Optional[float] = None, force: bool = False) -> ModelStatus:
+    def refresh_model_status(self, timeout_s: float | None = None, force: bool = False) -> ModelStatus:
         return self.provider.refresh_model_status(timeout_s=timeout_s, force=force)
 
     def mark_model_transport_failure(self, exc: Exception) -> None:
         self.provider.mark_model_transport_failure(exc)
 
-    def fetch_model_metadata(self, timeout_s: Optional[float] = None) -> tuple[Optional[str], Optional[int]]:
+    def fetch_model_metadata(self, timeout_s: float | None = None) -> tuple[str | None, int | None]:
         status = self.refresh_model_status(timeout_s=timeout_s, force=True)
         return status.model_name, status.context_window
 
     def ensure_ready(
         self,
         stop_event=None,
-        on_event: Optional[Callable[[JsonObject], None]] = None,
-        timeout_s: Optional[float] = None,
-    ) -> Optional[bool]:
+        on_event: Callable[[JsonObject], None] | None = None,
+        timeout_s: float | None = None,
+    ) -> bool | None:
         return self.provider.check_ready(stop_event=stop_event, on_event=on_event, timeout_s=timeout_s)
 
     def _status_probe_timeout_s(self) -> float:
@@ -192,9 +186,9 @@ class LLMClient:
         self,
         model_messages: list[ChatMessage],
         thinking: bool,
-        tools: Optional[list[JsonObject]] = None,
+        tools: list[JsonObject] | None = None,
         *,
-        max_tokens_override: Optional[int] = None,
+        max_tokens_override: int | None = None,
         model_override: str = "",
     ) -> JsonObject:
         return self.provider.build_payload(
@@ -209,7 +203,7 @@ class LLMClient:
         return self.provider.call_with_retry(payload, stop_event, on_event, pass_id=pass_id)
 
     @staticmethod
-    def _emit(on_event: Optional[Callable[[JsonObject], None]], event: JsonObject) -> None:
+    def _emit(on_event: Callable[[JsonObject], None] | None, event: JsonObject) -> None:
         OpenAICompatibleProvider._emit(on_event, event)
 
     @staticmethod

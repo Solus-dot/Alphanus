@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
-from typing import List, Optional
 
 from rich.console import Console, Group, RenderableType
 from rich.text import Text
@@ -31,21 +30,21 @@ def count_renderable_lines(renderable: RenderableType, width: int) -> int:
 
 
 class TranscriptView(Static):
-    def __init__(self, *args, max_lines: Optional[int] = None, **kwargs) -> None:
+    def __init__(self, *args, max_lines: int | None = None, **kwargs) -> None:
         super().__init__("", *args, markup=False, **kwargs)
-        self._entries: List[TranscriptEntry] = []
+        self._entries: list[TranscriptEntry] = []
         self._max_lines = max_lines
         self._last_render_width: int = 1
-        self._last_line_counts: List[int] = []
+        self._last_line_counts: list[int] = []
         self._last_line_total: int = 0
         self._has_rendered = False
 
     @property
-    def max_lines(self) -> Optional[int]:
+    def max_lines(self) -> int | None:
         return self._max_lines
 
     @max_lines.setter
-    def max_lines(self, value: Optional[int]) -> None:
+    def max_lines(self, value: int | None) -> None:
         self._max_lines = value
 
     def render(self) -> RenderableType:
@@ -55,7 +54,7 @@ class TranscriptView(Static):
             return Text("")
         return Group(*(entry.renderable for entry in self._entries))
 
-    def set_entries(self, entries: List[TranscriptEntry]) -> None:
+    def set_entries(self, entries: list[TranscriptEntry]) -> None:
         self._entries = list(entries)
         self._recalculate_line_cache(self._measurement_width())
         self._trim_entries_to_max_lines()
@@ -83,7 +82,7 @@ class TranscriptView(Static):
         self._recalculate_line_cache(width)
         self.refresh(layout=True)
 
-    def capture_anchor(self, scroll_y: float, *, partial_line_count: int = 0) -> Optional[ScrollAnchor]:
+    def capture_anchor(self, scroll_y: float, *, partial_line_count: int = 0) -> ScrollAnchor | None:
         counts = self._cached_line_counts()
         if not counts and partial_line_count <= 0:
             return None
@@ -112,7 +111,7 @@ class TranscriptView(Static):
         near_bottom = (max_scroll_y - current_scroll_y) <= 1.0
         return ScrollAnchor(near_bottom=near_bottom, entry_index=index, line_offset=offset, partial_line_offset=partial_offset)
 
-    def restore_anchor(self, anchor: Optional[ScrollAnchor], *, partial_line_count: int = 0) -> float:
+    def restore_anchor(self, anchor: ScrollAnchor | None, *, partial_line_count: int = 0) -> float:
         if not anchor:
             return 0.0
         counts = self._entry_line_counts_for_width(self._available_width())
@@ -133,7 +132,7 @@ class TranscriptView(Static):
             width = int(getattr(self.size, "width", 0) or 0)
         return max(1, width)
 
-    def _cached_line_counts(self) -> List[int]:
+    def _cached_line_counts(self) -> list[int]:
         if self._has_rendered and len(self._last_line_counts) == len(self._entries):
             return list(self._last_line_counts)
         self._recalculate_line_cache(self._available_width())
@@ -142,7 +141,7 @@ class TranscriptView(Static):
     def _measurement_width(self) -> int:
         return self._last_render_width if self._has_rendered else self._available_width()
 
-    def _entry_line_counts_for_width(self, width: int) -> List[int]:
+    def _entry_line_counts_for_width(self, width: int) -> list[int]:
         width = max(1, int(width))
         console = _line_count_console(width)
         options = console.options.update(width=width)

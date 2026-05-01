@@ -6,7 +6,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from agent.types import AgentTurnResult
 from tui.markdown_utils import render_md
@@ -32,16 +32,16 @@ class StreamTextState:
     reasoning_buffer: str = ""
     content_buffer: str = ""
     in_fence: bool = False
-    fence_lang: Optional[str] = None
-    fence_lines: List[str] = field(default_factory=list)
+    fence_lang: str | None = None
+    fence_lines: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
 class StreamRuntimeState:
-    event_queue: queue.SimpleQueue[Dict[str, object]] = field(default_factory=queue.SimpleQueue)
+    event_queue: queue.SimpleQueue[dict[str, object]] = field(default_factory=queue.SimpleQueue)
     drain_active: bool = False
     partial_dirty: bool = False
-    deferred_live_preview: Optional[Tuple[List[str], Optional[str]]] = None
+    deferred_live_preview: tuple[list[str], str | None] | None = None
     text: StreamTextState = field(default_factory=StreamTextState)
 
 
@@ -53,7 +53,7 @@ def _state(app: Any) -> StreamRuntimeState:
     return state
 
 
-def start_turn_stream(app: Any, turn: Any, user_input: str, attachment_paths: List[str]) -> None:
+def start_turn_stream(app: Any, turn: Any, user_input: str, attachment_paths: list[str]) -> None:
     app.streaming = True
     app._auto_follow_stream = True
     app._active_turn_id = turn.id
@@ -84,7 +84,7 @@ def start_turn_stream(app: Any, turn: Any, user_input: str, attachment_paths: Li
     )
 
 
-def enqueue_event(app: Any, event: Dict[str, Any]) -> None:
+def enqueue_event(app: Any, event: dict[str, Any]) -> None:
     _state(app).event_queue.put(event)
     if event.get("type") in {"tool_phase_started", "tool_call", "tool_result", "error", "info", "pass_end", "usage"}:
         app.call_from_thread(app._drain_stream_event_queue)
@@ -131,13 +131,9 @@ def refresh_deferred_partial(app: Any) -> None:
         return
     stream_state.partial_dirty = False
     if app._reasoning_open and not app._content_open:
-        display = "\n".join(
-            line for line in visible_reasoning_text(app._buf_r).splitlines() if not app._is_tool_trace_line(line)
-        ).strip()
+        display = "\n".join(line for line in visible_reasoning_text(app._buf_r).splitlines() if not app._is_tool_trace_line(line)).strip()
         if display:
-            app._set_partial_renderable(
-                app._bar_renderable(app._reasoning_panel_renderable(display), _assistant_color(app))
-            )
+            app._set_partial_renderable(app._bar_renderable(app._reasoning_panel_renderable(display), _assistant_color(app)))
         else:
             app._set_partial_renderable(None)
         return
@@ -182,7 +178,7 @@ def handle_content_token(app: Any, token: str, *, update_partial: bool = True) -
     app._flush_content_buffer(include_partial=False, update_partial=update_partial)
 
 
-def on_agent_event(app: Any, event: Dict[str, Any]) -> None:
+def on_agent_event(app: Any, event: dict[str, Any]) -> None:
     etype = event.get("type")
     stream_drain_active = bool(_state(app).drain_active)
 
@@ -206,9 +202,7 @@ def on_agent_event(app: Any, event: Dict[str, Any]) -> None:
                 line for line in visible_reasoning_text(app._buf_r).splitlines() if not app._is_tool_trace_line(line)
             ).strip()
             if display:
-                app._set_partial_renderable(
-                    app._bar_renderable(app._reasoning_panel_renderable(display), _assistant_color(app))
-                )
+                app._set_partial_renderable(app._bar_renderable(app._reasoning_panel_renderable(display), _assistant_color(app)))
             else:
                 app._set_partial_renderable(None)
 
@@ -334,7 +328,7 @@ def drain_events(app: Any) -> None:
     if stream_state.drain_active:
         return
 
-    queued: List[Dict[str, Any]] = []
+    queued: list[dict[str, Any]] = []
     while True:
         try:
             queued.append(stream_state.event_queue.get_nowait())
@@ -361,7 +355,7 @@ def drain_events(app: Any) -> None:
 
 def finish_turn_stream(app: Any, turn_id: str, result: AgentTurnResult) -> None:
     finalization_error = ""
-    cleanup_errors: List[str] = []
+    cleanup_errors: list[str] = []
 
     def run_cleanup_step(label: str, fn) -> None:
         try:
@@ -407,9 +401,7 @@ def finish_turn_stream(app: Any, turn_id: str, result: AgentTurnResult) -> None:
         if isinstance(loaded_skill_ids, list):
             app._loaded_skill_ids = [
                 skill.id
-                for skill in app.agent.skill_runtime.skills_by_ids(
-                    [str(item).strip() for item in loaded_skill_ids if str(item).strip()]
-                )
+                for skill in app.agent.skill_runtime.skills_by_ids([str(item).strip() for item in loaded_skill_ids if str(item).strip()])
             ]
 
         if result.status != "done":
@@ -435,7 +427,7 @@ def finish_turn_stream(app: Any, turn_id: str, result: AgentTurnResult) -> None:
         run_cleanup_step("update sidebar", app._update_sidebar)
         run_cleanup_step("update topbar", app._update_topbar)
         if finalization_error or cleanup_errors:
-            parts: List[str] = []
+            parts: list[str] = []
             if finalization_error:
                 parts.append(finalization_error)
             parts.extend(cleanup_errors)

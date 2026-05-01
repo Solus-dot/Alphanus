@@ -92,7 +92,9 @@ def test_main_does_not_block_on_model_readiness_before_launching_tui(monkeypatch
             app_calls.append("run")
 
     monkeypatch.setattr(alphanus_cli, "AlphanusTUI", AppStub)
-    monkeypatch.setattr(alphanus_cli.argparse.ArgumentParser, "parse_args", lambda self: SimpleNamespace(debug=False, dangerously_skip_permissions=False))
+    monkeypatch.setattr(
+        alphanus_cli.argparse.ArgumentParser, "parse_args", lambda self: SimpleNamespace(debug=False, dangerously_skip_permissions=False)
+    )
 
     exit_code = alphanus_cli.main()
 
@@ -121,7 +123,11 @@ def test_main_fails_fast_when_global_config_missing(monkeypatch, tmp_path) -> No
             repo_root=tmp_path,
         ),
     )
-    monkeypatch.setattr(alphanus_cli.argparse.ArgumentParser, "parse_args", lambda self: SimpleNamespace(command="", debug=False, dangerously_skip_permissions=False))
+    monkeypatch.setattr(
+        alphanus_cli.argparse.ArgumentParser,
+        "parse_args",
+        lambda self: SimpleNamespace(command="", debug=False, dangerously_skip_permissions=False),
+    )
 
     exit_code = alphanus_cli.main()
 

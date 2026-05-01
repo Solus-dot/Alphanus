@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import io
 import importlib.util
+import io
 import json
+import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
-import urllib.error
 
 import pytest
 

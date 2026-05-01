@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -9,17 +8,17 @@ class CommandEntry:
     prompt: str
     insert_text: str
     description: str
-    aliases: Tuple[str, ...] = ()
-    help_description: Optional[str] = None
+    aliases: tuple[str, ...] = ()
+    help_description: str | None = None
 
 
 @dataclass(frozen=True)
 class _CommandSection:
     title: str
-    entries: Tuple[CommandEntry, ...]
+    entries: tuple[CommandEntry, ...]
 
 
-_COMMAND_SECTIONS: Tuple[_CommandSection, ...] = (
+_COMMAND_SECTIONS: tuple[_CommandSection, ...] = (
     _CommandSection(
         "CONVERSATION",
         (
@@ -50,7 +49,9 @@ _COMMAND_SECTIONS: Tuple[_CommandSection, ...] = (
     _CommandSection(
         "BRANCHING",
         (
-            CommandEntry("/branch [label]", "/branch ", "Arm the next user message as a branch", help_description="Arm next user message as a branch"),
+            CommandEntry(
+                "/branch [label]", "/branch ", "Arm the next user message as a branch", help_description="Arm next user message as a branch"
+            ),
             CommandEntry("/unbranch", "/unbranch", "Return to the nearest branch fork"),
             CommandEntry("/branches", "/branches", "List branches from the current turn"),
             CommandEntry("/switch <n>", "/switch ", "Switch to a child branch"),
@@ -99,7 +100,7 @@ _COMMAND_SECTIONS: Tuple[_CommandSection, ...] = (
 COMMAND_ENTRIES = [entry for section in _COMMAND_SECTIONS for entry in section.entries]
 
 
-def _command_token_span(value: str, cursor_position: Optional[int] = None) -> Optional[Tuple[int, int]]:
+def _command_token_span(value: str, cursor_position: int | None = None) -> tuple[int, int] | None:
     if not value:
         return None
     cursor = len(value) if cursor_position is None else max(0, min(cursor_position, len(value)))
@@ -112,7 +113,7 @@ def _command_token_span(value: str, cursor_position: Optional[int] = None) -> Op
     return start, end
 
 
-def active_command_query(value: str, cursor_position: Optional[int] = None) -> str:
+def active_command_query(value: str, cursor_position: int | None = None) -> str:
     span = _command_token_span(value, cursor_position)
     if span is None:
         return ""
@@ -125,7 +126,7 @@ def active_command_query(value: str, cursor_position: Optional[int] = None) -> s
     return token
 
 
-def active_command_span(value: str, cursor_position: Optional[int] = None) -> Optional[Tuple[int, int]]:
+def active_command_span(value: str, cursor_position: int | None = None) -> tuple[int, int] | None:
     span = _command_token_span(value, cursor_position)
     if span is None:
         return None
@@ -135,11 +136,11 @@ def active_command_span(value: str, cursor_position: Optional[int] = None) -> Op
     return None
 
 
-def popup_command_query(value: str, cursor_position: Optional[int] = None) -> str:
+def popup_command_query(value: str, cursor_position: int | None = None) -> str:
     return active_command_query(value, cursor_position)
 
 
-def command_entries_for_query(value: str) -> List[CommandEntry]:
+def command_entries_for_query(value: str) -> list[CommandEntry]:
     query = value.strip().lower()
     if not query.startswith("/"):
         return []
@@ -147,13 +148,14 @@ def command_entries_for_query(value: str) -> List[CommandEntry]:
     if not needle:
         return COMMAND_ENTRIES
 
-    def sort_key(entry: CommandEntry) -> Tuple[int, int, str]:
+    def sort_key(entry: CommandEntry) -> tuple[int, int, str]:
         aliases = " ".join(entry.aliases)
         haystack = f"{entry.prompt} {aliases} {entry.description}".lower()
-        starts = 0 if (
-            entry.prompt.lower().startswith(f"/{needle}")
-            or any(alias.lower().startswith(f"/{needle}") for alias in entry.aliases)
-        ) else 1
+        starts = (
+            0
+            if (entry.prompt.lower().startswith(f"/{needle}") or any(alias.lower().startswith(f"/{needle}") for alias in entry.aliases))
+            else 1
+        )
         pos = haystack.find(needle)
         return (starts, pos if pos >= 0 else 9999, entry.prompt)
 
@@ -161,9 +163,7 @@ def command_entries_for_query(value: str) -> List[CommandEntry]:
         entry
         for entry in COMMAND_ENTRIES
         if (
-            needle in entry.prompt.lower()
-            or any(needle in alias.lower() for alias in entry.aliases)
-            or needle in entry.description.lower()
+            needle in entry.prompt.lower() or any(needle in alias.lower() for alias in entry.aliases) or needle in entry.description.lower()
         )
     ]
     matches.sort(key=sort_key)

@@ -59,7 +59,9 @@ class SkillInventoryLoader:
                         if not manifest.availability_code or manifest.availability_code == "ready":
                             manifest.availability_code = "invalid"
                         if not manifest.availability_reason:
-                            manifest.availability_reason = manifest.validation_errors[0] if manifest.validation_errors else "skill load failed"
+                            manifest.availability_reason = (
+                                manifest.validation_errors[0] if manifest.validation_errors else "skill load failed"
+                            )
 
                     runtime.skills[manifest.id] = manifest
                     runtime._all_skills.append(manifest)

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, List, Optional
 
-from core.message_types import ChatMessage
 from agent.classifier import TurnClassifier
 from agent.context import ContextWindowManager
 from agent.harness_metrics import HarnessMetrics
@@ -16,8 +15,9 @@ from agent.prompts import build_system_prompt
 from agent.runtime_hooks import AgentTurnRuntimeHooks
 from agent.telemetry import TelemetryEmitter
 from core.configuration import validate_endpoint_policy
-from core.types import AgentTurnResult, JsonObject, ModelStatus, ShellConfirmationFn
+from core.message_types import ChatMessage
 from core.skills import SkillRuntime
+from core.types import AgentTurnResult, JsonObject, ModelStatus, ShellConfirmationFn
 
 
 class Agent:
@@ -77,7 +77,7 @@ class Agent:
         return int(self.llm_client.max_classifier_tokens)
 
     @property
-    def auth_header(self) -> Optional[str]:
+    def auth_header(self) -> str | None:
         return self.llm_client.auth_header
 
     def reload_config(self, config: JsonObject) -> None:
@@ -108,26 +108,28 @@ class Agent:
         self.allow_cross_host = self.llm_client.allow_cross_host
         self.readiness_timeout_s = self.llm_client.readiness_timeout_s
 
-    def ensure_ready(self, stop_event=None, on_event: Optional[Callable[[JsonObject], None]] = None, timeout_s: Optional[float] = None) -> Optional[bool]:
+    def ensure_ready(
+        self, stop_event=None, on_event: Callable[[JsonObject], None] | None = None, timeout_s: float | None = None
+    ) -> bool | None:
         return self.llm_client.ensure_ready(stop_event=stop_event, on_event=on_event, timeout_s=timeout_s)
 
-    def fetch_model_metadata(self, timeout_s: Optional[float] = None) -> tuple[Optional[str], Optional[int]]:
+    def fetch_model_metadata(self, timeout_s: float | None = None) -> tuple[str | None, int | None]:
         return self.llm_client.fetch_model_metadata(timeout_s=timeout_s)
 
     def get_model_status(self) -> ModelStatus:
         return self.llm_client.get_model_status()
 
-    def refresh_model_status(self, timeout_s: Optional[float] = None, force: bool = False) -> ModelStatus:
+    def refresh_model_status(self, timeout_s: float | None = None, force: bool = False) -> ModelStatus:
         return self.llm_client.refresh_model_status(timeout_s=timeout_s, force=force)
 
     def mark_model_transport_failure(self, exc: Exception) -> None:
         self.llm_client.mark_model_transport_failure(exc)
 
-    def fetch_model_name(self, timeout_s: Optional[float] = None) -> Optional[str]:
+    def fetch_model_name(self, timeout_s: float | None = None) -> str | None:
         model_name, _context_window = self.fetch_model_metadata(timeout_s=timeout_s)
         return model_name
 
-    def _validate_endpoints(self) -> Optional[str]:
+    def _validate_endpoints(self) -> str | None:
         try:
             validate_endpoint_policy(
                 {
@@ -150,9 +152,7 @@ class Agent:
         workspace_root = Path(self.skill_runtime.workspace.workspace_root)
         memory_stats = self.skill_runtime.memory.stats()
         runtime_cfg = config_obj.get("runtime", {}) if isinstance(config_obj.get("runtime"), dict) else {}
-        capabilities_cfg = (
-            config_obj.get("capabilities", {}) if isinstance(config_obj.get("capabilities"), dict) else {}
-        )
+        capabilities_cfg = config_obj.get("capabilities", {}) if isinstance(config_obj.get("capabilities"), dict) else {}
         search_cfg = config_obj.get("search", {}) if isinstance(config_obj.get("search"), dict) else {}
         provider = str(search_cfg.get("provider", "tavily")).strip().lower() or "tavily"
         provider_env = {"tavily": "TAVILY_API_KEY", "brave": "BRAVE_SEARCH_API_KEY"}
@@ -207,7 +207,7 @@ class Agent:
     def build_support_bundle(self, tree_payload: dict[str, object]) -> dict[str, object]:
         return {
             "schema_version": "1.0.0",
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
             "doctor": self.doctor_report(),
             "tree": tree_payload,
         }
@@ -216,20 +216,20 @@ class Agent:
         return self.classifier.reload_skills()
 
     @staticmethod
-    def _extract_model_name(payload: object) -> Optional[str]:
+    def _extract_model_name(payload: object) -> str | None:
         return LLMClient.extract_model_name(payload)
 
     @staticmethod
-    def _extract_model_context_window(payload: object) -> Optional[int]:
+    def _extract_model_context_window(payload: object) -> int | None:
         return LLMClient.extract_model_context_window(payload)
 
     def _build_skill_context(
         self,
         user_input: str,
-        branch_labels: List[str],
-        attachments: List[str],
-        history_messages: Optional[list[ChatMessage]] = None,
-        loaded_skill_ids: Optional[list[str]] = None,
+        branch_labels: list[str],
+        attachments: list[str],
+        history_messages: list[ChatMessage] | None = None,
+        loaded_skill_ids: list[str] | None = None,
     ):
         return self.classifier.build_skill_context(user_input, branch_labels, attachments, history_messages, loaded_skill_ids)
 
@@ -269,13 +269,13 @@ class Agent:
         history_messages: list[ChatMessage],
         user_input: str,
         thinking: bool,
-        branch_labels: Optional[List[str]] = None,
-        attachments: Optional[List[str]] = None,
-        loaded_skill_ids: Optional[List[str]] = None,
+        branch_labels: list[str] | None = None,
+        attachments: list[str] | None = None,
+        loaded_skill_ids: list[str] | None = None,
         collaboration_mode: str = "execute",
         stop_event=None,
-        on_event: Optional[Callable[[JsonObject], None]] = None,
-        confirm_shell: Optional[ShellConfirmationFn] = None,
+        on_event: Callable[[JsonObject], None] | None = None,
+        confirm_shell: ShellConfirmationFn | None = None,
     ) -> AgentTurnResult:
         endpoint_err = self._validate_endpoints()
         if endpoint_err:

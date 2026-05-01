@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 def _clear_chat_input_draft(chat_input: Any) -> None:
@@ -23,7 +23,7 @@ def _expanded_chat_input_text(chat_input: Any, value: str) -> str:
     return value
 
 
-def on_session_manager_close(app: Any, result: Optional[Dict[str, str]]) -> None:
+def on_session_manager_close(app: Any, result: dict[str, str] | None) -> None:
     action = str((result or {}).get("action") or "").strip()
     if not action:
         return
@@ -50,7 +50,7 @@ def on_session_manager_close(app: Any, result: Optional[Dict[str, str]]) -> None
         app._delete_session_from_manager(session_id)
 
 
-def on_session_name_close(app: Any, result: Optional[Dict[str, str]]) -> None:
+def on_session_name_close(app: Any, result: dict[str, str] | None) -> None:
     if not result:
         return
     title = str(result.get("title") or "")
@@ -77,7 +77,7 @@ def confirm_shell_command(app: Any, command: str) -> bool:
     return bool(holder.get("value", False))
 
 
-def begin_shell_confirm(app: Any, command: str, event: threading.Event, holder: Dict[str, bool], *, esc) -> None:
+def begin_shell_confirm(app: Any, command: str, event: threading.Event, holder: dict[str, bool], *, esc) -> None:
     app._await_shell_confirm = True
     app._shell_confirm_command = command
     app._shell_confirm_event = event

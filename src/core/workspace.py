@@ -11,8 +11,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable, List, Optional
+from typing import Any
 
 DEFAULT_BLOCKED_PATTERNS = [
     ".ssh",
@@ -77,8 +78,8 @@ class WorkspaceManager:
     def __init__(
         self,
         workspace_root: str,
-        home_root: Optional[str] = None,
-        blocked_patterns: Optional[Iterable[str]] = None,
+        home_root: str | None = None,
+        blocked_patterns: Iterable[str] | None = None,
     ) -> None:
         self.workspace_root = Path(os.path.expanduser(workspace_root)).resolve()
         self.home_root = Path(os.path.expanduser(home_root or str(Path.home()))).resolve()
@@ -140,15 +141,11 @@ class WorkspaceManager:
             protected = Path(os.path.abspath(str(self.protected_state_dir)))
         return self._is_path_equal_or_descendant(candidate, protected)
 
-    def _resolve_command_token_path(self, token: str, cwd: Path) -> Optional[Path]:
+    def _resolve_command_token_path(self, token: str, cwd: Path) -> Path | None:
         value = str(token or "").strip()
         if not value or value == "-":
             return None
-        pathish = (
-            value.startswith((".", "/", "~"))
-            or "/" in value
-            or "\\" in value
-        )
+        pathish = value.startswith((".", "/", "~")) or "/" in value or "\\" in value
         if not pathish:
             candidate = cwd / value
             try:
@@ -168,7 +165,7 @@ class WorkspaceManager:
     def _text_mentions_protected_state(text: str) -> bool:
         return bool(PROTECTED_STATE_TOKEN_RE.search(str(text)))
 
-    def _command_touches_protected_state(self, argv: List[str], cwd: Path) -> bool:
+    def _command_touches_protected_state(self, argv: list[str], cwd: Path) -> bool:
         git_subcommand_index = self._git_subcommand_index(argv) if argv and argv[0] == "git" else -1
         for idx, part in enumerate(argv[1:], start=1):
             if self._text_mentions_protected_state(part):
@@ -193,7 +190,7 @@ class WorkspaceManager:
                 except OSError:
                     continue
                 rel_path = (rel_root / dirname).as_posix()
-                digest.update(f"d:{rel_path}:{stat.st_mode}:{stat.st_mtime_ns}\n".encode("utf-8"))
+                digest.update(f"d:{rel_path}:{stat.st_mode}:{stat.st_mtime_ns}\n".encode())
             for filename in sorted(filenames):
                 candidate = root_path / filename
                 try:
@@ -201,11 +198,11 @@ class WorkspaceManager:
                 except OSError:
                     continue
                 rel_path = (rel_root / filename).as_posix()
-                digest.update(f"f:{rel_path}:{stat.st_mode}:{stat.st_size}:{stat.st_mtime_ns}\n".encode("utf-8"))
+                digest.update(f"f:{rel_path}:{stat.st_mode}:{stat.st_size}:{stat.st_mtime_ns}\n".encode())
         return digest.hexdigest()
 
     @staticmethod
-    def _git_subcommand(argv: List[str]) -> str:
+    def _git_subcommand(argv: list[str]) -> str:
         if len(argv) < 2:
             return ""
         if argv[1] == "-C" and len(argv) >= 4:
@@ -213,14 +210,14 @@ class WorkspaceManager:
         return argv[1]
 
     @staticmethod
-    def _git_subcommand_index(argv: List[str]) -> int:
+    def _git_subcommand_index(argv: list[str]) -> int:
         if len(argv) < 2:
             return -1
         if argv[1] == "-C" and len(argv) >= 4:
             return 3
         return 1
 
-    def _classify_shell_command(self, argv: List[str]) -> str:
+    def _classify_shell_command(self, argv: list[str]) -> str:
         if not argv:
             return "ambiguous"
         executable = argv[0]
@@ -244,7 +241,7 @@ class WorkspaceManager:
             return "mutating"
         return "ambiguous"
 
-    def _git_status_snapshot(self) -> Optional[tuple[str, tuple[tuple[str, str, int, int], ...]]]:
+    def _git_status_snapshot(self) -> tuple[str, tuple[tuple[str, str, int, int], ...]] | None:
         git_path = shutil.which("git")
         if not git_path:
             return None
@@ -273,7 +270,7 @@ class WorkspaceManager:
         )
         if untracked.returncode != 0:
             return None
-        untracked_meta: List[tuple[str, str, int, int]] = []
+        untracked_meta: list[tuple[str, str, int, int]] = []
         for raw_path in untracked.stdout.decode("utf-8", errors="ignore").split("\x00"):
             path_text = raw_path.strip()
             if not path_text:
@@ -323,7 +320,7 @@ class WorkspaceManager:
             raise PermissionError("Writing protected internal state is not allowed")
         return resolved
 
-    def _resolve_read_path(self, path: str, extra_allowed_roots: Optional[Iterable[str]] = None) -> Path:
+    def _resolve_read_path(self, path: str, extra_allowed_roots: Iterable[str] | None = None) -> Path:
         raw = self._normalize_workspace_relative(path)
         candidate = (self.workspace_root / raw) if not raw.is_absolute() else raw
         resolved = candidate.resolve()
@@ -399,8 +396,8 @@ class WorkspaceManager:
         self,
         content: str,
         *,
-        start_line: Optional[int] = None,
-        end_line: Optional[int] = None,
+        start_line: int | None = None,
+        end_line: int | None = None,
         before_anchor: str = "",
         after_anchor: str = "",
     ) -> dict[str, Any]:
@@ -416,12 +413,7 @@ class WorkspaceManager:
             # This includes the trailing empty logical line for newline-terminated files.
             if len(line_start_offsets) != total_line_count:
                 raise RuntimeError("Failed to resolve logical line offsets")
-        selectors_applied = (
-            start_line is not None
-            or end_line is not None
-            or bool(before_anchor)
-            or bool(after_anchor)
-        )
+        selectors_applied = start_line is not None or end_line is not None or bool(before_anchor) or bool(after_anchor)
 
         if total_line_count == 0:
             if selectors_applied:
@@ -483,9 +475,9 @@ class WorkspaceManager:
             "selectors_applied": selectors_applied,
         }
 
-    def read_files(self, paths: Iterable[str], max_chars_per_file: int = MAX_TOOL_TEXT_BYTES) -> List[dict[str, Any]]:
+    def read_files(self, paths: Iterable[str], max_chars_per_file: int = MAX_TOOL_TEXT_BYTES) -> list[dict[str, Any]]:
         limit = max(1, int(max_chars_per_file))
-        files: List[dict[str, Any]] = []
+        files: list[dict[str, Any]] = []
         for raw_path in paths:
             path = str(raw_path)
             content = self.read_file(path)
@@ -578,7 +570,7 @@ class WorkspaceManager:
             raise OSError("Directory is not empty; set recursive=true to delete it") from exc
         return str(target)
 
-    def list_files(self, path: str = ".") -> List[str]:
+    def list_files(self, path: str = ".") -> list[str]:
         target = self._resolve_read_path(path)
         if not target.exists() or not target.is_dir():
             raise FileNotFoundError(str(target))
@@ -591,7 +583,7 @@ class WorkspaceManager:
         return results
 
     def workspace_tree(self, max_depth: int = 3) -> str:
-        lines: List[str] = [f"{self.workspace_root.name}/"]
+        lines: list[str] = [f"{self.workspace_root.name}/"]
 
         def walk(path: Path, prefix: str, depth: int) -> None:
             if depth > max_depth:
@@ -621,10 +613,10 @@ class WorkspaceManager:
 
     def _run_argv(
         self,
-        argv: List[str],
+        argv: list[str],
         *,
         timeout_s: int = 30,
-        cwd: Optional[Path] = None,
+        cwd: Path | None = None,
         max_output_bytes: int = MAX_TOOL_TEXT_BYTES,
     ) -> dict[str, Any]:
         start = time.perf_counter()
@@ -660,7 +652,7 @@ class WorkspaceManager:
             return False
         return resolved.exists() and ".git" not in resolved.parts
 
-    def _iter_searchable_files(self, target: Path, glob: Optional[str]) -> Iterable[Path]:
+    def _iter_searchable_files(self, target: Path, glob: str | None) -> Iterable[Path]:
         if target.is_file():
             if self._is_searchable_path(target) and (not glob or fnmatch.fnmatch(target.name, glob)):
                 yield target
@@ -702,7 +694,7 @@ class WorkspaceManager:
         line_number: int,
         before_context: int,
         after_context: int,
-        line_cache: Optional[dict[str, Optional[list[str]]]] = None,
+        line_cache: dict[str, list[str] | None] | None = None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         before_n = max(0, int(before_context))
         after_n = max(0, int(after_context))
@@ -731,14 +723,8 @@ class WorkspaceManager:
             return [], []
         before_start = max(0, idx - before_n)
         after_end = min(len(lines), idx + 1 + after_n)
-        before_rows = [
-            {"line_number": line_idx + 1, "line": lines[line_idx]}
-            for line_idx in range(before_start, min(idx, len(lines)))
-        ]
-        after_rows = [
-            {"line_number": line_idx + 1, "line": lines[line_idx]}
-            for line_idx in range(max(idx + 1, 0), after_end)
-        ]
+        before_rows = [{"line_number": line_idx + 1, "line": lines[line_idx]} for line_idx in range(before_start, min(idx, len(lines)))]
+        after_rows = [{"line_number": line_idx + 1, "line": lines[line_idx]} for line_idx in range(max(idx + 1, 0), after_end)]
         return before_rows, after_rows
 
     def _search_code_with_rg(
@@ -746,13 +732,13 @@ class WorkspaceManager:
         target: Path,
         *,
         needle: str,
-        glob: Optional[str],
+        glob: str | None,
         limit: int,
         case_sensitive: bool,
         fixed_strings: bool,
         before_context: int,
         after_context: int,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         if not self._is_relative_to(target, self.workspace_root):
             return None
         if not target.exists():
@@ -803,9 +789,9 @@ class WorkspaceManager:
             argv.extend(["--glob", glob])
         argv.extend([needle, str(target)])
 
-        results: List[dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         filepath_cache: dict[str, str] = {}
-        context_line_cache: dict[str, Optional[list[str]]] = {}
+        context_line_cache: dict[str, list[str] | None] = {}
         truncated = False
         terminated_early = False
         proc = subprocess.Popen(
@@ -900,7 +886,7 @@ class WorkspaceManager:
         query: str,
         *,
         path: str = ".",
-        glob: Optional[str] = None,
+        glob: str | None = None,
         max_results: int = 50,
         case_sensitive: bool = False,
         fixed_strings: bool = True,
@@ -953,12 +939,10 @@ class WorkspaceManager:
                         before_start = max(0, idx - max(0, int(before_context)))
                         after_end = min(len(content_lines), idx + 1 + max(0, int(after_context)))
                         results[-1]["before_context"] = [
-                            {"line_number": row_idx + 1, "line": content_lines[row_idx]}
-                            for row_idx in range(before_start, idx)
+                            {"line_number": row_idx + 1, "line": content_lines[row_idx]} for row_idx in range(before_start, idx)
                         ]
                         results[-1]["after_context"] = [
-                            {"line_number": row_idx + 1, "line": content_lines[row_idx]}
-                            for row_idx in range(idx + 1, after_end)
+                            {"line_number": row_idx + 1, "line": content_lines[row_idx]} for row_idx in range(idx + 1, after_end)
                         ]
                     if len(results) >= limit:
                         return {
@@ -988,7 +972,7 @@ class WorkspaceManager:
         self,
         command: str,
         *,
-        args: Optional[Iterable[str]] = None,
+        args: Iterable[str] | None = None,
         path: str = ".",
         timeout_s: int = 120,
     ) -> dict[str, Any]:
@@ -1049,7 +1033,7 @@ class WorkspaceManager:
             if re.search(pattern, trimmed, flags=re.IGNORECASE):
                 raise PermissionError("Command matches blocked dangerous pattern")
 
-    def _parse_command_argv(self, command: str) -> List[str]:
+    def _parse_command_argv(self, command: str) -> list[str]:
         try:
             argv = shlex.split(command, posix=True)
         except ValueError as exc:
@@ -1062,8 +1046,8 @@ class WorkspaceManager:
         self,
         command: str,
         timeout_s: int = 30,
-        cwd: Optional[str] = None,
-        allowed_cwd_roots: Optional[Iterable[str]] = None,
+        cwd: str | None = None,
+        allowed_cwd_roots: Iterable[str] | None = None,
     ) -> dict:
         start = time.perf_counter()
         try:
@@ -1077,8 +1061,8 @@ class WorkspaceManager:
                 raise PermissionError("Commands touching protected internal state are not allowed")
             if self._command_touches_protected_state(argv, target_cwd):
                 raise PermissionError("Commands touching protected internal state are not allowed")
-            snapshot_before: Optional[tuple[str, Any]] = None
-            fingerprint_before: Optional[str] = None
+            snapshot_before: tuple[str, Any] | None = None
+            fingerprint_before: str | None = None
             if command_kind == "ambiguous":
                 snapshot_before = self._workspace_change_snapshot()
                 if snapshot_before[0] == "git":

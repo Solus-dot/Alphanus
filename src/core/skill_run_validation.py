@@ -32,9 +32,7 @@ class SkillRunValidator:
         selected_with_scripts = [
             skill
             for skill in selected
-            if runtime._exposed_relevant_skill_scripts(skill, ctx)
-            and not skill.disable_model_invocation
-            and skill.execution_allowed
+            if runtime._exposed_relevant_skill_scripts(skill, ctx) and not skill.disable_model_invocation and skill.execution_allowed
         ]
         if not selected_with_scripts:
             raise PermissionError("No selected skills expose runnable bundled scripts")
@@ -89,9 +87,7 @@ class SkillRunValidator:
         selected_with_entrypoints = [
             skill
             for skill in selected
-            if runtime._exposed_relevant_skill_entrypoints(skill, ctx)
-            and not skill.disable_model_invocation
-            and skill.execution_allowed
+            if runtime._exposed_relevant_skill_entrypoints(skill, ctx) and not skill.disable_model_invocation and skill.execution_allowed
         ]
         if not selected_with_entrypoints:
             raise PermissionError("No selected skills expose runnable entrypoints")

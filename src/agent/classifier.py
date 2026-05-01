@@ -5,14 +5,12 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import List, Optional
-
-from core.message_types import ChatMessage, JSONValue, MessageContentPart
-from core.skills import SkillContext, SkillRuntime
 
 from agent.llm_client import LLMClient
 from agent.runtime_hooks import TurnRuntimeHooks
 from agent.telemetry import TelemetryEmitter
+from core.message_types import ChatMessage, JSONValue, MessageContentPart
+from core.skills import SkillContext, SkillRuntime
 from core.types import JsonObject, TurnClassification
 
 _EXPLICIT_PATH_PATTERN = re.compile(
@@ -43,8 +41,8 @@ class TurnClassifier:
         config: dict[str, object],
         skill_runtime: SkillRuntime,
         llm_client: LLMClient,
-        telemetry: Optional[TelemetryEmitter] = None,
-        runtime_hooks: Optional[TurnRuntimeHooks] = None,
+        telemetry: TelemetryEmitter | None = None,
+        runtime_hooks: TurnRuntimeHooks | None = None,
     ) -> None:
         self.config = config
         self.skill_runtime = skill_runtime
@@ -55,7 +53,7 @@ class TurnClassifier:
     def reload_config(self, config: dict[str, object]) -> None:
         self.config = config
 
-    def bind_runtime_hooks(self, runtime_hooks: Optional[TurnRuntimeHooks]) -> None:
+    def bind_runtime_hooks(self, runtime_hooks: TurnRuntimeHooks | None) -> None:
         self._runtime_hooks = runtime_hooks
 
     def call_with_retry(self, payload, stop_event, on_event, pass_id):
@@ -145,10 +143,10 @@ class TurnClassifier:
     def build_skill_context(
         self,
         user_input: str,
-        branch_labels: List[str],
-        attachments: List[str],
-        history_messages: Optional[list[ChatMessage]] = None,
-        loaded_skill_ids: Optional[list[str]] = None,
+        branch_labels: list[str],
+        attachments: list[str],
+        history_messages: list[ChatMessage] | None = None,
+        loaded_skill_ids: list[str] | None = None,
     ) -> SkillContext:
         hits = self.skill_runtime.memory.search(user_input, top_k=3, min_score=0.45)
         recent_hint, sticky_skill_ids = self.recent_routing_context(history_messages or [])
@@ -158,11 +156,7 @@ class TurnClassifier:
             attachments=attachments,
             workspace_root=str(self.skill_runtime.workspace.workspace_root),
             memory_hits=hits,
-            loaded_skill_ids=[
-                str(item).strip()
-                for item in (loaded_skill_ids or [])
-                if str(item).strip()
-            ],
+            loaded_skill_ids=[str(item).strip() for item in (loaded_skill_ids or []) if str(item).strip()],
             recent_routing_hint=recent_hint,
             sticky_skill_ids=sticky_skill_ids,
         )
@@ -280,9 +274,7 @@ class TurnClassifier:
             return True
         if re.search(r"\b(?:file|files|folder|folders|filename|filenames)\b", lowered):
             return True
-        action_pattern = (
-            r"(?:create|make|write|save|edit|update|modify|delete|remove|rename|move|read|open|list|show|inspect|find|copy|scaffold|generate)"
-        )
+        action_pattern = r"(?:create|make|write|save|edit|update|modify|delete|remove|rename|move|read|open|list|show|inspect|find|copy|scaffold|generate)"
         target_pattern = r"(?:directory|directories|workspace|repo|repository|project)"
         return bool(
             re.search(rf"\b{action_pattern}\b[^.\n]{{0,40}}\b{target_pattern}\b", lowered)
@@ -323,7 +315,11 @@ class TurnClassifier:
             "- Choose not_completed for drafts that hand the requested action back to the user, unsupported success claims, or deflections/refusals that are not supported by the evidence.\n"
             "Do not explain."
         )
-        user_lines = [f"Current user input:\n{current_user_input}", f"Assistant draft:\n{assistant_reply}", f"Tool evidence:\n{json.dumps(evidence, ensure_ascii=False, default=str)}"]
+        user_lines = [
+            f"Current user input:\n{current_user_input}",
+            f"Assistant draft:\n{assistant_reply}",
+            f"Tool evidence:\n{json.dumps(evidence, ensure_ascii=False, default=str)}",
+        ]
         if recent_routing_hint:
             user_lines.insert(1, f"Immediate prior exchange:\n{recent_routing_hint}")
         payload = self.llm_client.build_payload(
@@ -357,7 +353,9 @@ class TurnClassifier:
             return "not_completed"
         if TurnClassifier._draft_claims_workspace_completion_without_evidence(assistant_reply):
             return "not_completed"
-        if TurnClassifier._evidence_shows_blocked_or_unavailable_tool(evidence) and TurnClassifier._draft_reports_supported_limitation(assistant_reply):
+        if TurnClassifier._evidence_shows_blocked_or_unavailable_tool(evidence) and TurnClassifier._draft_reports_supported_limitation(
+            assistant_reply
+        ):
             return "declined_or_blocked"
         return "not_completed"
 

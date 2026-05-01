@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class SkillExecutor:
@@ -33,7 +33,7 @@ class SkillExecutor:
         self._err = err_fn
         self._protocol_error_cls = protocol_error_cls
 
-    def execute_registered_tool(self, reg, args: Dict[str, Any], env, ctx) -> Any:
+    def execute_registered_tool(self, reg, args: dict[str, Any], env, ctx) -> Any:
         runtime = self.runtime
         if reg.name == self._skills_list_tool_name:
             return runtime.skills_list()
@@ -53,12 +53,12 @@ class SkillExecutor:
             raise self._protocol_error_cls(f"Tool '{reg.name}' has no callable execute() handler")
         return reg.module.execute(reg.name, args, env)
 
-    def execute_registered_command_tool(self, reg, args: Dict[str, Any], env) -> Dict[str, Any]:
+    def execute_registered_command_tool(self, reg, args: dict[str, Any], env) -> dict[str, Any]:
         runtime = self.runtime
         skill = runtime.get_skill(str(getattr(reg, "skill_id", "")).strip())
         if skill is None or not skill.path:
             raise FileNotFoundError("Selected skill root is unavailable")
-        template_values: Dict[str, Any] = {
+        template_values: dict[str, Any] = {
             "workspace_root": str(runtime.workspace.workspace_root),
             "skill_root": str(skill.path),
         }
@@ -95,12 +95,12 @@ class SkillExecutor:
     def execute_tool_call(
         self,
         tool_name: str,
-        args: Dict[str, Any],
+        args: dict[str, Any],
         selected,
         ctx,
         confirm_shell=None,
         request_user_input=None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         runtime = self.runtime
         start = time.perf_counter()
         try:
@@ -136,14 +136,14 @@ class SkillExecutor:
             message = str(exc) if runtime.debug else "Action failed"
             return self._err("E_IO", message, int((time.perf_counter() - start) * 1000))
 
-    def execute_run_skill_tool(self, args: Dict[str, Any], env) -> Dict[str, Any]:
+    def execute_run_skill_tool(self, args: dict[str, Any], env) -> dict[str, Any]:
         if str(args.get("entrypoint", "")).strip():
             return self.execute_skill_entrypoint_tool(args, env)
         if str(args.get("script", "")).strip():
             return self.execute_skill_script_tool(args, env)
         raise ValueError("run_skill requires an entrypoint or script")
 
-    def execute_skill_script_tool(self, args: Dict[str, Any], env) -> Dict[str, Any]:
+    def execute_skill_script_tool(self, args: dict[str, Any], env) -> dict[str, Any]:
         runtime = self.runtime
         skill = runtime.get_skill(str(args.get("skill_id", "")).strip())
         if skill is None or not skill.path:
@@ -159,7 +159,11 @@ class SkillExecutor:
         interpreter = runtime._script_interpreter(ext)
         if not interpreter:
             raise PermissionError(f"Unsupported skill script type: {script_path.suffix}")
-        if not Path(interpreter[0]).exists() and interpreter[0] != Path(sys.executable).resolve().as_posix() and shutil.which(interpreter[0]) is None:
+        if (
+            not Path(interpreter[0]).exists()
+            and interpreter[0] != Path(sys.executable).resolve().as_posix()
+            and shutil.which(interpreter[0]) is None
+        ):
             raise FileNotFoundError(f"Missing interpreter for skill script: {interpreter[0]}")
 
         argv = args.get("argv") if isinstance(args.get("argv"), list) else []
@@ -215,7 +219,7 @@ class SkillExecutor:
         return {"skill_id": skill.id, "script": rel_script, "value": parsed}
 
     @staticmethod
-    def resolve_entrypoint_placeholders(template: str, values: Dict[str, Any]) -> str:
+    def resolve_entrypoint_placeholders(template: str, values: dict[str, Any]) -> str:
         def repl(match: re.Match[str]) -> str:
             key = match.group(1)
             if key not in values:
@@ -224,7 +228,7 @@ class SkillExecutor:
 
         return re.sub(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", repl, template)
 
-    def run_shell_workflow_command(self, command: str, env, timeout_s: int, cwd: Optional[str] = None) -> Dict[str, Any]:
+    def run_shell_workflow_command(self, command: str, env, timeout_s: int, cwd: str | None = None) -> dict[str, Any]:
         caps = env.config.get("capabilities", {})
         dangerously_skip_permissions = bool(caps.get("dangerously_skip_permissions", False))
         shell_require_confirmation = bool(caps.get("shell_require_confirmation", True))
@@ -251,7 +255,7 @@ class SkillExecutor:
             raise RuntimeError(message)
         return result["data"]
 
-    def execute_skill_entrypoint_tool(self, args: Dict[str, Any], env) -> Dict[str, Any]:
+    def execute_skill_entrypoint_tool(self, args: dict[str, Any], env) -> dict[str, Any]:
         runtime = self.runtime
         skill = runtime.get_skill(str(args.get("skill_id", "")).strip())
         if skill is None or not skill.path:
@@ -262,15 +266,15 @@ class SkillExecutor:
             raise FileNotFoundError(f"Skill entrypoint not found: {entrypoint_name}")
 
         params = args.get("params") if isinstance(args.get("params"), dict) else {}
-        template_values: Dict[str, Any] = {
+        template_values: dict[str, Any] = {
             "workspace_root": str(runtime.workspace.workspace_root),
             "skill_root": str(skill.path),
         }
         template_values.update(params)
         timeout_s = max(1, int(args.get("timeout_s", entrypoint.timeout_s)))
 
-        install_results: List[Dict[str, Any]] = []
-        verify_results: List[Dict[str, Any]] = []
+        install_results: list[dict[str, Any]] = []
+        verify_results: list[dict[str, Any]] = []
         command_cwd = str(skill.path) if entrypoint.cwd == "skill" else str(runtime.workspace.workspace_root)
         for template in entrypoint.install:
             command = self.resolve_entrypoint_placeholders(template, template_values)
@@ -292,7 +296,7 @@ class SkillExecutor:
             "cwd": run_data.get("cwd", ""),
         }
 
-    def normalize_result(self, result: Any, duration_ms: int) -> Dict[str, Any]:
+    def normalize_result(self, result: Any, duration_ms: int) -> dict[str, Any]:
         if isinstance(result, dict) and {"ok", "data", "error"}.issubset(result.keys()):
             out = dict(result)
             meta = out.get("meta") if isinstance(out.get("meta"), dict) else {}

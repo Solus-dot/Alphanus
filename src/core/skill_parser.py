@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import yaml
 
@@ -11,11 +11,11 @@ SKILL_DOC = "SKILL.md"
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 
 
-def _dedupe(items: List[str]) -> List[str]:
+def _dedupe(items: list[str]) -> list[str]:
     return list(dict.fromkeys(str(raw).strip() for raw in items if str(raw).strip()))
 
 
-def _as_str_list(value: Any) -> List[str]:
+def _as_str_list(value: Any) -> list[str]:
     if value is None:
         return []
     if isinstance(value, (list, tuple)):
@@ -28,7 +28,7 @@ def _as_str_list(value: Any) -> List[str]:
     return [str(value).strip()] if str(value).strip() else []
 
 
-def _as_tool_name_list(value: Any) -> List[str]:
+def _as_tool_name_list(value: Any) -> list[str]:
     if value is None:
         return []
     if isinstance(value, (list, tuple)):
@@ -53,7 +53,7 @@ def _coerce_bool(value: Any, default: bool) -> bool:
     return default
 
 
-def extract_skill_doc(skill_doc: Path, include_prompt: bool = True) -> Tuple[Dict[str, Any], Optional[str]]:
+def extract_skill_doc(skill_doc: Path, include_prompt: bool = True) -> tuple[dict[str, Any], str | None]:
     text = skill_doc.read_text(encoding="utf-8")
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
@@ -71,7 +71,7 @@ def extract_skill_doc(skill_doc: Path, include_prompt: bool = True) -> Tuple[Dic
     prompt = "\n".join(lines[end + 1 :]).strip() if include_prompt else None
     parsed = yaml.safe_load(frontmatter_text)
     if parsed is None:
-        frontmatter: Dict[str, Any] = {}
+        frontmatter: dict[str, Any] = {}
     elif isinstance(parsed, dict):
         frontmatter = parsed
     else:
@@ -84,12 +84,12 @@ class SkillEntrypointDef:
     name: str
     description: str
     command: str
-    parameters: Dict[str, Any]
+    parameters: dict[str, Any]
     tool: str = "shell_command"
-    intents: List[str] = field(default_factory=list)
-    produces: List[str] = field(default_factory=list)
-    install: List[str] = field(default_factory=list)
-    verify: List[str] = field(default_factory=list)
+    intents: list[str] = field(default_factory=list)
+    produces: list[str] = field(default_factory=list)
+    install: list[str] = field(default_factory=list)
+    verify: list[str] = field(default_factory=list)
     timeout_s: int = 30
     cwd: str = "workspace"
 
@@ -101,17 +101,17 @@ class SkillManifest:
     version: str
     description: str
     enabled: bool
-    requirements: Dict[str, List[str]] = field(default_factory=dict)
-    prompt: Optional[str] = None
-    path: Optional[Path] = None
-    doc_path: Optional[Path] = None
-    tags: List[str] = field(default_factory=list)
-    categories: List[str] = field(default_factory=list)
-    produces: List[str] = field(default_factory=list)
-    execution_dependencies: Dict[str, List[str]] = field(default_factory=dict)
-    allowed_tools: List[str] = field(default_factory=list)
-    required_tools: List[str] = field(default_factory=list)
-    entrypoints: List[SkillEntrypointDef] = field(default_factory=list)
+    requirements: dict[str, list[str]] = field(default_factory=dict)
+    prompt: str | None = None
+    path: Path | None = None
+    doc_path: Path | None = None
+    tags: list[str] = field(default_factory=list)
+    categories: list[str] = field(default_factory=list)
+    produces: list[str] = field(default_factory=list)
+    execution_dependencies: dict[str, list[str]] = field(default_factory=dict)
+    allowed_tools: list[str] = field(default_factory=list)
+    required_tools: list[str] = field(default_factory=list)
+    entrypoints: list[SkillEntrypointDef] = field(default_factory=list)
     disable_model_invocation: bool = False
     user_invocable: bool = True
     format: str = "agentskills"
@@ -120,23 +120,23 @@ class SkillManifest:
     availability_reason: str = ""
     execution_allowed: bool = True
     adapter: str = "agentskills"
-    validation_errors: List[str] = field(default_factory=list)
-    validation_warnings: List[str] = field(default_factory=list)
-    frontmatter: Dict[str, Any] = field(default_factory=dict)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    bundled_files: List[str] = field(default_factory=list)
-    aliases: List[str] = field(default_factory=list)
-    tool_definitions: List[Dict[str, Any]] = field(default_factory=list)
+    validation_errors: list[str] = field(default_factory=list)
+    validation_warnings: list[str] = field(default_factory=list)
+    frontmatter: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    bundled_files: list[str] = field(default_factory=list)
+    aliases: list[str] = field(default_factory=list)
+    tool_definitions: list[dict[str, Any]] = field(default_factory=list)
 
 
 def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool = False) -> SkillManifest:
     frontmatter, prompt = extract_skill_doc(skill_doc, include_prompt=include_prompt)
-    warnings: List[str] = []
+    warnings: list[str] = []
 
     skill_id = str(frontmatter.get("name", "")).strip()
     if not skill_id:
         raise ValueError("SKILL.md frontmatter requires 'name'")
-    aliases: List[str] = []
+    aliases: list[str] = []
     child_name = str(child.name).strip()
     if child_name and child_name != skill_id:
         aliases.append(child_name)
@@ -160,10 +160,7 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
     tags = _as_str_list(frontmatter.get("tags") or metadata_raw.get("tags"))
     produces = _dedupe(
         _as_str_list(
-            frontmatter.get("produces")
-            or frontmatter.get("artifacts")
-            or metadata_raw.get("produces")
-            or metadata_raw.get("artifacts")
+            frontmatter.get("produces") or frontmatter.get("artifacts") or metadata_raw.get("produces") or metadata_raw.get("artifacts")
         )
     )
 
@@ -175,14 +172,10 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
     requirements = {
         "os": _as_str_list(requirements_raw.get("os")),
         "env": _as_str_list(requirements_raw.get("env")),
-        "commands": _as_str_list(
-            requirements_raw.get("commands")
-            or requirements_raw.get("binaries")
-            or requirements_raw.get("bins")
-        ),
+        "commands": _as_str_list(requirements_raw.get("commands") or requirements_raw.get("binaries") or requirements_raw.get("bins")),
     }
     adapter = str(frontmatter.get("format") or metadata_raw.get("format") or "agentskills").strip() or "agentskills"
-    vendor_requires: Dict[str, Any] = {}
+    vendor_requires: dict[str, Any] = {}
     for vendor_key in ("openclaw", "claude", "opencode"):
         candidate = metadata_raw.get(vendor_key)
         if isinstance(candidate, dict):
@@ -217,16 +210,8 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
             or execution_dependencies_raw.get("system")
         ),
     }
-    global_install = _as_str_list(
-        execution_raw.get("install")
-        or execution_raw.get("install_commands")
-        or execution_raw.get("installs")
-    )
-    global_verify = _as_str_list(
-        execution_raw.get("verify")
-        or execution_raw.get("verify_commands")
-        or execution_raw.get("preflight")
-    )
+    global_install = _as_str_list(execution_raw.get("install") or execution_raw.get("install_commands") or execution_raw.get("installs"))
+    global_verify = _as_str_list(execution_raw.get("verify") or execution_raw.get("verify_commands") or execution_raw.get("preflight"))
     raw_entrypoints = execution_raw.get("entrypoints") or []
     if not raw_entrypoints and str(execution_raw.get("command", "")).strip():
         raw_entrypoints = [
@@ -245,7 +230,7 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         ]
     if raw_entrypoints and not isinstance(raw_entrypoints, list):
         raise ValueError("SKILL.md execution.entrypoints must be a list")
-    entrypoints: List[SkillEntrypointDef] = []
+    entrypoints: list[SkillEntrypointDef] = []
     for idx, raw in enumerate(raw_entrypoints):
         if not isinstance(raw, dict):
             raise ValueError(f"SKILL.md execution.entrypoints[{idx}] must be a mapping")
@@ -257,9 +242,7 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
             raise ValueError(f"SKILL.md execution.entrypoints[{idx}] missing command")
         tool = str(raw.get("tool", "shell_command")).strip() or "shell_command"
         if tool != "shell_command":
-            warnings.append(
-                f"entrypoint '{name}' uses unsupported tool '{tool}'; normalized to shell_command"
-            )
+            warnings.append(f"entrypoint '{name}' uses unsupported tool '{tool}'; normalized to shell_command")
             tool = "shell_command"
         description = str(raw.get("description", "")).strip() or name
         parameters = raw.get("parameters")
@@ -319,7 +302,7 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
     raw_defs = metadata_tools_raw.get("definitions") or tools_cfg_raw.get("definitions") or []
     if raw_defs and not isinstance(raw_defs, list):
         raise ValueError("SKILL.md tools.definitions must be a list")
-    tool_definitions: List[Dict[str, Any]] = []
+    tool_definitions: list[dict[str, Any]] = []
     for idx, raw in enumerate(raw_defs or []):
         if not isinstance(raw, dict):
             warnings.append(f"tools.definitions[{idx}] must be a mapping; ignored")
@@ -330,9 +313,7 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
             continue
         tool_runtime = str(raw.get("tool", "shell_command")).strip() or "shell_command"
         if tool_runtime != "shell_command":
-            warnings.append(
-                f"tool '{tool_name}' uses unsupported runtime tool '{tool_runtime}'; normalized to shell_command"
-            )
+            warnings.append(f"tool '{tool_name}' uses unsupported runtime tool '{tool_runtime}'; normalized to shell_command")
         command = str(raw.get("command", "") or raw.get("run", "")).strip()
         if not command:
             warnings.append(f"tool '{tool_name}' missing command; ignored")

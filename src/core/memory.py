@@ -7,7 +7,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 MEMORY_STORAGE_SCHEMA_VERSION = "3.0.0"
 
@@ -16,7 +16,7 @@ MEMORY_STORAGE_SCHEMA_VERSION = "3.0.0"
 class MemoryItem:
     id: int
     text: str
-    metadata: Dict[str, Any]
+    metadata: dict[str, Any]
     type: str
     timestamp: float
     access_count: int
@@ -43,7 +43,7 @@ class LexicalMemory:
         self.autosave_every = max(1, int(autosave_every))
         self.backup_revisions = max(0, int(backup_revisions))
 
-        self.memories: List[MemoryItem] = []
+        self.memories: list[MemoryItem] = []
         self._next_id = 1
         self._dirty = False
         self._pending_writes = 0
@@ -68,11 +68,11 @@ class LexicalMemory:
         return max(0.0, min(1.0, parsed))
 
     @staticmethod
-    def _tokenize(text: str) -> List[str]:
+    def _tokenize(text: str) -> list[str]:
         return re.findall(r"[a-z0-9]+", str(text).lower())
 
     @staticmethod
-    def _contains_phrase(query_tokens: List[str], text_tokens: List[str]) -> bool:
+    def _contains_phrase(query_tokens: list[str], text_tokens: list[str]) -> bool:
         if not query_tokens or not text_tokens or len(query_tokens) > len(text_tokens):
             return False
         q_len = len(query_tokens)
@@ -81,7 +81,7 @@ class LexicalMemory:
                 return True
         return False
 
-    def _score_text(self, query_tokens: List[str], text: str) -> float:
+    def _score_text(self, query_tokens: list[str], text: str) -> float:
         if not query_tokens:
             return 0.0
         text_tokens = self._tokenize(text)
@@ -113,7 +113,7 @@ class LexicalMemory:
         shutil.copy2(self.storage_path, bak1)
 
     @staticmethod
-    def _item_to_record(item: MemoryItem) -> Dict[str, Any]:
+    def _item_to_record(item: MemoryItem) -> dict[str, Any]:
         return {
             "schema_version": MEMORY_STORAGE_SCHEMA_VERSION,
             "id": item.id,
@@ -126,7 +126,7 @@ class LexicalMemory:
         }
 
     @staticmethod
-    def _record_to_item(record: Dict[str, Any]) -> MemoryItem:
+    def _record_to_item(record: dict[str, Any]) -> MemoryItem:
         metadata = record.get("metadata", {})
         if not isinstance(metadata, dict):
             raise ValueError("memory metadata must be an object")
@@ -144,8 +144,8 @@ class LexicalMemory:
         if not self.storage_path.exists():
             return
 
-        loaded_by_id: Dict[int, MemoryItem] = {}
-        ordered_ids: List[int] = []
+        loaded_by_id: dict[int, MemoryItem] = {}
+        ordered_ids: list[int] = []
 
         try:
             handle = self.storage_path.open("r", encoding="utf-8")
@@ -258,9 +258,9 @@ class LexicalMemory:
         self,
         text: str,
         memory_type: str = "conversation",
-        metadata: Optional[Dict[str, Any]] = None,
-        importance: Optional[float] = None,
-    ) -> Dict[str, Any]:
+        metadata: dict[str, Any] | None = None,
+        importance: float | None = None,
+    ) -> dict[str, Any]:
         now = time.time()
         md = dict(metadata or {})
         if importance is not None:
@@ -284,9 +284,9 @@ class LexicalMemory:
         self,
         query: str,
         top_k: int = 5,
-        memory_type: Optional[str] = None,
-        min_score: Optional[float] = None,
-    ) -> List[Dict[str, Any]]:
+        memory_type: str | None = None,
+        min_score: float | None = None,
+    ) -> list[dict[str, Any]]:
         if not self.memories:
             return []
 
@@ -295,7 +295,7 @@ class LexicalMemory:
         if not query_tokens:
             return []
 
-        scored: List[tuple[float, MemoryItem]] = []
+        scored: list[tuple[float, MemoryItem]] = []
         for item in self.memories:
             if memory_type and item.type != memory_type:
                 continue
@@ -311,7 +311,7 @@ class LexicalMemory:
 
         now = time.time()
         touched = False
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for score, item in selected:
             item.access_count += 1
             item.last_accessed = now
@@ -324,7 +324,7 @@ class LexicalMemory:
             self._mark_dirty(force=False)
         return out
 
-    def list_recent(self, count: int = 5) -> List[Dict[str, Any]]:
+    def list_recent(self, count: int = 5) -> list[dict[str, Any]]:
         ordered = sorted(self.memories, key=lambda m: m.timestamp, reverse=True)
         return [self._to_public(item) for item in ordered[: max(1, count)]]
 
@@ -338,8 +338,8 @@ class LexicalMemory:
         self._mark_dirty(force=False)
         return True
 
-    def stats(self) -> Dict[str, Any]:
-        by_type: Dict[str, int] = {}
+    def stats(self) -> dict[str, Any]:
+        by_type: dict[str, int] = {}
         for item in self.memories:
             by_type[item.type] = by_type.get(item.type, 0) + 1
 
@@ -374,7 +374,7 @@ class LexicalMemory:
         return str(target)
 
     @staticmethod
-    def _to_public(item: MemoryItem) -> Dict[str, Any]:
+    def _to_public(item: MemoryItem) -> dict[str, Any]:
         return {
             "id": item.id,
             "text": item.text,

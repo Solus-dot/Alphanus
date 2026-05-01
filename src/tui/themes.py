@@ -299,9 +299,7 @@ THEME_SPECS: Final[dict[str, ThemeSpec]] = {
 
 _FALLBACK_THEME_ID: Final[str] = "classic"
 _FALLBACK_THEME_SPEC: Final[ThemeSpec] = THEME_SPECS[_FALLBACK_THEME_ID]
-_FALLBACK_THEME_VARIABLES: Final[dict[str, str]] = {
-    key: str(value) for key, value in (_FALLBACK_THEME_SPEC.theme.variables or {}).items()
-}
+_FALLBACK_THEME_VARIABLES: Final[dict[str, str]] = {key: str(value) for key, value in (_FALLBACK_THEME_SPEC.theme.variables or {}).items()}
 _DEFAULT_THEME_SPEC: Final[ThemeSpec] = THEME_SPECS[DEFAULT_THEME_ID]
 
 FALLBACK_COLORS: Final[dict[str, str]] = {

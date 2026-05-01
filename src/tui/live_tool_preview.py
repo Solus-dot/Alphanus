@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 from rich.markup import escape as esc
 
-
 WriteFn = Callable[[str], None]
 WriteIndentedFn = Callable[[str, int], None]
-WriteCodeFn = Callable[[List[str], Optional[str], int], None]
-UpdatePreviewFn = Callable[[List[str], Optional[str]], None]
+WriteCodeFn = Callable[[list[str], str | None, int], None]
+UpdatePreviewFn = Callable[[list[str], str | None], None]
 ClearPreviewFn = Callable[[], None]
 
 
@@ -24,15 +24,15 @@ class LivePreviewState:
     closed: bool = False
     flushed_item_count: int = 0
     line_buf: str = ""
-    preview_lines: List[str] = field(default_factory=list)
-    rendered_filepaths: Set[str] = field(default_factory=set)
+    preview_lines: list[str] = field(default_factory=list)
+    rendered_filepaths: set[str] = field(default_factory=set)
     raw_len: int = 0
 
 
 class LiveToolPreviewManager:
     def __init__(
         self,
-        streamed_file_tools: Optional[Set[str]] = None,
+        streamed_file_tools: set[str] | None = None,
         max_static_preview_chars: int = 8000,
         max_static_preview_lines: int = 140,
     ) -> None:
@@ -40,7 +40,7 @@ class LiveToolPreviewManager:
         self.draft_preview_tools = {name for name in self.streamed_file_tools if name != "edit_file"}
         self.max_static_preview_chars = int(max_static_preview_chars)
         self.max_static_preview_lines = int(max_static_preview_lines)
-        self._streams: Dict[str, LivePreviewState] = {}
+        self._streams: dict[str, LivePreviewState] = {}
 
     def reset(self) -> None:
         self._streams = {}
@@ -136,9 +136,9 @@ class LiveToolPreviewManager:
         raw_arguments: str,
         write: WriteFn,
         update_preview: UpdatePreviewFn,
-        write_indented: Optional[WriteIndentedFn] = None,
-        write_code: Optional[WriteCodeFn] = None,
-        clear_preview: Optional[ClearPreviewFn] = None,
+        write_indented: WriteIndentedFn | None = None,
+        write_code: WriteCodeFn | None = None,
+        clear_preview: ClearPreviewFn | None = None,
     ) -> bool:
         if name not in self.draft_preview_tools:
             return False
@@ -268,7 +268,7 @@ class LiveToolPreviewManager:
         if truncated:
             write_indented("[dim]... (diff truncated) ...[/dim]", 2)
 
-    def rendered_filepaths(self, stream_id: str) -> Set[str]:
+    def rendered_filepaths(self, stream_id: str) -> set[str]:
         state = self._streams.get(stream_id)
         if state is None:
             return set()
@@ -277,7 +277,7 @@ class LiveToolPreviewManager:
             rendered.add(state.filepath)
         return rendered
 
-    def mark_rendered_filepaths(self, stream_id: str, filepaths: Set[str]) -> None:
+    def mark_rendered_filepaths(self, stream_id: str, filepaths: set[str]) -> None:
         state = self._streams.get(stream_id)
         if state is None:
             return
@@ -308,7 +308,7 @@ class LiveToolPreviewManager:
             clear_preview()
 
     @staticmethod
-    def _guess_language(filepath: str) -> Optional[str]:
+    def _guess_language(filepath: str) -> str | None:
         suffix = Path(filepath).suffix.lower()
         if suffix == ".py":
             return "python"
@@ -333,12 +333,12 @@ class LiveToolPreviewManager:
         return None
 
     @staticmethod
-    def _extract_partial_json_string_field(raw: str, key: str) -> Tuple[Optional[str], bool]:
+    def _extract_partial_json_string_field(raw: str, key: str) -> tuple[str | None, bool]:
         value, complete, _ = LiveToolPreviewManager._extract_partial_json_string_field_from(raw, key, 0)
         return value, complete
 
     @staticmethod
-    def _extract_partial_json_string_field_from(raw: str, key: str, start_at: int) -> Tuple[Optional[str], bool, int]:
+    def _extract_partial_json_string_field_from(raw: str, key: str, start_at: int) -> tuple[str | None, bool, int]:
         marker = f'"{key}"'
         start = raw.find(marker, start_at)
         if start < 0:
@@ -352,7 +352,7 @@ class LiveToolPreviewManager:
         if i >= len(raw) or raw[i] != '"':
             return None, False, -1
         i += 1
-        out: List[str] = []
+        out: list[str] = []
         escaped = False
         while i < len(raw):
             ch = raw[i]

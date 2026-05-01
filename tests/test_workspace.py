@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import os
-import tempfile
-from pathlib import Path
 import shutil
 import subprocess
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -206,7 +206,7 @@ def test_shell_command_nonzero_exit_is_reported_as_failure(tmp_path: Path):
     ws.mkdir()
 
     mgr = WorkspaceManager(str(ws), home_root=str(home))
-    res = mgr.run_shell_command("python3 -c \"raise SystemExit(7)\"")
+    res = mgr.run_shell_command('python3 -c "raise SystemExit(7)"')
     assert res["ok"] is False
     assert res["error"]["code"] == "E_SHELL"
     assert "code 7" in res["error"]["message"]
@@ -245,7 +245,7 @@ def test_shell_command_runs_in_requested_cwd(tmp_path: Path):
     subdir.mkdir(parents=True)
 
     mgr = WorkspaceManager(str(ws), home_root=str(home))
-    res = mgr.run_shell_command("python3 -c \"import os; print(os.getcwd())\"", cwd=str(subdir))
+    res = mgr.run_shell_command('python3 -c "import os; print(os.getcwd())"', cwd=str(subdir))
     assert res["ok"] is True
     assert res["data"]["stdout"].strip() == str(subdir.resolve())
     assert res["data"]["cwd"] == str(subdir.resolve())
@@ -277,9 +277,7 @@ def test_shell_command_ambiguous_command_uses_git_snapshot_when_repo_present(tmp
     subprocess.run([git_path, "-C", str(ws), "init"], check=True, capture_output=True, text=True)
 
     mgr = WorkspaceManager(str(ws), home_root=str(home))
-    res = mgr.run_shell_command(
-        'python3 -c "from pathlib import Path; Path(\'note.txt\').write_text(\'x\', encoding=\'utf-8\')"'
-    )
+    res = mgr.run_shell_command("python3 -c \"from pathlib import Path; Path('note.txt').write_text('x', encoding='utf-8')\"")
 
     assert res["ok"] is True
     assert res["meta"]["workspace_changed"] is True
@@ -300,9 +298,7 @@ def test_shell_command_detects_changes_to_existing_untracked_file_in_git_repo(tm
     scratch.write_text("before", encoding="utf-8")
 
     mgr = WorkspaceManager(str(ws), home_root=str(home))
-    res = mgr.run_shell_command(
-        'python3 -c "from pathlib import Path; Path(\'scratch.txt\').write_text(\'after\', encoding=\'utf-8\')"'
-    )
+    res = mgr.run_shell_command("python3 -c \"from pathlib import Path; Path('scratch.txt').write_text('after', encoding='utf-8')\"")
 
     assert res["ok"] is True
     assert res["meta"]["workspace_changed"] is True
@@ -360,8 +356,7 @@ def test_shell_command_detects_ignored_output_changes_in_git_repo(tmp_path: Path
 
     mgr = WorkspaceManager(str(ws), home_root=str(home))
     res = mgr.run_shell_command(
-        'python3 -c "from pathlib import Path; Path(\'dist\').mkdir(exist_ok=True); '
-        'Path(\'dist/out.txt\').write_text(\'x\', encoding=\'utf-8\')"'
+        "python3 -c \"from pathlib import Path; Path('dist').mkdir(exist_ok=True); Path('dist/out.txt').write_text('x', encoding='utf-8')\""
     )
 
     assert res["ok"] is True

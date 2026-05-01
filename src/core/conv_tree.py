@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional
 
 from core.message_types import ChatMessage, JSONValue, MessageContentPart, ToolCallDelta
 
@@ -18,8 +17,8 @@ def _major(version: str) -> int:
 class Turn:
     id: str
     user_content: JSONValue | list[MessageContentPart]
-    assistant_content: Optional[str]
-    parent: Optional[str]
+    assistant_content: str | None
+    parent: str | None
     children: list[str]
     label: str = ""
     branch_root: bool = False
@@ -111,7 +110,7 @@ class Turn:
         }
 
     @staticmethod
-    def from_dict(data: dict[str, object]) -> "Turn":
+    def from_dict(data: dict[str, object]) -> Turn:
         assistant_content = data.get("assistant_content")
         assistant_state = str(data.get("assistant_state") or "").strip()
         if not assistant_state:
@@ -214,7 +213,7 @@ class ConvTree:
 
     def path_to(self, node_id: str) -> list[Turn]:
         path: list[Turn] = []
-        cursor: Optional[str] = node_id
+        cursor: str | None = node_id
         while cursor is not None:
             node = self.nodes[cursor]
             path.append(node)
@@ -299,7 +298,7 @@ class ConvTree:
         self._history_messages_cache = list(messages)
         return messages
 
-    def unbranch(self) -> Optional[str]:
+    def unbranch(self) -> str | None:
         node = self.current
         while node.parent is not None:
             if node.branch_root:
@@ -310,7 +309,7 @@ class ConvTree:
             node = self.nodes[node.parent]
         return None
 
-    def switch_child(self, idx: int) -> Optional[Turn]:
+    def switch_child(self, idx: int) -> Turn | None:
         children = self.current.children
         if idx < 0 or idx >= len(children):
             return None
@@ -329,12 +328,10 @@ class ConvTree:
         }
 
     @staticmethod
-    def from_dict(data: dict[str, object]) -> "ConvTree":
+    def from_dict(data: dict[str, object]) -> ConvTree:
         version = data.get("schema_version", "1.0.0")
         if _major(version) != _major(SCHEMA_VERSION):
-            raise ValueError(
-                f"Unsupported tree schema version {version}; expected major {SCHEMA_VERSION}"
-            )
+            raise ValueError(f"Unsupported tree schema version {version}; expected major {SCHEMA_VERSION}")
 
         tree = ConvTree.__new__(ConvTree)
         tree.nodes = {key: Turn.from_dict(value) for key, value in data["nodes"].items()}

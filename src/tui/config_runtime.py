@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 from core.runtime_config import UiRuntimeConfig
 
 
-def merge_live_config(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
-    merged: Dict[str, Any] = dict(base)
+def merge_live_config(base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = dict(base)
     for key, value in updates.items():
         if isinstance(value, dict) and isinstance(base.get(key), dict):
             merged[key] = merge_live_config(base[key], value)

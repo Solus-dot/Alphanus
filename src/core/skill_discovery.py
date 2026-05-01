@@ -1,22 +1,22 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, List
 
 from core.skill_parser import SKILL_DOC
 
 
 class SkillDiscovery:
     @staticmethod
-    def discover_skill_roots(skills_dir: Path) -> List[Path]:
+    def discover_skill_roots(skills_dir: Path) -> list[Path]:
         return [skills_dir]
 
     @staticmethod
-    def discover_skill_dirs(root: Path, *, is_relative_to: Callable[[Path, Path], bool]) -> List[Path]:
+    def discover_skill_dirs(root: Path, *, is_relative_to: Callable[[Path, Path], bool]) -> list[Path]:
         if not root.exists():
             return []
-        candidates: List[Path] = []
+        candidates: list[Path] = []
         seen: set[str] = set()
         docs = [root / SKILL_DOC] if (root / SKILL_DOC).exists() else []
         if root.is_dir():

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, cast
+from typing import cast
 
 from core.message_types import JSONValue
 from core.types import JsonObject, ToolExecutionRecord, TurnState
@@ -36,9 +36,9 @@ class EvidenceGuard:
         return state.search_mode and state.time_sensitive_query and not state.completion.search_has_fetch_content
 
     def workspace_action_evidence(self, state: TurnState) -> JsonObject:
-        successful_mutating_tools: List[JSONValue] = []
-        policy_blocked_tools: List[JSONValue] = []
-        recent_tools: List[JSONValue] = []
+        successful_mutating_tools: list[JSONValue] = []
+        policy_blocked_tools: list[JSONValue] = []
+        recent_tools: list[JSONValue] = []
         for record in state.evidence[-12:]:
             ok = bool(record.result.get("ok"))
             mutating = self.tool_counts_as_workspace_mutation(record)

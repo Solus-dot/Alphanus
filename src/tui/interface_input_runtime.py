@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from core.configuration import normalize_config, validate_endpoint_policy
 from core.runtime_config import UiRuntimeConfig
@@ -100,7 +100,7 @@ def handle_key(app: Any, event: Any, *, chat_input_cls: Any) -> None:
         event.stop()
 
 
-def on_config_editor_close(app: Any, result: Optional[Dict[str, Any]], *, config_path: Path, status_runtime_state_cls: Any) -> None:
+def on_config_editor_close(app: Any, result: dict[str, Any] | None, *, config_path: Path, status_runtime_state_cls: Any) -> None:
     if not result:
         return
     parsed = result.get("config")

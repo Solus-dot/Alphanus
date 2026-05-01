@@ -58,17 +58,18 @@ class SkillSelector:
         return score
 
     def select_skills(self, ctx, top_n: int = 3):
-        loaded = [skill for skill in self.runtime.skills_by_ids(list(getattr(ctx, "loaded_skill_ids", []) or [])) if not skill.disable_model_invocation]
+        loaded = [
+            skill
+            for skill in self.runtime.skills_by_ids(list(getattr(ctx, "loaded_skill_ids", []) or []))
+            if not skill.disable_model_invocation
+        ]
         if not loaded:
             return []
         limit = max(1, int(top_n))
         if len(loaded) <= 1:
             return loaded[:limit]
 
-        scored = [
-            (self.skill_selection_score(skill, ctx), idx, skill)
-            for idx, skill in enumerate(loaded)
-        ]
+        scored = [(self.skill_selection_score(skill, ctx), idx, skill) for idx, skill in enumerate(loaded)]
         if not any(score > 0 for score, _idx, _skill in scored):
             return loaded[:limit]
         scored.sort(key=lambda item: (-item[0], item[1], item[2].id))

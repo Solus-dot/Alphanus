@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
 
 from rich.highlighter import Highlighter
 from textual import events
@@ -25,7 +25,7 @@ class _CompactPasteChunk:
 class _PasteTokenHighlighter(Highlighter):
     STYLE = f"bold {DEFAULT_ACCENT_COLOR} on {DEFAULT_PANEL_BG}"
 
-    def __init__(self, token_ranges_provider: Optional[Callable[[], List[Tuple[int, int]]]] = None) -> None:
+    def __init__(self, token_ranges_provider: Callable[[], list[tuple[int, int]]] | None = None) -> None:
         super().__init__()
         self._token_ranges_provider = token_ranges_provider or (lambda: [])
 
@@ -60,12 +60,12 @@ class ChatInput(Input):
         if kwargs.get("highlighter") is None:
             kwargs["highlighter"] = _PasteTokenHighlighter()
         super().__init__(*args, **kwargs)
-        self._compact_paste_chunks: List[_CompactPasteChunk] = []
+        self._compact_paste_chunks: list[_CompactPasteChunk] = []
         self._last_value = self.value
         if isinstance(self.highlighter, _PasteTokenHighlighter):
             self.highlighter._token_ranges_provider = self._highlighted_placeholder_ranges
 
-    def _highlighted_placeholder_ranges(self) -> List[Tuple[int, int]]:
+    def _highlighted_placeholder_ranges(self) -> list[tuple[int, int]]:
         return [(chunk.start, chunk.end) for chunk in self._compact_paste_chunks]
 
     @staticmethod
@@ -73,7 +73,7 @@ class ChatInput(Input):
         return f"[Pasted {len(text)} chars]"
 
     @staticmethod
-    def _changed_span(old_value: str, new_value: str) -> Tuple[int, int, int]:
+    def _changed_span(old_value: str, new_value: str) -> tuple[int, int, int]:
         prefix_len = 0
         max_prefix = min(len(old_value), len(new_value))
         while prefix_len < max_prefix and old_value[prefix_len] == new_value[prefix_len]:
@@ -96,7 +96,7 @@ class ChatInput(Input):
         prefix_len, old_suffix, new_suffix = self._changed_span(old_value, value)
 
         delta = (new_suffix - prefix_len) - (old_suffix - prefix_len)
-        updated: List[_CompactPasteChunk] = []
+        updated: list[_CompactPasteChunk] = []
         for chunk in self._compact_paste_chunks:
             start = chunk.start
             end = chunk.end
@@ -143,10 +143,10 @@ class ChatInput(Input):
         self._last_value = self.value
         event.stop()
 
-    def sync_paste_placeholders(self, value: Optional[str] = None) -> None:
+    def sync_paste_placeholders(self, value: str | None = None) -> None:
         self._sync_chunk_ranges(self.value if value is None else value)
 
-    def expanded_value(self, value: Optional[str] = None) -> str:
+    def expanded_value(self, value: str | None = None) -> str:
         self.sync_paste_placeholders(self.value if value is None else value)
         expanded = self.value if value is None else value
         for chunk in sorted(self._compact_paste_chunks, key=lambda item: item.start, reverse=True):
@@ -154,7 +154,7 @@ class ChatInput(Input):
                 continue
             if expanded[chunk.start : chunk.end] != chunk.marker:
                 continue
-            expanded = f"{expanded[:chunk.start]}{chunk.text}{expanded[chunk.end:]}"
+            expanded = f"{expanded[: chunk.start]}{chunk.text}{expanded[chunk.end :]}"
         return expanded
 
     def clear_draft(self) -> None:
@@ -220,4 +220,3 @@ class ChatInput(Input):
 
     def action_toggle_thinking(self) -> None:
         self._invoke_app_action("action_toggle_thinking")
-

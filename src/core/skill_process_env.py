@@ -6,7 +6,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 
 class SkillProcessEnvBuilder:
@@ -18,8 +18,8 @@ class SkillProcessEnvBuilder:
         memory_path: Path,
         python_executable: str,
         skills_dir: Path,
-        config: Dict[str, Any],
-    ) -> Dict[str, str]:
+        config: dict[str, Any],
+    ) -> dict[str, str]:
         env = os.environ.copy()
         env["ALPHANUS_WORKSPACE_ROOT"] = str(workspace_root)
         env["ALPHANUS_HOME_ROOT"] = str(home_root)
@@ -53,4 +53,3 @@ class SkillProcessEnvBuilder:
                 existing_node_path = env.get("NODE_PATH", "")
                 env["NODE_PATH"] = node_root if not existing_node_path else node_root + os.pathsep + existing_node_path
         return env
-

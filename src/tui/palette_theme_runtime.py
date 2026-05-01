@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from rich.markup import escape as esc
 
@@ -26,12 +26,12 @@ def workspace_file_candidates(
     *,
     max_items: int = 60,
     classify_attachment_fn: Any = None,
-) -> List[Path]:
+) -> list[Path]:
     classifier = classify_attachment_fn or classify_attachment
     root = app._workspace_root()
     if not root.exists() or not root.is_dir():
         return []
-    files: List[Path] = []
+    files: list[Path] = []
     skip_dirs = {
         ".git",
         ".hg",
@@ -46,11 +46,7 @@ def workspace_file_candidates(
         ".ruff_cache",
     }
     for current, dirs, names in os.walk(root):
-        dirs[:] = sorted(
-            d
-            for d in dirs
-            if d not in skip_dirs and not d.startswith(".")
-        )
+        dirs[:] = sorted(d for d in dirs if d not in skip_dirs and not d.startswith("."))
         for name in sorted(names):
             if name.startswith("."):
                 continue
@@ -65,9 +61,9 @@ def workspace_file_candidates(
     return files
 
 
-def build_global_palette_catalog(app: Any, *, command_palette_item_cls: Any) -> tuple[list[Any], Dict[str, Dict[str, str]]]:
+def build_global_palette_catalog(app: Any, *, command_palette_item_cls: Any) -> tuple[list[Any], dict[str, dict[str, str]]]:
     items: list[Any] = []
-    actions: Dict[str, Dict[str, str]] = {}
+    actions: dict[str, dict[str, str]] = {}
     accent = app._theme_color("accent", DEFAULT_ACCENT_COLOR)
     text_color = app._theme_color("text", DEFAULT_TEXT_COLOR)
     subtle = app._theme_color("subtle", DEFAULT_SUBTLE_COLOR)
@@ -100,20 +96,14 @@ def build_global_palette_catalog(app: Any, *, command_palette_item_cls: Any) -> 
             kind="command_insert",
             value=entry.insert_text,
             prompt=(
-                f"[bold {accent}]cmd[/bold {accent}] "
-                f"[{text_color}]{esc(entry.prompt)}[/{text_color}] "
-                f"[dim]{esc(entry.description)}[/dim]"
+                f"[bold {accent}]cmd[/bold {accent}] [{text_color}]{esc(entry.prompt)}[/{text_color}] [dim]{esc(entry.description)}[/dim]"
             ),
             search_text=f"command {entry.prompt} {aliases} {entry.description}".strip(),
             rank=0,
         )
 
     for summary in app._session_store.list_sessions()[:20]:
-        state = (
-            f"[bold {accent}]active[/bold {accent}]"
-            if summary.is_active
-            else f"[{subtle}]saved[/{subtle}]"
-        )
+        state = f"[bold {accent}]active[/bold {accent}]" if summary.is_active else f"[{subtle}]saved[/{subtle}]"
         add_item(
             kind="session_open",
             value=summary.id,
@@ -132,10 +122,7 @@ def build_global_palette_catalog(app: Any, *, command_palette_item_cls: Any) -> 
         add_item(
             kind="file_attach",
             value=str(path),
-            prompt=(
-                f"[bold {warning}]file[/bold {warning}] "
-                f"[{text_color}]{esc(rel)}[/{text_color}]"
-            ),
+            prompt=(f"[bold {warning}]file[/bold {warning}] [{text_color}]{esc(rel)}[/{text_color}]"),
             search_text=f"file {rel} {path.name}",
             rank=3,
         )
@@ -146,18 +133,12 @@ def build_global_palette_catalog(app: Any, *, command_palette_item_cls: Any) -> 
         if not loaded and (not bool(getattr(skill, "enabled", False)) or not bool(getattr(skill, "available", False))):
             continue
         action = "unload" if loaded else "load"
-        state_markup = (
-            f"[{success}]loaded[/{success}]"
-            if loaded
-            else f"[{muted}]available[/{muted}]"
-        )
+        state_markup = f"[{success}]loaded[/{success}]" if loaded else f"[{muted}]available[/{muted}]"
         add_item(
             kind="skill_toggle",
             value=skill.id,
             prompt=(
-                f"[bold {success}]skill[/bold {success}] "
-                f"[{text_color}]{esc(skill.id)}[/{text_color}] "
-                f"{state_markup} [dim]{action}[/dim]"
+                f"[bold {success}]skill[/bold {success}] [{text_color}]{esc(skill.id)}[/{text_color}] {state_markup} [dim]{action}[/dim]"
             ),
             search_text=f"skill {skill.id} {skill.name} {skill.description} {action}",
             rank=4 if loaded else 5,
@@ -166,7 +147,7 @@ def build_global_palette_catalog(app: Any, *, command_palette_item_cls: Any) -> 
     return items, actions
 
 
-def on_global_palette_close(app: Any, result: Optional[Dict[str, str]], *, chat_input_cls: Any) -> None:
+def on_global_palette_close(app: Any, result: dict[str, str] | None, *, chat_input_cls: Any) -> None:
     app.query_one(chat_input_cls).focus()
     selected_id = str((result or {}).get("id") or "").strip()
     if not selected_id:
@@ -235,8 +216,8 @@ def open_theme_picker(app: Any, *, picker_item_cls: Any, selection_picker_modal_
     )
 
 
-def persist_theme_preference(app: Any, theme_id: str, *, config_path: Path) -> List[str]:
-    warnings: List[str] = []
+def persist_theme_preference(app: Any, theme_id: str, *, config_path: Path) -> list[str]:
+    warnings: list[str] = []
     try:
         current = load_global_config(config_path, warnings=warnings)
     except (OSError, ValueError) as exc:
@@ -267,7 +248,7 @@ def persist_theme_preference(app: Any, theme_id: str, *, config_path: Path) -> L
     return warnings
 
 
-def on_theme_picker_close(app: Any, result: Optional[Dict[str, str]], *, chat_input_cls: Any, config_path: Path) -> None:
+def on_theme_picker_close(app: Any, result: dict[str, str] | None, *, chat_input_cls: Any, config_path: Path) -> None:
     selected_id = str((result or {}).get("id") or "").strip()
     if not selected_id.startswith("theme:"):
         app.query_one(chat_input_cls).focus()

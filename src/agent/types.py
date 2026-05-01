@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Literal, Optional
+from typing import Literal
 
 from core.message_types import ChatMessage, JSONValue, ToolCallDelta, ToolCallUpdate
 from core.skill_parser import SkillManifest
@@ -26,7 +26,7 @@ class StreamPassResult:
     reasoning: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     usage: dict[str, int] = field(default_factory=dict)
-    first_token_latency_ms: Optional[int] = None
+    first_token_latency_ms: int | None = None
 
 
 ModelStatusState = Literal["unknown", "online", "offline"]
@@ -35,8 +35,8 @@ ModelStatusState = Literal["unknown", "online", "offline"]
 @dataclass(slots=True)
 class ModelStatus:
     state: ModelStatusState = "unknown"
-    model_name: Optional[str] = None
-    context_window: Optional[int] = None
+    model_name: str | None = None
+    context_window: int | None = None
     last_checked_at: float = 0.0
     last_success_at: float = 0.0
     last_error: str = ""
@@ -45,7 +45,7 @@ class ModelStatus:
     def is_fresh(
         self,
         *,
-        now: Optional[float] = None,
+        now: float | None = None,
         online_ttl_s: float = 5.0,
         offline_ttl_s: float = 2.0,
     ) -> bool:
@@ -67,7 +67,7 @@ class AgentTurnResult:
     content: str
     reasoning: str
     skill_exchanges: list[ChatMessage]
-    error: Optional[str] = None
+    error: str | None = None
     journal: dict[str, JSONValue] = field(default_factory=dict)
 
 

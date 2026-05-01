@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import List, Optional, Set
-
 from core.message_types import ChatMessage, JSONValue, MessageContentPart
 
 
@@ -48,7 +46,7 @@ class ContextWindowManager:
         return cls._chars_to_tokens(sum(cls._estimate_message_chars(message) for message in messages))
 
     @staticmethod
-    def _last_role_index(messages: list[ChatMessage], role: str) -> Optional[int]:
+    def _last_role_index(messages: list[ChatMessage], role: str) -> int | None:
         for idx in range(len(messages) - 1, -1, -1):
             if messages[idx].get("role") == role:
                 return idx
@@ -60,7 +58,7 @@ class ContextWindowManager:
             text = content.strip()
             return text if text else "[user message omitted]"
         if isinstance(content, list):
-            chunks: List[str] = []
+            chunks: list[str] = []
             for part in content:
                 if not isinstance(part, dict):
                     continue
@@ -114,11 +112,11 @@ class ContextWindowManager:
         return {"role": "user", "content": cls._compact_user_content(message.get("content"), keep_chars)}
 
     @staticmethod
-    def _tool_call_ids(message: ChatMessage) -> Set[str]:
+    def _tool_call_ids(message: ChatMessage) -> set[str]:
         raw_calls = message.get("tool_calls") or []
         if not isinstance(raw_calls, list):
             return set()
-        out: Set[str] = set()
+        out: set[str] = set()
         for call in raw_calls:
             if isinstance(call, dict):
                 call_id = str(call.get("id") or "").strip()
@@ -132,7 +130,7 @@ class ContextWindowManager:
         messages: list[ChatMessage],
         upto_idx: int,
         tool_call_id: str,
-    ) -> Optional[int]:
+    ) -> int | None:
         if not tool_call_id:
             return None
         for idx in range(upto_idx - 1, -1, -1):
@@ -144,7 +142,7 @@ class ContextWindowManager:
         return None
 
     @classmethod
-    def _expand_tool_dependencies(cls, messages: list[ChatMessage], kept: Set[int]) -> Set[int]:
+    def _expand_tool_dependencies(cls, messages: list[ChatMessage], kept: set[int]) -> set[int]:
         changed = True
         while changed:
             changed = False
@@ -260,9 +258,9 @@ class ContextWindowManager:
             if not shrink_once():
                 break
 
-        def required_indexes() -> Set[int]:
-            required: Set[int] = set()
-            required_tool_ids: Set[str] = set()
+        def required_indexes() -> set[int]:
+            required: set[int] = set()
+            required_tool_ids: set[str] = set()
             for msg_idx, msg in enumerate(out):
                 if msg.get("role") != "tool":
                     continue
@@ -366,7 +364,7 @@ class ContextWindowManager:
         body_estimates = message_estimates[1:]
 
         start_idx = max(0, len(body) - keep_tail)
-        kept_indices: Set[int] = set(range(start_idx, len(body)))
+        kept_indices: set[int] = set(range(start_idx, len(body)))
         kept_indices = self._expand_tool_dependencies(body, kept_indices)
         last_user_idx = self._last_role_index(body, "user")
         if last_user_idx is not None:
@@ -382,11 +380,7 @@ class ContextWindowManager:
 
         # If still over budget, trim oldest non-dependent messages first.
         required_assistant_idxs = set()
-        required_tool_ids = {
-            str(body[idx].get("tool_call_id") or "").strip()
-            for idx in kept_indices
-            if body[idx].get("role") == "tool"
-        }
+        required_tool_ids = {str(body[idx].get("tool_call_id") or "").strip() for idx in kept_indices if body[idx].get("role") == "tool"}
         required_tool_ids.discard("")
         for idx in kept_indices:
             if body[idx].get("role") != "assistant":
@@ -395,9 +389,7 @@ class ContextWindowManager:
             if call_ids & required_tool_ids:
                 required_assistant_idxs.add(idx)
 
-        required_idxs = {
-            idx for idx in kept_indices if body[idx].get("role") == "tool"
-        } | required_assistant_idxs
+        required_idxs = {idx for idx in kept_indices if body[idx].get("role") == "tool"} | required_assistant_idxs
         if last_user_idx is not None:
             required_idxs.add(last_user_idx)
 

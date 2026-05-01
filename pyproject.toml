@@ -33,6 +33,7 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP"]
+ignore = ["E501"]
 
 [tool.setuptools]
 package-dir = {"" = "src", "alphanus_bundled" = "skills"}

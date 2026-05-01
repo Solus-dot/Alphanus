@@ -163,7 +163,7 @@ def test_shell_command_nonzero_exit_bubbles_up_as_tool_failure(tmp_path: Path):
 
     out = runtime.execute_tool_call(
         "shell_command",
-        {"command": "python3 -c \"raise SystemExit(3)\""},
+        {"command": 'python3 -c "raise SystemExit(3)"'},
         selected=[shell_skill],
         ctx=_ctx(str(runtime.workspace.workspace_root)),
         confirm_shell=lambda _: True,

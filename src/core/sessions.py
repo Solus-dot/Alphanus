@@ -5,9 +5,9 @@ import os
 import tempfile
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.conv_tree import ConvTree
 
@@ -21,10 +21,10 @@ def _major(version: str) -> int:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
-def _write_json_atomic(path: Path, payload: Dict[str, Any]) -> None:
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     body = json.dumps(payload, ensure_ascii=False, indent=2)
     fd, tmp_path = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
@@ -44,10 +44,10 @@ class ChatSession:
     created_at: str
     updated_at: str
     tree: ConvTree
-    loaded_skill_ids: List[str] = field(default_factory=list)
+    loaded_skill_ids: list[str] = field(default_factory=list)
     collaboration_mode: str = "execute"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": SESSION_SCHEMA_VERSION,
             "id": self.id,
@@ -60,12 +60,10 @@ class ChatSession:
         }
 
     @staticmethod
-    def from_dict(data: Dict[str, Any]) -> "ChatSession":
+    def from_dict(data: dict[str, Any]) -> ChatSession:
         version = data.get("schema_version", "1.0.0")
         if _major(version) != _major(SESSION_SCHEMA_VERSION):
-            raise ValueError(
-                f"Unsupported session schema version {version}; expected major {SESSION_SCHEMA_VERSION}"
-            )
+            raise ValueError(f"Unsupported session schema version {version}; expected major {SESSION_SCHEMA_VERSION}")
 
         return ChatSession(
             id=str(data["id"]),
@@ -73,15 +71,9 @@ class ChatSession:
             created_at=str(data.get("created_at") or _utc_now_iso()),
             updated_at=str(data.get("updated_at") or data.get("created_at") or _utc_now_iso()),
             tree=ConvTree.from_dict(data["tree"]),
-            loaded_skill_ids=[
-                str(item).strip()
-                for item in (data.get("loaded_skill_ids") or [])
-                if str(item).strip()
-            ],
+            loaded_skill_ids=[str(item).strip() for item in (data.get("loaded_skill_ids") or []) if str(item).strip()],
             collaboration_mode=(
-                "plan"
-                if str(data.get("collaboration_mode", "execute") or "execute").strip().lower() == "plan"
-                else "execute"
+                "plan" if str(data.get("collaboration_mode", "execute") or "execute").strip().lower() == "plan" else "execute"
             ),
         )
 
@@ -100,11 +92,7 @@ class SessionSummary:
 class SessionStore:
     def __init__(self, workspace_root: str | Path, storage_dir: str | Path | None = None) -> None:
         self.workspace_root = Path(workspace_root)
-        self.storage_dir = (
-            Path(storage_dir)
-            if storage_dir is not None
-            else self.workspace_root / DEFAULT_SESSIONS_DIRNAME
-        )
+        self.storage_dir = Path(storage_dir) if storage_dir is not None else self.workspace_root / DEFAULT_SESSIONS_DIRNAME
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self._manifest_path = self.storage_dir / "manifest.json"
 
@@ -126,14 +114,14 @@ class SessionStore:
 
         return self.create_session()
 
-    def list_sessions(self) -> List[SessionSummary]:
+    def list_sessions(self) -> list[SessionSummary]:
         manifest = self._load_manifest()
         active_id = str(manifest.get("active_session_id") or "").strip()
         raw_sessions = manifest.get("sessions", {})
         if not isinstance(raw_sessions, dict):
             raw_sessions = {}
 
-        summaries: List[SessionSummary] = []
+        summaries: list[SessionSummary] = []
         for session_id, raw_meta in raw_sessions.items():
             if not isinstance(raw_meta, dict):
                 continue
@@ -153,7 +141,7 @@ class SessionStore:
         summaries.sort(key=lambda item: (item.updated_at, item.created_at, item.title.casefold()), reverse=True)
         return summaries
 
-    def create_session(self, title: str = "", tree: Optional[ConvTree] = None, *, activate: bool = True) -> ChatSession:
+    def create_session(self, title: str = "", tree: ConvTree | None = None, *, activate: bool = True) -> ChatSession:
         manifest = self._load_manifest()
         session_id = self._new_session_id(manifest)
         now = _utc_now_iso()
@@ -175,10 +163,10 @@ class SessionStore:
         session_id: str,
         title: str,
         tree: ConvTree,
-        loaded_skill_ids: Optional[List[str]] = None,
-        collaboration_mode: Optional[str] = None,
+        loaded_skill_ids: list[str] | None = None,
+        collaboration_mode: str | None = None,
         *,
-        created_at: Optional[str] = None,
+        created_at: str | None = None,
         activate: bool = True,
     ) -> ChatSession:
         manifest = self._load_manifest()
@@ -190,9 +178,7 @@ class SessionStore:
             updated_at=_utc_now_iso(),
             tree=tree,
             loaded_skill_ids=[
-                str(item).strip()
-                for item in (loaded_skill_ids or raw_meta.get("loaded_skill_ids") or [])
-                if str(item).strip()
+                str(item).strip() for item in (loaded_skill_ids or raw_meta.get("loaded_skill_ids") or []) if str(item).strip()
             ],
             collaboration_mode=(
                 "plan"
@@ -207,7 +193,7 @@ class SessionStore:
     def load_session(self, selector: str, *, activate: bool = True) -> ChatSession:
         session_id = self.resolve_session_id(selector)
         path = self._session_path(session_id)
-        with open(path, "r", encoding="utf-8") as handle:
+        with open(path, encoding="utf-8") as handle:
             session = ChatSession.from_dict(json.load(handle))
         if activate:
             manifest = self._load_manifest()
@@ -269,14 +255,14 @@ class SessionStore:
             raise ValueError(f"Multiple sessions match '{value}'. Use the numeric index or session id.")
         raise ValueError(f"No saved session matches '{value}'.")
 
-    def _new_session_id(self, manifest: Dict[str, Any]) -> str:
+    def _new_session_id(self, manifest: dict[str, Any]) -> str:
         seen = set(manifest.get("sessions", {}).keys()) if isinstance(manifest.get("sessions"), dict) else set()
         while True:
             session_id = str(uuid.uuid4())[:8]
             if session_id not in seen:
                 return session_id
 
-    def _next_default_title(self, manifest: Dict[str, Any]) -> str:
+    def _next_default_title(self, manifest: dict[str, Any]) -> str:
         raw_sessions = manifest.get("sessions", {})
         existing = set()
         if isinstance(raw_sessions, dict):
@@ -298,7 +284,7 @@ class SessionStore:
     def _write_session(self, session: ChatSession) -> None:
         _write_json_atomic(self._session_path(session.id), session.to_dict())
 
-    def _update_manifest_for_session(self, manifest: Dict[str, Any], session: ChatSession, *, activate: bool) -> None:
+    def _update_manifest_for_session(self, manifest: dict[str, Any], session: ChatSession, *, activate: bool) -> None:
         sessions = manifest.get("sessions")
         if not isinstance(sessions, dict):
             sessions = {}
@@ -316,7 +302,7 @@ class SessionStore:
             manifest["active_session_id"] = session.id
         self._write_manifest(manifest)
 
-    def _load_manifest(self) -> Dict[str, Any]:
+    def _load_manifest(self) -> dict[str, Any]:
         if not self._manifest_path.exists():
             manifest = {
                 "schema_version": MANIFEST_SCHEMA_VERSION,
@@ -326,20 +312,18 @@ class SessionStore:
             self._write_manifest(manifest)
             return manifest
 
-        with open(self._manifest_path, "r", encoding="utf-8") as handle:
+        with open(self._manifest_path, encoding="utf-8") as handle:
             data = json.load(handle)
         version = data.get("schema_version", "1.0.0")
         if _major(version) != _major(MANIFEST_SCHEMA_VERSION):
-            raise ValueError(
-                f"Unsupported manifest schema version {version}; expected major {MANIFEST_SCHEMA_VERSION}"
-            )
+            raise ValueError(f"Unsupported manifest schema version {version}; expected major {MANIFEST_SCHEMA_VERSION}")
         if not isinstance(data.get("sessions"), dict):
             data["sessions"] = {}
         if "active_session_id" not in data:
             data["active_session_id"] = ""
         return data
 
-    def _write_manifest(self, manifest: Dict[str, Any]) -> None:
+    def _write_manifest(self, manifest: dict[str, Any]) -> None:
         payload = {
             "schema_version": MANIFEST_SCHEMA_VERSION,
             "active_session_id": str(manifest.get("active_session_id") or ""),

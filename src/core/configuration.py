@@ -4,8 +4,9 @@ import copy
 import json
 import os
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any
 from urllib.parse import urlparse
 
 from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
@@ -50,7 +51,7 @@ _PERMISSION_PROFILE_ALIASES = {
 }
 _VALID_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-DEFAULT_CONFIG: Dict[str, Any] = {
+DEFAULT_CONFIG: dict[str, Any] = {
     "schema_version": SCHEMA_VERSION,
     "agent": {
         "provider": "openai-compatible",
@@ -145,7 +146,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 }
 
 
-def deep_merge(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
+def deep_merge(base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
     out = copy.deepcopy(base)
     for key, value in updates.items():
         if isinstance(value, dict) and isinstance(out.get(key), dict):
@@ -162,11 +163,11 @@ def _major(version: str) -> int:
         raise ValueError(f"Invalid schema_version: {version!r}") from exc
 
 
-def _warn(warnings: List[str], message: str) -> None:
+def _warn(warnings: list[str], message: str) -> None:
     warnings.append(message)
 
 
-def _coerce_bool(value: Any, default: bool, *, path: str, warnings: List[str]) -> bool:
+def _coerce_bool(value: Any, default: bool, *, path: str, warnings: list[str]) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)) and value in (0, 1):
@@ -186,7 +187,7 @@ def _coerce_int(
     default: int,
     *,
     path: str,
-    warnings: List[str],
+    warnings: list[str],
     minimum: int | None = None,
     maximum: int | None = None,
 ) -> int:
@@ -223,7 +224,7 @@ def _coerce_float(
     default: float,
     *,
     path: str,
-    warnings: List[str],
+    warnings: list[str],
     minimum: float | None = None,
     maximum: float | None = None,
 ) -> float:
@@ -258,7 +259,7 @@ def _coerce_string(
     default: str,
     *,
     path: str,
-    warnings: List[str],
+    warnings: list[str],
     allow_empty: bool = True,
 ) -> str:
     if isinstance(value, str):
@@ -269,12 +270,12 @@ def _coerce_string(
     return default
 
 
-def _coerce_string_list(value: Any, default: Iterable[str], *, path: str, warnings: List[str]) -> List[str]:
+def _coerce_string_list(value: Any, default: Iterable[str], *, path: str, warnings: list[str]) -> list[str]:
     if not isinstance(value, list):
         if value is not None:
             _warn(warnings, f"{path}: expected list[string], using default")
         return list(default)
-    out: List[str] = []
+    out: list[str] = []
     for item in value:
         text = str(item).strip()
         if text and text not in out:
@@ -293,13 +294,13 @@ def _is_secret_key(key: str) -> bool:
     return False
 
 
-def strip_secret_fields(config: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+def strip_secret_fields(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     changed = False
 
     def _strip(obj: Any) -> Any:
         nonlocal changed
         if isinstance(obj, dict):
-            cleaned: Dict[str, Any] = {}
+            cleaned: dict[str, Any] = {}
             for key, value in obj.items():
                 key_text = str(key)
                 if _is_secret_key(key_text):
@@ -321,7 +322,7 @@ def strip_secret_fields(config: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
     return (stripped if isinstance(stripped, dict) else {}, changed)
 
 
-def config_for_editor_view(config: Dict[str, Any]) -> Dict[str, Any]:
+def config_for_editor_view(config: dict[str, Any]) -> dict[str, Any]:
     cleaned, _ = strip_secret_fields(config)
     agent_cfg = cleaned.get("agent")
     if isinstance(agent_cfg, dict):
@@ -333,7 +334,7 @@ def config_for_editor_view(config: Dict[str, Any]) -> Dict[str, Any]:
     return cleaned
 
 
-def _normalize_endpoint(url: Any, *, default: str, path: str, warnings: List[str]) -> str:
+def _normalize_endpoint(url: Any, *, default: str, path: str, warnings: list[str]) -> str:
     endpoint = _coerce_string(url, default, path=path, warnings=warnings, allow_empty=False)
     parsed = urlparse(endpoint)
     scheme = parsed.scheme.lower()
@@ -346,7 +347,7 @@ def _normalize_endpoint(url: Any, *, default: str, path: str, warnings: List[str
     return endpoint
 
 
-def _normalize_base_url(url: Any, *, default: str, path: str, warnings: List[str]) -> str:
+def _normalize_base_url(url: Any, *, default: str, path: str, warnings: list[str]) -> str:
     base = _coerce_string(url, default, path=path, warnings=warnings, allow_empty=False)
     parsed = urlparse(base)
     scheme = parsed.scheme.lower()
@@ -380,11 +381,11 @@ def _base_url_from_endpoint(endpoint: Any) -> str:
     return parsed._replace(path="", params="", query="", fragment="").geturl().rstrip("/")
 
 
-def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     if not isinstance(raw_config, dict):
         raise ValueError("Global config must be a JSON object")
 
-    warnings: List[str] = []
+    warnings: list[str] = []
     schema_raw = str(raw_config.get("schema_version", SCHEMA_VERSION)).strip() or SCHEMA_VERSION
     if _major(schema_raw) != _major(SCHEMA_VERSION):
         raise ValueError(f"Unsupported config schema_version: {schema_raw}")
@@ -414,11 +415,7 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
                 inferred_base_url = _base_url_from_endpoint(input_agent_cfg.get(endpoint_key))
                 if inferred_base_url:
                     break
-    base_url_candidate = (
-        base_url_input
-        if base_url_input not in (None, "")
-        else (inferred_base_url or str(default_agent["base_url"]))
-    )
+    base_url_candidate = base_url_input if base_url_input not in (None, "") else (inferred_base_url or str(default_agent["base_url"]))
     agent_cfg["base_url"] = _normalize_base_url(
         base_url_candidate,
         default=str(default_agent["base_url"]),
@@ -430,11 +427,7 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
     models_endpoint_default = _endpoint_from_base_url(str(agent_cfg["base_url"]), "/v1/models")
 
     model_input = input_agent_cfg.get("model_endpoint") if "model_endpoint" in input_agent_cfg else model_endpoint_default
-    responses_input = (
-        input_agent_cfg.get("responses_endpoint")
-        if "responses_endpoint" in input_agent_cfg
-        else responses_endpoint_default
-    )
+    responses_input = input_agent_cfg.get("responses_endpoint") if "responses_endpoint" in input_agent_cfg else responses_endpoint_default
     models_input = input_agent_cfg.get("models_endpoint") if "models_endpoint" in input_agent_cfg else models_endpoint_default
 
     agent_cfg["model_endpoint"] = _normalize_endpoint(
@@ -501,9 +494,7 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
         if not _VALID_ENV_NAME_RE.match(ref_name):
             _warn(warnings, f"agent.api_key: invalid env reference {api_key_value!r}, using env:{api_key_env}")
             api_key_value = f"env:{api_key_env}"
-        elif ref_name != api_key_env and not _VALID_ENV_NAME_RE.match(
-            str(input_agent_cfg.get("api_key_env", "")).strip()
-        ):
+        elif ref_name != api_key_env and not _VALID_ENV_NAME_RE.match(str(input_agent_cfg.get("api_key_env", "")).strip()):
             # Keep api_key aligned when api_key_env had to be corrected.
             api_key_value = f"env:{api_key_env}"
     agent_cfg["api_key"] = api_key_value
@@ -678,7 +669,7 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
     )
     raw_budgets = agent_cfg.get("tool_budgets")
     if isinstance(raw_budgets, dict):
-        clean_budgets: Dict[str, int] = {}
+        clean_budgets: dict[str, int] = {}
         for key, value in raw_budgets.items():
             clean_key = str(key).strip()
             if not clean_key:
@@ -708,7 +699,7 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
     merged["workspace"] = workspace_cfg
 
     raw_memory_cfg = merged.get("memory", {}) if isinstance(merged.get("memory"), dict) else {}
-    memory_cfg: Dict[str, Any] = {}
+    memory_cfg: dict[str, Any] = {}
     memory_cfg["min_score_default"] = _coerce_float(
         raw_memory_cfg.get("min_score_default"),
         float(DEFAULT_CONFIG["memory"]["min_score_default"]),
@@ -1018,7 +1009,7 @@ def normalize_config(raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[s
     return merged, warnings
 
 
-def validate_endpoint_policy(config: Dict[str, Any]) -> None:
+def validate_endpoint_policy(config: dict[str, Any]) -> None:
     agent_cfg = config.get("agent", {}) if isinstance(config.get("agent"), dict) else {}
     model_endpoint = str(agent_cfg.get("model_endpoint", "")).strip()
     models_endpoint = str(agent_cfg.get("models_endpoint", "")).strip()
@@ -1052,12 +1043,10 @@ def validate_endpoint_policy(config: Dict[str, Any]) -> None:
         (parsed_models.hostname or "").lower(),
     }
     if len(hosts) > 1 and not allow_cross:
-        raise ValueError(
-            "agent.base_url, agent.model_endpoint, agent.responses_endpoint, and agent.models_endpoint must share host"
-        )
+        raise ValueError("agent.base_url, agent.model_endpoint, agent.responses_endpoint, and agent.models_endpoint must share host")
 
 
-def _load_existing_global_config(path: Path, *, warnings: List[str] | None = None) -> Dict[str, Any]:
+def _load_existing_global_config(path: Path, *, warnings: list[str] | None = None) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Global config not found at {path}")
 
@@ -1086,7 +1075,7 @@ def _load_existing_global_config(path: Path, *, warnings: List[str] | None = Non
     return normalized
 
 
-def load_global_config(path: Path, *, warnings: List[str] | None = None) -> Dict[str, Any]:
+def load_global_config(path: Path, *, warnings: list[str] | None = None) -> dict[str, Any]:
     return _load_existing_global_config(path, warnings=warnings)
 
 

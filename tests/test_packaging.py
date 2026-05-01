@@ -63,10 +63,7 @@ def test_built_wheel_contains_bundled_skills(tmp_path: Path) -> None:
                 env=env,
             )
         except subprocess.CalledProcessError as pip_exc:
-            pytest.skip(
-                "wheel build unavailable in this environment "
-                f"(uv offline + pip fallback failed): {pip_exc.stderr.strip()}"
-            )
+            pytest.skip(f"wheel build unavailable in this environment (uv offline + pip fallback failed): {pip_exc.stderr.strip()}")
 
     wheel_paths = list(tmp_path.glob("alphanus-*.whl"))
     assert len(wheel_paths) == 1

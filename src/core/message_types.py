@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Callable, Literal, TypeAlias, TypedDict
+from collections.abc import Callable
+from typing import Literal, TypeAlias, TypedDict
 
 JSONPrimitive = str | int | float | bool | None
 JSONValue: TypeAlias = JSONPrimitive | list["JSONValue"] | dict[str, "JSONValue"]

@@ -4,9 +4,9 @@ import json
 import logging
 import time
 import urllib.parse
-from typing import Any, Callable, List, Optional
+from collections.abc import Callable
+from typing import Any
 
-from core.message_types import ChatMessage
 from agent.classifier import TurnClassifier
 from agent.evidence_guard import EvidenceGuard
 from agent.finalization_engine import FinalizationEngine
@@ -16,7 +16,9 @@ from agent.runtime_hooks import TurnRuntimeHooks
 from agent.telemetry import TelemetryEmitter
 from agent.tool_execution_engine import ToolExecutionEngine
 from agent.turn_policy_engine import TurnPolicyEngine
+from core.message_types import ChatMessage
 from core.skill_parser import SkillManifest
+from core.skills import SkillRuntime
 from core.types import (
     AgentTurnResult,
     JsonObject,
@@ -27,7 +29,6 @@ from core.types import (
     TurnState,
     UserInputRequestFn,
 )
-from core.skills import SkillRuntime
 
 
 class TurnOrchestrator:
@@ -38,8 +39,8 @@ class TurnOrchestrator:
         llm_client: LLMClient,
         classifier: TurnClassifier,
         prompt_renderer: PromptPolicyRenderer,
-        telemetry: Optional[TelemetryEmitter] = None,
-        runtime_hooks: Optional[TurnRuntimeHooks] = None,
+        telemetry: TelemetryEmitter | None = None,
+        runtime_hooks: TurnRuntimeHooks | None = None,
     ) -> None:
         self.skill_runtime = skill_runtime
         self.context_mgr = context_mgr
@@ -50,7 +51,7 @@ class TurnOrchestrator:
         self._runtime_hooks = runtime_hooks
         self.reload_config(llm_client.config)
 
-    def bind_runtime_hooks(self, runtime_hooks: Optional[TurnRuntimeHooks]) -> None:
+    def bind_runtime_hooks(self, runtime_hooks: TurnRuntimeHooks | None) -> None:
         self._runtime_hooks = runtime_hooks
 
     def call_with_retry(self, payload: JsonObject, stop_event, on_event, pass_id: str):
@@ -62,10 +63,10 @@ class TurnOrchestrator:
     def build_skill_context(
         self,
         user_input: str,
-        branch_labels: List[str],
-        attachments: List[str],
-        history_messages: Optional[list[ChatMessage]] = None,
-        loaded_skill_ids: Optional[list[str]] = None,
+        branch_labels: list[str],
+        attachments: list[str],
+        history_messages: list[ChatMessage] | None = None,
+        loaded_skill_ids: list[str] | None = None,
     ):
         hooks = self._runtime_hooks
         if hooks is not None:
@@ -113,7 +114,7 @@ class TurnOrchestrator:
         self.finalization_engine = FinalizationEngine(self)
 
     @staticmethod
-    def emit(on_event: Optional[Callable[[JsonObject], None]], event: JsonObject) -> None:
+    def emit(on_event: Callable[[JsonObject], None] | None, event: JsonObject) -> None:
         if not on_event:
             return
         try:
@@ -235,7 +236,7 @@ class TurnOrchestrator:
         call: ToolCall,
         pass_id: str,
         message: str,
-        on_event: Optional[Callable[[JsonObject], None]] = None,
+        on_event: Callable[[JsonObject], None] | None = None,
     ) -> None:
         result = {
             "ok": False,
@@ -318,7 +319,7 @@ class TurnOrchestrator:
         return False
 
     @staticmethod
-    def _latest_user_message(messages: list[ChatMessage]) -> Optional[ChatMessage]:
+    def _latest_user_message(messages: list[ChatMessage]) -> ChatMessage | None:
         for message in reversed(messages):
             if str(message.get("role", "")).strip().lower() == "user":
                 return message
@@ -343,7 +344,7 @@ class TurnOrchestrator:
         model_messages: list[ChatMessage],
         thinking: bool,
         stop_event=None,
-        on_event: Optional[Callable[[JsonObject], None]] = None,
+        on_event: Callable[[JsonObject], None] | None = None,
         pass_id: str,
     ):
         latest_user = self._latest_user_message(model_messages)
@@ -447,7 +448,7 @@ class TurnOrchestrator:
                 continue
             if isinstance(raw, (int, float)):
                 pass_first_tokens.append(max(0, int(raw)))
-        first_token_latency_ms: Optional[int] = pass_first_tokens[0] if pass_first_tokens else None
+        first_token_latency_ms: int | None = pass_first_tokens[0] if pass_first_tokens else None
         tool_loop_depth = int(sum(max(0, int(v)) for v in state.completion.tool_counts.values()))
         return {
             "status": result.status,
@@ -510,7 +511,9 @@ class TurnOrchestrator:
     def build_policy_snapshot(self, state: TurnState) -> TurnPolicySnapshot:
         return self.policy_engine.build_policy_snapshot(state)
 
-    def finalize_turn(self, system_content: str, state: TurnState, stop_event, on_event, pass_id: str, extra_rules: str = "") -> AgentTurnResult:
+    def finalize_turn(
+        self, system_content: str, state: TurnState, stop_event, on_event, pass_id: str, extra_rules: str = ""
+    ) -> AgentTurnResult:
         return self.finalization_engine.finalize_turn(
             system_content=system_content,
             state=state,
@@ -520,7 +523,9 @@ class TurnOrchestrator:
             extra_rules=extra_rules,
         )
 
-    def _finalize_turn_core(self, system_content: str, state: TurnState, stop_event, on_event, pass_id: str, extra_rules: str = "") -> AgentTurnResult:
+    def _finalize_turn_core(
+        self, system_content: str, state: TurnState, stop_event, on_event, pass_id: str, extra_rules: str = ""
+    ) -> AgentTurnResult:
         def finalize_once(extra: str, suffix: str):
             if self._is_stop_requested(stop_event):
                 return AgentTurnResult(
@@ -554,7 +559,9 @@ class TurnOrchestrator:
             except Exception as exc:
                 message = str(exc)
                 self.emit(on_event, {"type": "error", "text": message})
-                return AgentTurnResult(status="error", content="", reasoning=state.full_reasoning, skill_exchanges=state.skill_exchanges, error=message)
+                return AgentTurnResult(
+                    status="error", content="", reasoning=state.full_reasoning, skill_exchanges=state.skill_exchanges, error=message
+                )
 
         def coerce_result(stream_result, current_reasoning: str) -> AgentTurnResult:
             if stream_result.finish_reason == "cancelled":
@@ -641,7 +648,7 @@ class TurnOrchestrator:
             return "\n".join(lines)
 
         def fallback_final_result(current_reasoning: str) -> AgentTurnResult:
-            latest_failure: Optional[ToolExecutionRecord] = None
+            latest_failure: ToolExecutionRecord | None = None
             for record in reversed(state.evidence):
                 result_obj = record.result if isinstance(record.result, dict) else {}
                 if not bool(result_obj.get("ok")):
@@ -721,10 +728,7 @@ class TurnOrchestrator:
                 if failure_detail:
                     return f"I couldn't complete your request because {failure_detail}. Please retry and I can try again."
                 if state.search_mode:
-                    return (
-                        "I couldn't verify this from reliable web evidence because finalization kept failing in this turn. "
-                        "Please retry."
-                    )
+                    return "I couldn't verify this from reliable web evidence because finalization kept failing in this turn. Please retry."
                 if state.requires_workspace_action and not self._is_plan_mode(state) and self.workspace_mutation_count(state) == 0:
                     return "I couldn't complete that workspace action in this turn because finalization kept failing. Please retry."
                 return "I couldn't produce a reliable final answer in this turn because finalization failed repeatedly. Please retry."
@@ -739,7 +743,7 @@ class TurnOrchestrator:
                 "- no XML/HTML-like tags\n"
                 "- explain failure plainly\n"
                 "- do not claim completed actions without evidence\n"
-                "Return strict JSON only: {\"message\":\"...\"}"
+                'Return strict JSON only: {"message":"..."}'
             )
             fallback_payload = self.llm_client.build_payload(
                 [
@@ -816,9 +820,7 @@ class TurnOrchestrator:
         state.telemetry.finalization_attempts += 1
         state.telemetry.finalization_repairs += 1
         third = finalize_once(
-            correction_rules(
-                "The previous finalization still emitted tool markup or empty content."
-            )
+            correction_rules("The previous finalization still emitted tool markup or empty content.")
             + "\n"
             + "- The final answer must be plain text only, 1-3 sentences, and directly address the user.",
             "repair2",
@@ -840,9 +842,9 @@ class TurnOrchestrator:
         history_messages: list[ChatMessage],
         user_input: str,
         *,
-        branch_labels: Optional[List[str]] = None,
-        attachments: Optional[List[str]] = None,
-        loaded_skill_ids: Optional[List[str]] = None,
+        branch_labels: list[str] | None = None,
+        attachments: list[str] | None = None,
+        loaded_skill_ids: list[str] | None = None,
         collaboration_mode: str = "execute",
         stop_event=None,
     ) -> TurnState:
@@ -864,7 +866,7 @@ class TurnOrchestrator:
         thinking: bool,
         *,
         stop_event=None,
-        on_event: Optional[Callable[[JsonObject], None]] = None,
+        on_event: Callable[[JsonObject], None] | None = None,
     ) -> AgentTurnResult | tuple[str, str, Any]:
         self.refresh_search_tools_enabled(state)
         state.pass_index += 1
@@ -1001,10 +1003,10 @@ class TurnOrchestrator:
         pass_id: str,
         stream_result,
         stop_event=None,
-        on_event: Optional[Callable[[JsonObject], None]] = None,
-        confirm_shell: Optional[ShellConfirmationFn] = None,
-        request_user_input: Optional[UserInputRequestFn] = None,
-    ) -> tuple[str, Optional[AgentTurnResult]]:
+        on_event: Callable[[JsonObject], None] | None = None,
+        confirm_shell: ShellConfirmationFn | None = None,
+        request_user_input: UserInputRequestFn | None = None,
+    ) -> tuple[str, AgentTurnResult | None]:
         if self._is_stop_requested(stop_event):
             return (
                 "result",
@@ -1094,7 +1096,9 @@ class TurnOrchestrator:
                         skill_exchanges=state.skill_exchanges,
                     ),
                 )
-            self.emit(on_event, {"type": "tool_call", "stream_id": call.stream_id, "name": call.name, "arguments": call.arguments, "id": call.id})
+            self.emit(
+                on_event, {"type": "tool_call", "stream_id": call.stream_id, "name": call.name, "arguments": call.arguments, "id": call.id}
+            )
 
             force_finalize_reason = self.tool_budget_reason(state, call)
             if force_finalize_reason:
@@ -1111,18 +1115,14 @@ class TurnOrchestrator:
                     )
                 break
 
-            if (
-                self._normalize_collaboration_mode(getattr(state, "collaboration_mode", "execute")) == "plan"
-                and not self._tool_allowed_in_plan_mode(call.name)
-            ):
+            if self._normalize_collaboration_mode(
+                getattr(state, "collaboration_mode", "execute")
+            ) == "plan" and not self._tool_allowed_in_plan_mode(call.name):
                 self._policy_block_tool(
                     state=state,
                     call=call,
                     pass_id=pass_id,
-                    message=(
-                        f"{call.name} is not allowed in plan mode; "
-                        "use non-mutating inspection tools or switch to execute mode."
-                    ),
+                    message=(f"{call.name} is not allowed in plan mode; use non-mutating inspection tools or switch to execute mode."),
                     on_event=on_event,
                 )
                 if self._is_stop_requested(stop_event):
@@ -1344,8 +1344,8 @@ class TurnOrchestrator:
         pass_id: str,
         stream_result,
         stop_event=None,
-        on_event: Optional[Callable[[JsonObject], None]] = None,
-    ) -> tuple[str, Optional[AgentTurnResult]]:
+        on_event: Callable[[JsonObject], None] | None = None,
+    ) -> tuple[str, AgentTurnResult | None]:
         if self._is_stop_requested(stop_event):
             return (
                 "result",
@@ -1462,14 +1462,14 @@ class TurnOrchestrator:
         user_input: str,
         thinking: bool,
         *,
-        branch_labels: Optional[List[str]] = None,
-        attachments: Optional[List[str]] = None,
-        loaded_skill_ids: Optional[List[str]] = None,
+        branch_labels: list[str] | None = None,
+        attachments: list[str] | None = None,
+        loaded_skill_ids: list[str] | None = None,
         collaboration_mode: str = "execute",
         stop_event=None,
-        on_event: Optional[Callable[[JsonObject], None]] = None,
-        confirm_shell: Optional[ShellConfirmationFn] = None,
-        request_user_input: Optional[UserInputRequestFn] = None,
+        on_event: Callable[[JsonObject], None] | None = None,
+        confirm_shell: ShellConfirmationFn | None = None,
+        request_user_input: UserInputRequestFn | None = None,
     ) -> AgentTurnResult:
         state = self.prepare_turn(
             history_messages,

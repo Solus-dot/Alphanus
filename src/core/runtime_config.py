@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
 
 
-def _section(config: Dict[str, Any], key: str) -> Dict[str, Any]:
+def _section(config: dict[str, Any], key: str) -> dict[str, Any]:
     value = config.get(key)
     return value if isinstance(value, dict) else {}
 
@@ -26,7 +26,7 @@ def _coerce_bool(value: Any, default: bool) -> bool:
     return default
 
 
-def _coerce_int(value: Any, default: int, *, minimum: Optional[int] = None) -> int:
+def _coerce_int(value: Any, default: int, *, minimum: int | None = None) -> int:
     try:
         parsed = int(value)
     except Exception:
@@ -36,7 +36,7 @@ def _coerce_int(value: Any, default: int, *, minimum: Optional[int] = None) -> i
     return parsed
 
 
-def _coerce_float(value: Any, default: float, *, minimum: Optional[float] = None) -> float:
+def _coerce_float(value: Any, default: float, *, minimum: float | None = None) -> float:
     try:
         parsed = float(value)
     except Exception:
@@ -46,7 +46,7 @@ def _coerce_float(value: Any, default: float, *, minimum: Optional[float] = None
     return parsed
 
 
-def _coerce_optional_positive_int(value: Any) -> Optional[int]:
+def _coerce_optional_positive_int(value: Any) -> int | None:
     if value in (None, "", 0):
         return None
     try:
@@ -63,14 +63,14 @@ def _coerce_string(value: Any, default: str = "") -> str:
     return text if text else default
 
 
-def _coerce_string_list(value: Any) -> List[str]:
+def _coerce_string_list(value: Any) -> list[str]:
     if isinstance(value, str):
         items = [value]
     elif isinstance(value, list):
         items = value
     else:
         return []
-    out: List[str] = []
+    out: list[str] = []
     for item in items:
         text = str(item).strip()
         if text and text not in out:
@@ -88,7 +88,7 @@ class UiTimingConfig:
     shell_confirm_timeout_s: float = 60.0
 
     @classmethod
-    def from_config(cls, config: Dict[str, Any]) -> UiTimingConfig:
+    def from_config(cls, config: dict[str, Any]) -> UiTimingConfig:
         tui_cfg = _section(config, "tui")
         timing_cfg = _section(tui_cfg, "timing")
         return cls(
@@ -112,7 +112,7 @@ class UiTimingConfig:
 @dataclass(slots=True)
 class UiRuntimeConfig:
     theme: str
-    chat_log_max_lines: Optional[int]
+    chat_log_max_lines: int | None
     tree_compaction_enabled: bool
     inactive_assistant_char_limit: int
     inactive_tool_argument_char_limit: int
@@ -120,7 +120,7 @@ class UiRuntimeConfig:
     timing: UiTimingConfig = field(default_factory=UiTimingConfig)
 
     @classmethod
-    def from_config(cls, config: Dict[str, Any]) -> UiRuntimeConfig:
+    def from_config(cls, config: dict[str, Any]) -> UiRuntimeConfig:
         tui_cfg = _section(config, "tui")
         tree_cfg = _section(tui_cfg, "tree_compaction")
         chat_log_max_lines = _coerce_int(tui_cfg.get("chat_log_max_lines"), 5000, minimum=1)
@@ -167,14 +167,14 @@ class ProviderConfig:
     connect_timeout_s: float
     per_turn_retries: int
     retry_backoff_s: float
-    default_max_tokens: Optional[int]
+    default_max_tokens: int | None
     api_key: str
     api_key_env: str
     auth_header_template: str
-    auth_header: Optional[str]
+    auth_header: str | None
 
     @classmethod
-    def from_config(cls, config: Dict[str, Any], *, auth_header: Optional[str] = None) -> ProviderConfig:
+    def from_config(cls, config: dict[str, Any], *, auth_header: str | None = None) -> ProviderConfig:
         agent_cfg = _section(config, "agent")
         return cls(
             provider_name=_coerce_string(agent_cfg.get("provider"), "openai-compatible"),
@@ -227,7 +227,7 @@ class SkillsRuntimeConfig:
     python_executable: str = sys.executable
 
     @classmethod
-    def from_config(cls, config: Dict[str, Any]) -> SkillsRuntimeConfig:
+    def from_config(cls, config: dict[str, Any]) -> SkillsRuntimeConfig:
         skills_cfg = _section(config, "skills")
         configured_python = _coerce_string(
             skills_cfg.get("python_executable"),

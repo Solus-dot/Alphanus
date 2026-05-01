@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List
+from collections.abc import Callable
+from typing import Any
 
 from core.skill_parser import SkillManifest
 
@@ -14,7 +15,7 @@ class SkillRegistry:
 
     @staticmethod
     def rebuild_skill_index(
-        enabled_skills: List[SkillManifest],
+        enabled_skills: list[SkillManifest],
         *,
         skill_entrypoints: Callable[[SkillManifest], list[Any]],
         skill_runnable_scripts: Callable[[SkillManifest], tuple[str, ...]],
@@ -46,9 +47,9 @@ class SkillRegistry:
         tool_name: str,
         manifest: SkillManifest,
         tool_scope_for_name: Callable[[str], str],
-        append_unique: Callable[[List[str], str], None],
-        spec: Dict[str, Any],
-        extra: Dict[str, Any],
+        append_unique: Callable[[list[str], str], None],
+        spec: dict[str, Any],
+        extra: dict[str, Any],
         soft: bool = False,
     ) -> bool:
         warning_sink = manifest.validation_warnings if soft else manifest.validation_errors

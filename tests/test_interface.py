@@ -8,14 +8,14 @@ import pytest
 from rich.console import Console
 from rich.text import Text
 
+from agent.policies import OutputSanitizer
 from core.conv_tree import ConvTree
 from core.sessions import ChatSession
-from core.workspace import WorkspaceManager
-from agent.policies import OutputSanitizer
 from core.types import ModelStatus
-from tui.live_tool_preview import LiveToolPreviewManager
+from core.workspace import WorkspaceManager
 from tui.commands import active_command_query, active_command_span, command_entries_for_query, popup_command_query
 from tui.interface import AlphanusTUI, ChatInput
+from tui.live_tool_preview import LiveToolPreviewManager
 from tui.popups import CommandPaletteModal, SelectionPickerModal, SessionManagerModal, SessionNameModal
 from tui.status_runtime import StatusRuntimeState
 from tui.stream_runtime import StreamRuntimeState
@@ -50,7 +50,9 @@ def _tui_agent_stub(tmp_path: Path) -> SimpleNamespace:
         models_endpoint="http://127.0.0.1:8080/v1/models",
         fetch_model_metadata=lambda timeout_s=None: (None, None),
         get_model_status=lambda: ModelStatus(endpoint="http://127.0.0.1:8080/v1/models", last_success_at=1.0),
-        refresh_model_status=lambda timeout_s=None, force=False: ModelStatus(endpoint="http://127.0.0.1:8080/v1/models", last_success_at=1.0),
+        refresh_model_status=lambda timeout_s=None, force=False: ModelStatus(
+            endpoint="http://127.0.0.1:8080/v1/models", last_success_at=1.0
+        ),
         ensure_ready=lambda timeout_s=None: True,
         llm_client=SimpleNamespace(_is_local_endpoint=lambda endpoint: True),
         reload_skills=lambda: 0,
@@ -418,7 +420,7 @@ async def test_chat_input_literal_placeholder_backspace_deletes_single_character
         chat_input.action_delete_left()
         await pilot.pause()
 
-        assert chat_input.value == f"{original[:cursor - 1]}{original[cursor:]}"
+        assert chat_input.value == f"{original[: cursor - 1]}{original[cursor:]}"
 
 
 def test_app_bindings_include_open_file_picker_shortcut() -> None:
@@ -439,19 +441,17 @@ def test_on_resize_rebuilds_idle_viewport_and_updates_chrome(tmp_path: Path) -> 
     calls: list[str] = []
     scheduled: list[object] = []
     tui._focused_panel = "input"
-    tui.query_one = (
-        lambda selector, _type=None: (
-            sidebar
-            if selector == "#sidebar"
-            else chat_input
-                if selector is ChatInput
-                else attach_file
-                if selector == "#attach-file"
-                else footer_sep
-                if selector == "#footer-sep"
-                else None
-            )
-        )
+    tui.query_one = lambda selector, _type=None: (
+        sidebar
+        if selector == "#sidebar"
+        else chat_input
+        if selector is ChatInput
+        else attach_file
+        if selector == "#attach-file"
+        else footer_sep
+        if selector == "#footer-sep"
+        else None
+    )
     tui._apply_focus_classes = lambda: calls.append("focus")
     tui._update_topbar = lambda: calls.append("topbar")
     tui._update_status1 = lambda: calls.append("status1")
@@ -484,19 +484,17 @@ def test_on_resize_refreshes_stream_partial_and_unfocuses_hidden_tree(tmp_path: 
     calls: list[str] = []
     scheduled: list[object] = []
     tui._focused_panel = "tree"
-    tui.query_one = (
-        lambda selector, _type=None: (
-            sidebar
-            if selector == "#sidebar"
-            else chat_input
-                if selector is ChatInput
-                else attach_file
-                if selector == "#attach-file"
-                else footer_sep
-                if selector == "#footer-sep"
-                else None
-            )
-        )
+    tui.query_one = lambda selector, _type=None: (
+        sidebar
+        if selector == "#sidebar"
+        else chat_input
+        if selector is ChatInput
+        else attach_file
+        if selector == "#attach-file"
+        else footer_sep
+        if selector == "#footer-sep"
+        else None
+    )
     tui._apply_focus_classes = lambda: calls.append("focus")
     tui._update_topbar = lambda: calls.append("topbar")
     tui._update_status1 = lambda: calls.append("status1")
@@ -565,7 +563,7 @@ def test_write_skill_exchanges_skips_historical_previews_when_details_off() -> N
                     {
                         "function": {
                             "name": "create_file",
-                            "arguments": "{\"filepath\":\"/tmp/x\",\"content\":\"hello\"}",
+                            "arguments": '{"filepath":"/tmp/x","content":"hello"}',
                         }
                     }
                 ],
@@ -573,7 +571,7 @@ def test_write_skill_exchanges_skips_historical_previews_when_details_off() -> N
             {
                 "role": "tool",
                 "name": "create_file",
-                "content": "{\"ok\": true, \"data\": {}}",
+                "content": '{"ok": true, "data": {}}',
             },
         ]
     )
@@ -597,7 +595,7 @@ def test_write_skill_exchanges_keeps_failed_results_visible_when_details_off() -
             {
                 "role": "tool",
                 "name": "create_file",
-                "content": "{\"ok\": false, \"error\": {\"message\": \"blocked\"}}",
+                "content": '{"ok": false, "error": {"message": "blocked"}}',
             }
         ]
     )
@@ -1243,6 +1241,7 @@ def test_live_tool_preview_update_returns_false_for_empty_content() -> None:
     assert lines == []
     assert partial_updates == []
 
+
 def test_update_context_usage_ignores_total_tokens_without_prompt_tokens() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._last_model_context_tokens = 321
@@ -1465,6 +1464,7 @@ def test_handle_context_command_renders_context_summary() -> None:
 
     assert tui._handle_command("/context") is True
     assert rendered == [""]
+
 
 def test_show_keymap_writes_expected_sections() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)

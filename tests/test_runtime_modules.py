@@ -10,8 +10,8 @@ from agent.orchestrator import TurnOrchestrator
 from agent.policies import PromptPolicyRenderer
 from agent.telemetry import TelemetryEmitter, configure_logging
 from core.memory import LexicalMemory
-from core.streaming import StreamError
 from core.skills import SkillContext, SkillRuntime
+from core.streaming import StreamError
 from core.types import ModelStatus, StreamPassResult, ToolCall, TurnClassification
 from core.workspace import WorkspaceManager
 
@@ -93,6 +93,7 @@ def test_console_logging_suppresses_info_telemetry_but_keeps_file_events(tmp_pat
     assert len(lines) >= 2
     events = [json.loads(line) for line in lines]
     assert any(item.get("event") == "http_stream" for item in events)
+
 
 def test_classifier_uses_model_for_local_workspace_task(mocker, tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
@@ -899,4 +900,3 @@ def test_llm_client_fails_fast_on_local_backend_model_mismatch(mocker) -> None:
         raise AssertionError("Expected model integrity mismatch error")
     except RuntimeError as exc:
         assert "Backend model mismatch" in str(exc)
-

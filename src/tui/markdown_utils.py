@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional, Tuple
-
 from rich.markup import escape as esc
 
 
@@ -17,7 +15,7 @@ def hanging_indent(line: str) -> int:
     return lead
 
 
-def render_md(line: str, in_fence: bool) -> Tuple[str, bool]:
+def render_md(line: str, in_fence: bool) -> tuple[str, bool]:
     stripped = line.strip()
     if stripped.startswith("```") or stripped.startswith("~~~"):
         return f"[dim]{esc(line)}[/dim]", not in_fence
@@ -33,7 +31,7 @@ def render_md(line: str, in_fence: bool) -> Tuple[str, bool]:
             while j < n and line[j] != "`":
                 j += 1
             if j < n:
-                out.append(f"[bold yellow]{esc(line[i:j+1])}[/bold yellow]")
+                out.append(f"[bold yellow]{esc(line[i : j + 1])}[/bold yellow]")
                 i = j + 1
             else:
                 out.append(esc(line[i:]))
@@ -42,7 +40,7 @@ def render_md(line: str, in_fence: bool) -> Tuple[str, bool]:
         if i + 1 < n and line[i : i + 2] == "**":
             j = line.find("**", i + 2)
             if j != -1:
-                out.append(f"[bold]{esc(line[i+2:j])}[/bold]")
+                out.append(f"[bold]{esc(line[i + 2 : j])}[/bold]")
                 i = j + 2
                 continue
         out.append(esc(line[i]))
@@ -50,7 +48,7 @@ def render_md(line: str, in_fence: bool) -> Tuple[str, bool]:
     return "".join(out), in_fence
 
 
-def fence_language(line: str) -> Optional[str]:
+def fence_language(line: str) -> str | None:
     stripped = line.strip()
     if not (stripped.startswith("```") or stripped.startswith("~~~")):
         return None

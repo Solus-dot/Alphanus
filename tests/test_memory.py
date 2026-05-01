@@ -188,7 +188,10 @@ def test_load_rejects_legacy_schema_as_unsupported(tmp_path: Path):
 
 def test_load_skips_malformed_json_line(tmp_path: Path):
     path = tmp_path / "mem.pkl"
-    path.write_text('{"schema_version":"3.0.0","id":1,"text":"good","metadata":{},"type":"conversation","timestamp":1.0,"access_count":0,"last_accessed":1.0}\nnot-json\n', encoding="utf-8")
+    path.write_text(
+        '{"schema_version":"3.0.0","id":1,"text":"good","metadata":{},"type":"conversation","timestamp":1.0,"access_count":0,"last_accessed":1.0}\nnot-json\n',
+        encoding="utf-8",
+    )
 
     mem = LexicalMemory(storage_path=str(path))
 

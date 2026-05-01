@@ -90,7 +90,5 @@ def render_sidebar_inspector_markup(
         if tool_summary:
             lines.append(f"[dim]calls:[/dim] [{theme['text']}]{esc(tool_summary)}[/{theme['text']}]")
         if node.assistant_content:
-            lines.append(
-                f"[dim]assistant:[/dim] [{theme['text']}]{len(node.assistant_content)} chars[/{theme['text']}]"
-            )
+            lines.append(f"[dim]assistant:[/dim] [{theme['text']}]{len(node.assistant_content)} chars[/{theme['text']}]")
     return "\n".join(lines)

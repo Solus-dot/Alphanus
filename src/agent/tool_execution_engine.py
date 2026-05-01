@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import urllib.parse
-from typing import List, cast
+from typing import cast
 
 from core.message_types import JSONValue
 from core.types import ToolCall, ToolExecutionRecord, TurnState
@@ -20,7 +20,7 @@ class ToolExecutionEngine:
             created = data.get("created") or data.get("files")
             if not isinstance(created, list):
                 return []
-            out: List[str] = []
+            out: list[str] = []
             for item in created:
                 if not isinstance(item, dict):
                     continue

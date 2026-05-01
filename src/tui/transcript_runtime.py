@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, List, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
 from rich import box
-from rich.console import Console, ConsoleOptions, RenderResult, RenderableType
+from rich.console import Console, ConsoleOptions, RenderableType, RenderResult
 from rich.markup import escape as esc
 from rich.padding import Padding
 from rich.panel import Panel
@@ -45,14 +46,12 @@ class EdgeBar:
         renderable: RenderableType,
         color: str,
         first_indent: int = 0,
-        continuation_indent: Optional[int] = None,
+        continuation_indent: int | None = None,
     ) -> None:
         self.renderable = renderable
         self.color = color
         self.first_indent = max(0, int(first_indent))
-        self.continuation_indent = (
-            self.first_indent if continuation_indent is None else max(0, int(continuation_indent))
-        )
+        self.continuation_indent = self.first_indent if continuation_indent is None else max(0, int(continuation_indent))
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         inner_width = max(1, options.max_width - 2)
@@ -86,9 +85,9 @@ def partial_measurement_width(app: Any) -> int:
 
 def set_partial_renderable(
     app: Any,
-    renderable: Optional[RenderableType],
+    renderable: RenderableType | None,
     *,
-    visible: Optional[bool] = None,
+    visible: bool | None = None,
 ) -> None:
     partial = app._partial()
     if visible is not None:
@@ -108,7 +107,7 @@ def set_partial_renderable(
 
 def remeasure_partial_line_count(
     app: Any,
-    width: Optional[int] = None,
+    width: int | None = None,
     *,
     count_lines: Callable[[RenderableType, int], int] = count_renderable_lines,
 ) -> int:
@@ -165,7 +164,7 @@ def bar_renderable(
     color: str,
     *,
     content_indent: int = 0,
-    continuation_indent: Optional[int] = None,
+    continuation_indent: int | None = None,
 ) -> EdgeBar:
     return EdgeBar(
         renderable,
@@ -175,7 +174,7 @@ def bar_renderable(
     )
 
 
-def line_indents(line: str, *, base_indent: int = 2) -> Tuple[int, int]:
+def line_indents(line: str, *, base_indent: int = 2) -> tuple[int, int]:
     lead = len(line) - len(line.lstrip(" "))
     return max(base_indent, lead), max(base_indent, hanging_indent(line))
 
@@ -247,7 +246,7 @@ def write_assistant_bar_wrapped_line(app: Any, line: str, markup: str) -> None:
 def syntax_renderable(
     app: Any,
     code: str,
-    language: Optional[str],
+    language: str | None,
     *,
     syntax_theme: str = "github-dark",
     background_color: str = DEFAULT_PANEL_BG,
@@ -262,7 +261,7 @@ def syntax_renderable(
     )
 
 
-def code_panel_renderable(app: Any, code: str, language: Optional[str]) -> Panel:
+def code_panel_renderable(app: Any, code: str, language: str | None) -> Panel:
     border = _theme_color(app, "panel_border", DEFAULT_PANEL_BORDER)
     panel_bg = _theme_color(app, "panel_bg", DEFAULT_PANEL_BG)
     return Panel(
@@ -359,7 +358,7 @@ def take_pending_tool_detail(app: Any, name: str) -> str:
     return ""
 
 
-def remember_code_block(app: Any, code: str, language: Optional[str]) -> int:
+def remember_code_block(app: Any, code: str, language: str | None) -> int:
     app._code_blocks.append((code, language))
     if len(app._code_blocks) > 64:
         app._code_blocks = app._code_blocks[-64:]
@@ -368,8 +367,8 @@ def remember_code_block(app: Any, code: str, language: Optional[str]) -> int:
 
 def write_code_block(
     app: Any,
-    lines: List[str],
-    language: Optional[str],
+    lines: list[str],
+    language: str | None,
     content_indent: int = 2,
 ) -> None:
     code = "\n".join(lines)
@@ -386,8 +385,8 @@ def write_code_block(
 
 def render_static_markdown(app: Any, text: str) -> None:
     in_fence = False
-    fence_lang: Optional[str] = None
-    fence_lines: List[str] = []
+    fence_lang: str | None = None
+    fence_lines: list[str] = []
     for line in text.splitlines() or [""]:
         if app._is_fence_line(line):
             if in_fence:
@@ -453,9 +452,7 @@ def update_partial_content(app: Any) -> None:
         if app._buf_c and not app._is_fence_line(app._buf_c):
             lines.append(app._buf_c)
         if lines:
-            app._set_partial_renderable(
-                app._bar_renderable(app._code_panel_renderable("\n".join(lines), app._fence_lang), assistant)
-            )
+            app._set_partial_renderable(app._bar_renderable(app._code_panel_renderable("\n".join(lines), app._fence_lang), assistant))
         else:
             app._set_partial_renderable(None)
         return
@@ -474,7 +471,7 @@ def update_partial_content(app: Any) -> None:
     )
 
 
-def update_live_preview_partial(app: Any, lines: List[str], language: Optional[str]) -> None:
+def update_live_preview_partial(app: Any, lines: list[str], language: str | None) -> None:
     assistant = _theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR)
     app._set_partial_renderable(
         app._bar_renderable(app._code_panel_renderable("\n".join(lines), language), assistant),
@@ -482,7 +479,7 @@ def update_live_preview_partial(app: Any, lines: List[str], language: Optional[s
     )
 
 
-def defer_live_preview_partial(app: Any, lines: List[str], language: Optional[str]) -> None:
+def defer_live_preview_partial(app: Any, lines: list[str], language: str | None) -> None:
     state = app._stream_runtime
     state.deferred_live_preview = (list(lines), language)
     state.partial_dirty = False
@@ -503,7 +500,7 @@ def is_near_bottom(app: Any, threshold: float = 1.0) -> bool:
     return (scroll.max_scroll_y - scroll.scroll_y) <= threshold
 
 
-def capture_scroll_anchor(app: Any) -> Optional[ScrollAnchor]:
+def capture_scroll_anchor(app: Any) -> ScrollAnchor | None:
     scroll = app._scroll()
     return app._log().capture_anchor(
         float(scroll.scroll_y or 0),
@@ -511,7 +508,7 @@ def capture_scroll_anchor(app: Any) -> Optional[ScrollAnchor]:
     )
 
 
-def restore_scroll_anchor(app: Any, anchor: Optional[ScrollAnchor]) -> None:
+def restore_scroll_anchor(app: Any, anchor: ScrollAnchor | None) -> None:
     if not anchor:
         return
     scroll = app._scroll()
@@ -559,7 +556,7 @@ def write_detail_line(app: Any, label: str, value: str, *, accent_color: str, va
 
 def write_indexed_dim_lines(
     app: Any,
-    rows: List[str],
+    rows: list[str],
     *,
     color: str,
     allow_markup: bool = False,
@@ -580,12 +577,10 @@ def write_command_action(app: Any, text: str, *, color: str, icon: str = "•") 
 def write_command_row(app: Any, command: str, desc: str, *, col: int, accent_color: str) -> None:
     muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
     gap = max(1, col - len(command))
-    app._write(
-        f"  [bold {accent_color}]{esc(command)}[/bold {accent_color}]{' ' * gap}[{muted}]{esc(desc)}[/{muted}]"
-    )
+    app._write(f"  [bold {accent_color}]{esc(command)}[/bold {accent_color}]{' ' * gap}[{muted}]{esc(desc)}[/{muted}]")
 
 
-def write_muted_lines(app: Any, rows: List[str]) -> None:
+def write_muted_lines(app: Any, rows: list[str]) -> None:
     muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
     for row in rows:
         app._write(f"  [{muted}]{esc(row)}[/{muted}]")
@@ -607,7 +602,7 @@ def pending_attachment_markup(app: Any) -> str:
     chip_bg = _theme_color(app, "chip_bg", DEFAULT_CHIP_BG)
     chip_text = _theme_color(app, "chip_text", DEFAULT_CHIP_TEXT)
     muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
-    chips: List[str] = []
+    chips: list[str] = []
     visible = app.pending[:3]
     for index, (path, _kind) in enumerate(visible, start=1):
         chips.append(f"[{chip_text} on {chip_bg}] {index}. {esc(os.path.basename(path))} [/{chip_text} on {chip_bg}]")
