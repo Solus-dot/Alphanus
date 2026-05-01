@@ -25,6 +25,8 @@ venv/
 logs/
 llamachat_tree.json
 benchmark-fixtures/
+build/
+*.egg-info/
 
 # Optional local memory/workspace data
 memories/*.pkl
