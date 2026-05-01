@@ -261,6 +261,7 @@ def on_theme_picker_close(app: Any, result: dict[str, str] | None, *, chat_input
     else:
         persist_warnings = persist_theme_preference(app, resolved, config_path=config_path)
     app._write_command_action(f"Theme set to '{resolved}'", icon="◉")
-    for warning in persist_warnings:
+    warning_rows = persist_warnings if isinstance(persist_warnings, list) else []
+    for warning in warning_rows:
         app._write_info(f"Config warning: {warning}")
     app.query_one(chat_input_cls).focus()

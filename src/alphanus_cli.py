@@ -97,6 +97,10 @@ def _resolve_runtime_skills_dir(app_paths) -> Path:
     return (Path(app_paths.app_root).resolve() / "skills").resolve()
 
 
+def _as_object(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 def _seed_runtime_skills(runtime_skills_dir: Path, bundled_skills_dir: Path) -> None:
     runtime_skills_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -358,7 +362,7 @@ def _upsert_env_var(dotenv_path: Path, key: str, value: str) -> None:
     dotenv_path.write_text("\n".join(updated).rstrip() + "\n", encoding="utf-8")
 
 
-def _run_init(args: argparse.Namespace) -> int:
+def _run_init(args: Any) -> int:
     theme = _CliTheme()
     section = str(getattr(args, "section", "all") or "all").strip().lower()
     if section not in INIT_SECTIONS:
@@ -604,7 +608,7 @@ def _run_init(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_doctor(args: argparse.Namespace) -> int:
+def _run_doctor(args: Any) -> int:
     theme = _CliTheme()
     app_paths = get_app_paths()
     try:
@@ -618,17 +622,18 @@ def _run_doctor(args: argparse.Namespace) -> int:
 
     workspace, memory, _runtime, agent = _build_agent_runtime(app_paths, config, debug=args.debug)
     report = agent.doctor_report()
+    report_obj = report if isinstance(report, dict) else {}
     if args.json:
-        payload = dict(report) if isinstance(report, dict) else {"doctor": report}
+        payload: dict[str, Any] = dict(report_obj) if report_obj else {"doctor": report}
         payload["ok"] = True
         payload["config_warnings"] = warnings
         print(json.dumps(payload, indent=2))
     else:
         for warning in warnings:
             print(f"{theme.warn('config warning:')} {warning}")
-        agent_status = report.get("agent", {}) if isinstance(report, dict) else {}
-        workspace_status = report.get("workspace", {}) if isinstance(report, dict) else {}
-        search_status = report.get("search", {}) if isinstance(report, dict) else {}
+        agent_status = _as_object(report_obj.get("agent"))
+        workspace_status = _as_object(report_obj.get("workspace"))
+        search_status = _as_object(report_obj.get("search"))
         endpoint_error = str(agent_status.get("endpoint_policy_error") or "").strip()
         endpoint_ok = not endpoint_error
         model_ok = bool(agent_status.get("ready"))
@@ -660,9 +665,9 @@ def _run_doctor(args: argparse.Namespace) -> int:
         print(f"  search provider:   {search_state}{search_suffix}")
 
     failures = []
-    agent_status = report.get("agent", {}) if isinstance(report, dict) else {}
-    workspace_status = report.get("workspace", {}) if isinstance(report, dict) else {}
-    search_status = report.get("search", {}) if isinstance(report, dict) else {}
+    agent_status = _as_object(report_obj.get("agent"))
+    workspace_status = _as_object(report_obj.get("workspace"))
+    search_status = _as_object(report_obj.get("search"))
     if str(agent_status.get("endpoint_policy_error") or "").strip():
         failures.append("endpoint-policy")
     if not bool(agent_status.get("ready")):
@@ -683,7 +688,7 @@ def _run_doctor(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
-def _run_tui(args: argparse.Namespace) -> int:
+def _run_tui(args: Any) -> int:
     app_paths = get_app_paths()
     try:
         config, config_warnings = _load_runtime_config(app_paths, args)
@@ -699,7 +704,8 @@ def _run_tui(args: argparse.Namespace) -> int:
     if args.debug:
         logger.info(f"debug HTTP log: {config['agent']['debug_log_path']}")
 
-    if not config.get("agent", {}).get("tls_verify", True):
+    agent_cfg = _as_object(config.get("agent"))
+    if not bool(agent_cfg.get("tls_verify", True)):
         logger.warning("TLS verification is disabled (agent.tls_verify=false)")
     memory_stats = memory.stats()
     logger.info(f"[info] memory mode: {memory_stats.get('mode_label', 'lexical')}")

@@ -4,7 +4,7 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from rich.console import RenderableType
 from rich.markup import escape as esc
@@ -25,8 +25,9 @@ from core.configuration import (
     load_global_config,
 )
 from core.conv_tree import ConvTree, Turn
-from core.runtime_config import UiRuntimeConfig
-from core.sessions import ChatSession
+from core.message_types import ChatMessage, JSONValue, MessageContentPart
+from core.runtime_config import UiRuntimeConfig, UiTimingConfig
+from core.sessions import ChatSession, SessionStore
 from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
 from tui.app_shell_runtime import compose_shell as compose_tui_shell
 from tui.app_shell_runtime import initialize_shell_state as init_tui_shell_state
@@ -506,6 +507,52 @@ class AlphanusTUI(App):
 
     thinking: reactive[bool] = reactive(True)
     streaming: reactive[bool] = reactive(False)
+    agent: Agent
+    conv_tree: ConvTree
+    pending: list[tuple[str, str]]
+    _chat_input_cls: type[ChatInput]
+    _ui_config: UiRuntimeConfig
+    _ui_timing: UiTimingConfig
+    _chat_log_max_lines: int | None
+    _tree_compaction_enabled: bool
+    _inactive_assistant_char_limit: int
+    _inactive_tool_argument_char_limit: int
+    _inactive_tool_content_char_limit: int
+    _active_theme_id: str
+    _themes_registered: bool
+    _session_store: SessionStore
+    _session_id: str
+    _session_title: str
+    _session_created_at: str
+    _collaboration_mode: str
+    _loaded_skill_ids: list[str]
+    _status_runtime: StatusRuntimeState
+    _await_shell_confirm: bool
+    _shell_confirm_command: str
+    _shell_confirm_event: threading.Event | None
+    _shell_confirm_result: bool | None
+    _command_matches: list[dict[str, str]]
+    _global_palette_actions: dict[str, dict[str, str]]
+    _code_blocks: list[tuple[str, str | None]]
+    _show_tool_details: bool
+    _pending_tool_details: list[tuple[str, str]]
+    _focused_panel: str
+    _tree_cursor_id: str
+    _last_log_was_blank: bool
+    _last_model_context_tokens: int | None
+    _startup_session_prompt_opened: bool
+    _resize_redraw_pending: bool
+    _esc_pending: bool
+    _esc_ts: float
+    _auto_follow_stream: bool
+    _stop_event: threading.Event
+    _stream_runtime: StreamRuntimeState
+    _stream_drain_interval_s: float | None
+    _stream_drain_timer: Any
+    _last_status_right: str
+    _last_status_left: str
+    _reply_acc_parts: list[str]
+    _reply_acc_len: int
 
     def get_theme_variable_defaults(self) -> dict[str, str]:
         return default_theme_variables()
@@ -591,7 +638,9 @@ class AlphanusTUI(App):
         return state
 
     def on_mount(self) -> None:
-        self.thinking = bool(self.agent.config.get("agent", {}).get("enable_thinking", True))
+        agent_cfg = self.agent.config.get("agent")
+        agent_cfg_obj = agent_cfg if isinstance(agent_cfg, dict) else {}
+        self.thinking = bool(agent_cfg_obj.get("enable_thinking", True))
         self._register_themes()
         self._apply_theme_from_config()
         self.set_interval(0.1, self._tick)
@@ -889,7 +938,7 @@ class AlphanusTUI(App):
         self._update_status1()
         self._update_status2()
 
-    def _log(self) -> TranscriptView:
+    def _log(self) -> TranscriptView:  # pyright: ignore[reportIncompatibleMethodOverride]
         return self.query_one("#chat-log", TranscriptView)
 
     def _scroll(self) -> ScrollableContainer:
@@ -1352,7 +1401,7 @@ class AlphanusTUI(App):
     def _stream_worker(
         self,
         turn_id: str,
-        history_messages: list[dict[str, Any]],
+        history_messages: list[ChatMessage],
         user_input: str,
         branch_labels: list[str],
         attachment_paths: list[str],
@@ -1421,7 +1470,8 @@ class AlphanusTUI(App):
         attachments = list(self.pending)
         self.pending.clear()
         content = build_content(text, attachments)
-        turn = self.conv_tree.add_turn(content)
+        turn_content = cast(JSONValue | list[MessageContentPart], content)
+        turn = self.conv_tree.add_turn(turn_content)
         self._save_active_session()
         self._write_turn_user(turn)
         for update in (

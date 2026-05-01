@@ -60,12 +60,16 @@ def write_turn_user(app: Any, turn: Turn, accent_color: str = DEFAULT_ACCENT_COL
 def write_skill_exchanges(app: Any, turn: Turn) -> None:
     pending_details: list[tuple[str, str]] = []
     for msg in turn.skill_exchanges:
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+        raw_tool_calls = msg.get("tool_calls")
+        if msg.get("role") == "assistant" and isinstance(raw_tool_calls, list):
             if not app._show_tool_details:
                 continue
-            for call in msg["tool_calls"]:
-                name = call.get("function", {}).get("name", "unknown")
-                raw_args = call.get("function", {}).get("arguments", "{}")
+            for call in raw_tool_calls:
+                call_obj = call if isinstance(call, dict) else {}
+                function_obj = call_obj.get("function")
+                function_map = function_obj if isinstance(function_obj, dict) else {}
+                name = str(function_map.get("name") or "unknown")
+                raw_args = function_map.get("arguments", "{}")
                 try:
                     args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
                 except json.JSONDecodeError:
@@ -87,15 +91,16 @@ def write_skill_exchanges(app: Any, turn: Turn) -> None:
                 payload = {"ok": False, "error": {"message": "invalid tool response"}}
             if not isinstance(payload, dict):
                 payload = {"ok": False, "error": {"message": "invalid tool response"}}
-            if payload.get("ok") and app._show_tool_details:
+            payload_obj = dict(payload)
+            if payload_obj.get("ok") and app._show_tool_details:
                 app._live_preview.write_result_preview(
                     name,
-                    payload,
+                    payload_obj,
                     app._write_assistant_bar_line,
                     lambda markup, _indent=0: app._write_assistant_bar_line(markup),
                     app._write_code_block,
                 )
-            if not app._show_tool_result_line(name, bool(payload.get("ok"))):
+            if not app._show_tool_result_line(name, bool(payload_obj.get("ok"))):
                 continue
             detail = ""
             for idx, (pending_name, pending_detail) in enumerate(pending_details):
@@ -103,10 +108,12 @@ def write_skill_exchanges(app: Any, turn: Turn) -> None:
                     detail = pending_detail
                     pending_details.pop(idx)
                     break
-            if payload.get("ok"):
+            if payload_obj.get("ok"):
                 app._write_tool_lifecycle_block(name, True, detail or "completed")
             else:
-                em = payload.get("error", {}).get("message", "failed")
+                error_obj = payload_obj.get("error")
+                error_map = error_obj if isinstance(error_obj, dict) else {}
+                em = error_map.get("message", "failed")
                 app._write_tool_lifecycle_block(name, False, f"{detail}   {em}".strip())
 
 
