@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from typing import cast
 
-from core.message_types import ChatMessage, JSONValue, MessageContentPart, ToolCallDelta
+from core.message_types import ChatMessage, JSONValue, MessageContentPart, ToolCallDelta, ToolFunctionCall
 
 SCHEMA_VERSION = "1.0.0"
 _COMPACTED_MARKER = "\n...[compacted]"
@@ -67,8 +68,10 @@ class Turn:
         if isinstance(self.user_content, list):
             chunks: list[str] = []
             for part in self.user_content:
-                if part.get("type") == "text":
-                    chunks.append(part.get("text", ""))
+                if not isinstance(part, dict):
+                    continue
+                if str(part.get("type", "")).strip() == "text":
+                    chunks.append(str(part.get("text", "")))
             combined = "\n".join(c for c in chunks if c).strip()
             return self._strip_attachment_blocks(combined)
         return str(self.user_content or "")
@@ -83,7 +86,9 @@ class Turn:
 
         if isinstance(self.user_content, list):
             for part in self.user_content:
-                if part.get("type") == "text":
+                if not isinstance(part, dict):
+                    continue
+                if str(part.get("type", "")).strip() == "text":
                     summary = _extract(str(part.get("text", "")))
                     if summary:
                         return summary
@@ -111,7 +116,8 @@ class Turn:
 
     @staticmethod
     def from_dict(data: dict[str, object]) -> Turn:
-        assistant_content = data.get("assistant_content")
+        assistant_content_raw = data.get("assistant_content")
+        assistant_content = str(assistant_content_raw) if assistant_content_raw is not None else None
         assistant_state = str(data.get("assistant_state") or "").strip()
         if not assistant_state:
             content = str(assistant_content or "")
@@ -121,15 +127,32 @@ class Turn:
                 assistant_state = "done"
             else:
                 assistant_state = "pending"
+        user_content_raw = data.get("user_content", "")
+        if isinstance(user_content_raw, list):
+            user_content = cast(list[MessageContentPart], user_content_raw)
+        elif isinstance(user_content_raw, (str, int, float, bool, dict)) or user_content_raw is None:
+            user_content = cast(JSONValue, user_content_raw)
+        else:
+            user_content = ""
+        parent_raw = data.get("parent")
+        parent = str(parent_raw) if isinstance(parent_raw, str) else None
+        children_raw = data.get("children", [])
+        children = [str(item) for item in children_raw] if isinstance(children_raw, list) else []
+        exchanges_raw = data.get("skill_exchanges", [])
+        exchanges: list[ChatMessage] = []
+        if isinstance(exchanges_raw, list):
+            for item in exchanges_raw:
+                if isinstance(item, dict):
+                    exchanges.append(cast(ChatMessage, item))
         return Turn(
-            id=data["id"],
-            user_content=data.get("user_content", ""),
+            id=str(data.get("id", "")),
+            user_content=user_content,
             assistant_content=assistant_content,
-            parent=data.get("parent"),
-            children=list(data.get("children", [])),
-            label=data.get("label", ""),
+            parent=parent,
+            children=children,
+            label=str(data.get("label", "")),
             branch_root=bool(data.get("branch_root", False)),
-            skill_exchanges=list(data.get("skill_exchanges", [])),
+            skill_exchanges=exchanges,
             assistant_state=assistant_state,
         )
 
@@ -329,13 +352,22 @@ class ConvTree:
 
     @staticmethod
     def from_dict(data: dict[str, object]) -> ConvTree:
-        version = data.get("schema_version", "1.0.0")
+        version = str(data.get("schema_version", "1.0.0"))
         if _major(version) != _major(SCHEMA_VERSION):
             raise ValueError(f"Unsupported tree schema version {version}; expected major {SCHEMA_VERSION}")
 
         tree = ConvTree.__new__(ConvTree)
-        tree.nodes = {key: Turn.from_dict(value) for key, value in data["nodes"].items()}
-        tree.current_id = data["current_id"]
+        nodes_raw = data.get("nodes", {})
+        parsed_nodes: dict[str, Turn] = {}
+        if isinstance(nodes_raw, dict):
+            for key, value in nodes_raw.items():
+                if isinstance(value, dict):
+                    parsed_nodes[str(key)] = Turn.from_dict(cast(dict[str, object], value))
+        tree.nodes = parsed_nodes or {
+            "root": Turn(id="root", user_content="", assistant_content="", parent=None, children=[]),
+        }
+        current_id = str(data.get("current_id", "root"))
+        tree.current_id = current_id if current_id in tree.nodes else "root"
         tree._pending_branch = bool(data.get("pending_branch", False))
         tree._pending_branch_label = str(data.get("pending_branch_label") or "")
         tree._compact_inactive_branches = True
@@ -362,18 +394,17 @@ class ConvTree:
         return text[:keep] + _COMPACTED_MARKER
 
     def _compact_skill_message(self, message: ChatMessage) -> ChatMessage:
-        compacted = dict(message)
+        compacted = cast(ChatMessage, dict(message))
         role = str(compacted.get("role", ""))
 
         if role == "assistant":
             tool_calls = compacted.get("tool_calls")
             if isinstance(tool_calls, list):
-                compacted_calls: list[ToolCallDelta | dict[str, object] | object] = []
+                compacted_calls: list[ToolCallDelta] = []
                 for call in tool_calls:
                     if not isinstance(call, dict):
-                        compacted_calls.append(call)
                         continue
-                    compacted_call = dict(call)
+                    compacted_call = cast(ToolCallDelta, dict(call))
                     fn = compacted_call.get("function")
                     if isinstance(fn, dict):
                         compacted_fn = dict(fn)
@@ -383,7 +414,7 @@ class ConvTree:
                                 args,
                                 self._inactive_tool_argument_char_limit,
                             )
-                        compacted_call["function"] = compacted_fn
+                        compacted_call["function"] = cast(ToolFunctionCall, compacted_fn)
                     compacted_calls.append(compacted_call)
                 compacted["tool_calls"] = compacted_calls
 
@@ -395,7 +426,7 @@ class ConvTree:
                     self._inactive_tool_content_char_limit,
                 )
 
-        return compacted
+        return cast(ChatMessage, compacted)
 
     def compact_inactive_branches(self) -> None:
         if not self._compact_inactive_branches:

@@ -128,7 +128,8 @@ def stream_chat_completions(
                     if not raw:
                         return
                     idle_deadline = time.monotonic() + idle_timeout_s
-                    line = raw.decode(errors="replace").strip()
+                    raw_bytes = raw if isinstance(raw, (bytes, bytearray)) else str(raw).encode("utf-8", errors="replace")
+                    line = raw_bytes.decode(errors="replace").strip()
                     if not line.startswith("data:"):
                         continue
                     payload_str = line[5:].strip()

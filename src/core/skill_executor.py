@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 class SkillExecutor:
@@ -165,8 +165,10 @@ class SkillExecutor:
             and shutil.which(interpreter[0]) is None
         ):
             raise FileNotFoundError(f"Missing interpreter for skill script: {interpreter[0]}")
+        interpreter_cmd = cast(tuple[str, ...], interpreter)
 
-        argv = args.get("argv") if isinstance(args.get("argv"), list) else []
+        raw_argv = args.get("argv")
+        argv = [str(item) for item in raw_argv] if isinstance(raw_argv, list) else []
         proc_env = dict(runtime._proc_env_base)
         proc_env["ALPHANUS_SELECTED_SKILL_ID"] = skill.id
         proc_env["ALPHANUS_SKILL_ROOT"] = str(skill.path)
@@ -176,7 +178,7 @@ class SkillExecutor:
             params_payload = {}
         proc_env["ALPHANUS_TOOL_ARGS_JSON"] = json.dumps(params_payload, ensure_ascii=False)
         proc = subprocess.run(
-            list(interpreter) + [str(script_path)] + [str(item) for item in argv],
+            list(interpreter_cmd) + [str(script_path)] + argv,
             cwd=str(skill.path),
             capture_output=True,
             text=True,
@@ -265,7 +267,8 @@ class SkillExecutor:
         if entrypoint is None:
             raise FileNotFoundError(f"Skill entrypoint not found: {entrypoint_name}")
 
-        params = args.get("params") if isinstance(args.get("params"), dict) else {}
+        raw_params = args.get("params")
+        params = raw_params if isinstance(raw_params, dict) else {}
         template_values: dict[str, Any] = {
             "workspace_root": str(runtime.workspace.workspace_root),
             "skill_root": str(skill.path),
@@ -299,7 +302,8 @@ class SkillExecutor:
     def normalize_result(self, result: Any, duration_ms: int) -> dict[str, Any]:
         if isinstance(result, dict) and {"ok", "data", "error"}.issubset(result.keys()):
             out = dict(result)
-            meta = out.get("meta") if isinstance(out.get("meta"), dict) else {}
+            raw_meta = out.get("meta")
+            meta: dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
             meta["duration_ms"] = int(meta.get("duration_ms", duration_ms))
             out["meta"] = meta
             return out

@@ -179,7 +179,8 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
     for vendor_key in ("openclaw", "claude", "opencode"):
         candidate = metadata_raw.get(vendor_key)
         if isinstance(candidate, dict):
-            vendor_requires = candidate.get("requires") if isinstance(candidate.get("requires"), dict) else {}
+            raw_requires = candidate.get("requires")
+            vendor_requires = raw_requires if isinstance(raw_requires, dict) else {}
             if vendor_requires:
                 adapter = vendor_key
                 break

@@ -309,7 +309,7 @@ class SkillRuntime:
             return manifest.prompt
         _, prompt = extract_skill_doc(manifest.doc_path, include_prompt=True)
         manifest.prompt = prompt
-        return manifest.prompt
+        return manifest.prompt or ""
 
     def _remove_skill_tools(self, skill_id: str) -> None:
         SkillRegistry.remove_skill_tools(self._tool_registry, skill_id)
@@ -332,7 +332,7 @@ class SkillRuntime:
         self._skill_index = SkillRegistry.rebuild_skill_index(
             self.enabled_skills(),
             skill_entrypoints=self._skill_entrypoints,
-            skill_runnable_scripts=self._skill_runnable_scripts,
+            skill_runnable_scripts=lambda skill: tuple(self._skill_runnable_scripts(skill)),
         )
         self._rebuild_skill_alias_index()
 
@@ -1622,7 +1622,8 @@ class SkillRuntime:
     def _normalize_result(result: Any, duration_ms: int) -> dict[str, Any]:
         if isinstance(result, dict) and {"ok", "data", "error"}.issubset(result.keys()):
             out = dict(result)
-            meta = out.get("meta") if isinstance(out.get("meta"), dict) else {}
+            raw_meta = out.get("meta")
+            meta: dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
             meta["duration_ms"] = int(meta.get("duration_ms", duration_ms))
             out["meta"] = meta
             return out
