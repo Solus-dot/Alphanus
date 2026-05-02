@@ -2405,6 +2405,7 @@ def test_finalization_retries_when_model_leaks_tool_markup(mocker, runtime: Skil
             return FakeResponse(
                 [
                     'data: {"choices":[{"delta":{"content":"I could not verify a clean answer from the available evidence."}}]}',
+                    'data: {"choices":[],"usage":{"prompt_tokens":777,"completion_tokens":11,"total_tokens":788}}',
                     'data: {"choices":[{"finish_reason":"stop"}]}',
                     "data: [DONE]",
                 ]
@@ -2412,17 +2413,23 @@ def test_finalization_retries_when_model_leaks_tool_markup(mocker, runtime: Skil
         raise AssertionError("Unexpected extra completion call")
 
     mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+    events: list[dict[str, object]] = []
 
     result = agent.run_turn(
         history_messages=[{"role": "user", "content": "tell me about meta"}],
         user_input="tell me about meta",
         thinking=True,
+        on_event=events.append,
     )
 
     assert result.status == "done"
     assert "<tool_call>" not in result.content
     assert result.content == "I could not verify a clean answer from the available evidence."
     assert len(chat_reqs) == 4
+    assert not any(evt.get("type") == "info" and "Finalizing" in str(evt.get("text", "")) for evt in events)
+    assert not any(evt.get("type") == "info" and "Repairing final" in str(evt.get("text", "")) for evt in events)
+    assert not any(evt.get("type") == "content_token" and "<tool_call>" in str(evt.get("text", "")) for evt in events)
+    assert any(evt.get("type") == "usage" and evt.get("usage", {}).get("prompt_tokens") == 777 for evt in events)
 
 
 def test_finalization_sanitizes_failed_tool_error_context(mocker, runtime: SkillRuntime):

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from core.types import AgentTurnResult
+from tui.activity_runtime import ActivityState
 from tui.stream_runtime import (
     StreamRuntimeState,
     drain_events,
@@ -33,6 +34,7 @@ class _App:
     _show_tool_result_line: Callable[..., Any]
     _take_pending_tool_detail: Callable[..., Any]
     _write_tool_lifecycle_block: Callable[..., Any]
+    _activity_state: ActivityState
 
     def __init__(self) -> None:
         self.streaming = False
@@ -42,6 +44,7 @@ class _App:
         self._pending_tool_details = ["stale"]
         self._last_stream_error_text = "stale"
         self._stream_runtime = StreamRuntimeState()
+        self._activity_state = ActivityState()
         self._stop_event = None
         self._loaded_skill_ids = ["a", "b"]
         self.thinking = True
@@ -49,6 +52,7 @@ class _App:
         self._stream_worker_calls = []
         self._call_from_thread_calls = []
         self._usage_updates = 0
+        self._sidebar_updates = 0
         self._last_scroll = 0.0
         self._scroll_interval = 999.0
         self._live_preview = SimpleNamespace(reset=lambda: None)
@@ -86,6 +90,10 @@ class _App:
     def _maybe_scroll_end(self):
         return None
 
+    def _update_sidebar(self):
+        self._sidebar_updates += 1
+        return None
+
 
 def test_visible_reasoning_text_strips_internal_tags() -> None:
     text = "<think>r</think><tool_call><function=x></function></tool_call>answer"
@@ -101,6 +109,7 @@ def test_start_turn_stream_resets_runtime_and_invokes_worker() -> None:
     assert app.streaming is True
     assert app._active_turn_id == "t1"
     assert app._reply_acc == ""
+    assert app._sidebar_updates == 1
     assert app._stream_worker_calls
     call = app._stream_worker_calls[0]
     assert call[0] == "t1"
@@ -173,6 +182,33 @@ def test_drain_events_keeps_tool_result_events_after_stop_requested() -> None:
 
     assert "line:create_file:True" in events
     assert "lifecycle:create_file:True" in events
+
+
+def test_drain_events_updates_activity_for_tool_lifecycle() -> None:
+    app = _App()
+    app._show_tool_details = False
+    app._live_preview = SimpleNamespace(
+        compact_tool_args=lambda name, args: f"args={len(args)}",
+        draft_preview_tools=set(),
+        write_result_preview=lambda *_args, **_kwargs: None,
+    )
+    assert app._stream_runtime is not None
+    app._stream_runtime.event_queue = queue.SimpleQueue()
+    app._stream_runtime.event_queue.put({"type": "tool_call", "name": "read_file", "arguments": {"filepath": "README.md"}})
+    app._stream_runtime.event_queue.put(
+        {
+            "type": "tool_result",
+            "name": "read_file",
+            "result": {"ok": True, "data": {}, "error": None, "meta": {"duration_ms": 3}},
+        }
+    )
+
+    drain_events(app)
+
+    assert app._activity_state.rows[0].name == "read_file"
+    assert app._activity_state.rows[0].status == "done"
+    assert app._activity_state.rows[0].duration_ms == 3
+    assert app._sidebar_updates >= 2
 
 
 def test_finish_turn_stream_restores_ui_even_when_finalization_raises() -> None:
