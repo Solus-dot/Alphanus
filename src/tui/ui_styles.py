@@ -150,6 +150,7 @@ ALPHANUS_TUI_CSS = """
         width: 1fr;
         height: auto;
         background: $panel;
+        text-wrap: nowrap;
     }
 
     #sidebar-inspector-section {
@@ -175,11 +176,12 @@ ALPHANUS_TUI_CSS = """
         scrollbar-corner-color: $panel;
     }
 
-    #sidebar-inspector-content {
-        width: 1fr;
-        height: auto;
-        background: $panel;
-    }
+#sidebar-inspector-content {
+    width: 1fr;
+    height: auto;
+    background: $panel;
+    text-wrap: nowrap;
+}
 
     #footer {
         width: 1fr;
@@ -295,7 +297,7 @@ ALPHANUS_TUI_CSS = """
         layout: horizontal;
         background: $panel;
         border: round $app-border;
-        padding: 0 0;
+        padding: 0 1;
         margin: 0 0 0 0;
         align: left middle;
     }

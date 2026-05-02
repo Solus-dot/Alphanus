@@ -21,6 +21,22 @@ def _theme_colors(colors: dict[str, str] | None = None) -> dict[str, str]:
     return merged
 
 
+def _truncate(text: str, max_len: int) -> str:
+    if max_len <= 0:
+        return ""
+    if len(text) <= max_len:
+        return text
+    if max_len == 1:
+        return "…"
+    return text[: max_len - 1] + "…"
+
+
+def _field_line(label: str, value: str, *, width: int, theme: dict[str, str]) -> str:
+    prefix = f"{label}: "
+    visible_value = _truncate(value, max(0, width - len(prefix)))
+    return f"[{theme['muted']}]{esc(label)}:[/{theme['muted']}] [{theme['text']}]{esc(visible_value)}[/{theme['text']}]"
+
+
 def render_sidebar_tree_markup(
     tree: ConvTree,
     width: int = 30,
@@ -46,7 +62,7 @@ def render_sidebar_tree_markup(
         elif active:
             lines.append(f"[{theme['subtle']}]{line}[/{theme['subtle']}]")
         else:
-            lines.append(f"[dim]{line}[/dim]")
+            lines.append(f"[{theme['muted']}]{line}[/{theme['muted']}]")
     return "\n".join(lines)
 
 
@@ -58,6 +74,7 @@ def render_sidebar_inspector_markup(
     colors: dict[str, str] | None = None,
 ) -> str:
     theme = _theme_colors(colors)
+    width = max(1, int(width))
     lines: list[str] = []
     selected = selected_id or tree.current_id
 
@@ -66,7 +83,7 @@ def render_sidebar_inspector_markup(
         parent = node.parent or "none"
         tools = len(node.skill_exchanges)
         branch_desc = node.label or ("branch" if node.branch_root else ("root" if node.id == "root" else "none"))
-        user_preview = node.short(max_len=width + 14) if node.id != "root" else "root"
+        user_preview = node.short(max_len=width) if node.id != "root" else "root"
         tool_names = []
         for message in node.skill_exchanges:
             if message.get("role") == "tool":
@@ -78,17 +95,17 @@ def render_sidebar_inspector_markup(
             tool_summary += ", …"
         lines.extend(
             [
-                f"[dim]id:[/dim] [{theme['text']}]{esc(node.id)}[/{theme['text']}]",
-                f"[dim]state:[/dim] [{theme['text']}]{esc(node.assistant_state)}[/{theme['text']}]",
-                f"[dim]parent:[/dim] [{theme['text']}]{esc(parent)}[/{theme['text']}]",
-                f"[dim]children:[/dim] [{theme['text']}]{len(node.children)}[/{theme['text']}]",
-                f"[dim]tools:[/dim] [{theme['text']}]{tools}[/{theme['text']}]",
-                f"[dim]branch:[/dim] [{theme['text']}]{esc(branch_desc)}[/{theme['text']}]",
-                f"[dim]user:[/dim] [{theme['text']}]{esc(user_preview)}[/{theme['text']}]",
+                _field_line("id", node.id, width=width, theme=theme),
+                _field_line("state", node.assistant_state, width=width, theme=theme),
+                _field_line("parent", parent, width=width, theme=theme),
+                _field_line("children", str(len(node.children)), width=width, theme=theme),
+                _field_line("tools", str(tools), width=width, theme=theme),
+                _field_line("branch", branch_desc, width=width, theme=theme),
+                _field_line("user", user_preview, width=width, theme=theme),
             ]
         )
         if tool_summary:
-            lines.append(f"[dim]calls:[/dim] [{theme['text']}]{esc(tool_summary)}[/{theme['text']}]")
+            lines.append(_field_line("calls", tool_summary, width=width, theme=theme))
         if node.assistant_content:
-            lines.append(f"[dim]assistant:[/dim] [{theme['text']}]{len(node.assistant_content)} chars[/{theme['text']}]")
+            lines.append(_field_line("assistant", f"{len(node.assistant_content)} chars", width=width, theme=theme))
     return "\n".join(lines)
