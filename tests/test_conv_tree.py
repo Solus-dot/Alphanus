@@ -69,6 +69,23 @@ def test_tree_rows_render_branch_indentation_in_tui_layer():
     assert rows[3][0].startswith("  ● [alt] ⎇ ✓  other path")
 
 
+def test_tree_rows_use_full_width_without_overflowing():
+    tree = ConvTree()
+    first = tree.add_turn("tell me about tokyo now")
+    tree.complete_turn(first.id, "weather")
+    tree.current_id = first.id
+    tree.arm_branch("very long branch label")
+    branch = tree.add_turn("Tell me more about making a tetris game using html canvas and javascript")
+    tree.complete_turn(branch.id, "plan")
+
+    rows = render_tree_rows(tree, width=42)
+
+    assert all(len(row[0]) <= 42 for row in rows)
+    branch_row = next(row[0] for row in rows if "[very lo…]" in row[0])
+    assert len(branch_row) == 42
+    assert "Tell me more about ma…" in branch_row
+
+
 def test_branch_unbranch_and_switch():
     tree = ConvTree()
     a = tree.add_turn("a")

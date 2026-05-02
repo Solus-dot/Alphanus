@@ -11,10 +11,10 @@ from tui.commands import (
 
 
 def test_active_command_query_and_span_share_token_boundaries() -> None:
-    value = "/keyboard-shortcuts extra text"
+    value = "/shortcuts extra text"
 
-    assert active_command_query(value, 2) == "/keyboard-shortcuts"
-    assert active_command_span(value, 2) == (0, 19)
+    assert active_command_query(value, 2) == "/shortcuts"
+    assert active_command_span(value, 2) == (0, 10)
 
 
 def test_help_sections_are_derived_from_command_metadata() -> None:
@@ -34,6 +34,6 @@ def test_command_matching_prefers_prefix_matches_and_aliases() -> None:
     matches = command_entries_for_query("/key")
 
     assert matches
-    assert matches[0].prompt == "/keyboard-shortcuts"
+    assert matches[0].prompt == "/shortcuts"
     assert "/exit" in exact_command_inputs()
     assert "/q" in exact_command_inputs()

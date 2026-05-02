@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
+from rich.padding import Padding
 from rich.text import Text
 
 from agent.policies import OutputSanitizer
@@ -70,12 +71,12 @@ def test_command_entries_match_quit_aliases() -> None:
     assert "/quit" in exit_matches
 
 
-def test_command_entries_match_keyboard_shortcuts_aliases() -> None:
+def test_command_entries_match_shortcuts_aliases() -> None:
     shortcut_matches = [entry.prompt for entry in command_entries_for_query("/short")]
     keymap_matches = [entry.prompt for entry in command_entries_for_query("/keym")]
 
-    assert "/keyboard-shortcuts" in shortcut_matches
-    assert "/keyboard-shortcuts" in keymap_matches
+    assert "/shortcuts" in shortcut_matches
+    assert "/shortcuts" in keymap_matches
 
 
 def test_command_entries_match_context_command() -> None:
@@ -203,6 +204,7 @@ async def test_attachment_name_renders_in_separator_without_moving_it(tmp_path: 
         separator = tui.query_one("#footer-sep")
         separator_y_before = separator.region.y
         attachment_bar = tui.query_one("#attachment-bar")
+        composer = tui.query_one("#composer-shell")
         attachment = tmp_path / "notes.txt"
         attachment.write_text("hello", encoding="utf-8")
         tui.pending.append((str(attachment), "text"))
@@ -215,6 +217,8 @@ async def test_attachment_name_renders_in_separator_without_moving_it(tmp_path: 
         assert attachment_bar.region.y > separator.region.y
         assert attach_file.region.y >= chat_input.region.y
         assert attach_file.region.x > chat_input.region.x
+        assert chat_input.region.x >= composer.region.x + 2
+        assert attach_file.region.right <= composer.region.right - 2
         assert "notes.txt" in str(attachment_bar.render())
 
 
@@ -262,6 +266,7 @@ def test_chat_input_binds_new_shortcuts_locally() -> None:
     assert bindings["ctrl+backspace"] == "remove_last_attachment"
     assert bindings["ctrl+shift+backspace"] == "clear_attachments"
     assert bindings["ctrl+f"] == "open_file_picker"
+    assert bindings["ctrl+b"] == "toggle_sidebar"
     assert bindings["ctrl+g"] == "focus_input"
     assert bindings["ctrl+p"] == "open_command_palette"
     assert bindings["f1"] == "show_keymap"
@@ -431,6 +436,55 @@ def test_app_bindings_include_open_file_picker_shortcut() -> None:
     assert bindings["ctrl+backspace"] == "remove_last_attachment"
     assert bindings["ctrl+shift+backspace"] == "clear_attachments"
     assert bindings["ctrl+f"] == "open_file_picker"
+    assert bindings["ctrl+b"] == "toggle_sidebar"
+
+
+def test_toggle_sidebar_hides_and_restores_sidebar(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    sidebar = SimpleNamespace(display=True, styles=SimpleNamespace(width=38))
+    calls: list[str] = []
+    tui._focused_panel = "tree"
+    tui._sidebar_visible_override = None
+    tui._last_sidebar_layout_width = 160
+    tui.query_one = lambda selector, _type=None: sidebar if selector == "#sidebar" else None
+    tui._apply_focus_classes = lambda: calls.append("focus")
+    tui._update_footer_separator = lambda: calls.append("footer")
+    tui._update_sidebar = lambda: calls.append("sidebar")
+    tui._update_topbar = lambda: calls.append("topbar")
+
+    tui.action_toggle_sidebar()
+
+    assert sidebar.display is False
+    assert tui._focused_panel == "chat"
+    assert tui._sidebar_visible_override is False
+    assert calls == ["focus", "footer", "sidebar", "topbar"]
+
+    calls.clear()
+    tui.action_toggle_sidebar()
+
+    assert sidebar.display is True
+    assert sidebar.styles.width == 38
+    assert tui._sidebar_visible_override is True
+    assert calls == ["focus", "footer", "sidebar", "topbar"]
+
+
+def test_toggle_sidebar_can_restore_sidebar_below_auto_width(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    sidebar = SimpleNamespace(display=False, styles=SimpleNamespace(width=0))
+    tui._focused_panel = "input"
+    tui._sidebar_visible_override = None
+    tui._last_sidebar_layout_width = 100
+    tui.query_one = lambda selector, _type=None: sidebar if selector == "#sidebar" else None
+    tui._apply_focus_classes = lambda: None
+    tui._update_footer_separator = lambda: None
+    tui._update_sidebar = lambda: None
+    tui._update_topbar = lambda: None
+
+    tui.action_toggle_sidebar()
+
+    assert sidebar.display is True
+    assert sidebar.styles.width == 32
+    assert tui._sidebar_visible_override is True
 
 
 def test_on_resize_rebuilds_idle_viewport_and_updates_chrome(tmp_path: Path) -> None:
@@ -605,12 +659,48 @@ def test_write_skill_exchanges_keeps_failed_results_visible_when_details_off() -
     assert writes == [("create_file", False, "blocked")]
 
 
+def test_write_skill_exchanges_uses_compact_spacing_for_reloaded_successes() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    lines: list[tuple[str, int]] = []
+    tui._show_tool_details = True
+    tui._theme_color = lambda _key, default: default
+    tui._write_assistant_bar_line = lambda markup="", content_indent=0: lines.append((markup, content_indent))
+    tui._write_code_block = lambda *_args, **_kwargs: None
+    tui._live_preview = SimpleNamespace(
+        compact_tool_args=lambda _name, _args: "query=user name",
+        write_static_preview=lambda *_args, **_kwargs: None,
+        write_result_preview=lambda *_args, **_kwargs: None,
+    )
+
+    turn = SimpleNamespace(
+        skill_exchanges=[
+            {
+                "role": "assistant",
+                "tool_calls": [{"function": {"name": "recall_memory", "arguments": '{"query":"user name"}'}}],
+            },
+            {
+                "role": "tool",
+                "name": "recall_memory",
+                "content": '{"ok": true, "data": {}}',
+            },
+        ]
+    )
+
+    assert tui._write_skill_exchanges(turn) is None
+    assert len(lines) == 1
+    assert "recall_memory" in lines[0][0]
+    assert lines[0][1] == 2
+
+
 def test_write_turn_user_renders_green_edge_bar_without_role_label() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     writes: list[str] = []
     renderables: list[tuple[object, int]] = []
     tui._write = writes.append
     tui._write_renderable = lambda renderable, indent=0: renderables.append((renderable, indent))
+    tui._write_bar_renderable = lambda renderable, **_kwargs: renderables.append(
+        (tui._bar_renderable(renderable, "#6366f1"), 0)
+    )
 
     turn = SimpleNamespace(
         branch_root=False,
@@ -635,6 +725,9 @@ def test_write_completed_turn_asst_omits_role_label() -> None:
     renderables: list[tuple[object, int]] = []
     tui._write = writes.append
     tui._write_renderable = lambda renderable, indent=0: renderables.append((renderable, indent))
+    tui._write_bar_renderable = lambda renderable, **_kwargs: renderables.append(
+        (tui._bar_renderable(renderable, "#6366f1"), 0)
+    )
     tui._write_skill_exchanges = lambda _turn: None
 
     turn = SimpleNamespace(assistant_content="A wrapped assistant reply for the rail", assistant_state="done")
@@ -705,6 +798,45 @@ def test_transcript_view_reflows_historical_tool_panel_at_new_width() -> None:
 
     assert len(narrow) > len(wide)
     assert any("delete_path" in line for line in wide)
+
+
+def test_refresh_themed_transcript_entries_rebuilds_historical_code_panel() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    view = TranscriptView(id="chat-log")
+    calls: list[tuple[str, str | None]] = []
+    view.set_entries(
+        [
+            TranscriptEntry("markup_line", Text("transient command output")),
+            TranscriptEntry(
+                "renderable",
+                Padding(Text("old code panel"), pad=(0, 0, 0, 0)),
+                source=("code_block", ["print('theme')"], "python", 2),
+            ),
+        ]
+    )
+    tui._log = lambda: view
+    tui._theme_color = lambda key, default: {"assistant_bar": "#cba6f7"}.get(key, default)
+    tui._code_panel_renderable = lambda code, language: calls.append((code, language)) or Text(f"new:{language}:{code}")
+
+    tui._refresh_themed_transcript_entries()
+
+    assert view._entries[0].renderable == Text("transient command output")
+    assert calls == [("print('theme')", "python")]
+    assert view._entries[1].source == ("code_block", ["print('theme')"], "python", 2)
+
+
+def test_successful_tool_lifecycle_line_has_vertical_spacing() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    lines: list[tuple[str, int]] = []
+    tui._write_assistant_bar_line = lambda markup="", content_indent=0: lines.append((markup, content_indent))
+    tui._theme_color = lambda _key, default: default
+
+    tui._write_tool_lifecycle_block("recall_memory", True, "query=user name")
+
+    assert len(lines) == 2
+    assert lines[0] == ("", 0)
+    assert "recall_memory" in lines[1][0]
+    assert lines[1][1] == 2
 
 
 def test_transcript_view_enforces_max_lines_when_appending() -> None:
@@ -997,33 +1129,17 @@ def test_cached_partial_line_count_is_lazy_and_reused(monkeypatch: pytest.Monkey
     assert tui._last_partial_render_width == 18
 
 
-def test_tool_call_partial_renders_panel_with_assistant_bar() -> None:
-    tui = AlphanusTUI.__new__(AlphanusTUI)
-
-    class PartialStub:
-        def __init__(self) -> None:
-            self.value = None
-            self.display = False
-
-        def update(self, value) -> None:
-            self.value = value
-
-    partial = PartialStub()
-    tui._partial = lambda: partial
-
-    tui._update_tool_call_partial("recall_memory", "query=user name")
-
-    assert partial.display is True
-    _assert_barred(partial.value, width=40)
-
-
 def test_live_preview_partial_renders_panel_with_assistant_bar() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._live_preview_partial_source = None
 
     class PartialStub:
         def __init__(self) -> None:
             self.value = None
             self.display = False
+            self.content_region = SimpleNamespace(width=40)
+            self.region = SimpleNamespace(width=40)
+            self.size = SimpleNamespace(width=40)
 
         def update(self, value) -> None:
             self.value = value
@@ -1034,7 +1150,70 @@ def test_live_preview_partial_renders_panel_with_assistant_bar() -> None:
     tui._update_live_preview_partial(["console.log('hi')"], "javascript")
 
     assert partial.display is True
+    assert tui._live_preview_partial_source == (["console.log('hi')"], "javascript")
     _assert_barred(partial.value, width=40)
+
+
+def test_clear_partial_preview_forgets_live_preview_source(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    tui._stream_runtime = StreamRuntimeState()
+    tui._live_preview_partial_source = (["print('old')"], "python")
+
+    class PartialStub:
+        def __init__(self) -> None:
+            self.value = "old"
+            self.display = True
+            self.content_region = SimpleNamespace(width=40)
+            self.region = SimpleNamespace(width=40)
+            self.size = SimpleNamespace(width=40)
+
+        def update(self, value) -> None:
+            self.value = value
+
+    partial = PartialStub()
+    tui._partial = lambda: partial
+
+    tui._clear_partial_preview()
+
+    assert tui._live_preview_partial_source is None
+    assert partial.value == ""
+    assert partial.display is False
+
+
+def test_refresh_live_preview_partial_rerenders_existing_preview() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._live_preview_partial_source = (["print('new theme')"], "python")
+
+    class PartialStub:
+        def __init__(self) -> None:
+            self.value = None
+            self.display = True
+            self.content_region = SimpleNamespace(width=40)
+            self.region = SimpleNamespace(width=40)
+            self.size = SimpleNamespace(width=40)
+
+        def update(self, value) -> None:
+            self.value = value
+
+    partial = PartialStub()
+    tui._partial = lambda: partial
+    tui._theme_color = lambda _key, default: default
+    tui._code_panel_renderable = lambda code, language: Text(f"{language}:{code}")
+
+    tui._refresh_live_preview_partial()
+
+    assert partial.value is not None
+    _assert_barred(partial.value, width=40)
+
+
+def test_reasoning_renderable_uses_compact_labeled_text() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._theme_color = lambda _key, default: default
+
+    renderable = tui._reasoning_panel_renderable("check memory")
+    lines = _render_lines(renderable, width=80)
+
+    assert lines == ["· thinking  check memory"]
 
 
 def test_handle_content_token_uses_barred_spacer_after_reasoning() -> None:
@@ -1075,6 +1254,24 @@ def test_live_tool_preview_shows_edit_file_diff() -> None:
     assert code_blocks
     assert code_blocks[0][1] == "diff"
     assert "-beta" in "\n".join(code_blocks[0][0])
+
+
+def test_live_tool_preview_labels_use_configured_theme_colors() -> None:
+    preview = LiveToolPreviewManager()
+    preview.set_theme_colors(label_color="#123456", muted_color="#abcdef")
+    lines: list[str] = []
+
+    preview.write_static_preview(
+        "create_file",
+        {"filepath": "notes.txt", "content": "hello"},
+        lines.append,
+        lambda markup, _indent=0: lines.append(markup),
+        lambda *_args, **_kwargs: None,
+    )
+
+    assert lines
+    assert lines[0].startswith("[#123456]")
+    assert "file draft: notes.txt" in lines[0]
 
 
 def test_reply_accumulator_preserves_content_and_caps_length() -> None:
@@ -1152,6 +1349,23 @@ def test_flush_reasoning_buffer_skips_whitespace_only_panel() -> None:
     assert tui._buf_r == ""
 
 
+def test_flush_reasoning_buffer_aligns_reasoning_with_tool_rows() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    writes: list[tuple[object, int]] = []
+    partial_updates: list[object] = []
+    tui._buf_r = "checking memory"
+    tui._partial = lambda: SimpleNamespace(update=partial_updates.append)
+    tui._write_assistant_bar_renderable = lambda renderable, content_indent=0: writes.append((renderable, content_indent))
+    tui._reasoning_panel_renderable = lambda text: text
+    tui._is_tool_trace_line = lambda _line: False
+
+    tui._flush_reasoning_buffer()
+
+    assert writes == [("checking memory", 2)]
+    assert partial_updates == [""]
+    assert tui._buf_r == ""
+
+
 def test_visible_reasoning_text_strips_think_markers() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._is_tool_trace_line = lambda _line: False
@@ -1201,14 +1415,13 @@ def test_file_tool_success_lines_use_standard_tool_blocks() -> None:
     assert tui._show_tool_result_line("workspace_tree", True) is True
 
 
-def test_tool_call_delta_shows_fallback_partial_when_preview_not_ready() -> None:
+def test_tool_call_delta_does_not_show_fallback_box_when_preview_not_ready() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
-    partial_updates: list[tuple[str, str]] = []
+    partial_updates: list[object] = []
 
     tui._show_tool_details = True
     tui._live_preview = SimpleNamespace(update=lambda *_args, **_kwargs: False)
-    tui._update_tool_call_partial = lambda name, detail="": partial_updates.append((name, detail))
-    tui._partial = lambda: SimpleNamespace(update=lambda *_args, **_kwargs: None, display=False)
+    tui._set_partial_renderable = lambda renderable, **_kwargs: partial_updates.append(renderable)
     tui._last_scroll = 0.0
     tui._scroll_interval = 999.0
     tui._maybe_scroll_end = lambda *args, **kwargs: None
@@ -1222,7 +1435,7 @@ def test_tool_call_delta_shows_fallback_partial_when_preview_not_ready() -> None
         }
     )
 
-    assert partial_updates == [("create_file", "streaming…")]
+    assert partial_updates == []
 
 
 def test_live_tool_preview_update_returns_false_for_empty_content() -> None:
@@ -1265,6 +1478,69 @@ def test_update_context_usage_accepts_llamacpp_prompt_eval_count() -> None:
 
     assert tui._last_model_context_tokens == 512
     assert updates == ["topbar"]
+
+
+def test_apply_theme_refreshes_transcript_and_preview_theme(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    events: list[str] = []
+    preview_updates: list[dict[str, str]] = []
+    tui.refresh_css = lambda animate=False: events.append(f"css:{animate}")
+    tui._apply_focus_classes = lambda: events.append("focus")
+    tui._update_topbar = lambda: events.append("topbar")
+    tui._update_status1 = lambda: events.append("status1")
+    tui._update_status2 = lambda: events.append("status2")
+    tui._update_footer_separator = lambda: events.append("footer")
+    tui._update_sidebar = lambda: events.append("sidebar")
+    tui._update_pending_attachments = lambda: events.append("attachments")
+    tui._rebuild_viewport = lambda preserve_scroll=False: events.append(f"rebuild:{preserve_scroll}")
+    tui._refresh_transcript_after_resize = lambda: events.append("transcript")
+    tui._refresh_themed_transcript_entries = lambda: events.append("themed-transcript")
+    tui._refresh_live_preview_partial = lambda: events.append("live-preview")
+    tui._refresh_deferred_partial = lambda: events.append("deferred")
+    tui._refresh_command_popup_for_resize = lambda: events.append("popup")
+    tui.query_one = lambda *_args, **_kwargs: SimpleNamespace(
+        value="", highlighter=None, sync_paste_placeholders=lambda _value: None
+    )
+    tui._reactive_streaming = False
+    tui._live_preview = SimpleNamespace(set_theme_colors=lambda **kwargs: preview_updates.append(kwargs))
+
+    resolved = tui._apply_theme("soft")
+
+    assert resolved == "soft"
+    assert preview_updates == [{"label_color": "#859289", "muted_color": "#9da9a0"}]
+    assert "themed-transcript" in events
+    assert "transcript" not in events
+    assert "live-preview" not in events
+    assert not any(event.startswith("rebuild:") for event in events)
+    assert "sidebar" in events
+
+
+def test_apply_theme_rerenders_streaming_live_preview(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    events: list[str] = []
+    tui.refresh_css = lambda animate=False: events.append(f"css:{animate}")
+    tui._apply_focus_classes = lambda: events.append("focus")
+    tui._update_topbar = lambda: events.append("topbar")
+    tui._update_status1 = lambda: events.append("status1")
+    tui._update_status2 = lambda: events.append("status2")
+    tui._update_footer_separator = lambda: events.append("footer")
+    tui._update_sidebar = lambda: events.append("sidebar")
+    tui._update_pending_attachments = lambda: events.append("attachments")
+    tui._refresh_transcript_after_resize = lambda: events.append("transcript")
+    tui._refresh_themed_transcript_entries = lambda: events.append("themed-transcript")
+    tui._refresh_live_preview_partial = lambda: events.append("live-preview")
+    tui._refresh_deferred_partial = lambda: events.append("deferred")
+    tui._refresh_command_popup_for_resize = lambda: events.append("popup")
+    tui.query_one = lambda *_args, **_kwargs: SimpleNamespace(
+        value="", highlighter=None, sync_paste_placeholders=lambda _value: None
+    )
+    tui._reactive_streaming = True
+    tui._live_preview = SimpleNamespace(set_theme_colors=lambda **_kwargs: None)
+
+    tui._apply_theme("soft")
+
+    assert events.index("deferred") < events.index("live-preview") < events.index("themed-transcript")
+    assert "transcript" not in events
 
 
 def test_update_context_usage_replaces_previous_turn_value() -> None:
@@ -1487,6 +1763,7 @@ def test_show_keymap_writes_expected_sections() -> None:
     assert any("Ctrl+K" in line for line in lines)
     assert any("Ctrl+P / /" in line for line in lines)
     assert any("Ctrl+F" in line for line in lines)
+    assert any("Ctrl+B" in line for line in lines)
     assert any("Backspace (empty)" in line for line in lines)
     assert any("Ctrl+Backspace" in line for line in lines)
     assert any("Ctrl+Shift+Backspace" in line for line in lines)
@@ -1596,14 +1873,14 @@ def test_global_palette_catalog_excludes_non_loadable_unloaded_skills() -> None:
     assert "unavailable-skill" not in skill_ids
 
 
-def test_handle_keyboard_shortcuts_command_renders_keymap() -> None:
+def test_handle_shortcuts_command_renders_keymap() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._id = "app"
     tui._reactive_streaming = False
     rendered: list[str] = []
     tui._show_keyboard_shortcuts = lambda: rendered.append("keymap")
 
-    assert tui._handle_command("/keyboard-shortcuts") is True
+    assert tui._handle_command("/shortcuts") is True
     assert rendered == ["keymap"]
 
 
@@ -1696,6 +1973,29 @@ def test_handle_theme_rejects_arguments() -> None:
 
     assert tui._handle_command("/theme soft") is True
     assert usages == ["/theme"]
+
+
+def test_theme_picker_uses_compact_active_tick() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    captured: dict[str, object] = {}
+    tui._theme_id = lambda: "soft"
+    tui._theme_color = lambda _key, default: default
+    tui.push_screen = lambda modal, callback: captured.update({"modal": modal, "callback": callback})
+    tui._on_theme_picker_close = lambda _result: None
+
+    tui._cmd_theme()
+
+    modal = captured["modal"]
+    items = getattr(modal, "_items")
+    prompts = [str(item.prompt) for item in items]
+    soft_prompt = next(prompt for prompt in prompts if "Soft" in prompt)
+    tokyo_prompt = next(prompt for prompt in prompts if "Tokyo Night Moon" in prompt)
+
+    assert "✓" in soft_prompt
+    assert "active" not in soft_prompt
+    assert all("available" not in prompt for prompt in prompts)
+    assert "Moonlit blue" in tokyo_prompt
+    assert "restrained electric accents" not in tokyo_prompt
 
 
 def test_handle_mode_without_argument_reports_current_mode() -> None:

@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from rich.text import Text
+
 from core.conv_tree import ConvTree
+from tui.activity_runtime import ActivityState, render_activity_markup
 from tui.sidebar import render_sidebar_inspector_markup, render_sidebar_tree_markup
 from tui.status import context_usage_percent, status_left_markup, status_right_markup, topbar_center, topbar_left, topbar_right
+from tui.view_runtime import widget_render_width
+
+
+def _plain_lines(markup: str) -> list[str]:
+    return Text.from_markup(markup).plain.splitlines()
 
 
 def test_topbar_helpers_include_workspace_branch_and_context() -> None:
@@ -24,6 +34,7 @@ def test_topbar_helpers_include_workspace_branch_and_context() -> None:
     assert "ctx:" in right
     assert "4%" in right
     assert "127.0.0.1:8080" in right
+    assert "mode:" not in right
 
 
 def test_topbar_right_uses_inference_engine_context_window() -> None:
@@ -58,7 +69,7 @@ def test_topbar_right_handles_missing_model_usage() -> None:
     assert "—" in right
 
 
-def test_topbar_right_includes_backend_profile_and_integrity_when_present() -> None:
+def test_topbar_right_hides_backend_profile_but_keeps_integrity_warning() -> None:
     right = topbar_right(
         endpoint="http://127.0.0.1:8080/v1/chat/completions",
         context_tokens=512,
@@ -69,8 +80,8 @@ def test_topbar_right_includes_backend_profile_and_integrity_when_present() -> N
         model_integrity="violation",
     )
 
-    assert "be:" in right
-    assert "mlx_vlm" in right
+    assert "be:" not in right
+    assert "mlx_vlm" not in right
     assert "int:" in right
     assert "fail" in right
 
@@ -89,6 +100,53 @@ def test_sidebar_renderers_include_tree_and_inspector_details() -> None:
     assert "user:" in inspector_markup
     assert "calls:" in inspector_markup
     assert "open_url" in inspector_markup
+
+
+def test_sidebar_inspector_truncates_to_visible_width() -> None:
+    tree = ConvTree()
+    turn = tree.add_turn("Tell me more about making a tetris game using html canvas and javascript")
+    tree.complete_turn(turn.id, "plan")
+    tree.append_skill_exchange(turn.id, {"role": "tool", "name": "very_long_tool_name_for_sidebar", "content": "ok"})
+
+    lines = _plain_lines(render_sidebar_inspector_markup(tree, width=24, selected_id=turn.id))
+
+    assert lines
+    assert all(len(line) <= 24 for line in lines)
+
+
+def test_activity_markup_truncates_to_visible_width() -> None:
+    state = ActivityState()
+    state.reset()
+    state.start_tool("very_long_tool_name_for_sidebar", 'query="Tell me more about making a tetris game"')
+    state.finish_tool("very_long_tool_name_for_sidebar", ok=False, message="a long failure message for narrow sidebars")
+
+    lines = _plain_lines(render_activity_markup(state, width=24))
+
+    assert lines
+    assert all(len(line) <= 24 for line in lines)
+
+
+def test_widget_render_width_prefers_content_region() -> None:
+    widget = SimpleNamespace(
+        content_region=SimpleNamespace(width=27),
+        region=SimpleNamespace(width=40),
+        size=SimpleNamespace(width=50),
+    )
+
+    assert widget_render_width(widget, fallback=30) == 27
+
+
+def test_activity_markup_renders_live_tool_rows() -> None:
+    state = ActivityState()
+    state.reset()
+    state.start_tool("git_status", 'path="repo"')
+    state.finish_tool("git_status", ok=True, duration_ms=9)
+
+    markup = render_activity_markup(state, width=30)
+
+    assert "Turn activity" in markup
+    assert "git_status" in markup
+    assert "done" in markup
 
 
 def test_status_left_changes_with_focused_panel() -> None:
@@ -175,6 +233,43 @@ def test_status_left_input_focus_includes_file_shortcut_hint() -> None:
     )
 
     assert "ctrl+f file" in status_left
+
+
+def test_status_left_streaming_copy_distinguishes_interrupt_states() -> None:
+    normal = status_left_markup(
+        await_shell_confirm=False,
+        streaming=True,
+        spinner_frame="x",
+        stop_requested=False,
+        esc_pending=False,
+        auto_follow_stream=True,
+        focus_panel="input",
+        width=180,
+    )
+    armed = status_left_markup(
+        await_shell_confirm=False,
+        streaming=True,
+        spinner_frame="x",
+        stop_requested=False,
+        esc_pending=True,
+        auto_follow_stream=True,
+        focus_panel="input",
+        width=180,
+    )
+    stopping = status_left_markup(
+        await_shell_confirm=False,
+        streaming=True,
+        spinner_frame="x",
+        stop_requested=True,
+        esc_pending=False,
+        auto_follow_stream=True,
+        focus_panel="input",
+        width=180,
+    )
+
+    assert "esc stop" in normal
+    assert "esc to confirm" in armed
+    assert "stopping after current step" in stopping
 
 
 def test_status_right_markup_includes_model_label_and_value() -> None:
