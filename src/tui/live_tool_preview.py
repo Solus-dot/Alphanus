@@ -225,13 +225,13 @@ class LiveToolPreviewManager:
 
         clipped = content[: self.max_static_preview_chars]
         lines = clipped.splitlines()
-        truncated = len(content) > self.max_static_preview_chars or len(lines) > self.max_static_preview_lines
+        clipped_for_display = len(content) > self.max_static_preview_chars or len(lines) > self.max_static_preview_lines
         lines = lines[: self.max_static_preview_lines]
 
         write(self._label_markup("file draft", filepath))
         write_code(lines, self._guess_language(filepath), 2)
-        if truncated:
-            write_indented(self._muted_markup("... (preview truncated) ..."), 2)
+        if clipped_for_display:
+            write_indented(self._muted_markup("... (preview clipped; file write still uses full content) ..."), 2)
 
     def _write_file_preview(
         self,
@@ -243,12 +243,12 @@ class LiveToolPreviewManager:
     ) -> None:
         clipped = content[: self.max_static_preview_chars]
         lines = clipped.splitlines()
-        truncated = len(content) > self.max_static_preview_chars or len(lines) > self.max_static_preview_lines
+        clipped_for_display = len(content) > self.max_static_preview_chars or len(lines) > self.max_static_preview_lines
         lines = lines[: self.max_static_preview_lines]
         write(self._label_markup("file draft", filepath))
         write_code(lines, self._guess_language(filepath), 2)
-        if truncated:
-            write_indented(self._muted_markup("... (preview truncated) ..."), 2)
+        if clipped_for_display:
+            write_indented(self._muted_markup("... (preview clipped; file write still uses full content) ..."), 2)
 
     def write_result_preview(
         self,

@@ -62,6 +62,25 @@ def test_live_preview_does_not_emit_truncation_marker_for_long_stream():
     assert code_blocks[-1] == ([long_line], "javascript", 2)
 
 
+def test_static_file_preview_reports_display_clipping_not_write_truncation():
+    manager = LiveToolPreviewManager(max_static_preview_chars=5)
+    writes = []
+    indented = []
+    code_blocks = []
+
+    manager.write_static_preview(
+        "create_file",
+        {"filepath": "demo.js", "content": "const value = 1;\n"},
+        writes.append,
+        lambda text, indent: indented.append((text, indent)),
+        lambda lines, language, indent: code_blocks.append((list(lines), language, indent)),
+    )
+
+    assert writes == ["[dim]  · file draft: demo.js[/dim]"]
+    assert code_blocks == [(["const"], "javascript", 2)]
+    assert indented == [("[dim]... (preview clipped; file write still uses full content) ...[/dim]", 2)]
+
+
 def test_live_preview_resets_when_stream_rewinds():
     manager = LiveToolPreviewManager()
     writes = []

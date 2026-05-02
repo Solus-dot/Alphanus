@@ -262,7 +262,10 @@ def _create_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, ob
     data.update(
         {
             "created": True,
+            "write_verified": True,
+            "content_preview_truncated": False,
             "bytes_written": len(content.encode("utf-8")),
+            "chars_written": len(content),
             "line_count": _line_count(content),
         }
     )

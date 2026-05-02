@@ -48,7 +48,10 @@ def test_workspace_ops_returns_rich_file_metadata(tmp_path: Path):
     )
     assert created["ok"] is True
     assert created["data"]["created"] is True
+    assert created["data"]["write_verified"] is True
+    assert created["data"]["content_preview_truncated"] is False
     assert created["data"]["bytes_written"] > 0
+    assert created["data"]["chars_written"] == len("alpha\nbeta\n")
     assert created["data"]["line_count"] == 3
 
     edited = runtime.execute_tool_call(
