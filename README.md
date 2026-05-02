@@ -368,7 +368,6 @@ Optional checks:
 uv run ruff check src tests
 uv run pyright
 uv run vulture src tests
-uv run python tools/benchmark_hotpaths.py --loops 5
 ```
 
 Autoresearch-style optimization loop (whole program, functionality-gated):
