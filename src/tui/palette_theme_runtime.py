@@ -20,6 +20,15 @@ DEFAULT_SUCCESS_COLOR = fallback_color("success")
 DEFAULT_WARNING_COLOR = fallback_color("warning")
 DEFAULT_MUTED_COLOR = fallback_color("muted")
 
+_THEME_PICKER_DESCRIPTIONS = {
+    "classic": "High contrast",
+    "soft": "Forest slate",
+    "catppuccin-mocha": "Catppuccin Mocha",
+    "catppuccin-macchiato": "Catppuccin Macchiato",
+    "tokyonight-moon": "Moonlit blue",
+    "gruvbox-dark-soft": "Warm earthy",
+}
+
 
 def workspace_file_candidates(
     app: Any,
@@ -188,17 +197,17 @@ def open_theme_picker(app: Any, *, picker_item_cls: Any, selection_picker_modal_
     active = app._theme_id()
     accent = app._theme_color("accent", DEFAULT_ACCENT_COLOR)
     text_color = app._theme_color("text", DEFAULT_TEXT_COLOR)
-    muted = app._theme_color("muted", DEFAULT_MUTED_COLOR)
     items = []
     for theme_id in available_theme_ids():
         spec = theme_spec(theme_id)
-        marker = f"[bold {accent}]active[/bold {accent}]" if theme_id == active else f"[{muted}]available[/{muted}]"
+        marker = f"[bold {accent}]✓[/bold {accent}] " if theme_id == active else "  "
+        description = _THEME_PICKER_DESCRIPTIONS.get(theme_id, spec.description)
         items.append(
             picker_item_cls(
                 id=f"theme:{theme_id}",
                 prompt=(
-                    f"[bold {spec.colors.get('accent', accent)}]{esc(spec.title)}[/bold {spec.colors.get('accent', accent)}] "
-                    f"{marker} [{text_color}]{esc(spec.description)}[/{text_color}]"
+                    f"{marker}[bold {spec.colors.get('accent', accent)}]{esc(spec.title)}[/bold {spec.colors.get('accent', accent)}] "
+                    f"[{text_color}]{esc(description)}[/{text_color}]"
                 ),
             )
         )
