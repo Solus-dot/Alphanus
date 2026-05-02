@@ -542,12 +542,10 @@ class TurnOrchestrator:
                     reasoning=state.full_reasoning,
                     skill_exchanges=state.skill_exchanges,
                 )
-            phase_message = {
-                "final": "Finalizing response...",
-                "repair": "Repairing final response...",
-                "repair2": "Retrying final response cleanup...",
-            }.get(suffix, "Finalizing response...")
-            self.emit(on_event, {"type": "info", "text": phase_message})
+            # Finalization attempts are provisional until their output passes
+            # sanitization. Do not stream their tokens or repair progress into
+            # the user transcript; finish_turn_stream renders the accepted
+            # final content once validation completes.
 
             finalize_system = (
                 system_content
@@ -562,8 +560,18 @@ class TurnOrchestrator:
             finalize_messages = [{"role": "system", "content": finalize_system}] + state.dynamic_history
             finalize_messages = self.context_mgr.prune(finalize_messages, self.context_budget_max_tokens)
             finalize_payload = self.llm_client.build_payload(finalize_messages, thinking=False, tools=None)
+
+            def forward_finalization_usage(event: JsonObject) -> None:
+                if event.get("type") == "usage":
+                    self.emit(on_event, event)
+
             try:
-                return self.call_with_retry(finalize_payload, stop_event, on_event, pass_id=f"{pass_id}_{suffix}")
+                return self.call_with_retry(
+                    finalize_payload,
+                    stop_event,
+                    forward_finalization_usage,
+                    pass_id=f"{pass_id}_{suffix}",
+                )
             except Exception as exc:
                 message = str(exc)
                 self.emit(on_event, {"type": "error", "text": message})
@@ -847,7 +855,6 @@ class TurnOrchestrator:
             return third_result
 
         state.telemetry.finalization_fallback_applied = True
-        self.emit(on_event, {"type": "info", "text": "Finalization fallback applied from tool evidence."})
         return fallback_final_result(third_result.reasoning)
 
     def prepare_turn(
