@@ -109,6 +109,8 @@ def topbar_right(
     model_integrity: str = "unknown",
     colors: dict[str, str] | None = None,
 ) -> str:
+    _ = backend_profile
+    _ = collaboration_mode
     theme = _theme_colors(colors)
     short_endpoint = _short_endpoint(endpoint)
     if width < 105:
@@ -117,22 +119,15 @@ def topbar_right(
     endpoint_markup = ""
     if short_endpoint:
         endpoint_markup = f"[{theme['muted']}]{esc(_truncate(short_endpoint, 22 if width < 140 else 28))}[/{theme['muted']}]"
-    mode_label = "plan" if str(collaboration_mode or "").strip().lower() == "plan" else "execute"
-    backend = str(backend_profile or "").strip().lower()
-    backend_markup = ""
-    if backend and backend not in {"auto", "unknown"} and width >= 120:
-        backend_markup = f"[dim]be:[/dim] [{theme['accent']}]{esc(_truncate(backend, 12))}[/{theme['accent']}]"
     integrity = str(model_integrity or "").strip().lower()
     integrity_markup = ""
     if integrity == "violation":
         integrity_markup = f"[dim]int:[/dim] [{theme['error']}]fail[/{theme['error']}]"
     return _join_topbar_segments(
         endpoint_markup,
-        backend_markup,
         integrity_markup,
         _endpoint_state_markup(endpoint_state, width=width, colors=theme),
         f"[dim]ctx:[/dim] {ctx_markup}",
-        f"[dim]mode:[/dim] [{theme['accent']}]{mode_label}[/{theme['accent']}]",
     )
 
 
@@ -187,16 +182,16 @@ def status_left_markup(
         return "[bold yellow]approve shell command?[/bold yellow] [dim][y/n][/dim]"
     if streaming:
         if stop_requested:
-            return f"[dim]{spinner_frame}[/dim] [yellow]stopping...[/yellow]"
+            return f"[dim]{spinner_frame}[/dim] [yellow]stopping after current step…[/yellow]"
         if esc_pending:
-            return f"[dim]{spinner_frame}[/dim] [dim]generating[/dim] [bold red]esc again to stop[/bold red]"
+            return f"[dim]{spinner_frame}[/dim] [dim]generating[/dim] [bold red]esc to confirm[/bold red]"
         if not auto_follow_stream:
             return (
                 f"[dim]pgup/dn[/dim] [{theme['accent']}]scroll[/{theme['accent']}]"
                 if width < 110
                 else f"[dim]pgup/dn ·[/dim] [{theme['accent']}]free scroll[/{theme['accent']}]"
             )
-        return f"[dim]{spinner_frame}[/dim] [dim]generating[/dim] [dim]esc · stop[/dim]"
+        return f"[dim]{spinner_frame}[/dim] [dim]generating[/dim] [dim]esc stop[/dim]"
     if focus_panel == "tree":
         if width < 110:
             return f"[dim]j/k move[/dim]   [{theme['accent']}]enter[/{theme['accent']}]"
