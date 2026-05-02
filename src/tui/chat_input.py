@@ -48,6 +48,7 @@ class ChatInput(Input):
         Binding("ctrl+shift+k", "kill_to_end", show=False),
         Binding("ctrl+backspace", "remove_last_attachment", show=False),
         Binding("ctrl+shift+backspace", "clear_attachments", show=False),
+        Binding("ctrl+b", "toggle_sidebar", show=False),
         Binding("ctrl+f", "open_file_picker", show=False),
         Binding("ctrl+g", "focus_input", show=False),
         Binding("ctrl+p", "open_command_palette", show=False),
@@ -220,3 +221,6 @@ class ChatInput(Input):
 
     def action_toggle_thinking(self) -> None:
         self._invoke_app_action("action_toggle_thinking")
+
+    def action_toggle_sidebar(self) -> None:
+        self._invoke_app_action("action_toggle_sidebar")

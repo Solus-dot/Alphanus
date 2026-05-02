@@ -12,7 +12,7 @@ def handle_command(app, text: str) -> bool:
         app.exit()
         return True
 
-    if cmd in {"/keyboard-shortcuts", "/shortcuts", "/keymap", "/keys"}:
+    if cmd in {"/shortcuts", "/keymap", "/keys"}:
         app._show_keyboard_shortcuts()
         return True
 

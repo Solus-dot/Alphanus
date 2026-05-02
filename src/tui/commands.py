@@ -24,10 +24,10 @@ _COMMAND_SECTIONS: tuple[_CommandSection, ...] = (
         (
             CommandEntry("/help", "/help", "Show this help"),
             CommandEntry(
-                "/keyboard-shortcuts",
-                "/keyboard-shortcuts",
+                "/shortcuts",
+                "/shortcuts",
                 "Show keyboard shortcuts",
-                aliases=("/shortcuts", "/keymap", "/keys"),
+                aliases=("/keymap", "/keys"),
             ),
             CommandEntry("/details", "/details", "Toggle tool execution details"),
             CommandEntry("/think", "/think", "Toggle thinking mode"),

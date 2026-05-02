@@ -15,6 +15,7 @@ KEYBOARD_SHORTCUT_SECTIONS = [
             ("Ctrl+K", "Open quick palette"),
             ("Ctrl+P / /", "Open slash command palette"),
             ("Ctrl+F", "Open file picker"),
+            ("Ctrl+B", "Toggle conversation sidebar"),
             ("Ctrl+G", "Focus composer"),
             ("Tab / Shift+Tab", "Cycle active panels"),
             ("Ctrl+H / Ctrl+L", "Focus transcript or tree"),
