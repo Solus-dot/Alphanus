@@ -184,62 +184,79 @@ def write_renderable(app: Any, renderable: RenderableType, indent: int = 2) -> N
     app._last_log_was_blank = False
 
 
-def write_user_bar_line(app: Any, markup: str = "", *, content_indent: int = 0) -> None:
-    app._write_renderable(
-        app._bar_renderable(
-            Text.from_markup(markup),
-            _theme_color(app, "user_bar", DEFAULT_USER_BAR_COLOR),
-            content_indent=content_indent,
+def write_bar_renderable(
+    app: Any,
+    renderable: RenderableType,
+    *,
+    bar_color: str,
+    content_indent: int = 0,
+    continuation_indent: int | None = None,
+    source: tuple[Any, ...] | None = None,
+) -> None:
+    append_transcript_entry(
+        app,
+        TranscriptEntry(
+            "renderable",
+            Padding(
+                app._bar_renderable(
+                    renderable,
+                    bar_color,
+                    content_indent=content_indent,
+                    continuation_indent=continuation_indent,
+                ),
+                pad=(0, 0, 0, 0),
+            ),
+            source=source,
         ),
-        indent=0,
+    )
+    app._last_log_was_blank = False
+
+
+def write_user_bar_line(app: Any, markup: str = "", *, content_indent: int = 0) -> None:
+    app._write_bar_renderable(
+        Text.from_markup(markup),
+        bar_color=_theme_color(app, "user_bar", DEFAULT_USER_BAR_COLOR),
+        content_indent=content_indent,
+        source=("user_line", markup, content_indent),
     )
 
 
 def write_assistant_bar_line(app: Any, markup: str = "", *, content_indent: int = 0) -> None:
-    app._write_renderable(
-        app._bar_renderable(
-            Text.from_markup(markup),
-            _theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
-            content_indent=content_indent,
-        ),
-        indent=0,
+    app._write_bar_renderable(
+        Text.from_markup(markup),
+        bar_color=_theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
+        content_indent=content_indent,
+        source=("assistant_line", markup, content_indent),
     )
 
 
 def write_assistant_bar_renderable(app: Any, renderable: RenderableType, *, content_indent: int = 0) -> None:
-    app._write_renderable(
-        app._bar_renderable(
-            renderable,
-            _theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
-            content_indent=content_indent,
-        ),
-        indent=0,
+    app._write_bar_renderable(
+        renderable,
+        bar_color=_theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
+        content_indent=content_indent,
     )
 
 
 def write_user_bar_wrapped_line(app: Any, line: str) -> None:
     first_indent, continuation_indent = app._line_indents(line)
-    app._write_renderable(
-        app._bar_renderable(
-            Text.from_markup(esc(line.lstrip(" "))),
-            _theme_color(app, "user_bar", DEFAULT_USER_BAR_COLOR),
-            content_indent=first_indent,
-            continuation_indent=continuation_indent,
-        ),
-        indent=0,
+    app._write_bar_renderable(
+        Text.from_markup(esc(line.lstrip(" "))),
+        bar_color=_theme_color(app, "user_bar", DEFAULT_USER_BAR_COLOR),
+        content_indent=first_indent,
+        continuation_indent=continuation_indent,
+        source=("user_wrapped", line),
     )
 
 
 def write_assistant_bar_wrapped_line(app: Any, line: str, markup: str) -> None:
     first_indent, continuation_indent = app._line_indents(line)
-    app._write_renderable(
-        app._bar_renderable(
-            Text.from_markup(markup.lstrip(" ")),
-            _theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
-            content_indent=first_indent,
-            continuation_indent=continuation_indent,
-        ),
-        indent=0,
+    app._write_bar_renderable(
+        Text.from_markup(markup.lstrip(" ")),
+        bar_color=_theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
+        content_indent=first_indent,
+        continuation_indent=continuation_indent,
+        source=("assistant_wrapped", line, markup),
     )
 
 
@@ -273,21 +290,11 @@ def code_panel_renderable(app: Any, code: str, language: str | None) -> Panel:
     )
 
 
-def reasoning_panel_renderable(app: Any, text: str) -> Panel:
+def reasoning_panel_renderable(app: Any, text: str) -> Text:
     accent = _theme_color(app, "accent", DEFAULT_ASSISTANT_BAR_COLOR)
-    border = _theme_color(app, "panel_border", DEFAULT_PANEL_BORDER)
-    panel_bg = _theme_color(app, "panel_bg", DEFAULT_PANEL_BG)
+    muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
     rendered, _ = render_md(text, False)
-    return Panel(
-        Text.from_markup(f"[dim]{rendered}[/dim]"),
-        title=f"[dim {accent}]thinking[/dim {accent}]",
-        title_align="left",
-        expand=True,
-        padding=(0, 1),
-        border_style=border,
-        style=f"on {panel_bg}",
-        box=box.SQUARE,
-    )
+    return Text.from_markup(f"[dim {accent}]· thinking[/dim {accent}]  [dim {muted}]{rendered}[/dim {muted}]")
 
 
 def tool_event_panel(
@@ -322,7 +329,7 @@ def tool_lifecycle_panel(app: Any, name: str, detail: str, *, ok: bool) -> Panel
     success = _theme_color(app, "success", DEFAULT_SUCCESS_COLOR)
     error = _theme_color(app, "error", DEFAULT_ERROR_COLOR)
     return app._tool_event_panel(
-        "tool → done" if ok else "tool → fail",
+        "tool done" if ok else "tool failed",
         success if ok else error,
         success if ok else error,
         name,
@@ -330,15 +337,20 @@ def tool_lifecycle_panel(app: Any, name: str, detail: str, *, ok: bool) -> Panel
     )
 
 
-def update_tool_call_partial(app: Any, name: str, detail: str = "") -> None:
-    assistant = _theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR)
-    app._set_partial_renderable(
-        app._bar_renderable(app._tool_event_panel("tool", assistant, assistant, name, detail), assistant),
-        visible=True,
-    )
-
-
 def write_tool_lifecycle_block(app: Any, name: str, ok: bool, detail: str = "") -> None:
+    if ok:
+        success = _theme_color(app, "success", DEFAULT_SUCCESS_COLOR)
+        muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
+        text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
+        suffix = f" [{muted}]{esc(detail)}[/{muted}]" if detail else ""
+        spaced = not bool(getattr(app, "_compact_tool_lifecycle_spacing", False))
+        if spaced:
+            app._write_assistant_bar_line()
+        app._write_assistant_bar_line(
+            f"[{success}]✓[/{success}] [{text_color}]{esc(name)}[/{text_color}]{suffix}",
+            content_indent=2,
+        )
+        return
     app._write_assistant_bar_renderable(
         app._tool_lifecycle_panel(name, detail or ("completed" if ok else "failed"), ok=ok),
     )
@@ -373,14 +385,85 @@ def write_code_block(
 ) -> None:
     code = "\n".join(lines)
     block_index = app._remember_code_block(code, language)
-    app._write_assistant_bar_renderable(
+    app._write_bar_renderable(
         app._code_panel_renderable(code, language),
+        bar_color=_theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
         content_indent=max(0, int(content_indent)),
+        source=("code_block", list(lines), language, max(0, int(content_indent))),
     )
     app._write_assistant_bar_line(
         f"[dim]code block {block_index} · /code {block_index} to open copyable view[/dim]",
         content_indent=max(0, int(content_indent)),
     )
+
+
+def refresh_themed_transcript_entries(app: Any) -> None:
+    def refresh_entry(entry: TranscriptEntry) -> TranscriptEntry:
+        source = entry.source
+        if not source:
+            return entry
+        kind = str(source[0])
+        if kind == "code_block" and len(source) == 4:
+            lines = [str(line) for line in source[1]]
+            language = source[2] if isinstance(source[2], str) or source[2] is None else str(source[2])
+            content_indent = max(0, int(source[3]))
+            code = "\n".join(lines)
+            return TranscriptEntry(
+                entry.kind,
+                Padding(
+                    app._bar_renderable(
+                        app._code_panel_renderable(code, language),
+                        _theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
+                        content_indent=content_indent,
+                    ),
+                    pad=(0, 0, 0, 0),
+                ),
+                source=source,
+            )
+        if kind == "user_line" and len(source) == 3:
+            markup = str(source[1])
+            content_indent = max(0, int(source[2]))
+            color_key = "user_bar"
+            color_default = DEFAULT_USER_BAR_COLOR
+            renderable = Text.from_markup(markup)
+            continuation_indent = None
+        elif kind == "assistant_line" and len(source) == 3:
+            markup = str(source[1])
+            content_indent = max(0, int(source[2]))
+            color_key = "assistant_bar"
+            color_default = DEFAULT_ASSISTANT_BAR_COLOR
+            renderable = Text.from_markup(markup)
+            continuation_indent = None
+        elif kind == "user_wrapped" and len(source) == 2:
+            line = str(source[1])
+            content_indent, continuation_indent = app._line_indents(line)
+            color_key = "user_bar"
+            color_default = DEFAULT_USER_BAR_COLOR
+            renderable = Text.from_markup(esc(line.lstrip(" ")))
+        elif kind == "assistant_wrapped" and len(source) == 3:
+            line = str(source[1])
+            markup = str(source[2])
+            content_indent, continuation_indent = app._line_indents(line)
+            color_key = "assistant_bar"
+            color_default = DEFAULT_ASSISTANT_BAR_COLOR
+            renderable = Text.from_markup(markup.lstrip(" "))
+        else:
+            return entry
+        return TranscriptEntry(
+            entry.kind,
+            Padding(
+                app._bar_renderable(
+                    renderable,
+                    _theme_color(app, color_key, color_default),
+                    content_indent=content_indent,
+                    continuation_indent=continuation_indent,
+                ),
+                pad=(0, 0, 0, 0),
+            ),
+            source=source,
+        )
+
+    app._log().refresh_entries(refresh_entry)
 
 
 def render_static_markdown(app: Any, text: str) -> None:
@@ -473,10 +556,22 @@ def update_partial_content(app: Any) -> None:
 
 def update_live_preview_partial(app: Any, lines: list[str], language: str | None) -> None:
     assistant = _theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR)
+    app._live_preview_partial_source = (list(lines), language)
     app._set_partial_renderable(
         app._bar_renderable(app._code_panel_renderable("\n".join(lines), language), assistant),
         visible=True,
     )
+
+
+def refresh_live_preview_partial(app: Any) -> None:
+    source = getattr(app, "_live_preview_partial_source", None)
+    if source is None:
+        return
+    partial = app._partial()
+    if not getattr(partial, "display", False):
+        return
+    lines, language = source
+    update_live_preview_partial(app, list(lines), language)
 
 
 def defer_live_preview_partial(app: Any, lines: list[str], language: str | None) -> None:
@@ -488,10 +583,15 @@ def defer_live_preview_partial(app: Any, lines: list[str], language: str | None)
 def clear_partial_preview(app: Any) -> None:
     state = app._stream_runtime
     state.deferred_live_preview = None
+    app._live_preview_partial_source = None
     state.partial_dirty = False
     app._set_partial_renderable(None)
     partial = app._partial()
-    if not app.streaming:
+    try:
+        streaming = bool(app.streaming)
+    except Exception:
+        streaming = False
+    if not streaming:
         partial.display = False
 
 

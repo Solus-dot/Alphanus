@@ -41,9 +41,21 @@ class LiveToolPreviewManager:
         self.max_static_preview_chars = int(max_static_preview_chars)
         self.max_static_preview_lines = int(max_static_preview_lines)
         self._streams: dict[str, LivePreviewState] = {}
+        self._label_color = "dim"
+        self._muted_color = "dim"
+
+    def set_theme_colors(self, *, label_color: str = "", muted_color: str = "") -> None:
+        self._label_color = str(label_color or "dim")
+        self._muted_color = str(muted_color or self._label_color or "dim")
 
     def reset(self) -> None:
         self._streams = {}
+
+    def _label_markup(self, label: str, value: str) -> str:
+        return f"[{self._label_color}]  · {label}: {esc(value)}[/{self._label_color}]"
+
+    def _muted_markup(self, text: str) -> str:
+        return f"[{self._muted_color}]{esc(text)}[/{self._muted_color}]"
 
     @staticmethod
     def _reset_stream_state(state: LivePreviewState) -> None:
@@ -69,7 +81,7 @@ class LiveToolPreviewManager:
         if not state.opened:
             state.opened = True
             path_label = state.filepath or "(pending filepath)"
-            write(f"[dim]  · file draft: {esc(path_label)}[/dim]")
+            write(self._label_markup("file draft", path_label))
 
         lines = content.split("\n")
         if content.endswith("\n"):
@@ -216,10 +228,10 @@ class LiveToolPreviewManager:
         truncated = len(content) > self.max_static_preview_chars or len(lines) > self.max_static_preview_lines
         lines = lines[: self.max_static_preview_lines]
 
-        write(f"[dim]  · file draft: {esc(filepath)}[/dim]")
+        write(self._label_markup("file draft", filepath))
         write_code(lines, self._guess_language(filepath), 2)
         if truncated:
-            write_indented("[dim]... (preview truncated) ...[/dim]", 2)
+            write_indented(self._muted_markup("... (preview truncated) ..."), 2)
 
     def _write_file_preview(
         self,
@@ -233,10 +245,10 @@ class LiveToolPreviewManager:
         lines = clipped.splitlines()
         truncated = len(content) > self.max_static_preview_chars or len(lines) > self.max_static_preview_lines
         lines = lines[: self.max_static_preview_lines]
-        write(f"[dim]  · file draft: {esc(filepath)}[/dim]")
+        write(self._label_markup("file draft", filepath))
         write_code(lines, self._guess_language(filepath), 2)
         if truncated:
-            write_indented("[dim]... (preview truncated) ...[/dim]", 2)
+            write_indented(self._muted_markup("... (preview truncated) ..."), 2)
 
     def write_result_preview(
         self,
@@ -263,10 +275,10 @@ class LiveToolPreviewManager:
         truncated = len(diff_text) > self.max_static_preview_chars or len(lines) > self.max_static_preview_lines
         lines = lines[: self.max_static_preview_lines]
         label = filepath or "edited file"
-        write(f"[dim]  · edit diff: {esc(label)}[/dim]")
+        write(self._label_markup("edit diff", label))
         write_code(lines, "diff", 2)
         if truncated:
-            write_indented("[dim]... (diff truncated) ...[/dim]", 2)
+            write_indented(self._muted_markup("... (diff truncated) ..."), 2)
 
     def rendered_filepaths(self, stream_id: str) -> set[str]:
         state = self._streams.get(stream_id)

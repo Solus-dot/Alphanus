@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent.types import AgentTurnResult
+from tui.activity_runtime import ActivityState, compact_tool_result_message, tool_result_duration_ms
 from tui.markdown_utils import render_md
 from tui.themes import fallback_color
 
@@ -53,11 +54,27 @@ def _state(app: Any) -> StreamRuntimeState:
     return state
 
 
+def _activity(app: Any) -> ActivityState:
+    state = getattr(app, "_activity_state", None)
+    if state is None:
+        state = ActivityState()
+        app._activity_state = state
+    return state
+
+
+def _refresh_activity_sidebar(app: Any) -> None:
+    update = getattr(app, "_update_sidebar", None)
+    if callable(update):
+        update()
+
+
 def start_turn_stream(app: Any, turn: Any, user_input: str, attachment_paths: list[str]) -> None:
     app.streaming = True
     app._auto_follow_stream = True
     app._active_turn_id = turn.id
     app._reply_acc = ""
+    _activity(app).reset()
+    _refresh_activity_sidebar(app)
     app._live_preview.reset()
     app._pending_tool_details = []
     app._last_stream_error_text = ""
@@ -109,7 +126,7 @@ def flush_reasoning_buffer(app: Any) -> None:
     visible = "\n".join(line for line in visible_reasoning_text(text).splitlines() if not app._is_tool_trace_line(line)).strip()
     app._set_partial_renderable(None)
     if visible:
-        app._write_assistant_bar_renderable(app._reasoning_panel_renderable(visible))
+        app._write_assistant_bar_renderable(app._reasoning_panel_renderable(visible), content_indent=2)
 
 
 def close_reasoning_section(app: Any) -> bool:
@@ -133,7 +150,9 @@ def refresh_deferred_partial(app: Any) -> None:
     if app._reasoning_open and not app._content_open:
         display = "\n".join(line for line in visible_reasoning_text(app._buf_r).splitlines() if not app._is_tool_trace_line(line)).strip()
         if display:
-            app._set_partial_renderable(app._bar_renderable(app._reasoning_panel_renderable(display), _assistant_color(app)))
+            app._set_partial_renderable(
+                app._bar_renderable(app._reasoning_panel_renderable(display), _assistant_color(app), content_indent=2)
+            )
         else:
             app._set_partial_renderable(None)
         return
@@ -202,7 +221,9 @@ def on_agent_event(app: Any, event: dict[str, Any]) -> None:
                 line for line in visible_reasoning_text(app._buf_r).splitlines() if not app._is_tool_trace_line(line)
             ).strip()
             if display:
-                app._set_partial_renderable(app._bar_renderable(app._reasoning_panel_renderable(display), _assistant_color(app)))
+                app._set_partial_renderable(
+                    app._bar_renderable(app._reasoning_panel_renderable(display), _assistant_color(app), content_indent=2)
+                )
             else:
                 app._set_partial_renderable(None)
 
@@ -214,6 +235,8 @@ def on_agent_event(app: Any, event: dict[str, Any]) -> None:
         app._close_reasoning_section()
         app._flush_content_buffer(include_partial=True, update_partial=True)
         app._content_open = False
+        _activity(app).phase = "tools"
+        _refresh_activity_sidebar(app)
 
     elif etype == "tool_call_delta":
         if not app._show_tool_details:
@@ -222,7 +245,7 @@ def on_agent_event(app: Any, event: dict[str, Any]) -> None:
         name = str(event.get("name") or "")
         raw_arguments = str(event.get("raw_arguments") or "")
         if stream_id and name:
-            rendered_preview = app._live_preview.update(
+            app._live_preview.update(
                 stream_id,
                 name,
                 raw_arguments,
@@ -232,8 +255,6 @@ def on_agent_event(app: Any, event: dict[str, Any]) -> None:
                 app._write_code_block,
                 app._clear_partial_preview,
             )
-            if not rendered_preview:
-                app._update_tool_call_partial(name, "streaming…")
 
     elif etype == "tool_call":
         close_reasoning_section(app)
@@ -241,9 +262,10 @@ def on_agent_event(app: Any, event: dict[str, Any]) -> None:
         args = event.get("arguments", {})
         stream_id = str(event.get("stream_id") or "")
         detail = app._live_preview.compact_tool_args(name, args)
+        _activity(app).start_tool(str(name), detail)
+        _refresh_activity_sidebar(app)
         if app._show_tool_details:
             app._pending_tool_details.append((name, detail))
-            app._update_tool_call_partial(name, detail)
             streamed = (
                 app._live_preview.close(
                     stream_id,
@@ -275,7 +297,16 @@ def on_agent_event(app: Any, event: dict[str, Any]) -> None:
         close_reasoning_section(app)
         name = event.get("name", "tool")
         result = event.get("result", {})
-        if result.get("ok"):
+        result_ok = bool(isinstance(result, dict) and result.get("ok"))
+        message = compact_tool_result_message(result)
+        _activity(app).finish_tool(
+            str(name),
+            ok=result_ok,
+            message=message,
+            duration_ms=tool_result_duration_ms(result),
+        )
+        _refresh_activity_sidebar(app)
+        if result_ok:
             app._live_preview.write_result_preview(
                 name,
                 result,
@@ -283,19 +314,21 @@ def on_agent_event(app: Any, event: dict[str, Any]) -> None:
                 lambda markup, _indent=0: app._write_assistant_bar_line(markup),
                 app._write_code_block,
             )
-        if name not in app._live_preview.draft_preview_tools or not result.get("ok"):
+        if name not in app._live_preview.draft_preview_tools or not result_ok:
             app._clear_partial_preview()
-        if not app._show_tool_result_line(name, bool(result.get("ok"))):
+        if not app._show_tool_result_line(name, result_ok):
             return
         detail = app._take_pending_tool_detail(name)
-        if result.get("ok"):
+        if result_ok:
             app._write_tool_lifecycle_block(name, True, detail or "completed")
         else:
-            msg = result.get("error", {}).get("message", "failed")
+            msg = result.get("error", {}).get("message", "failed") if isinstance(result, dict) else "failed"
             app._write_tool_lifecycle_block(name, False, f"{detail}   {msg}".strip())
 
     elif etype == "error":
         app._last_stream_error_text = str(event.get("text", "Unknown error"))
+        _activity(app).note_error(app._last_stream_error_text)
+        _refresh_activity_sidebar(app)
         app._write_error(app._last_stream_error_text)
 
     elif etype == "info":
@@ -408,6 +441,7 @@ def finish_turn_stream(app: Any, turn_id: str, result: AgentTurnResult) -> None:
             if result.error and result.error != app._last_stream_error_text:
                 app._write_error(result.error)
             if result.status == "cancelled":
+                _activity(app).mark_interrupted()
                 app._write("[bold red]  ✖ interrupted[/bold red]")
 
         app._save_active_session()

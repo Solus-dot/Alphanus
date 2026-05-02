@@ -9,6 +9,7 @@ from textual.widgets import Button, OptionList, Static
 
 from core.runtime_config import UiRuntimeConfig
 from core.sessions import SessionStore
+from tui.activity_runtime import ActivityState
 from tui.live_tool_preview import LiveToolPreviewManager
 from tui.status_runtime import StatusRuntimeState
 from tui.stream_runtime import StreamRuntimeState
@@ -48,6 +49,7 @@ def initialize_shell_state(app: Any, *, agent: Any, debug: bool) -> None:
     app._stop_event = threading.Event()
     app._active_turn_id = None
     app._reply_acc = ""
+    app._activity_state = ActivityState()
     app._live_preview = LiveToolPreviewManager()
     app._stream_runtime = StreamRuntimeState()
     app._reasoning_open = False
@@ -60,6 +62,7 @@ def initialize_shell_state(app: Any, *, agent: Any, debug: bool) -> None:
     app._stream_drain_timer = None
     app._stream_drain_interval_s = None
     app._partial_renderable = None
+    app._live_preview_partial_source = None
     app._last_partial_render_width = 1
     app._last_partial_line_count = 0
     app._partial_line_count_dirty = False
@@ -93,6 +96,8 @@ def initialize_shell_state(app: Any, *, agent: Any, debug: bool) -> None:
     app._show_tool_details = True
     app._pending_tool_details = []
     app._focused_panel = "input"
+    app._sidebar_visible_override = None
+    app._last_sidebar_layout_width = 0
     app._tree_cursor_id = "root"
     app._last_log_was_blank = False
     app._last_model_context_tokens = None

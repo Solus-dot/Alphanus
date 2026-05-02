@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import io
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from rich.console import Console, Group, RenderableType
 from rich.text import Text
@@ -12,6 +14,7 @@ from textual.widgets import Static
 class TranscriptEntry:
     kind: str
     renderable: RenderableType
+    source: tuple[Any, ...] | None = None
 
 
 @dataclass(slots=True)
@@ -75,6 +78,10 @@ class TranscriptView(Static):
         self._last_line_counts = []
         self._last_line_total = 0
         self.refresh(layout=True)
+
+    def refresh_entries(self, refresh_entry: Callable[[TranscriptEntry], TranscriptEntry]) -> None:
+        self._entries = [refresh_entry(entry) for entry in self._entries]
+        self.refresh_for_width_change()
 
     def refresh_for_width_change(self) -> None:
         width = self._available_width()

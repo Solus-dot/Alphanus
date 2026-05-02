@@ -7,6 +7,7 @@ from rich.markup import escape as esc
 from textual.widgets import Static
 
 from core.conv_tree import Turn
+from tui.activity_runtime import ActivityState, render_activity_markup
 from tui.sidebar import render_sidebar_inspector_markup, render_sidebar_tree_markup
 from tui.themes import fallback_color
 
@@ -14,11 +15,17 @@ DEFAULT_ACCENT_COLOR = fallback_color("accent")
 DEFAULT_MUTED_COLOR = fallback_color("muted")
 
 
+def widget_render_width(widget: Any, *, fallback: int = 30) -> int:
+    for attr in ("content_region", "region", "size"):
+        area = getattr(widget, attr, None)
+        width = int(getattr(area, "width", 0) or 0)
+        if width > 0:
+            return max(1, width)
+    return max(1, fallback)
+
+
 def sidebar_render_width(sidebar: Any) -> int:
-    width = int(getattr(sidebar.region, "width", 0) or 0)
-    if width <= 0:
-        width = int(getattr(sidebar.size, "width", 0) or 0)
-    return max(20, width - 8) if width > 0 else 30
+    return widget_render_width(sidebar, fallback=30)
 
 
 def update_sidebar(app: Any) -> None:
@@ -29,15 +36,27 @@ def update_sidebar(app: Any) -> None:
         app._tree_cursor_id = app.conv_tree.current_id
     else:
         app._sync_tree_cursor()
-    width = sidebar_render_width(sidebar)
     colors = app._theme_spec().colors if hasattr(app, "_theme_spec") else None
+    tree_content = app.query_one("#sidebar-tree-content", Static)
+    inspector_content = app.query_one("#sidebar-inspector-content", Static)
+    fallback_width = sidebar_render_width(sidebar)
+    tree_width = widget_render_width(tree_content, fallback=fallback_width)
+    inspector_width = widget_render_width(inspector_content, fallback=fallback_width)
     app.query_one("#sidebar-tree-meta", Static).update(f"{app.conv_tree.turn_count()} turns")
-    app.query_one("#sidebar-tree-content", Static).update(
-        render_sidebar_tree_markup(app.conv_tree, width=width, selected_id=app._tree_cursor_id, colors=colors)
+    tree_content.update(
+        render_sidebar_tree_markup(app.conv_tree, width=tree_width, selected_id=app._tree_cursor_id, colors=colors)
     )
-    app.query_one("#sidebar-inspector-content", Static).update(
-        render_sidebar_inspector_markup(app.conv_tree, width=width, selected_id=app._tree_cursor_id, colors=colors)
+    inspector = (
+        render_activity_markup(getattr(app, "_activity_state", ActivityState()), width=inspector_width, colors=colors)
+        if getattr(app, "streaming", False)
+        else render_sidebar_inspector_markup(
+            app.conv_tree,
+            width=inspector_width,
+            selected_id=app._tree_cursor_id,
+            colors=colors,
+        )
     )
+    inspector_content.update(inspector)
 
 
 def write_turn_user(app: Any, turn: Turn, accent_color: str = DEFAULT_ACCENT_COLOR) -> None:
@@ -58,63 +77,68 @@ def write_turn_user(app: Any, turn: Turn, accent_color: str = DEFAULT_ACCENT_COL
 
 
 def write_skill_exchanges(app: Any, turn: Turn) -> None:
+    previous_compact_spacing = bool(getattr(app, "_compact_tool_lifecycle_spacing", False))
+    app._compact_tool_lifecycle_spacing = True
     pending_details: list[tuple[str, str]] = []
-    for msg in turn.skill_exchanges:
-        raw_tool_calls = msg.get("tool_calls")
-        if msg.get("role") == "assistant" and isinstance(raw_tool_calls, list):
-            if not app._show_tool_details:
-                continue
-            for call in raw_tool_calls:
-                call_obj = call if isinstance(call, dict) else {}
-                function_obj = call_obj.get("function")
-                function_map = function_obj if isinstance(function_obj, dict) else {}
-                name = str(function_map.get("name") or "unknown")
-                raw_args = function_map.get("arguments", "{}")
+    try:
+        for msg in turn.skill_exchanges:
+            raw_tool_calls = msg.get("tool_calls")
+            if msg.get("role") == "assistant" and isinstance(raw_tool_calls, list):
+                if not app._show_tool_details:
+                    continue
+                for call in raw_tool_calls:
+                    call_obj = call if isinstance(call, dict) else {}
+                    function_obj = call_obj.get("function")
+                    function_map = function_obj if isinstance(function_obj, dict) else {}
+                    name = str(function_map.get("name") or "unknown")
+                    raw_args = function_map.get("arguments", "{}")
+                    try:
+                        args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    except json.JSONDecodeError:
+                        args = raw_args
+                    pending_details.append((name, app._live_preview.compact_tool_args(name, args)))
+                    app._live_preview.write_static_preview(
+                        name,
+                        args,
+                        app._write_assistant_bar_line,
+                        lambda markup, _indent=0: app._write_assistant_bar_line(markup),
+                        app._write_code_block,
+                    )
+            elif msg.get("role") == "tool":
+                name = msg.get("name", "tool")
+                content = msg.get("content", "{}")
                 try:
-                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    payload = json.loads(content) if isinstance(content, str) else content
                 except json.JSONDecodeError:
-                    args = raw_args
-                pending_details.append((name, app._live_preview.compact_tool_args(name, args)))
-                app._live_preview.write_static_preview(
-                    name,
-                    args,
-                    app._write_assistant_bar_line,
-                    lambda markup, _indent=0: app._write_assistant_bar_line(markup),
-                    app._write_code_block,
-                )
-        elif msg.get("role") == "tool":
-            name = msg.get("name", "tool")
-            content = msg.get("content", "{}")
-            try:
-                payload = json.loads(content) if isinstance(content, str) else content
-            except json.JSONDecodeError:
-                payload = {"ok": False, "error": {"message": "invalid tool response"}}
-            if not isinstance(payload, dict):
-                payload = {"ok": False, "error": {"message": "invalid tool response"}}
-            payload_obj = dict(payload)
-            if payload_obj.get("ok") and app._show_tool_details:
-                app._live_preview.write_result_preview(
-                    name,
-                    payload_obj,
-                    app._write_assistant_bar_line,
-                    lambda markup, _indent=0: app._write_assistant_bar_line(markup),
-                    app._write_code_block,
-                )
-            if not app._show_tool_result_line(name, bool(payload_obj.get("ok"))):
-                continue
-            detail = ""
-            for idx, (pending_name, pending_detail) in enumerate(pending_details):
-                if pending_name == name:
-                    detail = pending_detail
-                    pending_details.pop(idx)
-                    break
-            if payload_obj.get("ok"):
-                app._write_tool_lifecycle_block(name, True, detail or "completed")
-            else:
-                error_obj = payload_obj.get("error")
-                error_map = error_obj if isinstance(error_obj, dict) else {}
-                em = error_map.get("message", "failed")
-                app._write_tool_lifecycle_block(name, False, f"{detail}   {em}".strip())
+                    payload = {"ok": False, "error": {"message": "invalid tool response"}}
+                if not isinstance(payload, dict):
+                    payload = {"ok": False, "error": {"message": "invalid tool response"}}
+                payload_obj = dict(payload)
+                if payload_obj.get("ok") and app._show_tool_details:
+                    app._live_preview.write_result_preview(
+                        name,
+                        payload_obj,
+                        app._write_assistant_bar_line,
+                        lambda markup, _indent=0: app._write_assistant_bar_line(markup),
+                        app._write_code_block,
+                    )
+                if not app._show_tool_result_line(name, bool(payload_obj.get("ok"))):
+                    continue
+                detail = ""
+                for idx, (pending_name, pending_detail) in enumerate(pending_details):
+                    if pending_name == name:
+                        detail = pending_detail
+                        pending_details.pop(idx)
+                        break
+                if payload_obj.get("ok"):
+                    app._write_tool_lifecycle_block(name, True, detail or "completed")
+                else:
+                    error_obj = payload_obj.get("error")
+                    error_map = error_obj if isinstance(error_obj, dict) else {}
+                    em = error_map.get("message", "failed")
+                    app._write_tool_lifecycle_block(name, False, f"{detail}   {em}".strip())
+    finally:
+        app._compact_tool_lifecycle_spacing = previous_compact_spacing
 
 
 def write_completed_turn_assistant(app: Any, turn: Turn) -> None:

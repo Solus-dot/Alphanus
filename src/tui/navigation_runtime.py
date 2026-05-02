@@ -22,10 +22,31 @@ def sidebar_target_width(width: int) -> int:
 
 def apply_sidebar_layout(app: Any, width: int) -> None:
     sidebar = app.query_one("#sidebar", Vertical)
+    app._last_sidebar_layout_width = width
+    override = getattr(app, "_sidebar_visible_override", None)
     target_width = sidebar_target_width(width)
+    if override is False:
+        target_width = 0
+    elif override is True and target_width <= 0:
+        target_width = 32
     sidebar.display = target_width > 0
     if target_width > 0 and hasattr(sidebar, "styles"):
         sidebar.styles.width = target_width
+
+
+def toggle_sidebar(app: Any) -> None:
+    sidebar = app.query_one("#sidebar", Vertical)
+    app._sidebar_visible_override = not bool(getattr(sidebar, "display", True))
+    current_width = int(getattr(app, "_last_sidebar_layout_width", 0) or 0)
+    if current_width <= 0:
+        current_width = int(getattr(getattr(app, "size", None), "width", 0) or 0)
+    apply_sidebar_layout(app, current_width)
+    if not sidebar.display and app._focused_panel == "tree":
+        app._focused_panel = "chat"
+    app._apply_focus_classes()
+    app._update_footer_separator()
+    app._update_sidebar()
+    app._update_topbar()
 
 
 def apply_focus_classes(app: Any) -> None:

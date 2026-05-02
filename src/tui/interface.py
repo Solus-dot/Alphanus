@@ -186,6 +186,9 @@ from tui.navigation_runtime import (
 from tui.navigation_runtime import (
     sync_tree_cursor as sync_tui_tree_cursor,
 )
+from tui.navigation_runtime import (
+    toggle_sidebar as toggle_tui_sidebar,
+)
 from tui.palette_theme_runtime import (
     build_global_palette_catalog as build_tui_global_palette_catalog,
 )
@@ -344,6 +347,12 @@ from tui.transcript_runtime import (
     reasoning_panel_renderable as tui_reasoning_panel_renderable,
 )
 from tui.transcript_runtime import (
+    refresh_live_preview_partial as tui_refresh_live_preview_partial,
+)
+from tui.transcript_runtime import (
+    refresh_themed_transcript_entries as tui_refresh_themed_transcript_entries,
+)
+from tui.transcript_runtime import (
     remember_code_block as tui_remember_code_block,
 )
 from tui.transcript_runtime import (
@@ -383,9 +392,6 @@ from tui.transcript_runtime import (
     update_partial_content as tui_update_partial_content,
 )
 from tui.transcript_runtime import (
-    update_tool_call_partial as tui_update_tool_call_partial,
-)
-from tui.transcript_runtime import (
     write_assistant_bar_line as tui_write_assistant_bar_line,
 )
 from tui.transcript_runtime import (
@@ -393,6 +399,9 @@ from tui.transcript_runtime import (
 )
 from tui.transcript_runtime import (
     write_assistant_bar_wrapped_line as tui_write_assistant_bar_wrapped_line,
+)
+from tui.transcript_runtime import (
+    write_bar_renderable as tui_write_bar_renderable,
 )
 from tui.transcript_runtime import (
     write_code_block as tui_write_code_block,
@@ -487,6 +496,7 @@ class AlphanusTUI(App):
         Binding("ctrl+backspace", "remove_last_attachment", show=False),
         Binding("ctrl+shift+backspace", "clear_attachments", show=False),
         Binding("ctrl+f", "open_file_picker", show=False),
+        Binding("ctrl+b", "toggle_sidebar", show=False),
         Binding("ctrl+g", "focus_input", show=False),
         Binding("ctrl+k", "open_global_palette", show=False),
         Binding("ctrl+p", "open_command_palette", show=False),
@@ -527,6 +537,8 @@ class AlphanusTUI(App):
     _collaboration_mode: str
     _loaded_skill_ids: list[str]
     _status_runtime: StatusRuntimeState
+    _live_preview: Any
+    _live_preview_partial_source: tuple[list[str], str | None] | None
     _await_shell_confirm: bool
     _shell_confirm_command: str
     _shell_confirm_event: threading.Event | None
@@ -537,6 +549,8 @@ class AlphanusTUI(App):
     _show_tool_details: bool
     _pending_tool_details: list[tuple[str, str]]
     _focused_panel: str
+    _sidebar_visible_override: bool | None
+    _last_sidebar_layout_width: int
     _tree_cursor_id: str
     _last_log_was_blank: bool
     _last_model_context_tokens: int | None
@@ -604,6 +618,12 @@ class AlphanusTUI(App):
         style = f"bold {self._theme_color('accent', DEFAULT_ACCENT_COLOR)} on {self._theme_color('panel_bg', DEFAULT_PANEL_BG)}"
         _PasteTokenHighlighter.STYLE = style
         ChatInput.PASTE_TOKEN_STYLE = style
+        set_preview_theme = getattr(self._live_preview, "set_theme_colors", None)
+        if callable(set_preview_theme):
+            set_preview_theme(
+                label_color=self._theme_color("subtle", DEFAULT_SUBTLE_COLOR),
+                muted_color=self._theme_color("muted", DEFAULT_MUTED_COLOR),
+            )
         try:
             chat_input = self.query_one(ChatInput)
         except Exception:
@@ -615,7 +635,20 @@ class AlphanusTUI(App):
             chat_input.sync_paste_placeholders(chat_input.value)
         try:
             self.refresh_css(animate=False)
-            self._redraw_after_resize()
+            self._apply_focus_classes()
+            self._update_topbar()
+            self._update_status1()
+            self._update_status2()
+            self._update_footer_separator()
+            self._update_sidebar()
+            self._update_pending_attachments()
+            if self.streaming:
+                self._refresh_deferred_partial()
+                self._refresh_live_preview_partial()
+            else:
+                pass
+            self._refresh_themed_transcript_entries()
+            self._refresh_command_popup_for_resize()
         except NoMatches:
             pass
         return resolved
@@ -806,6 +839,9 @@ class AlphanusTUI(App):
     def action_focus_input(self) -> None:
         self._set_focused_panel("input")
 
+    def action_toggle_sidebar(self) -> None:
+        toggle_tui_sidebar(self)
+
     def action_tree_down(self) -> None:
         action_tui_tree_down(self)
 
@@ -982,6 +1018,24 @@ class AlphanusTUI(App):
     def _write_assistant_bar_renderable(self, renderable: RenderableType, *, content_indent: int = 0) -> None:
         tui_write_assistant_bar_renderable(self, renderable, content_indent=content_indent)
 
+    def _write_bar_renderable(
+        self,
+        renderable: RenderableType,
+        *,
+        bar_color: str,
+        content_indent: int = 0,
+        continuation_indent: int | None = None,
+        source: tuple[Any, ...] | None = None,
+    ) -> None:
+        tui_write_bar_renderable(
+            self,
+            renderable,
+            bar_color=bar_color,
+            content_indent=content_indent,
+            continuation_indent=continuation_indent,
+            source=source,
+        )
+
     def _write_user_bar_wrapped_line(self, line: str) -> None:
         tui_write_user_bar_wrapped_line(self, line)
 
@@ -1011,9 +1065,6 @@ class AlphanusTUI(App):
 
     def _tool_lifecycle_panel(self, name: str, detail: str, *, ok: bool):
         return tui_tool_lifecycle_panel(self, name, detail, ok=ok)
-
-    def _update_tool_call_partial(self, name: str, detail: str = "") -> None:
-        tui_update_tool_call_partial(self, name, detail)
 
     def _write_tool_lifecycle_block(self, name: str, ok: bool, detail: str = "") -> None:
         tui_write_tool_lifecycle_block(self, name, ok, detail)
@@ -1057,6 +1108,12 @@ class AlphanusTUI(App):
 
     def _clear_partial_preview(self) -> None:
         tui_clear_partial_preview(self)
+
+    def _refresh_live_preview_partial(self) -> None:
+        tui_refresh_live_preview_partial(self)
+
+    def _refresh_themed_transcript_entries(self) -> None:
+        tui_refresh_themed_transcript_entries(self)
 
     def _is_near_bottom(self, threshold: float = 1.0) -> bool:
         return tui_is_near_bottom(self, threshold=threshold)
