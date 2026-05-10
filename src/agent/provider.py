@@ -20,10 +20,17 @@ from agent.backend_profiles import (
     profile_capabilities,
     rewrite_payload_for_profile,
 )
+from agent.provider_failure_policy import (
+    is_connection_refused_error,
+    is_endpoint_unsupported,
+    is_local_endpoint,
+    is_transport_failure,
+    should_retry_provider_exception,
+)
 from agent.telemetry import TelemetryEmitter
 from core.message_types import JSONValue, ToolCallDelta
 from core.runtime_config import ProviderConfig
-from core.streaming import build_ssl_context, should_retry
+from core.streaming import build_ssl_context
 from core.streaming import stream_chat_completions as core_stream_chat_completions
 from core.types import JsonObject, ModelStatus, StreamPassResult, ToolCallAccumulator
 
@@ -231,21 +238,7 @@ class OpenAICompatibleProvider:
         )
 
     def _is_endpoint_unsupported(self, exc: Exception) -> bool:
-        status_code = getattr(exc, "status_code", None)
-        if status_code in {400, 404, 405, 415, 422}:
-            return True
-        text = str(exc).lower()
-        markers = (
-            "unsupported",
-            "unknown endpoint",
-            "not found",
-            "unrecognized request argument",
-            "unknown field",
-            "validation error",
-            "responses",
-            "chat/completions",
-        )
-        return any(marker in text for marker in markers)
+        return is_endpoint_unsupported(exc)
 
     def _select_endpoint_mode(self) -> str:
         selected_backend = self._selected_backend_profile()
@@ -764,22 +757,18 @@ class OpenAICompatibleProvider:
 
     @staticmethod
     def _is_local_endpoint(endpoint: str) -> bool:
-        parsed = urllib.parse.urlparse(endpoint)
-        host = (parsed.hostname or "").strip().lower()
-        return host in {"127.0.0.1", "localhost"}
+        return is_local_endpoint(endpoint)
 
     @staticmethod
     def _is_connection_refused_error(exc: Exception) -> bool:
-        return "refused" in str(exc).lower()
+        return is_connection_refused_error(exc)
 
     def _should_retry_exception(self, exc: Exception) -> bool:
-        if self._is_local_endpoint(self.model_endpoint) and self._is_connection_refused_error(exc):
-            return False
-        return should_retry(exc)
+        return should_retry_provider_exception(exc, model_endpoint=self.model_endpoint)
 
     @staticmethod
     def _is_transport_failure(exc: Exception) -> bool:
-        return getattr(exc, "status_code", None) is None
+        return is_transport_failure(exc)
 
     def complete(self, payload: dict[str, object], timeout_s: float | None = None) -> dict[str, object]:
         request = urllib.request.Request(
