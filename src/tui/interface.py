@@ -28,7 +28,6 @@ from core.conv_tree import ConvTree, Turn
 from core.message_types import ChatMessage, JSONValue, MessageContentPart
 from core.runtime_config import UiRuntimeConfig, UiTimingConfig
 from core.sessions import ChatSession, SessionStore
-from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
 from tui.app_shell_runtime import compose_shell as compose_tui_shell
 from tui.app_shell_runtime import initialize_shell_state as init_tui_shell_state
 from tui.attachment_runtime import (
@@ -49,7 +48,7 @@ from tui.attachment_runtime import (
 from tui.attachment_runtime import (
     workspace_root as workspace_tui_root,
 )
-from tui.chat_input import ChatInput, _PasteTokenHighlighter
+from tui.chat_input import ChatInput
 from tui.command_output_runtime import (
     cmd_code as cmd_tui_code,
 )
@@ -299,7 +298,8 @@ from tui.stream_runtime import (
 from tui.stream_runtime import (
     visible_reasoning_text as visible_tui_reasoning_text,
 )
-from tui.themes import ThemeSpec, available_theme_ids, default_theme_variables, fallback_color, theme_spec
+from tui.theme_controller import ThemeController
+from tui.themes import ThemeSpec, fallback_color
 from tui.transcript import ScrollAnchor, TranscriptView, count_renderable_lines
 from tui.transcript_runtime import (
     bar_renderable as tui_bar_renderable,
@@ -569,99 +569,44 @@ class AlphanusTUI(App):
     _reply_acc_len: int
 
     def get_theme_variable_defaults(self) -> dict[str, str]:
-        return default_theme_variables()
+        return ThemeController.variable_defaults()
 
     def __init__(self, agent: Agent, debug: bool = False):
         super().__init__()
         init_tui_shell_state(self, agent=agent, debug=debug)
+        self._theme_controller = ThemeController(self)
         self._chat_input_cls = ChatInput
 
     def compose(self) -> ComposeResult:
         yield from compose_tui_shell(self, chat_input_cls=ChatInput, transcript_view_cls=TranscriptView)
 
+    def _theme_service(self) -> ThemeController:
+        controller = getattr(self, "_theme_controller", None)
+        if controller is None:
+            controller = ThemeController(self)
+            self._theme_controller = controller
+        return controller
+
     def _timing_config(self):
-        timing = getattr(self, "_ui_timing", None)
-        if timing is None:
-            timing = UiRuntimeConfig.from_config({}).timing
-            self._ui_timing = timing
-        return timing
+        return self._theme_service().timing_config()
 
     def _theme_id(self) -> str:
-        current = str(getattr(self, "_active_theme_id", "") or "").strip().lower()
-        if current:
-            resolved, _ = normalize_theme_id(current, default=DEFAULT_THEME_ID)
-            return resolved
-        ui_cfg = getattr(self, "_ui_config", None)
-        configured = str(getattr(ui_cfg, "theme", "") or "").strip().lower()
-        resolved, _ = normalize_theme_id(configured, default=DEFAULT_THEME_ID)
-        return resolved
+        return self._theme_service().theme_id()
 
     def _theme_spec(self) -> ThemeSpec:
-        return theme_spec(self._theme_id())
+        return self._theme_service().theme_spec()
 
     def _theme_color(self, key: str, default: str) -> str:
-        spec = self._theme_spec()
-        return str(spec.colors.get(key, default))
+        return self._theme_service().theme_color(key, default)
 
     def _register_themes(self) -> None:
-        if getattr(self, "_themes_registered", False):
-            return
-        for theme_id in available_theme_ids():
-            self.register_theme(theme_spec(theme_id).theme)
-        self._themes_registered = True
+        self._theme_service().register_themes()
 
     def _apply_theme(self, raw_theme_id: str) -> str:
-        resolved, _ = normalize_theme_id(raw_theme_id, default=DEFAULT_THEME_ID)
-        self._register_themes()
-        self.theme = resolved
-        self._active_theme_id = resolved
-        style = f"bold {self._theme_color('accent', DEFAULT_ACCENT_COLOR)} on {self._theme_color('panel_bg', DEFAULT_PANEL_BG)}"
-        _PasteTokenHighlighter.STYLE = style
-        ChatInput.PASTE_TOKEN_STYLE = style
-        set_preview_theme = getattr(self._live_preview, "set_theme_colors", None)
-        if callable(set_preview_theme):
-            set_preview_theme(
-                label_color=self._theme_color("subtle", DEFAULT_SUBTLE_COLOR),
-                muted_color=self._theme_color("muted", DEFAULT_MUTED_COLOR),
-            )
-        try:
-            chat_input = self.query_one(ChatInput)
-        except Exception:
-            chat_input = None
-        if chat_input is not None:
-            highlighter = getattr(chat_input, "highlighter", None)
-            if isinstance(highlighter, _PasteTokenHighlighter):
-                highlighter.STYLE = style
-            chat_input.sync_paste_placeholders(chat_input.value)
-        try:
-            self.refresh_css(animate=False)
-            self._apply_focus_classes()
-            self._update_topbar()
-            self._update_status1()
-            self._update_status2()
-            self._update_footer_separator()
-            self._update_sidebar()
-            self._update_pending_attachments()
-            if self.streaming:
-                self._refresh_deferred_partial()
-                self._refresh_live_preview_partial()
-            else:
-                pass
-            self._refresh_themed_transcript_entries()
-            self._refresh_command_popup_for_resize()
-        except NoMatches:
-            pass
-        return resolved
+        return self._theme_service().apply_theme(raw_theme_id)
 
     def _apply_theme_from_config(self) -> str:
-        configured = getattr(self, "_ui_config", None)
-        configured_theme = str(getattr(configured, "theme", DEFAULT_THEME_ID))
-        try:
-            return self._apply_theme(configured_theme)
-        except Exception:
-            resolved, _ = normalize_theme_id(configured_theme, default=DEFAULT_THEME_ID)
-            self._active_theme_id = resolved
-            return resolved
+        return self._theme_service().apply_theme_from_config()
 
     def _stream_runtime_state(self) -> StreamRuntimeState:
         state = getattr(self, "_stream_runtime", None)
