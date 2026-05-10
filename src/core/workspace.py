@@ -15,6 +15,8 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from core.workspace_command_policy import WorkspaceCommandPolicy
+
 DEFAULT_BLOCKED_PATTERNS = [
     ".ssh",
     ".aws",
@@ -54,26 +56,6 @@ SAFE_CHECK_RUNNERS = {
     "nox",
 }
 PYTHON_MODULE_CHECK_RUNNERS = {"pytest", "ruff", "mypy", "pyright", "tox", "nox"}
-READ_ONLY_SHELL_COMMANDS = {
-    "ls",
-    "pwd",
-    "cat",
-    "head",
-    "tail",
-    "grep",
-    "rg",
-    "find",
-    "stat",
-    "wc",
-    "sort",
-    "uniq",
-    "cut",
-}
-READ_ONLY_GIT_SUBCOMMANDS = {"status", "diff", "show", "log", "rev-parse", "branch"}
-MUTATING_SHELL_COMMANDS = {"touch", "mkdir", "mv", "cp", "rm", "chmod", "chown", "ln"}
-MUTATING_GIT_SUBCOMMANDS = {"add", "rm", "mv", "restore", "checkout", "switch", "commit", "clean", "apply", "am", "stash"}
-
-
 class WorkspaceManager:
     def __init__(
         self,
@@ -203,43 +185,14 @@ class WorkspaceManager:
 
     @staticmethod
     def _git_subcommand(argv: list[str]) -> str:
-        if len(argv) < 2:
-            return ""
-        if argv[1] == "-C" and len(argv) >= 4:
-            return argv[3]
-        return argv[1]
+        return WorkspaceCommandPolicy.git_subcommand(argv)
 
     @staticmethod
     def _git_subcommand_index(argv: list[str]) -> int:
-        if len(argv) < 2:
-            return -1
-        if argv[1] == "-C" and len(argv) >= 4:
-            return 3
-        return 1
+        return WorkspaceCommandPolicy.git_subcommand_index(argv)
 
     def _classify_shell_command(self, argv: list[str]) -> str:
-        if not argv:
-            return "ambiguous"
-        executable = argv[0]
-        if executable in READ_ONLY_SHELL_COMMANDS:
-            return "readonly"
-        if executable in MUTATING_SHELL_COMMANDS:
-            return "mutating"
-        if executable == "sed":
-            return "readonly" if "-i" not in argv else "mutating"
-        if executable != "git":
-            return "ambiguous"
-
-        subcommand = self._git_subcommand(argv)
-        if subcommand == "branch":
-            if "--show-current" in argv:
-                return "readonly"
-            return "ambiguous"
-        if subcommand in READ_ONLY_GIT_SUBCOMMANDS:
-            return "readonly"
-        if subcommand in MUTATING_GIT_SUBCOMMANDS:
-            return "mutating"
-        return "ambiguous"
+        return WorkspaceCommandPolicy.classify_shell_command(argv)
 
     def _git_status_snapshot(self) -> tuple[str, tuple[tuple[str, str, int, int], ...]] | None:
         git_path = shutil.which("git")
