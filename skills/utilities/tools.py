@@ -79,7 +79,7 @@ def _get_weather(args: dict[str, object]) -> dict[str, object]:
         return _err("E_IO", f"Weather service returned HTTP {exc.code}", {"city": city})
     except urllib.error.URLError as exc:
         return _err("E_IO", f"Weather service unreachable: {exc.reason}", {"city": city})
-    except json.JSONDecodeError as exc:
+    except json.JSONDecodeError:
         return _err("E_IO", "Weather service returned invalid JSON", {"city": city})
 
     current = payload.get("current_condition", [{}])[0]
