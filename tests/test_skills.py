@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-import core.skills as skills_module
+import core.skill_process_env as skill_process_env_module
 from core.memory import LexicalMemory
 from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
@@ -1312,8 +1312,8 @@ def test_runtime_env_exposes_global_npm_root_as_node_path(tmp_path: Path, monkey
         stdout = "/opt/homebrew/lib/node_modules\n"
         stderr = ""
 
-    monkeypatch.setattr(skills_module.shutil, "which", lambda name: "/opt/homebrew/bin/npm" if name == "npm" else None)
-    monkeypatch.setattr(skills_module.subprocess, "run", lambda *args, **kwargs: _Proc())
+    monkeypatch.setattr(skill_process_env_module.shutil, "which", lambda name: "/opt/homebrew/bin/npm" if name == "npm" else None)
+    monkeypatch.setattr(skill_process_env_module.subprocess, "run", lambda *args, **kwargs: _Proc())
 
     runtime = SkillRuntime(
         skills_dir=str(skills),

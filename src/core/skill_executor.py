@@ -307,4 +307,4 @@ class SkillExecutor:
             meta["duration_ms"] = int(meta.get("duration_ms", duration_ms))
             out["meta"] = meta
             return out
-        return self._ok(result, duration_ms)
+        return cast(dict[str, Any], self._ok(result, duration_ms))

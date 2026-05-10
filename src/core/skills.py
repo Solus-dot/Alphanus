@@ -8,11 +8,10 @@ import os
 import re
 import shlex
 import shutil
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from core.memory import LexicalMemory
 from core.message_types import JSONValue, ShellConfirmationFn, UserInputRequestFn
@@ -24,7 +23,9 @@ from core.skill_parser import SKILL_DOC, SkillEntrypointDef, SkillManifest, extr
 from core.skill_process_env import SkillProcessEnvBuilder
 from core.skill_registry import SkillRegistry
 from core.skill_run_validation import SkillRunValidator
+from core.skill_script_inspector import SkillScriptInspector
 from core.skill_selector import SkillSelector
+from core.tool_results import ToolResult, error_result, ok_result
 from core.workspace import WorkspaceManager
 
 _CORE_TOOL_NAMES = frozenset(
@@ -54,25 +55,13 @@ _ALWAYS_AVAILABLE_TOOL_NAMES = frozenset(
         _REQUEST_USER_INPUT_TOOL_NAME,
     }
 )
-_SCRIPT_INTERPRETER_BY_EXT = {
-    ".py": [sys.executable],
-    ".sh": ["bash"],
-    ".js": ["node"],
-    ".mjs": ["node"],
-}
+
+def _ok(data: object, duration_ms: int) -> ToolResult:
+    return ok_result(cast(JSONValue, data), duration_ms=duration_ms)
 
 
-def _ok(data: object, duration_ms: int) -> dict[str, object]:
-    return {"ok": True, "data": data, "error": None, "meta": {"duration_ms": duration_ms}}
-
-
-def _err(code: str, message: str, duration_ms: int) -> dict[str, object]:
-    return {
-        "ok": False,
-        "data": None,
-        "error": {"code": code, "message": message},
-        "meta": {"duration_ms": duration_ms},
-    }
+def _err(code: str, message: str, duration_ms: int) -> ToolResult:
+    return error_result(code, message, duration_ms=duration_ms)
 
 
 class ToolProtocolError(RuntimeError):
@@ -191,6 +180,7 @@ class SkillRuntime:
         self._runnable_scripts_cache: dict[tuple[str, str], tuple[str, ...]] = {}
         self._tools_schema_cache: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
         self._python_module_probe_cache: dict[str, bool] = {}
+        self._script_inspector = SkillScriptInspector(self)
         self._inventory_loader = SkillInventoryLoader(self)
         self._skill_executor = SkillExecutor(
             self,
@@ -780,176 +770,31 @@ class SkillRuntime:
 
     @staticmethod
     def _is_skill_script_candidate(relpath: str) -> bool:
-        normalized = str(relpath or "").strip()
-        if not normalized:
-            return False
-        name = Path(normalized).name
-        if name in {"tools.py", "hooks.py", "__init__.py"}:
-            return False
-        if normalized.startswith("scripts/"):
-            return True
-        return "/" not in normalized and Path(normalized).suffix.lower() in _SCRIPT_INTERPRETER_BY_EXT
+        return SkillScriptInspector.is_skill_script_candidate(relpath)
 
     def _skill_runnable_scripts(self, skill: SkillManifest) -> list[str]:
-        cache_key = (skill.id, str(skill.path or ""))
-        cached = self._runnable_scripts_cache.get(cache_key)
-        if cached is not None:
-            return list(cached)
-
-        runnable: list[str] = []
-        for rel in skill.bundled_files:
-            if not self._is_skill_script_candidate(rel):
-                continue
-            if not self._script_is_cli_entry(skill, rel):
-                continue
-            ext = Path(rel).suffix.lower()
-            interpreter = self._script_interpreter(ext)
-            if not interpreter:
-                continue
-            if (
-                not Path(interpreter[0]).exists()
-                and interpreter[0] != Path(sys.executable).resolve().as_posix()
-                and shutil.which(interpreter[0]) is None
-            ):
-                continue
-            if self._python_script_missing_modules(skill, rel):
-                continue
-            runnable.append(rel)
-        deduped = tuple(sorted(dict.fromkeys(runnable)))
-        self._runnable_scripts_cache[cache_key] = deduped
-        return list(deduped)
+        return self._script_inspector.skill_runnable_scripts(skill)
 
     def _script_block_reason(self, skill: SkillManifest, rel_script: str) -> str:
-        if not skill.path:
-            return "skill root is unavailable"
-        script_path = (skill.path / rel_script).resolve()
-        if not self._is_relative_to(script_path, skill.path.resolve()):
-            return "script path escapes skill root"
-        if not script_path.exists():
-            return "script file is missing"
-        ext = script_path.suffix.lower()
-        interpreter = self._script_interpreter(ext)
-        if not interpreter:
-            return f"unsupported script type: {script_path.suffix}"
-        if (
-            not Path(interpreter[0]).exists()
-            and interpreter[0] != Path(sys.executable).resolve().as_posix()
-            and shutil.which(interpreter[0]) is None
-        ):
-            return f"missing interpreter: {interpreter[0]}"
-        missing_modules = self._python_script_missing_modules(skill, rel_script)
-        if missing_modules:
-            return f"missing python modules: {', '.join(missing_modules)}"
-        return ""
+        return self._script_inspector.script_block_reason(skill, rel_script)
 
     def _blocked_skill_scripts(self, skill: SkillManifest) -> list[dict[str, str]]:
-        blocked: list[dict[str, str]] = []
-        for rel in sorted(rel for rel in skill.bundled_files if self._is_skill_script_candidate(rel)):
-            if not self._script_is_cli_entry(skill, rel):
-                continue
-            if Path(rel).suffix.lower() not in _SCRIPT_INTERPRETER_BY_EXT:
-                continue
-            reason = self._script_block_reason(skill, rel)
-            if reason:
-                blocked.append({"script": rel, "reason": reason})
-        return blocked
+        return self._script_inspector.blocked_skill_scripts(skill)
 
     def _script_is_cli_entry(self, skill: SkillManifest, rel_script: str) -> bool:
-        if not skill.path:
-            return False
-        script_path = (skill.path / rel_script).resolve()
-        ext = script_path.suffix.lower()
-        if ext in {".sh", ".js", ".mjs"}:
-            return True
-        if ext != ".py" or not script_path.exists():
-            return False
-        return script_path.name != "__init__.py"
+        return self._script_inspector.script_is_cli_entry(skill, rel_script)
 
     def _script_has_local_module(self, skill: SkillManifest, script_path: Path, module_name: str) -> bool:
-        if not skill.path:
-            return False
-        bases = [script_path.parent, skill.path / "scripts", skill.path]
-        for base in bases:
-            if (base / f"{module_name}.py").exists():
-                return True
-            module_dir = base / module_name
-            if module_dir.exists() and module_dir.is_dir():
-                return True
-        return False
+        return self._script_inspector.script_has_local_module(skill, script_path, module_name)
 
     def _python_script_missing_modules(self, skill: SkillManifest, rel_script: str) -> list[str]:
-        if not skill.path:
-            return []
-        script_path = (skill.path / rel_script).resolve()
-        if script_path.suffix.lower() != ".py" or not script_path.exists():
-            return []
-        try:
-            tree = ast.parse(script_path.read_text(encoding="utf-8"), filename=str(script_path))
-        except Exception:
-            return []
-
-        imported: set[str] = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    name = str(alias.name or "").split(".", 1)[0].strip()
-                    if name:
-                        imported.add(name)
-            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                name = str(node.module).split(".", 1)[0].strip()
-                if name:
-                    imported.add(name)
-
-        missing: list[str] = []
-        stdlib = getattr(sys, "stdlib_module_names", set())
-        for name in sorted(imported):
-            if name in stdlib:
-                continue
-            if self._script_has_local_module(skill, script_path, name):
-                continue
-            if not self._python_module_available(name):
-                missing.append(name)
-        return missing
+        return self._script_inspector.python_script_missing_modules(skill, rel_script)
 
     def _script_interpreter(self, ext: str) -> list[str] | None:
-        normalized = str(ext or "").lower()
-        if normalized == ".py":
-            return [self.python_executable]
-        base = _SCRIPT_INTERPRETER_BY_EXT.get(normalized)
-        return list(base) if base else None
+        return self._script_inspector.script_interpreter(ext)
 
     def _python_module_available(self, module_name: str) -> bool:
-        cached = self._python_module_probe_cache.get(module_name)
-        if cached is not None:
-            return cached
-
-        python_exec = str(self.python_executable or sys.executable)
-        if python_exec == sys.executable:
-            try:
-                available = importlib.util.find_spec(module_name) is not None
-            except Exception:
-                available = False
-            self._python_module_probe_cache[module_name] = available
-            return available
-
-        try:
-            proc = subprocess.run(
-                [
-                    python_exec,
-                    "-c",
-                    "import importlib.util,sys; raise SystemExit(0 if importlib.util.find_spec(sys.argv[1]) else 1)",
-                    module_name,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                env=self._proc_env_base,
-            )
-            available = proc.returncode == 0
-        except Exception:
-            available = False
-        self._python_module_probe_cache[module_name] = available
-        return available
+        return self._script_inspector.python_module_available(module_name)
 
     def _skill_entrypoints(self, skill: SkillManifest) -> list[SkillEntrypointDef]:
         return list(getattr(skill, "entrypoints", []) or [])
@@ -1627,4 +1472,4 @@ class SkillRuntime:
             meta["duration_ms"] = int(meta.get("duration_ms", duration_ms))
             out["meta"] = meta
             return out
-        return _ok(result, duration_ms)
+        return cast(dict[str, Any], _ok(result, duration_ms))
