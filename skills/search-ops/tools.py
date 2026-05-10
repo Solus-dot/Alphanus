@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
@@ -8,10 +9,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import ipaddress
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from html import unescape
-from typing import Any, Dict, List
+from typing import Any
 
 from core.skills import ToolExecutionEnv
 from core.streaming import should_retry
@@ -88,7 +88,7 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 _NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler())
 
 
-def _request(url: str, *, data: bytes | None = None, headers: Dict[str, str] | None = None) -> urllib.request.Request:
+def _request(url: str, *, data: bytes | None = None, headers: dict[str, str] | None = None) -> urllib.request.Request:
     merged = {"User-Agent": _USER_AGENT}
     if headers:
         merged.update(headers)
@@ -140,7 +140,7 @@ def _canonicalize_url(url: str) -> str:
     return urllib.parse.urlunparse(cleaned)
 
 
-def _query_tokens(query: str) -> List[str]:
+def _query_tokens(query: str) -> list[str]:
     return [
         token
         for token in re.findall(r"[a-z0-9]{2,}", str(query or "").lower())
@@ -166,8 +166,8 @@ def _parse_dateish(value: Any) -> str:
         try:
             dt = datetime.strptime(cleaned, fmt)
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.astimezone(timezone.utc).isoformat()
+                dt = dt.replace(tzinfo=UTC)
+            return dt.astimezone(UTC).isoformat()
         except ValueError:
             continue
     try:
@@ -175,8 +175,8 @@ def _parse_dateish(value: Any) -> str:
     except ValueError:
         return ""
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).isoformat()
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).isoformat()
 
 
 def _freshness_score(published_at: str) -> float:
@@ -186,7 +186,7 @@ def _freshness_score(published_at: str) -> float:
         dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
     except ValueError:
         return 0.0
-    age_days = max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds() / 86400.0)
+    age_days = max(0.0, (datetime.now(UTC) - dt.astimezone(UTC)).total_seconds() / 86400.0)
     return round(max(0.0, 1.0 - min(age_days, 365.0) / 365.0), 2)
 
 
@@ -250,7 +250,7 @@ def _raw_published_at(item: dict) -> str:
 
 
 def _selection_reason(source_type: str, query_match_score: float, freshness_score: float) -> str:
-    reasons: List[str] = []
+    reasons: list[str] = []
     if source_type in {"official", "documentation"}:
         reasons.append("primary or official source")
     elif source_type == "news":
@@ -279,14 +279,14 @@ def _provider_name(env: ToolExecutionEnv) -> str:
     return str(search_cfg.get("provider", "tavily")).strip().lower() or "tavily"
 
 
-def _search_cfg(env: ToolExecutionEnv) -> Dict[str, Any]:
+def _search_cfg(env: ToolExecutionEnv) -> dict[str, Any]:
     if not isinstance(getattr(env, "config", None), dict):
         return {}
     cfg = env.config.get("search")
     return cfg if isinstance(cfg, dict) else {}
 
 
-def _cfg_float(search_cfg: Dict[str, Any], key: str, default: float, *, minimum: float = 0.0) -> float:
+def _cfg_float(search_cfg: dict[str, Any], key: str, default: float, *, minimum: float = 0.0) -> float:
     raw = search_cfg.get(key, default)
     try:
         value = float(raw)
@@ -295,7 +295,7 @@ def _cfg_float(search_cfg: Dict[str, Any], key: str, default: float, *, minimum:
     return max(minimum, value)
 
 
-def _cfg_int(search_cfg: Dict[str, Any], key: str, default: int, *, minimum: int = 0) -> int:
+def _cfg_int(search_cfg: dict[str, Any], key: str, default: int, *, minimum: int = 0) -> int:
     raw = search_cfg.get(key, default)
     try:
         value = int(raw)
@@ -304,7 +304,7 @@ def _cfg_int(search_cfg: Dict[str, Any], key: str, default: int, *, minimum: int
     return max(minimum, value)
 
 
-def _cfg_bool(search_cfg: Dict[str, Any], key: str, default: bool) -> bool:
+def _cfg_bool(search_cfg: dict[str, Any], key: str, default: bool) -> bool:
     raw = search_cfg.get(key, default)
     if isinstance(raw, bool):
         return raw
@@ -343,7 +343,7 @@ def _per_provider_limit(limit: int, env: ToolExecutionEnv) -> int:
     return max(1, min(requested, 10))
 
 
-def _provider_order(env: ToolExecutionEnv) -> List[str]:
+def _provider_order(env: ToolExecutionEnv) -> list[str]:
     primary = _provider_name(env)
     if primary == "brave":
         return ["brave", "tavily"]
@@ -373,7 +373,7 @@ def _brave_api_key() -> str:
     return _api_key("BRAVE_SEARCH_API_KEY", "Brave Search API key not configured")
 
 
-def _normalize_result_item(item: dict, *, provider: str, provider_rank: int, query: str) -> Dict[str, Any] | None:
+def _normalize_result_item(item: dict, *, provider: str, provider_rank: int, query: str) -> dict[str, Any] | None:
     url = str(item.get("url", "")).strip()
     title = _clean_text(item.get("title", ""))
     if not url.startswith(("http://", "https://")) or not title:
@@ -407,14 +407,14 @@ def _normalize_result_item(item: dict, *, provider: str, provider_rank: int, que
     }
 
 
-def _provider_payload(raw_results: list[dict], limit: int, *, provider: str, provider_rank: int, query: str) -> Dict[str, Any]:
+def _provider_payload(raw_results: list[dict], limit: int, *, provider: str, provider_rank: int, query: str) -> dict[str, Any]:
     results = _normalize_results(raw_results, limit, provider=provider, provider_rank=provider_rank, query=query)
     if not results:
         raise RuntimeError(f"{provider.title()} returned no usable results")
     return {"results": results, "provider": provider, "search_engine": provider}
 
 
-def _result_score(item: Dict[str, Any]) -> float:
+def _result_score(item: dict[str, Any]) -> float:
     trust_score = float(item.get("trust_score", 0.0) or 0.0)
     query_match_score = float(item.get("query_match_score", 0.0) or 0.0)
     freshness_score = float(item.get("freshness_score", 0.0) or 0.0)
@@ -429,8 +429,8 @@ def _result_score(item: Dict[str, Any]) -> float:
     )
 
 
-def _merge_search_payloads(payloads: List[Dict[str, Any]], limit: int) -> Dict[str, Any]:
-    deduped: Dict[str, Dict[str, Any]] = {}
+def _merge_search_payloads(payloads: list[dict[str, Any]], limit: int) -> dict[str, Any]:
+    deduped: dict[str, dict[str, Any]] = {}
     for payload in payloads:
         for item in payload.get("results", []):
             if not isinstance(item, dict):
@@ -459,7 +459,7 @@ def _merge_search_payloads(payloads: List[Dict[str, Any]], limit: int) -> Dict[s
         item["rank"] = index
         item.pop("_score", None)
 
-    providers_used: List[str] = []
+    providers_used: list[str] = []
     for payload in payloads:
         provider = str(payload.get("provider", "")).strip().lower()
         if provider and provider not in providers_used:
@@ -482,7 +482,7 @@ def _request_json(
     timeout_s: float,
     retries: int,
     retry_backoff_s: float,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     attempt = 0
     while True:
         try:
@@ -513,7 +513,7 @@ def _request_json(
 
 
 def _normalize_results(raw_results: list[dict], limit: int, *, provider: str, provider_rank: int, query: str) -> list[dict]:
-    deduped: Dict[str, Dict[str, Any]] = {}
+    deduped: dict[str, dict[str, Any]] = {}
     for item in raw_results:
         if not isinstance(item, dict):
             continue
@@ -543,7 +543,7 @@ def _search_with_tavily(
     timeout_s: float = 20.0,
     retries: int = 1,
     retry_backoff_s: float = 0.5,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     key = _tavily_api_key()
     lowered = query.lower()
     is_newsish = any(token in lowered for token in ("latest", "today", "recent", "current", "news", "update"))
@@ -588,7 +588,7 @@ def _search_with_brave(
     timeout_s: float = 20.0,
     retries: int = 1,
     retry_backoff_s: float = 0.5,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     key = _brave_api_key()
     params = urllib.parse.urlencode(
         {
@@ -624,10 +624,10 @@ def _search_with_brave(
     return out
 
 
-def _search(query: str, limit: int, env: ToolExecutionEnv) -> Dict[str, Any]:
-    errors: List[str] = []
-    provider_chain: List[Dict[str, Any]] = []
-    successful_payloads: List[Dict[str, Any]] = []
+def _search(query: str, limit: int, env: ToolExecutionEnv) -> dict[str, Any]:
+    errors: list[str] = []
+    provider_chain: list[dict[str, Any]] = []
+    successful_payloads: list[dict[str, Any]] = []
     merge_providers = _merge_providers_enabled(env)
     timeout_s = _request_timeout_s(env)
     retries = _request_retries(env)
@@ -744,8 +744,8 @@ def _is_private_or_local_host(host: str) -> bool:
     return False
 
 
-def _meta_attr_map(raw_attrs: str) -> Dict[str, str]:
-    attrs: Dict[str, str] = {}
+def _meta_attr_map(raw_attrs: str) -> dict[str, str]:
+    attrs: dict[str, str] = {}
     for match in _ATTR_RE.finditer(raw_attrs or ""):
         key = str(match.group(1) or "").strip().lower()
         value = match.group(3) or match.group(4) or match.group(5) or ""
@@ -754,7 +754,7 @@ def _meta_attr_map(raw_attrs: str) -> Dict[str, str]:
     return attrs
 
 
-def _meta_content(payload: str, keys: List[str]) -> str:
+def _meta_content(payload: str, keys: list[str]) -> str:
     wanted = {str(key).strip().lower() for key in keys if str(key).strip()}
     if not wanted:
         return ""
@@ -768,8 +768,8 @@ def _meta_content(payload: str, keys: List[str]) -> str:
     return ""
 
 
-def _extract_headings(payload: str) -> List[str]:
-    headings: List[str] = []
+def _extract_headings(payload: str) -> list[str]:
+    headings: list[str] = []
     for match in _HEADING_RE.finditer(payload or ""):
         text = _clean_text(_TAG_RE.sub(" ", match.group(2)))
         if text:
@@ -777,8 +777,8 @@ def _extract_headings(payload: str) -> List[str]:
     return headings[:8]
 
 
-def _extract_blocks(payload: str) -> List[str]:
-    blocks: List[str] = []
+def _extract_blocks(payload: str) -> list[str]:
+    blocks: list[str] = []
     body = _SCRIPT_STYLE_RE.sub(" ", payload or "")
     for match in _BLOCK_CAPTURE_RE.finditer(body):
         text = _clean_text(_TAG_RE.sub(" ", match.group(1)))
@@ -787,7 +787,7 @@ def _extract_blocks(payload: str) -> List[str]:
     body = _BLOCK_TAG_RE.sub("\n", body)
     body = _TAG_RE.sub(" ", body)
     fallback_lines = [line for line in (_clean_text(chunk) for chunk in body.splitlines()) if line]
-    merged: List[str] = []
+    merged: list[str] = []
     seen: set[str] = set()
     for item in blocks + fallback_lines:
         if item in seen:
@@ -802,7 +802,7 @@ def _html_to_text(payload: str) -> str:
     return "\n\n".join(blocks)
 
 
-def _best_passages(text: str, limit: int = 3) -> List[str]:
+def _best_passages(text: str, limit: int = 3) -> list[str]:
     candidates = [chunk.strip() for chunk in re.split(r"\n{2,}", text) if chunk.strip()]
     if not candidates:
         candidates = [chunk.strip() for chunk in re.split(r"(?<=[.!?])\s+", text) if chunk.strip()]
@@ -817,7 +817,7 @@ def _fetch(
     retries: int = 1,
     retry_backoff_s: float = 0.5,
     max_redirects: int = 5,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if not (url.startswith("http://") or url.startswith("https://")):
         raise ValueError("URL must start with http:// or https://")
 
@@ -886,7 +886,7 @@ def _fetch(
     description = ""
     published_at = ""
     author = ""
-    headings: List[str] = []
+    headings: list[str] = []
 
     if "html" in normalized_content_type:
         description = _meta_content(payload, ["description", "og:description", "twitter:description"])
@@ -933,7 +933,7 @@ def _fetch(
     }
 
 
-def execute(tool_name: str, args: Dict[str, Any], env: ToolExecutionEnv):
+def execute(tool_name: str, args: dict[str, Any], env: ToolExecutionEnv):
     if tool_name == "web_search":
         query = str(args["query"]).strip()
         limit = int(args.get("limit", 5) or 5)
