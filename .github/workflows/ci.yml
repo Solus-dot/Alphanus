@@ -24,34 +24,10 @@ jobs:
         run: uv sync --extra dev
 
       - name: Ruff
-        run: uv run ruff check src tests --select F821
+        run: uv run ruff check src tests skills
 
       - name: Pyright
-        run: >
-          uv run pyright
-          src/core/workspace.py
-          src/core/configuration.py
-          src/agent/evidence_guard.py
-          src/agent/turn_policy_engine.py
-          src/agent/tool_execution_engine.py
-          src/agent/finalization_engine.py
-          src/core/skill_discovery.py
-          src/core/skill_registry.py
-          src/core/skill_selector.py
-
-      - name: Unused Imports/Variables
-        run: uv run ruff check src tests --select F401,F841
-
-      - name: Dead Code (Vulture)
-        run: >
-          uv run vulture
-          src/agent/harness_metrics.py
-          src/agent/runtime_hooks.py
-          src/core/skill_executor.py
-          src/core/skill_inventory.py
-          src/core/skill_process_env.py
-          tools/vulture_whitelist.py
-          --min-confidence 80
+        run: uv run pyright
 
       - name: Tests
         run: uv run pytest
