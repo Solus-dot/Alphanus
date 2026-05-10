@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Dict
 
 from core.skills import ToolExecutionEnv
 
@@ -83,14 +82,14 @@ def _normalize_whitespace(value: str) -> str:
     return " ".join(value.strip().split()).lower()
 
 
-def _memory_cfg(env: ToolExecutionEnv) -> Dict[str, object]:
+def _memory_cfg(env: ToolExecutionEnv) -> dict[str, object]:
     if not isinstance(getattr(env, "config", None), dict):
         return {}
     cfg = env.config.get("memory")
     return cfg if isinstance(cfg, dict) else {}
 
 
-def _cfg_score(cfg: Dict[str, object], key: str, default: float) -> float:
+def _cfg_score(cfg: dict[str, object], key: str, default: float) -> float:
     raw = cfg.get(key, default)
     try:
         value = float(raw)
