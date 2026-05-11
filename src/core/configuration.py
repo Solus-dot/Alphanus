@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "2.0.0"
 MAX_CONFIG_BYTES = 512 * 1024
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
