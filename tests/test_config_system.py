@@ -33,9 +33,16 @@ def test_normalize_config_strips_secret_like_fields() -> None:
     assert any("secret-like fields" in item for item in warnings)
 
 
-def test_normalize_config_rejects_v1_config_after_v2_reset() -> None:
+def test_normalize_config_upgrades_v1_config_after_v2_reset() -> None:
+    normalized, warnings = normalize_config({"schema_version": "1.0.0"})
+
+    assert normalized["schema_version"] == "2.0.0"
+    assert any("Upgraded config schema_version from 1.0.0 to 2.0.0" in warning for warning in warnings)
+
+
+def test_normalize_config_rejects_future_major_schema() -> None:
     with pytest.raises(ValueError, match="Unsupported config schema_version"):
-        normalize_config({"schema_version": "1.0.0"})
+        normalize_config({"schema_version": "99.0.0"})
 
 
 def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
@@ -178,6 +185,21 @@ def test_load_global_config_scrubs_secret_fields_on_disk(tmp_path: Path) -> None
     assert "tavily_api_key" not in loaded["search"]
     assert "tavily_api_key" not in disk
     assert any("on disk" in warning for warning in warnings)
+
+
+def test_load_global_config_updates_v1_schema_on_disk(tmp_path: Path) -> None:
+    cfg = tmp_path / "config" / "global_config.json"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text('{"schema_version": "1.0.0","agent":{"request_timeout_s":42}}', encoding="utf-8")
+
+    warnings: list[str] = []
+    loaded = load_global_config(cfg, warnings=warnings)
+    disk = cfg.read_text(encoding="utf-8")
+
+    assert loaded["schema_version"] == "2.0.0"
+    assert loaded["agent"]["request_timeout_s"] == 42.0
+    assert '"schema_version": "2.0.0"' in disk
+    assert any("Updated config/global_config.json schema_version on disk" in warning for warning in warnings)
 
 
 def test_load_global_config_fails_for_missing_file(tmp_path: Path) -> None:

@@ -387,15 +387,20 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
 
     warnings: list[str] = []
     schema_raw = str(raw_config.get("schema_version", SCHEMA_VERSION)).strip() or SCHEMA_VERSION
-    if _major(schema_raw) != _major(SCHEMA_VERSION):
+    schema_major = _major(schema_raw)
+    current_major = _major(SCHEMA_VERSION)
+    if schema_major > current_major:
         raise ValueError(f"Unsupported config schema_version: {schema_raw}")
+    if schema_major < current_major:
+        _warn(warnings, f"Upgraded config schema_version from {schema_raw} to {SCHEMA_VERSION}.")
 
     sanitized_input, stripped = strip_secret_fields(raw_config)
     if stripped:
         _warn(warnings, "Removed secret-like fields from config; use environment variables for secrets.")
+    sanitized_input["schema_version"] = SCHEMA_VERSION
 
     merged = deep_merge(DEFAULT_CONFIG, sanitized_input)
-    merged["schema_version"] = schema_raw
+    merged["schema_version"] = SCHEMA_VERSION
     input_agent_cfg = sanitized_input.get("agent", {}) if isinstance(sanitized_input.get("agent"), dict) else {}
 
     default_agent = DEFAULT_CONFIG["agent"]
@@ -1072,6 +1077,10 @@ def _load_existing_global_config(path: Path, *, warnings: list[str] | None = Non
     normalized, local_warnings = normalize_config(raw)
     if warnings is not None:
         warnings.extend(local_warnings)
+    if str(raw.get("schema_version", "")).strip() != str(normalized.get("schema_version", "")).strip():
+        path.write_text(json.dumps(normalized, indent=2) + "\n", encoding="utf-8")
+        if warnings is not None:
+            warnings.append("Updated config/global_config.json schema_version on disk.")
     return normalized
 
 
