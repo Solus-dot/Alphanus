@@ -25,6 +25,7 @@ from core.skill_registry import SkillRegistry
 from core.skill_run_validation import SkillRunValidator
 from core.skill_script_inspector import SkillScriptInspector
 from core.skill_selector import SkillSelector
+from core.skill_tool_schema import SkillToolSchemaBuilder
 from core.tool_results import ToolResult, error_result, ok_result
 from core.workspace import WorkspaceManager
 
@@ -181,6 +182,7 @@ class SkillRuntime:
         self._tools_schema_cache: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
         self._python_module_probe_cache: dict[str, bool] = {}
         self._script_inspector = SkillScriptInspector(self)
+        self._tool_schema_builder = SkillToolSchemaBuilder(self, run_skill_tool_name=_RUN_SKILL_TOOL_NAME)
         self._inventory_loader = SkillInventoryLoader(self)
         self._skill_executor = SkillExecutor(
             self,
@@ -1184,55 +1186,10 @@ class SkillRuntime:
         names: list[str],
         selected: list[SkillManifest],
     ) -> tuple[Any, ...]:
-        selected_ids = tuple(str(getattr(skill, "id", "")).strip() for skill in selected if str(getattr(skill, "id", "")).strip())
-        active_skill_ids = tuple(self._active_skill_ids(selected))
-        return (
-            self.generation,
-            selected_ids,
-            tuple(names),
-            active_skill_ids,
-        )
+        return SkillToolSchemaBuilder.cache_key(names, selected, generation=self.generation)
 
     def _dynamic_run_skill_schema(self, selected: list[SkillManifest], ctx: SkillContext | None) -> dict[str, Any]:
-        executable_skills = [
-            skill
-            for skill in selected
-            if not skill.disable_model_invocation
-            and (self._exposed_relevant_skill_entrypoints(skill, ctx) or self._exposed_relevant_skill_scripts(skill, ctx))
-        ]
-        properties: dict[str, Any] = {
-            "skill_id": {"type": "string"},
-            "entrypoint": {"type": "string"},
-            "script": {"type": "string"},
-            "params": {"type": "object"},
-            "argv": {"type": "array", "items": {"type": "string"}},
-            "stdin": {"type": "string"},
-            "timeout_s": {"type": "integer"},
-        }
-        if len(executable_skills) > 1:
-            properties["skill_id"] = {"type": "string", "enum": [skill.id for skill in executable_skills]}
-
-        entrypoint_names = sorted(
-            dict.fromkeys(
-                entrypoint.name for skill in executable_skills for entrypoint in self._exposed_relevant_skill_entrypoints(skill, ctx)
-            )
-        )
-        if entrypoint_names:
-            properties["entrypoint"] = {"type": "string", "enum": entrypoint_names}
-
-        script_names = sorted(
-            dict.fromkeys(rel_script for skill in executable_skills for rel_script in self._exposed_relevant_skill_scripts(skill, ctx))
-        )
-        if script_names:
-            properties["script"] = {"type": "string", "enum": script_names}
-
-        required = ["skill_id"] if len(executable_skills) > 1 else []
-        return {
-            "type": "object",
-            "properties": properties,
-            "required": required,
-            "additionalProperties": False,
-        }
+        return self._tool_schema_builder.dynamic_run_skill_schema(selected, ctx)
 
     def _tool_schemas(
         self,
@@ -1240,34 +1197,7 @@ class SkillRuntime:
         selected: list[SkillManifest] | None = None,
         ctx: SkillContext | None = None,
     ) -> list[dict[str, Any]]:
-        tools = []
-        for name in names:
-            reg = self._tool_registry[name]
-            parameters = reg.parameters
-            description = reg.description
-            if reg.name == _RUN_SKILL_TOOL_NAME and selected is not None:
-                parameters = self._dynamic_run_skill_schema(selected, ctx)
-                available_paths: list[str] = []
-                for skill in selected:
-                    if skill.disable_model_invocation:
-                        continue
-                    for entrypoint in self._exposed_relevant_skill_entrypoints(skill, ctx):
-                        available_paths.append(f"{skill.id}:{entrypoint.name}")
-                    for rel_script in self._exposed_relevant_skill_scripts(skill, ctx):
-                        available_paths.append(f"{skill.id}:{rel_script}")
-                if available_paths:
-                    description = f"{reg.description} Available executable paths: {', '.join(sorted(dict.fromkeys(available_paths))[:8])}."
-            tools.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": reg.name,
-                        "description": description,
-                        "parameters": parameters,
-                    },
-                }
-            )
-        return tools
+        return self._tool_schema_builder.build(names, selected=selected, ctx=ctx)
 
     def tools_for_turn(
         self,

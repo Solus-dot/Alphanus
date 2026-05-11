@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 from pathlib import Path
 from typing import cast
 
@@ -202,7 +201,7 @@ def test_shell_confirmation_reuses_recent_assistant_action_context(mocker, tmp_p
         assert pass_id == "turn_classify"
         return type("R", (), {"finish_reason": "stop", "content": '{"followup_kind":"confirmation"}'})()
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
 
     history_messages = cast(
         list[ChatMessage],
@@ -212,13 +211,13 @@ def test_shell_confirmation_reuses_recent_assistant_action_context(mocker, tmp_p
         ],
     )
 
-    ctx = agent._build_skill_context("Yeah check my version", [], [], history_messages)
+    ctx = agent.classifier.build_skill_context("Yeah check my version", [], [], history_messages)
     ctx.loaded_skill_ids = ["shell-ops"]
 
     assert "assistant just said:" in ctx.recent_routing_hint
     assert "go version" in ctx.recent_routing_hint
 
-    selected = agent._select_skills(ctx, threading.Event())
+    selected = agent.skill_runtime.select_skills(ctx)
 
     assert selected
     assert any(skill.id == "shell-ops" for skill in selected)
