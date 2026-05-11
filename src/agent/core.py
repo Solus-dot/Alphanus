@@ -8,7 +8,7 @@ from typing import Any
 
 from agent.classifier import TurnClassifier
 from agent.config_values import coerce_int, get_json_object
-from agent.context import ContextWindowManager
+from agent.context import DEFAULT_CONTEXT_LIMIT, DEFAULT_KEEP_LAST_N, DEFAULT_SAFETY_MARGIN, ContextWindowManager
 from agent.harness_metrics import HarnessMetrics
 from agent.llm_client import LLMClient
 from agent.orchestrator import TurnOrchestrator, request_user_input_passthrough
@@ -16,6 +16,7 @@ from agent.policies import PromptPolicyRenderer
 from agent.prompts import build_system_prompt
 from agent.runtime_hooks import AgentTurnRuntimeHooks
 from agent.telemetry import TelemetryEmitter
+from core.config_model import TypedConfigV2
 from core.configuration import validate_endpoint_policy
 from core.message_types import ChatMessage, JsonObject
 from core.skills import SkillRuntime
@@ -51,14 +52,6 @@ class Agent:
         self.reload_config(config)
 
     @property
-    def _ready_checked(self) -> bool:
-        return bool(self.llm_client._ready_checked)
-
-    @_ready_checked.setter
-    def _ready_checked(self, value: bool) -> None:
-        self.llm_client._ready_checked = bool(value)
-
-    @property
     def connect_timeout_s(self) -> float:
         return float(self.llm_client.connect_timeout_s)
 
@@ -88,11 +81,12 @@ class Agent:
         self.skill_runtime.refresh_process_env()
         self.skill_runtime.load_skills()
         context_cfg = get_json_object(config, "context")
-        self.context_mgr.context_limit = coerce_int(context_cfg.get("context_limit", 8192), 8192, minimum=1)
-        self.context_mgr.keep_last_n = coerce_int(context_cfg.get("keep_last_n", 10), 10, minimum=1)
-        self.context_mgr.safety_margin = coerce_int(context_cfg.get("safety_margin", 500), 500, minimum=0)
+        self.context_mgr.context_limit = coerce_int(context_cfg.get("context_limit"), DEFAULT_CONTEXT_LIMIT, minimum=1)
+        self.context_mgr.keep_last_n = coerce_int(context_cfg.get("keep_last_n"), DEFAULT_KEEP_LAST_N, minimum=1)
+        self.context_mgr.safety_margin = coerce_int(context_cfg.get("safety_margin"), DEFAULT_SAFETY_MARGIN, minimum=0)
         self.system_prompt = build_system_prompt(str(self.skill_runtime.workspace.workspace_root))
         self.llm_client.reload_config(config)
+        self.typed_config = TypedConfigV2.from_normalized_config(config, auth_header=self.llm_client.auth_header)
         self.classifier.reload_config(config)
         self.classifier.bind_runtime_hooks(self._runtime_hooks)
         self.prompt_renderer.system_prompt = self.system_prompt
@@ -208,7 +202,7 @@ class Agent:
 
     def build_support_bundle(self, tree_payload: dict[str, object]) -> dict[str, object]:
         return {
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "created_at": datetime.now(UTC).isoformat(),
             "doctor": self.doctor_report(),
             "tree": tree_payload,
@@ -216,48 +210,6 @@ class Agent:
 
     def reload_skills(self) -> int:
         return self.classifier.reload_skills()
-
-    @staticmethod
-    def _extract_model_name(payload: object) -> str | None:
-        return LLMClient.extract_model_name(payload)
-
-    @staticmethod
-    def _extract_model_context_window(payload: object) -> int | None:
-        return LLMClient.extract_model_context_window(payload)
-
-    def _build_skill_context(
-        self,
-        user_input: str,
-        branch_labels: list[str],
-        attachments: list[str],
-        history_messages: list[ChatMessage] | None = None,
-        loaded_skill_ids: list[str] | None = None,
-    ):
-        return self.classifier.build_skill_context(user_input, branch_labels, attachments, history_messages, loaded_skill_ids)
-
-    def _classify_turn(self, ctx, stop_event=None):
-        return self.classifier.classify(ctx, stop_event=stop_event)
-
-    def _select_turn(self, ctx, stop_event):
-        classification = self._classify_turn(ctx, stop_event=stop_event)
-        selected = self._select_skills(ctx, stop_event, classification=classification)
-        return classification, selected
-
-    def _select_skills(self, ctx, stop_event, classification=None):
-        return self.skill_runtime.select_skills(ctx)
-
-    def _explicit_path_outside_workspace(self, text: str) -> str:
-        return self.classifier._explicit_path_outside_workspace(text)
-
-    def _prefers_local_workspace_tools(self, ctx, selected) -> bool:
-        classification = self._classify_turn(ctx)
-        return classification.prefer_local_workspace_tools
-
-    def _call_with_retry(self, payload: JsonObject, stop_event, on_event, pass_id: str):
-        return self.llm_client.call_with_retry(payload, stop_event, on_event, pass_id)
-
-    def _tool_call_args_for_history(self, args: JsonObject) -> JsonObject:
-        return self.orchestrator.tool_call_args_for_history(args)
 
     def _record_and_return(self, result: AgentTurnResult) -> AgentTurnResult:
         try:

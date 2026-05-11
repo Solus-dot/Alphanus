@@ -13,10 +13,18 @@ import pytest
 
 from agent.core import Agent
 from agent.policies import PromptPolicyRenderer
+from agent.provider_metadata import ProviderMetadataExtractor
 from core.memory import LexicalMemory
 from core.skills import SkillContext, SkillRuntime
 from core.types import ModelStatus, TurnClassification, TurnPolicySnapshot
 from core.workspace import WorkspaceManager
+
+TEST_BASE_URL = "http://127.0.0.1:8080"
+TEST_MODEL_ENDPOINT = f"{TEST_BASE_URL}/v1/chat/completions"
+TEST_RESPONSES_ENDPOINT = f"{TEST_BASE_URL}/v1/responses"
+TEST_MODELS_ENDPOINT = f"{TEST_BASE_URL}/v1/models"
+TEST_SLOTS_ENDPOINT = f"{TEST_BASE_URL}/slots"
+TEST_PROPS_ENDPOINT = f"{TEST_BASE_URL}/props"
 
 
 class FakeResponse:
@@ -106,8 +114,8 @@ def execute(tool_name, args, env):
 def test_agent_tool_call_loop(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -175,8 +183,8 @@ def test_agent_tool_call_loop(mocker, runtime: SkillRuntime):
 def test_agent_records_model_usage_from_stream(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -215,8 +223,8 @@ def test_agent_records_model_usage_from_stream(mocker, runtime: SkillRuntime):
 def test_agent_journal_contains_turn_trace_payload_and_tools(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -279,8 +287,8 @@ def test_agent_journal_contains_turn_trace_payload_and_tools(mocker, runtime: Sk
 def test_image_turn_without_selected_skill_tools_omits_tool_schemas(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -343,8 +351,8 @@ def test_image_turn_keeps_model_exposed_core_tools_for_workspace_actions(
 ):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -422,8 +430,8 @@ def test_leading_system_messages_stop_at_first_non_system(runtime: SkillRuntime)
 def test_image_turn_reports_clear_error_when_backend_rejects_multimodal_prompt(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -472,8 +480,8 @@ def test_image_turn_reports_clear_error_when_backend_rejects_multimodal_prompt(m
 def test_image_turn_reports_mmproj_hint_when_backend_has_no_image_support(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -525,8 +533,8 @@ def test_image_turn_reports_mmproj_hint_when_backend_has_no_image_support(mocker
 def test_image_turn_retries_with_latest_user_only_after_tokenize_failure(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -594,8 +602,8 @@ def test_image_turn_retries_with_latest_user_only_after_tokenize_failure(mocker,
 def test_agent_run_turn_exercises_structured_classification_path(mocker, runtime: SkillRuntime, monkeypatch: pytest.MonkeyPatch):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -652,8 +660,8 @@ def test_agent_run_turn_exercises_structured_classification_path(mocker, runtime
 def test_agent_requests_final_answer_if_post_tool_content_empty(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -729,8 +737,8 @@ def test_agent_requests_final_answer_if_post_tool_content_empty(mocker, runtime:
 def test_agent_does_not_finish_after_helper_file_for_opaque_artifact_request(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -742,7 +750,7 @@ def test_agent_does_not_finish_after_helper_file_for_opaque_artifact_request(moc
     agent = Agent(cfg, runtime)
     chat_reqs = []
 
-    mocker.patch.object(agent, "_select_skills", return_value=runtime.enabled_skills())
+    mocker.patch.object(agent.skill_runtime, "select_skills", return_value=runtime.enabled_skills())
 
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):
@@ -898,7 +906,7 @@ def test_confirmation_turn_reuses_immediate_prior_skill_context(mocker, runtime:
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
         return type("R", (), {"finish_reason": "stop", "content": '{"skills":["workspace-ops"]}'})()
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
 
     history_messages = [
         {"role": "user", "content": "delete all files in the workspace"},
@@ -916,13 +924,13 @@ def test_confirmation_turn_reuses_immediate_prior_skill_context(mocker, runtime:
         {"role": "tool", "name": "create_file", "content": '{"ok": true, "data": {"filepath": "a.txt"}}'},
     ]
 
-    ctx = agent._build_skill_context("yes", [], [], history_messages)
+    ctx = agent.classifier.build_skill_context("yes", [], [], history_messages)
 
     assert "previous user request: delete all files in the workspace" in ctx.recent_routing_hint
     assert "tools just used: create_file" in ctx.recent_routing_hint
     assert ctx.sticky_skill_ids == ["workspace-ops"]
 
-    assert agent._select_skills(ctx, threading.Event()) == []
+    assert agent.skill_runtime.select_skills(ctx) == []
 
 
 def test_contextual_followup_reuses_immediate_prior_skill_context(mocker, runtime: SkillRuntime):
@@ -945,9 +953,9 @@ def test_contextual_followup_reuses_immediate_prior_skill_context(mocker, runtim
         {"role": "tool", "name": "create_file", "content": '{"ok": true, "data": {"filepath": "1738/index.html"}}'},
     ]
 
-    ctx = agent._build_skill_context("Where is JS?", [], [], history_messages)
+    ctx = agent.classifier.build_skill_context("Where is JS?", [], [], history_messages)
 
-    assert agent._select_skills(ctx, threading.Event()) == []
+    assert agent.skill_runtime.select_skills(ctx) == []
 
 
 def test_contextual_followup_seed_reuses_immediate_prior_skill_context(runtime: SkillRuntime):
@@ -970,16 +978,16 @@ def test_contextual_followup_seed_reuses_immediate_prior_skill_context(runtime: 
         {"role": "tool", "name": "create_file", "content": '{"ok": true, "data": {"filepath": "1738/index.html"}}'},
     ]
 
-    ctx = agent._build_skill_context("Where is JS?", [], [], history_messages)
+    ctx = agent.classifier.build_skill_context("Where is JS?", [], [], history_messages)
 
-    assert agent._select_skills(ctx, threading.Event()) == []
+    assert agent.skill_runtime.select_skills(ctx) == []
 
 
 def test_confirmation_workspace_action_retries_instead_of_accepting_manual_terminal_advice(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
-        agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation")
+        agent.classifier, "classify", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation")
     )
 
     calls = []
@@ -1039,7 +1047,7 @@ def test_confirmation_workspace_action_retries_instead_of_accepting_manual_termi
         assert tool_name == "create_file"
         return {"ok": True, "data": {"filepath": "notes.txt"}, "error": None, "meta": {}}
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
     mocker.patch.object(runtime, "execute_tool_call", side_effect=fake_execute_tool_call)
 
     result = agent.run_turn(
@@ -1057,7 +1065,7 @@ def test_confirmation_workspace_action_rejects_manual_terminal_advice_after_retr
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
-        agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation")
+        agent.classifier, "classify", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation")
     )
 
     calls = []
@@ -1094,7 +1102,7 @@ def test_confirmation_workspace_action_rejects_manual_terminal_advice_after_retr
             },
         )()
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
 
     result = agent.run_turn(
         history_messages=[{"role": "user", "content": "delete all files in the workspace"}],
@@ -1112,7 +1120,7 @@ def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_u
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
-        agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation")
+        agent.classifier, "classify", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation")
     )
 
     calls = []
@@ -1149,7 +1157,7 @@ def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_u
             },
         )()
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
 
     result = agent.run_turn(
         history_messages=[{"role": "user", "content": "delete all files in the workspace"}],
@@ -1167,7 +1175,7 @@ def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_s
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
-        agent, "_classify_turn", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation")
+        agent.classifier, "classify", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation")
     )
 
     calls = []
@@ -1238,7 +1246,7 @@ def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_s
         assert tool_name == "read_file"
         return {"ok": True, "data": {"filepath": "foo.txt", "content": "alpha"}, "error": None, "meta": {}}
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
     mocker.patch.object(runtime, "execute_tool_call", side_effect=fake_execute_tool_call)
 
     result = agent.run_turn(
@@ -1256,8 +1264,7 @@ def test_workspace_action_preserves_policy_blocked_reply_when_outcome_classifier
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
-        agent,
-        "_classify_turn",
+        agent.classifier, "classify",
         return_value=TurnClassification(requires_workspace_action=True, prefer_local_workspace_tools=True, followup_kind="confirmation"),
     )
 
@@ -1297,7 +1304,7 @@ def test_workspace_action_preserves_policy_blocked_reply_when_outcome_classifier
             raise RuntimeError("timeout")
         raise AssertionError(f"Unexpected pass id: {pass_id}")
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
 
     result = agent.run_turn(
         history_messages=[{"role": "user", "content": "delete all files in the workspace"}],
@@ -1315,8 +1322,7 @@ def test_workspace_action_classifier_failure_does_not_accept_manual_shell_advice
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
-        agent,
-        "_classify_turn",
+        agent.classifier, "classify",
         return_value=TurnClassification(requires_workspace_action=True, prefer_local_workspace_tools=True, followup_kind="confirmation"),
     )
 
@@ -1378,7 +1384,7 @@ def test_workspace_action_classifier_failure_does_not_accept_manual_shell_advice
             )()
         raise AssertionError(f"Unexpected pass id: {pass_id}")
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
 
     result = agent.run_turn(
         history_messages=[{"role": "user", "content": "delete all files in the workspace"}],
@@ -1404,7 +1410,7 @@ def test_run_turn_allows_same_host_endpoints_with_different_ports(mocker, runtim
     agent = Agent(
         {
             "agent": {
-                "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
+                "model_endpoint": TEST_MODEL_ENDPOINT,
                 "models_endpoint": "http://127.0.0.1:9000/v1/models",
                 "allow_cross_host_endpoints": False,
             },
@@ -1413,8 +1419,7 @@ def test_run_turn_allows_same_host_endpoints_with_different_ports(mocker, runtim
     )
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
-        agent,
-        "_call_with_retry",
+        agent.llm_client, "call_with_retry",
         return_value=type(
             "R",
             (),
@@ -1490,7 +1495,7 @@ search
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     selected = [runtime.get_skill("search-ops"), runtime.get_skill("utilities")]
-    mocker.patch.object(agent, "_select_skills", return_value=selected)
+    mocker.patch.object(agent.skill_runtime, "select_skills", return_value=selected)
 
     calls = []
 
@@ -1526,7 +1531,7 @@ search
             )()
         raise AssertionError(f"Unexpected pass id: {pass_id}")
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
 
     result = agent.run_turn(
         history_messages=[{"role": "user", "content": "what is the weather in London?"}],
@@ -1560,7 +1565,7 @@ utilities
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     selected = [runtime.get_skill("utilities")]
-    mocker.patch.object(agent, "_select_skills", return_value=selected)
+    mocker.patch.object(agent.skill_runtime, "select_skills", return_value=selected)
 
     calls = []
 
@@ -1596,7 +1601,7 @@ utilities
             )()
         raise AssertionError(f"Unexpected pass id: {pass_id}")
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
     mocker.patch.object(
         runtime,
         "execute_tool_call",
@@ -1624,7 +1629,7 @@ def test_batch_workspace_delete_does_not_stop_after_first_successful_tool(mocker
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     selected = [runtime.get_skill("workspace-ops")]
-    mocker.patch.object(agent, "_select_skills", return_value=selected)
+    mocker.patch.object(agent.skill_runtime, "select_skills", return_value=selected)
 
     calls = []
 
@@ -1660,7 +1665,7 @@ def test_batch_workspace_delete_does_not_stop_after_first_successful_tool(mocker
             )()
         raise AssertionError(f"Unexpected pass id: {pass_id}")
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
     mocker.patch.object(
         runtime,
         "execute_tool_call",
@@ -1683,7 +1688,7 @@ def test_workspace_scaffold_does_not_stop_after_create_directory(mocker, runtime
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     selected = [runtime.get_skill("workspace-ops")]
-    mocker.patch.object(agent, "_select_skills", return_value=selected)
+    mocker.patch.object(agent.skill_runtime, "select_skills", return_value=selected)
 
     calls = []
 
@@ -1755,7 +1760,7 @@ def test_workspace_scaffold_does_not_stop_after_create_directory(mocker, runtime
             return type("R", (), {"finish_reason": "stop", "content": "Done.", "reasoning": "", "tool_calls": []})()
         raise AssertionError(f"Unexpected pass id: {pass_id}")
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
     executed = []
     real_execute = runtime.execute_tool_call
 
@@ -1788,7 +1793,7 @@ def test_workspace_folder_and_single_file_does_not_stop_after_create_directory(m
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     selected = [runtime.get_skill("workspace-ops")]
-    mocker.patch.object(agent, "_select_skills", return_value=selected)
+    mocker.patch.object(agent.skill_runtime, "select_skills", return_value=selected)
 
     calls = []
 
@@ -1838,7 +1843,7 @@ def test_workspace_folder_and_single_file_does_not_stop_after_create_directory(m
             return type("R", (), {"finish_reason": "stop", "content": "Done.", "reasoning": "", "tool_calls": []})()
         raise AssertionError(f"Unexpected pass id: {pass_id}")
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
     executed = []
     real_execute = runtime.execute_tool_call
 
@@ -1871,7 +1876,7 @@ def test_workspace_readback_request_does_not_stop_after_create_file(mocker, runt
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     selected = [runtime.get_skill("workspace-ops")]
-    mocker.patch.object(agent, "_select_skills", return_value=selected)
+    mocker.patch.object(agent.skill_runtime, "select_skills", return_value=selected)
 
     calls = []
 
@@ -1921,7 +1926,7 @@ def test_workspace_readback_request_does_not_stop_after_create_file(mocker, runt
             return type("R", (), {"finish_reason": "stop", "content": "notes.txt=alpha", "reasoning": "", "tool_calls": []})()
         raise AssertionError(f"Unexpected pass id: {pass_id}")
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
     executed = []
 
     def fake_execute(tool_name, args, selected, ctx, **_kwargs):
@@ -1957,9 +1962,9 @@ def test_workspace_readback_request_does_not_stop_after_create_file(mocker, runt
 def test_local_workspace_tasks_prefer_workspace_tools_but_still_block_fetch_tools(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
-    mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(prefer_local_workspace_tools=True))
+    mocker.patch.object(agent.classifier, "classify", return_value=TurnClassification(prefer_local_workspace_tools=True))
     selected = [runtime.get_skill("workspace-ops")]
-    mocker.patch.object(agent, "_select_skills", return_value=selected)
+    mocker.patch.object(agent.skill_runtime, "select_skills", return_value=selected)
 
     calls = []
 
@@ -2036,7 +2041,7 @@ def test_local_workspace_tasks_prefer_workspace_tools_but_still_block_fetch_tool
             return type("R", (), {"finish_reason": "stop", "content": "Done.", "reasoning": "", "tool_calls": []})()
         raise AssertionError(f"Unexpected pass id: {pass_id}")
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
     executed = []
     real_execute = runtime.execute_tool_call
 
@@ -2071,7 +2076,7 @@ def test_multi_file_scaffold_single_pass_does_not_consume_action_depth_per_file(
     agent = Agent({"agent": {"max_action_depth": 10}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     selected = [runtime.get_skill("workspace-ops")]
-    mocker.patch.object(agent, "_select_skills", return_value=selected)
+    mocker.patch.object(agent.skill_runtime, "select_skills", return_value=selected)
 
     calls = []
 
@@ -2097,7 +2102,7 @@ def test_multi_file_scaffold_single_pass_does_not_consume_action_depth_per_file(
             return type("R", (), {"finish_reason": "stop", "content": "Done.", "reasoning": "", "tool_calls": []})()
         raise AssertionError(f"Unexpected pass id: {pass_id}")
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
     executed = []
     real_execute = runtime.execute_tool_call
 
@@ -2123,12 +2128,11 @@ def test_workspace_action_accepts_successful_mutating_shell_command(mocker, runt
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
-        agent,
-        "_classify_turn",
+        agent.classifier, "classify",
         return_value=TurnClassification(requires_workspace_action=True, prefer_local_workspace_tools=True),
     )
     selected = [runtime.get_skill("workspace-ops")]
-    mocker.patch.object(agent, "_select_skills", return_value=selected)
+    mocker.patch.object(agent.skill_runtime, "select_skills", return_value=selected)
 
     calls = []
 
@@ -2161,7 +2165,7 @@ def test_workspace_action_accepts_successful_mutating_shell_command(mocker, runt
             return type("R", (), {"finish_reason": "stop", "content": "Done.", "reasoning": "", "tool_calls": []})()
         raise AssertionError(f"Unexpected pass id: {pass_id}")
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
     mocker.patch.object(
         runtime,
         "tools_for_turn",
@@ -2195,12 +2199,11 @@ def test_workspace_action_does_not_fingerprint_around_shell_command(mocker, runt
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
-        agent,
-        "_classify_turn",
+        agent.classifier, "classify",
         return_value=TurnClassification(requires_workspace_action=True, prefer_local_workspace_tools=True),
     )
     selected = [runtime.get_skill("workspace-ops")]
-    mocker.patch.object(agent, "_select_skills", return_value=selected)
+    mocker.patch.object(agent.skill_runtime, "select_skills", return_value=selected)
     mocker.patch.object(
         runtime,
         "tools_for_turn",
@@ -2239,7 +2242,7 @@ def test_workspace_action_does_not_fingerprint_around_shell_command(mocker, runt
             return type("R", (), {"finish_reason": "stop", "content": "Done.", "reasoning": "", "tool_calls": []})()
         raise AssertionError(f"Unexpected pass id: {pass_id}")
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
     mocker.patch.object(
         runtime,
         "execute_tool_call",
@@ -2261,7 +2264,6 @@ def test_workspace_action_does_not_fingerprint_around_shell_command(mocker, runt
 
 def test_explicit_external_path_disables_local_workspace_routing(runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
-    selected = [runtime.get_skill("workspace-ops")]
     other_path = str(Path(runtime.workspace.home_root) / "other-project")
     ctx = SkillContext(
         user_input=f"Update the packages in {other_path}, it uses uv",
@@ -2271,15 +2273,15 @@ def test_explicit_external_path_disables_local_workspace_routing(runtime: SkillR
         memory_hits=[],
     )
 
-    assert agent._explicit_path_outside_workspace(ctx.user_input) == other_path
-    assert agent._prefers_local_workspace_tools(ctx, selected) is False
+    assert agent.classifier._explicit_path_outside_workspace(ctx.user_input) == other_path
+    assert agent.classifier.classify(ctx).prefer_local_workspace_tools is False
 
 
 def test_explicit_external_path_adds_prompt_rule_and_skips_local_workspace_rule(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     selected = [runtime.get_skill("workspace-ops")]
-    mocker.patch.object(agent, "_select_skills", return_value=selected)
+    mocker.patch.object(agent.skill_runtime, "select_skills", return_value=selected)
     mocker.patch.object(runtime, "tools_for_turn", return_value=[])
     other_path = str(Path(runtime.workspace.home_root) / "other-project")
 
@@ -2290,7 +2292,7 @@ def test_explicit_external_path_adds_prompt_rule_and_skips_local_workspace_rule(
         assert "Local workspace tool rule:" not in system_text
         return type("R", (), {"finish_reason": "stop", "content": "Need confirmation.", "reasoning": "", "tool_calls": []})()
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_call_with_retry)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
 
     result = agent.run_turn(
         history_messages=[],
@@ -2335,12 +2337,11 @@ def test_policy_rules_include_shell_guidance_only_when_shell_tool_is_exposed(run
 def test_explicit_external_path_ignores_urls(runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
 
-    assert agent._explicit_path_outside_workspace("Use https://example.com as inspiration for the landing page") == ""
+    assert agent.classifier._explicit_path_outside_workspace("Use https://example.com as inspiration for the landing page") == ""
 
 
 def test_explicit_external_path_supports_quoted_paths_with_spaces(runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
-    selected = [runtime.get_skill("workspace-ops")]
     other_path = str(Path(runtime.workspace.home_root) / "Other Project")
     ctx = SkillContext(
         user_input=f'Update the packages in "{other_path}", it uses uv',
@@ -2350,15 +2351,15 @@ def test_explicit_external_path_supports_quoted_paths_with_spaces(runtime: Skill
         memory_hits=[],
     )
 
-    assert agent._explicit_path_outside_workspace(ctx.user_input) == other_path
-    assert agent._prefers_local_workspace_tools(ctx, selected) is False
+    assert agent.classifier._explicit_path_outside_workspace(ctx.user_input) == other_path
+    assert agent.classifier.classify(ctx).prefer_local_workspace_tools is False
 
 
 def test_finalization_retries_when_model_leaks_tool_markup(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -2435,8 +2436,8 @@ def test_finalization_retries_when_model_leaks_tool_markup(mocker, runtime: Skil
 def test_finalization_sanitizes_failed_tool_error_context(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -2525,8 +2526,8 @@ def test_finalization_sanitizes_failed_tool_error_context(mocker, runtime: Skill
 def test_finalization_uses_fallback_when_markup_repeats(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -2603,8 +2604,8 @@ def test_finalization_uses_fallback_when_markup_repeats(mocker, runtime: SkillRu
 def test_finalization_strips_think_tags_from_model_output(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -2645,8 +2646,8 @@ def test_finalization_strips_think_tags_from_model_output(mocker, runtime: Skill
 def test_main_pass_tool_markup_forces_clean_finalization(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -2740,8 +2741,8 @@ def execute(tool_name, args, env):
 
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -2837,8 +2838,8 @@ def execute(tool_name, args, env):
 
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -2923,8 +2924,8 @@ def execute(tool_name, args, env):
 
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -2935,8 +2936,7 @@ def execute(tool_name, args, env):
     }
     agent = Agent(cfg, runtime)
     mocker.patch.object(
-        agent,
-        "_classify_turn",
+        agent.classifier, "classify",
         return_value=TurnClassification(time_sensitive=True),
     )
 
@@ -3025,8 +3025,8 @@ def execute(tool_name, args, env):
 
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -3121,8 +3121,8 @@ def execute(tool_name, args, env):
 
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -3209,8 +3209,8 @@ def execute(tool_name, args, env):
 
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -3220,7 +3220,7 @@ def execute(tool_name, args, env):
         },
     }
     agent = Agent(cfg, runtime)
-    mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(time_sensitive=True))
+    mocker.patch.object(agent.classifier, "classify", return_value=TurnClassification(time_sensitive=True))
 
     chat_reqs: list[urllib.request.Request] = []
 
@@ -3360,7 +3360,7 @@ def test_prompt_policy_renderer_uses_configured_context_limit_for_skill_budget(m
 def test_large_tool_call_args_are_compacted_in_history(runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     large = "x" * 5000
-    compacted = agent._tool_call_args_for_history({"filepath": "a.txt", "content": large})
+    compacted = agent.orchestrator.tool_call_args_for_history({"filepath": "a.txt", "content": large})
 
     assert compacted["filepath"] == "a.txt"
     assert compacted["content"].startswith("x" * 1200)
@@ -3371,7 +3371,7 @@ def test_large_tool_call_args_are_compacted_in_history(runtime: SkillRuntime):
 def test_large_non_content_tool_call_args_still_use_generic_truncation(runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     large = "x" * 5000
-    compacted = agent._tool_call_args_for_history({"query": large})
+    compacted = agent.orchestrator.tool_call_args_for_history({"query": large})
 
     assert compacted["query"].startswith("x" * 1200)
     assert "[truncated 3800 chars]" in compacted["query"]
@@ -3381,8 +3381,8 @@ def test_large_non_content_tool_call_args_still_use_generic_truncation(runtime: 
 def test_agent_transport_error_marks_error(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -3414,8 +3414,8 @@ def test_agent_transport_error_marks_error(mocker, runtime: SkillRuntime):
 def test_agent_infers_tool_calls_when_finish_reason_missing(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -3468,8 +3468,8 @@ def test_agent_infers_tool_calls_when_finish_reason_missing(mocker, runtime: Ski
 def test_agent_emits_unique_tool_stream_ids_per_pass(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -3533,8 +3533,8 @@ def test_agent_emits_unique_tool_stream_ids_per_pass(mocker, runtime: SkillRunti
 def test_tool_result_history_not_compacted_by_default(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -3594,8 +3594,8 @@ def test_tool_result_history_not_compacted_by_default(mocker, runtime: SkillRunt
 def test_tool_result_history_compaction_can_be_gated_by_tool_name(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -3660,8 +3660,8 @@ def test_tool_result_history_compaction_can_be_gated_by_tool_name(mocker, runtim
 def test_agent_can_cancel_while_waiting_for_readiness(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 5,
             "readiness_poll_s": 0.5,
@@ -3694,8 +3694,8 @@ def test_agent_can_cancel_while_waiting_for_readiness(mocker, runtime: SkillRunt
 def test_cancel_after_tool_completion_preserves_tool_result_exchange(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -3745,8 +3745,8 @@ def test_doctor_report_uses_env_auth_header(mocker, runtime: SkillRuntime, monke
     monkeypatch.setenv("ALPHANUS_AUTH_HEADER", "Authorization: Bearer test")
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -3769,11 +3769,30 @@ def test_doctor_report_uses_env_auth_header(mocker, runtime: SkillRuntime, monke
     assert report["harness_metrics"]["turns_total"] == 0
 
 
+def test_typed_config_provider_uses_resolved_auth_header(runtime: SkillRuntime, monkeypatch):
+    monkeypatch.setenv("CUSTOM_ALPHANUS_KEY", "secret-token")
+
+    agent = Agent(
+        {
+            "schema_version": "2.0.0",
+            "agent": {
+                "api_key": "env:CUSTOM_ALPHANUS_KEY",
+                "api_key_env": "CUSTOM_ALPHANUS_KEY",
+                "auth_header_template": "Authorization: Bearer {api_key}",
+            },
+        },
+        runtime,
+    )
+
+    assert agent.llm_client.auth_header == "Authorization: Bearer secret-token"
+    assert agent.typed_config.provider.auth_header == "Authorization: Bearer secret-token"
+
+
 def test_doctor_report_handles_non_object_runtime_and_capabilities_sections(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -3800,8 +3819,8 @@ def test_doctor_report_supports_brave_provider(mocker, runtime: SkillRuntime, mo
     monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-test-key")
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -3829,8 +3848,8 @@ def test_doctor_report_supports_brave_provider(mocker, runtime: SkillRuntime, mo
 def test_fetch_model_name_reads_first_model_id(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -3854,8 +3873,8 @@ def test_fetch_model_name_reads_first_model_id(mocker, runtime: SkillRuntime):
 def test_fetch_model_metadata_reads_model_id_and_context_window(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -3878,8 +3897,8 @@ def test_fetch_model_metadata_reads_model_id_and_context_window(mocker, runtime:
 
     assert agent.fetch_model_metadata() == ("llama-3.2-3b-instruct", 24576)
     assert seen_urls == [
-        "http://127.0.0.1:8080/slots",
-        "http://127.0.0.1:8080/v1/models",
+        TEST_SLOTS_ENDPOINT,
+        TEST_MODELS_ENDPOINT,
     ]
 
 
@@ -3893,14 +3912,14 @@ def test_select_skills_returns_only_explicitly_loaded_skills(runtime: SkillRunti
         workspace_root=str(runtime.workspace.workspace_root),
         memory_hits=[],
     )
-    assert agent._select_skills(ctx, threading.Event()) == []
+    assert agent.skill_runtime.select_skills(ctx) == []
 
 
 def test_fetch_model_metadata_falls_back_to_slots_for_context_window(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -3923,16 +3942,16 @@ def test_fetch_model_metadata_falls_back_to_slots_for_context_window(mocker, run
 
     assert agent.fetch_model_metadata() == ("llama-3.2-3b-instruct", 40960)
     assert seen_urls == [
-        "http://127.0.0.1:8080/slots",
-        "http://127.0.0.1:8080/v1/models",
+        TEST_SLOTS_ENDPOINT,
+        TEST_MODELS_ENDPOINT,
     ]
 
 
 def test_fetch_model_metadata_falls_back_to_props_after_slots_miss(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -3957,9 +3976,9 @@ def test_fetch_model_metadata_falls_back_to_props_after_slots_miss(mocker, runti
 
     assert agent.fetch_model_metadata() == ("llama-3.2-3b-instruct", 40960)
     assert seen_urls == [
-        "http://127.0.0.1:8080/slots",
-        "http://127.0.0.1:8080/v1/models",
-        "http://127.0.0.1:8080/props",
+        TEST_SLOTS_ENDPOINT,
+        TEST_MODELS_ENDPOINT,
+        TEST_PROPS_ENDPOINT,
     ]
 
 
@@ -3980,7 +3999,7 @@ def test_refresh_model_status_reports_online_and_context_window(mocker, runtime:
     assert status.model_name == "qwen-3"
     assert status.context_window == 16384
     assert agent.get_model_status().state == "online"
-    assert agent._ready_checked is True
+    assert agent.llm_client.provider._ready_checked is True
 
 
 def test_refresh_model_status_shares_timeout_budget_across_probes(mocker, runtime: SkillRuntime):
@@ -4024,14 +4043,14 @@ def test_refresh_model_status_shares_timeout_budget_across_probes(mocker, runtim
 
 def test_reload_config_resets_model_status_cache(runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
-    agent.llm_client._store_model_status(
+    agent.llm_client.provider._store_model_status(
         ModelStatus(
             state="online",
             model_name="qwen-old",
             context_window=8192,
             last_checked_at=123.0,
             last_success_at=123.0,
-            endpoint="http://127.0.0.1:8080/v1/models",
+            endpoint=TEST_MODELS_ENDPOINT,
         )
     )
 
@@ -4049,37 +4068,37 @@ def test_reload_config_resets_model_status_cache(runtime: SkillRuntime):
     assert status.state == "unknown"
     assert status.endpoint == "http://127.0.0.1:8081/v1/models"
     assert status.model_name is None
-    assert agent._ready_checked is False
+    assert agent.llm_client.provider._ready_checked is False
 
 
 def test_fetch_model_name_accepts_top_level_model_field(runtime: SkillRuntime):
-    assert Agent._extract_model_name({"model": "qwen2.5-coder-7b"}) == "qwen2.5-coder-7b"
+    assert ProviderMetadataExtractor.extract_model_name({"model": "qwen2.5-coder-7b"}) == "qwen2.5-coder-7b"
 
 
 def test_fetch_model_name_accepts_nested_model_id_field(runtime: SkillRuntime):
     assert (
-        Agent._extract_model_name({"models": [{"model_id": "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"}]})
+        ProviderMetadataExtractor.extract_model_name({"models": [{"model_id": "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"}]})
         == "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"
     )
 
 
 def test_fetch_model_name_returns_none_when_models_list_is_empty(runtime: SkillRuntime):
-    assert Agent._extract_model_name({"object": "list", "data": []}) is None
+    assert ProviderMetadataExtractor.extract_model_name({"object": "list", "data": []}) is None
 
 
 def test_extract_model_context_window_accepts_nested_metadata(runtime: SkillRuntime):
-    assert Agent._extract_model_context_window({"data": [{"metadata": {"n_ctx_slot": 40960}}]}) == 40960
+    assert ProviderMetadataExtractor.extract_model_context_window({"data": [{"metadata": {"n_ctx_slot": 40960}}]}) == 40960
 
 
 def test_extract_model_context_window_accepts_recursive_nested_fields(runtime: SkillRuntime):
-    assert Agent._extract_model_context_window({"default_generation_settings": {"nested": {"n_ctx": 40960}}}) == 40960
+    assert ProviderMetadataExtractor.extract_model_context_window({"default_generation_settings": {"nested": {"n_ctx": 40960}}}) == 40960
 
 
 def test_reload_config_resets_readiness_state(runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -4089,7 +4108,7 @@ def test_reload_config_resets_readiness_state(runtime: SkillRuntime):
         "context": {"context_limit": 8192, "keep_last_n": 10, "safety_margin": 500},
     }
     agent = Agent(cfg, runtime)
-    agent._ready_checked = True
+    agent.llm_client.provider._ready_checked = True
 
     agent.reload_config(
         {
@@ -4104,14 +4123,14 @@ def test_reload_config_resets_readiness_state(runtime: SkillRuntime):
 
     assert agent.model_endpoint == "http://127.0.0.1:8081/v1/chat/completions"
     assert agent.models_endpoint == "http://127.0.0.1:8081/v1/models"
-    assert agent._ready_checked is False
+    assert agent.llm_client.provider._ready_checked is False
 
 
 def test_reload_config_rebuilds_context_manager(runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -4137,8 +4156,8 @@ def test_reload_config_rebuilds_context_manager(runtime: SkillRuntime):
 def test_reload_config_coerces_invalid_numeric_values(runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -4185,7 +4204,7 @@ def test_reload_config_coerces_invalid_numeric_values(runtime: SkillRuntime):
 
 def test_run_turn_fails_fast_when_cached_status_is_freshly_offline(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
-    agent.llm_client._store_model_status(
+    agent.llm_client.provider._store_model_status(
         ModelStatus(
             state="offline",
             model_name="qwen-down",
@@ -4208,7 +4227,7 @@ def test_run_turn_fails_fast_when_cached_status_is_freshly_offline(mocker, runti
 
 def test_run_turn_waits_for_cold_local_model_despite_fresh_offline_status(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
-    agent.llm_client._store_model_status(
+    agent.llm_client.provider._store_model_status(
         ModelStatus(
             state="offline",
             model_name=None,
@@ -4234,7 +4253,7 @@ def test_run_turn_waits_for_cold_local_model_despite_fresh_offline_status(mocker
 
 def test_run_turn_probes_when_status_is_stale(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
-    agent.llm_client._store_model_status(
+    agent.llm_client.provider._store_model_status(
         ModelStatus(
             state="online",
             model_name="qwen-stale",
@@ -4269,13 +4288,13 @@ def test_run_turn_probes_when_status_is_stale(mocker, runtime: SkillRuntime):
 def test_run_turn_uses_configured_readiness_timeout_before_first_turn(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "readiness_timeout_s": 30,
         }
     }
     agent = Agent(cfg, runtime)
-    agent.llm_client._store_model_status(ModelStatus(state="unknown", endpoint=agent.models_endpoint))
+    agent.llm_client.provider._store_model_status(ModelStatus(state="unknown", endpoint=agent.models_endpoint))
     ready = mocker.patch.object(agent, "ensure_ready", return_value=True)
     run = mocker.patch.object(
         agent.orchestrator,
@@ -4293,7 +4312,7 @@ def test_run_turn_uses_configured_readiness_timeout_before_first_turn(mocker, ru
 
 def test_local_connection_refused_is_not_retried(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
-    agent.llm_client._store_model_status(
+    agent.llm_client.provider._store_model_status(
         ModelStatus(
             state="online",
             model_name="qwen-3",
@@ -4348,7 +4367,7 @@ def test_retryable_transport_error_still_runs_readiness_poll_after_offline_probe
 
 def test_refresh_model_status_preserves_model_name_when_endpoint_goes_offline(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
-    agent.llm_client._store_model_status(
+    agent.llm_client.provider._store_model_status(
         ModelStatus(
             state="online",
             model_name="qwen-3",
@@ -4454,8 +4473,8 @@ def execute(tool_name, args, env):
     )
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -4528,8 +4547,8 @@ Use scripts/convert.py when needed.
     )
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -4576,8 +4595,8 @@ Use scripts/convert.py when needed.
 def test_reasoning_tokens_strip_think_markers_in_journal_and_output(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -4642,8 +4661,8 @@ Ask a follow-up before continuing.
     )
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -4707,8 +4726,8 @@ Ask a follow-up before continuing.
     )
     cfg = {
         "agent": {
-            "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-            "models_endpoint": "http://127.0.0.1:8080/v1/models",
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
             "request_timeout_s": 5,
             "readiness_timeout_s": 1,
             "readiness_poll_s": 0.01,
@@ -4752,7 +4771,7 @@ Ask a follow-up before continuing.
 def test_run_turn_allows_shell_command_for_environment_question(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
-    mocker.patch.object(agent, "_classify_turn", return_value=TurnClassification(prefer_local_workspace_tools=False))
+    mocker.patch.object(agent.classifier, "classify", return_value=TurnClassification(prefer_local_workspace_tools=False))
 
     pass_calls = []
     executed = []
@@ -4806,7 +4825,7 @@ def test_run_turn_allows_shell_command_for_environment_question(mocker, runtime:
             "meta": {},
         }
 
-    mocker.patch.object(agent, "_call_with_retry", side_effect=fake_turn_call)
+    mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_turn_call)
     mocker.patch.object(runtime, "execute_tool_call", side_effect=fake_execute_tool_call)
 
     result = agent.run_turn(

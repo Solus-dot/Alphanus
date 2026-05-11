@@ -91,14 +91,6 @@ class LLMClient:
         self.auth_source = "none"
         return None
 
-    @property
-    def _ready_checked(self) -> bool:
-        return bool(getattr(self.provider, "_ready_checked", False))
-
-    @_ready_checked.setter
-    def _ready_checked(self, value: bool) -> None:
-        self.provider._ready_checked = bool(value)
-
     def headers(self) -> dict[str, str]:
         return self.provider.headers()
 
@@ -119,26 +111,11 @@ class LLMClient:
     def sleep_with_stop(duration_s: float, stop_event) -> bool:
         return OpenAICompatibleProvider.sleep_with_stop(duration_s, stop_event)
 
-    @staticmethod
-    def extract_model_name(payload: object) -> str | None:
-        return OpenAICompatibleProvider.extract_model_name(payload)
-
-    @staticmethod
-    def extract_model_context_window(payload: object) -> int | None:
-        return OpenAICompatibleProvider.extract_model_context_window(payload)
-
-    @staticmethod
-    def props_endpoint_from_models_endpoint(models_endpoint: str) -> str:
-        return OpenAICompatibleProvider.props_endpoint_from_models_endpoint(models_endpoint)
-
     def fetch_json(self, url: str, timeout_s: float | None = None) -> object:
         return self.provider.fetch_json(url, timeout_s=timeout_s)
 
     def get_model_status(self) -> ModelStatus:
         return self.provider.get_model_status()
-
-    def _store_model_status(self, status: ModelStatus) -> ModelStatus:
-        return self.provider._store_model_status(status)
 
     def is_model_status_fresh(self, status: ModelStatus | None = None, *, now: float | None = None) -> bool:
         return self.provider.is_model_status_fresh(status, now=now)
@@ -161,29 +138,8 @@ class LLMClient:
     ) -> bool | None:
         return self.provider.check_ready(stop_event=stop_event, on_event=on_event, timeout_s=timeout_s)
 
-    def _status_probe_timeout_s(self) -> float:
-        return self.provider._status_probe_timeout_s()
-
-    def _status_allows_immediate_send(self) -> ModelStatus:
-        return self.provider._status_allows_immediate_send()
-
     def should_fail_fast_on_offline_status(self, status: ModelStatus) -> bool:
         return self.provider.should_fail_fast_on_offline_status(status)
-
-    @staticmethod
-    def _is_local_endpoint(endpoint: str) -> bool:
-        return OpenAICompatibleProvider._is_local_endpoint(endpoint)
-
-    @staticmethod
-    def _is_connection_refused_error(exc: Exception) -> bool:
-        return OpenAICompatibleProvider._is_connection_refused_error(exc)
-
-    def _should_retry_exception(self, exc: Exception) -> bool:
-        return self.provider._should_retry_exception(exc)
-
-    @staticmethod
-    def _is_transport_failure(exc: Exception) -> bool:
-        return OpenAICompatibleProvider._is_transport_failure(exc)
 
     def build_payload(
         self,
@@ -206,11 +162,3 @@ class LLMClient:
     def call_with_retry(self, payload: JsonObject, stop_event, on_event, pass_id: str) -> StreamPassResult:
         payload_obj = cast(dict[str, object], payload)
         return self.provider.call_with_retry(payload_obj, stop_event, on_event, pass_id=pass_id)
-
-    @staticmethod
-    def _emit(on_event: Callable[[JsonObject], None] | None, event: JsonObject) -> None:
-        OpenAICompatibleProvider._emit(on_event, event)
-
-    @staticmethod
-    def _contains_tool_markup(text: str) -> bool:
-        return OpenAICompatibleProvider._contains_tool_markup(text)

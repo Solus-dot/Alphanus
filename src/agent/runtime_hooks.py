@@ -20,7 +20,7 @@ class TurnRuntimeHooks(Protocol):
 
     def classify_context(self, ctx, stop_event=None): ...
 
-    def select_skills(self, ctx, stop_event): ...
+    def select_skills(self, ctx, stop_event) -> object: ...
 
 
 class AgentTurnRuntimeHooks:
@@ -28,7 +28,7 @@ class AgentTurnRuntimeHooks:
         self.agent = agent
 
     def call_with_retry(self, payload: JsonObject, stop_event, on_event, pass_id: str):
-        return self.agent._call_with_retry(payload, stop_event, on_event, pass_id)
+        return self.agent.llm_client.call_with_retry(payload, stop_event, on_event, pass_id)
 
     def build_skill_context(
         self,
@@ -38,7 +38,7 @@ class AgentTurnRuntimeHooks:
         history_messages: list[ChatMessage] | None = None,
         loaded_skill_ids: list[str] | None = None,
     ):
-        return self.agent._build_skill_context(
+        return self.agent.classifier.build_skill_context(
             user_input,
             branch_labels,
             attachments,
@@ -47,7 +47,9 @@ class AgentTurnRuntimeHooks:
         )
 
     def classify_context(self, ctx, stop_event=None):
-        return self.agent._classify_turn(ctx, stop_event=stop_event)
+        return self.agent.classifier.classify(ctx, stop_event=stop_event)
 
     def select_skills(self, ctx, stop_event):
-        return self.agent._select_turn(ctx, stop_event)
+        classification = self.agent.classifier.classify(ctx, stop_event=stop_event)
+        selected = self.agent.skill_runtime.select_skills(ctx)
+        return classification, selected
