@@ -44,6 +44,7 @@ class LexicalMemory:
         self.backup_revisions = max(0, int(backup_revisions))
 
         self.memories: list[MemoryItem] = []
+        self._token_cache: dict[int, list[str]] = {}
         self._next_id = 1
         self._dirty = False
         self._pending_writes = 0
@@ -82,9 +83,20 @@ class LexicalMemory:
         return False
 
     def _score_text(self, query_tokens: list[str], text: str) -> float:
+        text_tokens = self._tokenize(text)
+        return self._score_tokens(query_tokens, text_tokens)
+
+    def _tokens_for_item(self, item: MemoryItem) -> list[str]:
+        cached = self._token_cache.get(item.id)
+        if cached is not None:
+            return cached
+        tokens = self._tokenize(item.text)
+        self._token_cache[item.id] = tokens
+        return tokens
+
+    def _score_tokens(self, query_tokens: list[str], text_tokens: list[str]) -> float:
         if not query_tokens:
             return 0.0
-        text_tokens = self._tokenize(text)
         if not text_tokens:
             return 0.0
         query_set = set(query_tokens)
@@ -192,6 +204,7 @@ class LexicalMemory:
             handle.close()
 
         self.memories = [loaded_by_id[memory_id] for memory_id in ordered_ids if memory_id in loaded_by_id]
+        self._token_cache = {}
         self._next_id = max((m.id for m in self.memories), default=0) + 1
         self._dirty = False
         self._pending_writes = 0
@@ -277,6 +290,7 @@ class LexicalMemory:
         )
         self._next_id += 1
         self.memories.append(item)
+        self._token_cache[item.id] = self._tokenize(item.text)
         self._mark_dirty(force=False)
         return self._to_public(item)
 
@@ -299,7 +313,7 @@ class LexicalMemory:
         for item in self.memories:
             if memory_type and item.type != memory_type:
                 continue
-            score = self._score_text(query_tokens, item.text)
+            score = self._score_tokens(query_tokens, self._tokens_for_item(item))
             if score >= threshold:
                 scored.append((score, item))
 
@@ -335,6 +349,7 @@ class LexicalMemory:
             return False
 
         self.memories.pop(memory_idx)
+        self._token_cache.pop(target_id, None)
         self._mark_dirty(force=False)
         return True
 
