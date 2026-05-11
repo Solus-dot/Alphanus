@@ -56,6 +56,21 @@ SAFE_CHECK_RUNNERS = {
     "nox",
 }
 PYTHON_MODULE_CHECK_RUNNERS = {"pytest", "ruff", "mypy", "pyright", "tox", "nox"}
+HEAVY_WALK_DIRS = {
+    ".alphanus",
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+}
+
+
 class WorkspaceManager:
     def __init__(
         self,
@@ -542,7 +557,11 @@ class WorkspaceManager:
             if depth > max_depth:
                 return
             entries = sorted(
-                (entry for entry in path.iterdir() if not self._is_protected_state_path(entry)),
+                (
+                    entry
+                    for entry in path.iterdir()
+                    if not self._is_protected_state_path(entry) and (not entry.is_dir() or entry.name not in HEAVY_WALK_DIRS)
+                ),
                 key=lambda p: (p.is_file(), p.name.lower()),
             )
             for idx, entry in enumerate(entries):
@@ -615,6 +634,8 @@ class WorkspaceManager:
             root_path = Path(root)
             allowed_dirs = []
             for dirname in dirnames:
+                if dirname in HEAVY_WALK_DIRS:
+                    continue
                 candidate = root_path / dirname
                 if self._is_searchable_path(candidate):
                     allowed_dirs.append(dirname)
