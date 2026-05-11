@@ -2,14 +2,25 @@ from __future__ import annotations
 
 from typing import cast
 
+from core.configuration import DEFAULT_CONFIG
 from core.message_types import ChatMessage, JSONValue, MessageContentPart, ToolCallDelta, ToolFunctionCall
+
+_DEFAULT_CONTEXT_CONFIG = DEFAULT_CONFIG["context"]
+DEFAULT_CONTEXT_LIMIT = int(_DEFAULT_CONTEXT_CONFIG["context_limit"])
+DEFAULT_KEEP_LAST_N = int(_DEFAULT_CONTEXT_CONFIG["keep_last_n"])
+DEFAULT_SAFETY_MARGIN = int(_DEFAULT_CONTEXT_CONFIG["safety_margin"])
 
 
 class ContextWindowManager:
     _MEDIA_PART_CHAR_COST = 256
     _STRUCTURED_PART_OVERHEAD = 32
 
-    def __init__(self, context_limit: int = 8192, keep_last_n: int = 10, safety_margin: int = 500):
+    def __init__(
+        self,
+        context_limit: int = DEFAULT_CONTEXT_LIMIT,
+        keep_last_n: int = DEFAULT_KEEP_LAST_N,
+        safety_margin: int = DEFAULT_SAFETY_MARGIN,
+    ):
         self.context_limit = int(context_limit)
         self.keep_last_n = int(keep_last_n)
         self.safety_margin = int(safety_margin)

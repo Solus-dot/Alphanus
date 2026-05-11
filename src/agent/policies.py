@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from agent.context import DEFAULT_CONTEXT_LIMIT
 from core.skill_parser import SkillManifest
 from core.skills import SkillContext, SkillRuntime
 from core.types import TurnPolicySnapshot
@@ -99,7 +100,7 @@ class OutputSanitizer:
 
 
 class PromptPolicyRenderer:
-    def __init__(self, system_prompt: str, skill_runtime: SkillRuntime, context_limit: int = 8192) -> None:
+    def __init__(self, system_prompt: str, skill_runtime: SkillRuntime, context_limit: int = DEFAULT_CONTEXT_LIMIT) -> None:
         self.system_prompt = system_prompt
         self.skill_runtime = skill_runtime
         self.context_limit = max(1, int(context_limit))
