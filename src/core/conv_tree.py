@@ -6,7 +6,7 @@ from typing import cast
 
 from core.message_types import ChatMessage, JSONValue, MessageContentPart, ToolCallDelta, ToolFunctionCall
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "2.0.0"
 _COMPACTED_MARKER = "\n...[compacted]"
 
 
@@ -352,7 +352,7 @@ class ConvTree:
 
     @staticmethod
     def from_dict(data: dict[str, object]) -> ConvTree:
-        version = str(data.get("schema_version", "1.0.0"))
+        version = str(data.get("schema_version", "0.0.0"))
         if _major(version) != _major(SCHEMA_VERSION):
             raise ValueError(f"Unsupported tree schema version {version}; expected major {SCHEMA_VERSION}")
 

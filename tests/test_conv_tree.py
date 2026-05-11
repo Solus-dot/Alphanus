@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 # pyright: reportTypedDictNotRequiredAccess=false, reportArgumentType=false, reportOperatorIssue=false
+import pytest
+
 from core.conv_tree import ConvTree
 from tui.tree_render import render_tree_rows
 
@@ -186,6 +188,15 @@ def test_dict_roundtrip_preserves_pending_branch_state():
 
     assert loaded._pending_branch is True
     assert loaded._pending_branch_label == "alt-path"
+
+
+def test_rejects_v1_tree_after_v2_reset():
+    tree = ConvTree()
+    payload = tree.to_dict()
+    payload["schema_version"] = "1.0.0"
+
+    with pytest.raises(ValueError, match="Unsupported tree schema version"):
+        ConvTree.from_dict(payload)
 
 
 def test_user_text_strips_inline_attachment_blocks():
