@@ -315,8 +315,13 @@ class SessionStore:
         with open(self._manifest_path, encoding="utf-8") as handle:
             data = json.load(handle)
         version = data.get("schema_version", "0.0.0")
-        if _major(version) != _major(MANIFEST_SCHEMA_VERSION):
+        manifest_major = _major(version)
+        current_major = _major(MANIFEST_SCHEMA_VERSION)
+        if manifest_major > current_major:
             raise ValueError(f"Unsupported manifest schema version {version}; expected major {MANIFEST_SCHEMA_VERSION}")
+        if manifest_major < current_major:
+            data["schema_version"] = MANIFEST_SCHEMA_VERSION
+            self._write_manifest(data)
         if not isinstance(data.get("sessions"), dict):
             data["sessions"] = {}
         if "active_session_id" not in data:

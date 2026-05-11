@@ -99,3 +99,17 @@ def test_session_store_rejects_v1_session_after_v2_reset(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="Unsupported session schema version"):
         store.load_session(session.id, activate=False)
+
+
+def test_session_store_updates_v1_manifest_after_v2_reset(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path, tmp_path / "sessions")
+    session = store.bootstrap()
+    manifest_path = store.storage_dir / "manifest.json"
+    text = manifest_path.read_text(encoding="utf-8").replace('"schema_version": "2.0.0"', '"schema_version": "1.0.0"')
+    manifest_path.write_text(text, encoding="utf-8")
+
+    loaded = store.bootstrap()
+    disk = manifest_path.read_text(encoding="utf-8")
+
+    assert loaded.id == session.id
+    assert '"schema_version": "2.0.0"' in disk
