@@ -296,6 +296,8 @@ Config behavior:
 - types normalized and invalid values clamped
 - secret-like fields stripped from disk and `/config` editor
 - endpoint host policy enforced unless `agent.allow_cross_host_endpoints = true`
+- normalized config is projected into an internal typed v2 runtime model for new subsystem code
+- config and session storage use major schema v2; v1 files are intentionally rejected instead of migrated
 
 Model-related config keys:
 
@@ -312,7 +314,7 @@ Trimmed config example:
 
 ```json
 {
-  "schema_version": "1.0.0",
+  "schema_version": "2.0.0",
   "agent": {
     "base_url": "http://127.0.0.1:8080",
     "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
@@ -365,6 +367,12 @@ uv run pyright
 ```
 
 CI runs the same checks for pushes and pull requests.
+
+Performance benchmarks are part of the test suite and can be run directly:
+
+```bash
+uv run pytest tests/test_performance_benchmarks.py
+```
 
 ---
 
