@@ -162,7 +162,7 @@ def test_stats_reports_lexical_backend(tmp_path: Path):
 
 def test_load_rejects_invalid_payload_shape(tmp_path: Path):
     path = tmp_path / "mem.pkl"
-    path.write_text('{"schema_version":"3.0.0","id":1,"text":"x","metadata":[]}\n', encoding="utf-8")
+    path.write_text('{"id":1,"text":"x","metadata":[]}\n', encoding="utf-8")
 
     mem = LexicalMemory(storage_path=str(path))
 
@@ -171,25 +171,26 @@ def test_load_rejects_invalid_payload_shape(tmp_path: Path):
     assert path.exists()
 
 
-def test_load_rejects_legacy_schema_as_unsupported(tmp_path: Path):
+def test_load_accepts_existing_records_without_version_gates(tmp_path: Path):
     path = tmp_path / "mem.pkl"
     path.write_text(
-        '{"schema_version":"2.0.0","id":1,"text":"legacy fact","metadata":{},"type":"conversation","timestamp":1.0,"access_count":0,"last_accessed":1.0}\n',
+        '{"id":1,"text":"existing fact","metadata":{},"type":"conversation","timestamp":1.0,"access_count":0,"last_accessed":1.0}\n',
         encoding="utf-8",
     )
 
     mem = LexicalMemory(storage_path=str(path))
 
     stats = mem.stats()
-    assert mem.memories == []
-    assert stats["load_unsupported_count"] == 1
+    assert len(mem.memories) == 1
+    assert mem.memories[0].text == "existing fact"
+    assert stats["load_recovery_count"] == 0
     assert path.exists()
 
 
 def test_load_skips_malformed_json_line(tmp_path: Path):
     path = tmp_path / "mem.pkl"
     path.write_text(
-        '{"schema_version":"3.0.0","id":1,"text":"good","metadata":{},"type":"conversation","timestamp":1.0,"access_count":0,"last_accessed":1.0}\nnot-json\n',
+        '{"id":1,"text":"good","metadata":{},"type":"conversation","timestamp":1.0,"access_count":0,"last_accessed":1.0}\nnot-json\n',
         encoding="utf-8",
     )
 
@@ -230,7 +231,7 @@ def test_flush_writes_events_and_facts(tmp_path: Path):
     lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     records = [json.loads(line) for line in lines]
     assert len(records) == 2
-    assert all(record["schema_version"] == mem.stats()["memory_schema_version"] for record in records)
+    assert all("id" in record and "text" in record for record in records)
     facts = path.parent / "facts.md"
     assert facts.exists()
     facts_text = facts.read_text(encoding="utf-8")

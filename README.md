@@ -314,7 +314,6 @@ Trimmed config example:
 
 ```json
 {
-  "schema_version": "2.0.0",
   "agent": {
     "base_url": "http://127.0.0.1:8080",
     "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",

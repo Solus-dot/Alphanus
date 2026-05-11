@@ -9,8 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-MEMORY_STORAGE_SCHEMA_VERSION = "3.0.0"
-
 
 @dataclass(slots=True)
 class MemoryItem:
@@ -50,7 +48,6 @@ class LexicalMemory:
         self._pending_writes = 0
         self._last_save_ts = time.time()
         self._load_recovery_count = 0
-        self._load_unsupported_count = 0
 
         self._load()
 
@@ -127,7 +124,6 @@ class LexicalMemory:
     @staticmethod
     def _item_to_record(item: MemoryItem) -> dict[str, Any]:
         return {
-            "schema_version": MEMORY_STORAGE_SCHEMA_VERSION,
             "id": item.id,
             "text": item.text,
             "metadata": item.metadata,
@@ -179,11 +175,6 @@ class LexicalMemory:
                     continue
                 if not isinstance(record, dict):
                     self._load_recovery_count += 1
-                    continue
-
-                schema_version = str(record.get("schema_version", "")).strip()
-                if schema_version != MEMORY_STORAGE_SCHEMA_VERSION:
-                    self._load_unsupported_count += 1
                     continue
 
                 try:
@@ -367,11 +358,9 @@ class LexicalMemory:
             "backend": "lexical",
             "mode_label": "lexical",
             "backup_revisions": self.backup_revisions,
-            "memory_schema_version": MEMORY_STORAGE_SCHEMA_VERSION,
             "storage_format": "jsonl",
             "storage_root": str(self.storage_path.parent),
             "load_recovery_count": self._load_recovery_count,
-            "load_unsupported_count": self._load_unsupported_count,
         }
 
     def export_txt(self, path: str) -> str:

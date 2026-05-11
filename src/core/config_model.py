@@ -6,8 +6,6 @@ from typing import Any
 from core.configuration import DEFAULT_CONFIG
 from core.runtime_config import ProviderConfig, SkillsRuntimeConfig, UiRuntimeConfig
 
-CONFIG_MODEL_VERSION = "2.0.0"
-
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceConfig:
@@ -83,7 +81,6 @@ class TypedConfigV2:
     search: SearchConfig
     ui: UiRuntimeConfig
     raw: dict[str, Any]
-    model_version: str = CONFIG_MODEL_VERSION
 
     @classmethod
     def from_normalized_config(cls, config: dict[str, Any], *, auth_header: str | None = None) -> TypedConfigV2:

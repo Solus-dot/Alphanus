@@ -11,13 +11,7 @@ from typing import Any
 
 from core.conv_tree import ConvTree
 
-MANIFEST_SCHEMA_VERSION = "2.0.0"
-SESSION_SCHEMA_VERSION = "2.0.0"
 DEFAULT_SESSIONS_DIRNAME = "sessions"
-
-
-def _major(version: str) -> int:
-    return int((version or "0").split(".", 1)[0])
 
 
 def _utc_now_iso() -> str:
@@ -49,7 +43,6 @@ class ChatSession:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": SESSION_SCHEMA_VERSION,
             "id": self.id,
             "title": self.title,
             "created_at": self.created_at,
@@ -61,10 +54,6 @@ class ChatSession:
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> ChatSession:
-        version = data.get("schema_version", "0.0.0")
-        if _major(version) != _major(SESSION_SCHEMA_VERSION):
-            raise ValueError(f"Unsupported session schema version {version}; expected major {SESSION_SCHEMA_VERSION}")
-
         return ChatSession(
             id=str(data["id"]),
             title=str(data.get("title") or "Untitled Session"),
@@ -305,7 +294,6 @@ class SessionStore:
     def _load_manifest(self) -> dict[str, Any]:
         if not self._manifest_path.exists():
             manifest = {
-                "schema_version": MANIFEST_SCHEMA_VERSION,
                 "active_session_id": "",
                 "sessions": {},
             }
@@ -314,14 +302,6 @@ class SessionStore:
 
         with open(self._manifest_path, encoding="utf-8") as handle:
             data = json.load(handle)
-        version = data.get("schema_version", "0.0.0")
-        manifest_major = _major(version)
-        current_major = _major(MANIFEST_SCHEMA_VERSION)
-        if manifest_major > current_major:
-            raise ValueError(f"Unsupported manifest schema version {version}; expected major {MANIFEST_SCHEMA_VERSION}")
-        if manifest_major < current_major:
-            data["schema_version"] = MANIFEST_SCHEMA_VERSION
-            self._write_manifest(data)
         if not isinstance(data.get("sessions"), dict):
             data["sessions"] = {}
         if "active_session_id" not in data:
@@ -330,7 +310,6 @@ class SessionStore:
 
     def _write_manifest(self, manifest: dict[str, Any]) -> None:
         payload = {
-            "schema_version": MANIFEST_SCHEMA_VERSION,
             "active_session_id": str(manifest.get("active_session_id") or ""),
             "sessions": manifest.get("sessions", {}),
         }

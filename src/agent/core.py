@@ -202,7 +202,6 @@ class Agent:
 
     def build_support_bundle(self, tree_payload: dict[str, object]) -> dict[str, object]:
         return {
-            "schema_version": "2.0.0",
             "created_at": datetime.now(UTC).isoformat(),
             "doctor": self.doctor_report(),
             "tree": tree_payload,

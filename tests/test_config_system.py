@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from core.config_model import CONFIG_MODEL_VERSION, TypedConfigV2
+from core.config_model import TypedConfigV2
 from core.configuration import (
     DEFAULT_CONFIG,
     load_dotenv,
@@ -18,7 +18,6 @@ from core.runtime_config import ProviderConfig, SkillsRuntimeConfig, UiRuntimeCo
 
 def test_normalize_config_strips_secret_like_fields() -> None:
     raw = {
-        "schema_version": "2.0.0",
         "agent": {"auth_header": "Authorization: Bearer secret"},
         "search": {"provider": "tavily", "tavily_api_key": "tvly-secret"},
         "nested": {"api_key": "abc", "keep": True},
@@ -33,21 +32,8 @@ def test_normalize_config_strips_secret_like_fields() -> None:
     assert any("secret-like fields" in item for item in warnings)
 
 
-def test_normalize_config_upgrades_v1_config_after_v2_reset() -> None:
-    normalized, warnings = normalize_config({"schema_version": "1.0.0"})
-
-    assert normalized["schema_version"] == "2.0.0"
-    assert any("Upgraded config schema_version from 1.0.0 to 2.0.0" in warning for warning in warnings)
-
-
-def test_normalize_config_rejects_future_major_schema() -> None:
-    with pytest.raises(ValueError, match="Unsupported config schema_version"):
-        normalize_config({"schema_version": "99.0.0"})
-
-
 def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
     raw = {
-        "schema_version": "2.0.0",
         "agent": {
             "model_endpoint": "ftp://bad-endpoint",
             "request_timeout_s": "bad",
@@ -80,7 +66,6 @@ def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
 def test_normalize_config_preserves_api_key_env_reference() -> None:
     normalized, warnings = normalize_config(
         {
-            "schema_version": "2.0.0",
             "agent": {
                 "api_key": "env:CUSTOM_KEY",
                 "api_key_env": "CUSTOM_KEY",
@@ -96,7 +81,6 @@ def test_normalize_config_preserves_api_key_env_reference() -> None:
 def test_normalize_config_infers_base_url_from_existing_remote_endpoints() -> None:
     normalized, _warnings = normalize_config(
         {
-            "schema_version": "2.0.0",
             "agent": {
                 "model_endpoint": "https://remote.example/v1/chat/completions",
                 "models_endpoint": "https://remote.example/v1/models",
@@ -112,7 +96,6 @@ def test_normalize_config_infers_base_url_from_existing_remote_endpoints() -> No
 def test_normalize_config_aligns_api_key_reference_when_api_key_env_is_invalid() -> None:
     normalized, warnings = normalize_config(
         {
-            "schema_version": "2.0.0",
             "agent": {
                 "api_key": "env:BAD-NAME",
                 "api_key_env": "BAD-NAME",
@@ -126,8 +109,8 @@ def test_normalize_config_aligns_api_key_reference_when_api_key_env_is_invalid()
 
 
 def test_normalize_config_theme_alias_and_invalid_values() -> None:
-    aliased, alias_warnings = normalize_config({"schema_version": "2.0.0", "tui": {"theme": "catppuccin"}})
-    invalid, invalid_warnings = normalize_config({"schema_version": "2.0.0", "tui": {"theme": "unknown-theme"}})
+    aliased, alias_warnings = normalize_config({"tui": {"theme": "catppuccin"}})
+    invalid, invalid_warnings = normalize_config({"tui": {"theme": "unknown-theme"}})
 
     assert aliased["tui"]["theme"] == "catppuccin-mocha"
     assert invalid["tui"]["theme"] == DEFAULT_CONFIG["tui"]["theme"]
@@ -136,9 +119,9 @@ def test_normalize_config_theme_alias_and_invalid_values() -> None:
 
 
 def test_normalize_config_runtime_profile_aliases() -> None:
-    minimal, minimal_warnings = normalize_config({"schema_version": "2.0.0", "runtime": {"profile": "safe"}})
-    standard, standard_warnings = normalize_config({"schema_version": "2.0.0", "runtime": {"profile": "workspace"}})
-    invalid, invalid_warnings = normalize_config({"schema_version": "2.0.0", "runtime": {"profile": "unknown"}})
+    minimal, minimal_warnings = normalize_config({"runtime": {"profile": "safe"}})
+    standard, standard_warnings = normalize_config({"runtime": {"profile": "workspace"}})
+    invalid, invalid_warnings = normalize_config({"runtime": {"profile": "unknown"}})
 
     assert minimal["runtime"]["profile"] == "minimal"
     assert standard["runtime"]["profile"] == "standard"
@@ -149,9 +132,9 @@ def test_normalize_config_runtime_profile_aliases() -> None:
 
 
 def test_normalize_config_permission_profile_aliases() -> None:
-    safe, safe_warnings = normalize_config({"schema_version": "2.0.0", "capabilities": {"permission_profile": "minimal"}})
-    workspace, workspace_warnings = normalize_config({"schema_version": "2.0.0", "capabilities": {"permission_profile": "standard"}})
-    invalid, invalid_warnings = normalize_config({"schema_version": "2.0.0", "capabilities": {"permission_profile": "unknown"}})
+    safe, safe_warnings = normalize_config({"capabilities": {"permission_profile": "minimal"}})
+    workspace, workspace_warnings = normalize_config({"capabilities": {"permission_profile": "standard"}})
+    invalid, invalid_warnings = normalize_config({"capabilities": {"permission_profile": "unknown"}})
 
     assert safe["capabilities"]["permission_profile"] == "safe"
     assert workspace["capabilities"]["permission_profile"] == "workspace"
@@ -174,7 +157,7 @@ def test_load_global_config_scrubs_secret_fields_on_disk(tmp_path: Path) -> None
     cfg = tmp_path / "config" / "global_config.json"
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text(
-        '{"schema_version": "2.0.0","search":{"provider":"tavily","tavily_api_key":"secret"}}',
+        '{"search":{"provider":"tavily","tavily_api_key":"secret"}}',
         encoding="utf-8",
     )
 
@@ -185,21 +168,6 @@ def test_load_global_config_scrubs_secret_fields_on_disk(tmp_path: Path) -> None
     assert "tavily_api_key" not in loaded["search"]
     assert "tavily_api_key" not in disk
     assert any("on disk" in warning for warning in warnings)
-
-
-def test_load_global_config_updates_v1_schema_on_disk(tmp_path: Path) -> None:
-    cfg = tmp_path / "config" / "global_config.json"
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    cfg.write_text('{"schema_version": "1.0.0","agent":{"request_timeout_s":42}}', encoding="utf-8")
-
-    warnings: list[str] = []
-    loaded = load_global_config(cfg, warnings=warnings)
-    disk = cfg.read_text(encoding="utf-8")
-
-    assert loaded["schema_version"] == "2.0.0"
-    assert loaded["agent"]["request_timeout_s"] == 42.0
-    assert '"schema_version": "2.0.0"' in disk
-    assert any("Updated config/global_config.json schema_version on disk" in warning for warning in warnings)
 
 
 def test_load_global_config_fails_for_missing_file(tmp_path: Path) -> None:
@@ -264,7 +232,6 @@ def test_validate_endpoint_policy_rejects_cross_host_when_disallowed() -> None:
 
 def test_normalize_config_preserves_new_runtime_boundary_fields() -> None:
     raw = {
-        "schema_version": "2.0.0",
         "agent": {
             "provider": "openai-compatible",
             "connect_timeout_s": "2.5",
@@ -288,7 +255,6 @@ def test_normalize_config_preserves_new_runtime_boundary_fields() -> None:
 
 def test_normalize_config_clamps_memory_robustness_fields() -> None:
     raw = {
-        "schema_version": "2.0.0",
         "memory": {
             "path": "./legacy/memory.pkl",
             "min_score_default": 2.0,
@@ -316,7 +282,6 @@ def test_normalize_config_clamps_memory_robustness_fields() -> None:
 def test_typed_runtime_configs_parse_normalized_config() -> None:
     normalized, _warnings = normalize_config(
         {
-            "schema_version": "2.0.0",
             "agent": {"connect_timeout_s": 3, "per_turn_retries": 2},
             "skills": {"python_executable": "/usr/bin/python3"},
             "tui": {"theme": "gruvbox-dark-soft", "chat_log_max_lines": 1234, "timing": {"model_refresh_interval_s": 9}},
@@ -340,7 +305,6 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
 def test_typed_config_v2_groups_runtime_sections() -> None:
     normalized, _warnings = normalize_config(
         {
-            "schema_version": "2.0.0",
             "agent": {"connect_timeout_s": 3, "per_turn_retries": 2},
             "workspace": {"path": "~/code"},
             "memory": {"backup_revisions": 4},
@@ -354,7 +318,6 @@ def test_typed_config_v2_groups_runtime_sections() -> None:
 
     typed = TypedConfigV2.from_normalized_config(normalized, auth_header="Authorization: Bearer demo")
 
-    assert typed.model_version == CONFIG_MODEL_VERSION
     assert typed.provider.connect_timeout_s == 3.0
     assert typed.provider.auth_header == "Authorization: Bearer demo"
     assert typed.workspace.path == "~/code"

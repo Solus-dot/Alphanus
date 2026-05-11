@@ -11,7 +11,6 @@ from urllib.parse import urlparse
 
 from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
 
-SCHEMA_VERSION = "2.0.0"
 MAX_CONFIG_BYTES = 512 * 1024
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -52,7 +51,6 @@ _PERMISSION_PROFILE_ALIASES = {
 _VALID_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "schema_version": SCHEMA_VERSION,
     "agent": {
         "provider": "openai-compatible",
         "base_url": "http://127.0.0.1:8080",
@@ -154,13 +152,6 @@ def deep_merge(base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
         else:
             out[key] = copy.deepcopy(value)
     return out
-
-
-def _major(version: str) -> int:
-    try:
-        return int(str(version).strip().split(".", 1)[0])
-    except ValueError as exc:
-        raise ValueError(f"Invalid schema_version: {version!r}") from exc
 
 
 def _warn(warnings: list[str], message: str) -> None:
@@ -386,21 +377,11 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         raise ValueError("Global config must be a JSON object")
 
     warnings: list[str] = []
-    schema_raw = str(raw_config.get("schema_version", SCHEMA_VERSION)).strip() or SCHEMA_VERSION
-    schema_major = _major(schema_raw)
-    current_major = _major(SCHEMA_VERSION)
-    if schema_major > current_major:
-        raise ValueError(f"Unsupported config schema_version: {schema_raw}")
-    if schema_major < current_major:
-        _warn(warnings, f"Upgraded config schema_version from {schema_raw} to {SCHEMA_VERSION}.")
-
     sanitized_input, stripped = strip_secret_fields(raw_config)
     if stripped:
         _warn(warnings, "Removed secret-like fields from config; use environment variables for secrets.")
-    sanitized_input["schema_version"] = SCHEMA_VERSION
 
     merged = deep_merge(DEFAULT_CONFIG, sanitized_input)
-    merged["schema_version"] = SCHEMA_VERSION
     input_agent_cfg = sanitized_input.get("agent", {}) if isinstance(sanitized_input.get("agent"), dict) else {}
 
     default_agent = DEFAULT_CONFIG["agent"]
@@ -1077,10 +1058,6 @@ def _load_existing_global_config(path: Path, *, warnings: list[str] | None = Non
     normalized, local_warnings = normalize_config(raw)
     if warnings is not None:
         warnings.extend(local_warnings)
-    if str(raw.get("schema_version", "")).strip() != str(normalized.get("schema_version", "")).strip():
-        path.write_text(json.dumps(normalized, indent=2) + "\n", encoding="utf-8")
-        if warnings is not None:
-            warnings.append("Updated config/global_config.json schema_version on disk.")
     return normalized
 
 

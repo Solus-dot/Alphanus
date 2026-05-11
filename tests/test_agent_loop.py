@@ -3774,7 +3774,6 @@ def test_typed_config_provider_uses_resolved_auth_header(runtime: SkillRuntime, 
 
     agent = Agent(
         {
-            "schema_version": "2.0.0",
             "agent": {
                 "api_key": "env:CUSTOM_ALPHANUS_KEY",
                 "api_key_env": "CUSTOM_ALPHANUS_KEY",
