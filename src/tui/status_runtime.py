@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from agent.provider_failure_policy import is_local_endpoint
 from agent.types import ModelStatus
 from tui.status import status_left_markup, topbar_center, topbar_left, topbar_right
 
@@ -59,9 +60,7 @@ def current_model_refresh_interval(host: Any) -> float:
 
 
 def should_startup_readiness_poll(host: Any) -> bool:
-    return host._status_runtime.should_startup_readiness_poll(
-        is_local_endpoint=host.agent.llm_client._is_local_endpoint(host.agent.models_endpoint)
-    )
+    return host._status_runtime.should_startup_readiness_poll(is_local_endpoint=is_local_endpoint(host.agent.models_endpoint))
 
 
 def start_startup_readiness_poll(host: Any) -> None:

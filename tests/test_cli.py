@@ -6,6 +6,10 @@ from types import SimpleNamespace
 
 import alphanus_cli
 
+TEST_BASE_URL = "http://127.0.0.1:8080"
+TEST_MODEL_ENDPOINT = f"{TEST_BASE_URL}/v1/chat/completions"
+TEST_MODELS_ENDPOINT = f"{TEST_BASE_URL}/v1/models"
+
 
 def test_main_does_not_block_on_model_readiness_before_launching_tui(monkeypatch, tmp_path) -> None:
     config_path = tmp_path / "config.json"
@@ -69,7 +73,7 @@ def test_main_does_not_block_on_model_readiness_before_launching_tui(monkeypatch
     agent_calls: list[str] = []
 
     class AgentStub:
-        models_endpoint = "http://127.0.0.1:8080/v1/models"
+        models_endpoint = TEST_MODELS_ENDPOINT
 
         def __init__(self, **_kwargs):
             agent_calls.append("init")
@@ -158,8 +162,8 @@ def test_init_non_interactive_writes_global_config_and_env_template(monkeypatch,
             command="init",
             non_interactive=True,
             workspace_path=str(tmp_path / "ws"),
-            model_endpoint="http://127.0.0.1:8080/v1/chat/completions",
-            models_endpoint="http://127.0.0.1:8080/v1/models",
+            model_endpoint=TEST_MODEL_ENDPOINT,
+            models_endpoint=TEST_MODELS_ENDPOINT,
             search_provider="tavily",
             theme="catppuccin-macchiato",
             debug=False,

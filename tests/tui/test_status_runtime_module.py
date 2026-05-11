@@ -13,14 +13,13 @@ from tui.status_runtime import (
     start_startup_readiness_poll,
 )
 
+TEST_MODELS_ENDPOINT = "http://127.0.0.1:8080/v1/models"
+
 
 class _Host:
     def __init__(self) -> None:
         self._status_runtime = StatusRuntimeState(model_status=ModelStatus(state="offline"))
-        self.agent = SimpleNamespace(
-            models_endpoint="http://127.0.0.1:8080/v1/models",
-            llm_client=SimpleNamespace(_is_local_endpoint=lambda _url: True),
-        )
+        self.agent = SimpleNamespace(models_endpoint=TEST_MODELS_ENDPOINT)
         self._timing = UiTimingConfig()
         self.refresh_calls = 0
         self.startup_calls = 0

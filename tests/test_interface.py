@@ -23,6 +23,10 @@ from tui.status_runtime import StatusRuntimeState
 from tui.stream_runtime import StreamRuntimeState
 from tui.transcript import ScrollAnchor, TranscriptEntry, TranscriptView
 
+TEST_BASE_URL = "http://127.0.0.1:8080"
+TEST_MODEL_ENDPOINT = f"{TEST_BASE_URL}/v1/chat/completions"
+TEST_MODELS_ENDPOINT = f"{TEST_BASE_URL}/v1/models"
+
 
 def _render_lines(renderable, *, width: int = 40) -> list[str]:
     console = Console(width=width, record=True)
@@ -48,15 +52,14 @@ def _tui_agent_stub(tmp_path: Path) -> SimpleNamespace:
         ),
         connect_timeout_s=1.0,
         readiness_timeout_s=1.0,
-        model_endpoint="http://127.0.0.1:8080/v1/chat/completions",
-        models_endpoint="http://127.0.0.1:8080/v1/models",
+        model_endpoint=TEST_MODEL_ENDPOINT,
+        models_endpoint=TEST_MODELS_ENDPOINT,
         fetch_model_metadata=lambda timeout_s=None: (None, None),
-        get_model_status=lambda: ModelStatus(endpoint="http://127.0.0.1:8080/v1/models", last_success_at=1.0),
+        get_model_status=lambda: ModelStatus(endpoint=TEST_MODELS_ENDPOINT, last_success_at=1.0),
         refresh_model_status=lambda timeout_s=None, force=False: ModelStatus(
-            endpoint="http://127.0.0.1:8080/v1/models", last_success_at=1.0
+            endpoint=TEST_MODELS_ENDPOINT, last_success_at=1.0
         ),
         ensure_ready=lambda timeout_s=None: True,
-        llm_client=SimpleNamespace(_is_local_endpoint=lambda endpoint: True),
         reload_skills=lambda: 0,
         run_turn=lambda *args, **kwargs: None,
         doctor_report=lambda: {},
@@ -1562,7 +1565,7 @@ def test_apply_model_status_refresh_updates_visible_status_and_hot_swap_state() 
             state="online",
             model_name="qwen-3",
             context_window=8192,
-            endpoint="http://127.0.0.1:8080/v1/models",
+            endpoint=TEST_MODELS_ENDPOINT,
         ),
         model_name="qwen-3",
         model_context_window=8192,
@@ -1580,7 +1583,7 @@ def test_apply_model_status_refresh_updates_visible_status_and_hot_swap_state() 
             context_window=16384,
             last_checked_at=time.monotonic(),
             last_success_at=time.monotonic(),
-            endpoint="http://127.0.0.1:8080/v1/models",
+            endpoint=TEST_MODELS_ENDPOINT,
         )
     )
 
@@ -1615,7 +1618,7 @@ def test_apply_model_status_refresh_keeps_model_name_when_offline() -> None:
             state="online",
             model_name="qwen-3",
             context_window=8192,
-            endpoint="http://127.0.0.1:8080/v1/models",
+            endpoint=TEST_MODELS_ENDPOINT,
         ),
         model_name="qwen-3",
         model_context_window=8192,
@@ -1632,7 +1635,7 @@ def test_apply_model_status_refresh_keeps_model_name_when_offline() -> None:
             model_name="qwen-stale",
             context_window=8192,
             last_checked_at=time.monotonic(),
-            endpoint="http://127.0.0.1:8080/v1/models",
+            endpoint=TEST_MODELS_ENDPOINT,
         )
     )
 
@@ -1648,21 +1651,17 @@ def test_should_startup_readiness_poll_only_for_cold_local_model() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._status_runtime = StatusRuntimeState(startup_readiness_inflight=False)
     tui.agent = SimpleNamespace(
-        models_endpoint="http://127.0.0.1:8080/v1/models",
-        llm_client=SimpleNamespace(_is_local_endpoint=lambda endpoint: endpoint.startswith("http://127.0.0.1")),
+        models_endpoint=TEST_MODELS_ENDPOINT,
     )
-    tui._status_runtime.model_status = ModelStatus(state="offline", endpoint="http://127.0.0.1:8080/v1/models", last_success_at=0.0)
+    tui._status_runtime.model_status = ModelStatus(state="offline", endpoint=TEST_MODELS_ENDPOINT, last_success_at=0.0)
 
     assert tui._should_startup_readiness_poll() is True
 
-    tui._status_runtime.model_status = ModelStatus(state="online", endpoint="http://127.0.0.1:8080/v1/models", last_success_at=1.0)
+    tui._status_runtime.model_status = ModelStatus(state="online", endpoint=TEST_MODELS_ENDPOINT, last_success_at=1.0)
     assert tui._should_startup_readiness_poll() is False
 
     tui._status_runtime.model_status = ModelStatus(state="offline", endpoint="https://example.com/v1/models", last_success_at=0.0)
-    tui.agent = SimpleNamespace(
-        models_endpoint="https://example.com/v1/models",
-        llm_client=SimpleNamespace(_is_local_endpoint=lambda _endpoint: False),
-    )
+    tui.agent = SimpleNamespace(models_endpoint="https://example.com/v1/models")
     assert tui._should_startup_readiness_poll() is False
 
 
