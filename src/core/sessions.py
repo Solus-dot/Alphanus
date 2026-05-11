@@ -11,8 +11,8 @@ from typing import Any
 
 from core.conv_tree import ConvTree
 
-MANIFEST_SCHEMA_VERSION = "1.0.0"
-SESSION_SCHEMA_VERSION = "1.0.0"
+MANIFEST_SCHEMA_VERSION = "2.0.0"
+SESSION_SCHEMA_VERSION = "2.0.0"
 DEFAULT_SESSIONS_DIRNAME = "sessions"
 
 
@@ -61,7 +61,7 @@ class ChatSession:
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> ChatSession:
-        version = data.get("schema_version", "1.0.0")
+        version = data.get("schema_version", "0.0.0")
         if _major(version) != _major(SESSION_SCHEMA_VERSION):
             raise ValueError(f"Unsupported session schema version {version}; expected major {SESSION_SCHEMA_VERSION}")
 
@@ -314,7 +314,7 @@ class SessionStore:
 
         with open(self._manifest_path, encoding="utf-8") as handle:
             data = json.load(handle)
-        version = data.get("schema_version", "1.0.0")
+        version = data.get("schema_version", "0.0.0")
         if _major(version) != _major(MANIFEST_SCHEMA_VERSION):
             raise ValueError(f"Unsupported manifest schema version {version}; expected major {MANIFEST_SCHEMA_VERSION}")
         if not isinstance(data.get("sessions"), dict):

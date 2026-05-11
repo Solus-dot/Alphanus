@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from core.sessions import SessionStore
 
 
@@ -86,3 +88,14 @@ def test_save_tree_roundtrip_preserves_collaboration_mode(tmp_path: Path) -> Non
 
     assert saved.collaboration_mode == "plan"
     assert loaded.collaboration_mode == "plan"
+
+
+def test_session_store_rejects_v1_session_after_v2_reset(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path, tmp_path / "sessions")
+    session = store.bootstrap()
+    path = store._session_path(session.id)
+    text = path.read_text(encoding="utf-8").replace('"schema_version": "2.0.0"', '"schema_version": "1.0.0"')
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Unsupported session schema version"):
+        store.load_session(session.id, activate=False)
