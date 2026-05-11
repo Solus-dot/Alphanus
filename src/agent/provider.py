@@ -4,7 +4,6 @@ import json
 import logging
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -27,23 +26,15 @@ from agent.provider_failure_policy import (
     is_transport_failure,
     should_retry_provider_exception,
 )
+from agent.provider_metadata import ProviderMetadataExtractor
+from agent.provider_payload import ProviderPayloadAdapter
+from agent.provider_stream_parser import ProviderStreamParser
 from agent.telemetry import TelemetryEmitter
-from core.message_types import JSONValue, ToolCallDelta
+from core.message_types import ToolCallDelta
 from core.runtime_config import ProviderConfig
 from core.streaming import build_ssl_context
 from core.streaming import stream_chat_completions as core_stream_chat_completions
 from core.types import JsonObject, ModelStatus, StreamPassResult, ToolCallAccumulator
-
-
-@dataclass(slots=True)
-class ProviderCapabilities:
-    streaming: bool = True
-    tool_calls: bool = True
-    reasoning_tokens: bool = True
-    context_window_probe: bool = True
-    responses_endpoint: bool = True
-    multimodal: bool = True
-    structured_output: bool = True
 
 
 @dataclass(slots=True)
@@ -89,6 +80,9 @@ class OpenAICompatibleProvider:
         self.debug = debug
         self.telemetry = telemetry or TelemetryEmitter()
         self._stream_chat_completions = stream_chat_completions_fn or core_stream_chat_completions
+        self._payload_adapter = ProviderPayloadAdapter()
+        self._metadata = ProviderMetadataExtractor()
+        self._stream_parser = ProviderStreamParser()
         self._ready_checked = False
         self._model_status = ModelStatus(endpoint=config.models_endpoint)
         self.reload_config(config)
@@ -127,9 +121,6 @@ class OpenAICompatibleProvider:
         self._backend_incompatibility_last = ""
         self._backend_model_integrity_state = "unknown"
         self._refresh_backend_profile(None)
-
-    def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities()
 
     def headers(self) -> dict[str, str]:
         headers: dict[str, str] = {}
@@ -282,86 +273,6 @@ class OpenAICompatibleProvider:
         )
         return self._resolved_endpoint_mode
 
-    @staticmethod
-    def _chat_tools_to_responses(tools: list[JsonObject]) -> list[JsonObject]:
-        converted: list[JsonObject] = []
-        for item in tools:
-            if not isinstance(item, dict):
-                continue
-            function = item.get("function")
-            if isinstance(function, dict):
-                converted.append(
-                    {
-                        "type": "function",
-                        "name": str(function.get("name", "")).strip(),
-                        "description": str(function.get("description", "")).strip(),
-                        "parameters": function.get("parameters") if isinstance(function.get("parameters"), dict) else {},
-                    }
-                )
-                continue
-            if item.get("type") == "function" and isinstance(item.get("name"), str):
-                converted.append(item)
-        return converted
-
-    @staticmethod
-    def _responses_tools_to_chat(tools: list[JsonObject]) -> list[JsonObject]:
-        converted: list[JsonObject] = []
-        for item in tools:
-            if not isinstance(item, dict):
-                continue
-            if isinstance(item.get("function"), dict):
-                converted.append(item)
-                continue
-            if str(item.get("type", "")).strip() != "function":
-                continue
-            name = str(item.get("name", "")).strip()
-            if not name:
-                continue
-            converted.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "description": str(item.get("description", "")).strip(),
-                        "parameters": item.get("parameters") if isinstance(item.get("parameters"), dict) else {},
-                    },
-                }
-            )
-        return converted
-
-    def _payload_to_mode(self, payload: dict[str, object], mode: str) -> JsonObject:
-        if mode not in {"responses", "chat"}:
-            mode = "chat"
-        messages = payload.get("messages")
-        if not isinstance(messages, list):
-            messages = payload.get("input")
-        message_list = [item for item in messages] if isinstance(messages, list) else []
-        tools_raw = payload.get("tools")
-        tools = [item for item in tools_raw] if isinstance(tools_raw, list) else None
-        thinking = False
-        template = payload.get("chat_template_kwargs")
-        if isinstance(template, dict):
-            thinking = bool(template.get("enable_thinking"))
-        max_tokens_override = None
-        max_output_tokens = payload.get("max_output_tokens")
-        max_tokens = payload.get("max_tokens")
-        if isinstance(max_output_tokens, (int, float)):
-            max_tokens_override = int(max_output_tokens)
-        elif isinstance(max_tokens, (int, float)):
-            max_tokens_override = int(max_tokens)
-        model_override = str(payload.get("model", "")).strip()
-        converted_tools: list[JsonObject] | None = None
-        if tools is not None:
-            converted_tools = self._chat_tools_to_responses(tools) if mode == "responses" else self._responses_tools_to_chat(tools)
-        return self.build_payload(
-            model_messages=cast(list[JsonObject], message_list),
-            thinking=thinking,
-            tools=converted_tools,
-            max_tokens_override=max_tokens_override,
-            model_override=model_override,
-            mode=mode,
-        )
-
     def build_payload(
         self,
         *,
@@ -373,37 +284,15 @@ class OpenAICompatibleProvider:
         mode: str | None = None,
     ) -> JsonObject:
         selected_mode = mode if mode in {"responses", "chat"} else self._select_endpoint_mode()
-        limit = self.default_max_tokens if max_tokens_override is None else max_tokens_override
-        if selected_mode == "responses":
-            payload: JsonObject = {
-                "input": cast(JSONValue, model_messages),
-                "stream": True,
-            }
-            if limit is not None and int(limit) > 0:
-                payload["max_output_tokens"] = int(limit)
-            if tools:
-                payload["tools"] = cast(JSONValue, self._chat_tools_to_responses(tools))
-                payload["tool_choice"] = "auto"
-            if model_override.strip():
-                payload["model"] = model_override.strip()
-            if thinking:
-                payload["reasoning"] = {"summary": "auto"}
-            return payload
-
-        payload: JsonObject = {
-            "messages": cast(JSONValue, model_messages),
-            "stream": True,
-            "stream_options": {"include_usage": True},
-            "chat_template_kwargs": {"enable_thinking": bool(thinking)},
-        }
-        if limit is not None and int(limit) > 0:
-            payload["max_tokens"] = int(limit)
-        if tools:
-            payload["tools"] = cast(JSONValue, tools)
-            payload["tool_choice"] = "auto"
-        if model_override.strip():
-            payload["model"] = model_override.strip()
-        return payload
+        return self._payload_adapter.build_payload(
+            model_messages=model_messages,
+            thinking=thinking,
+            tools=tools,
+            max_tokens_override=max_tokens_override,
+            model_override=model_override,
+            mode=selected_mode,
+            default_max_tokens=self.default_max_tokens,
+        )
 
     @staticmethod
     def stop_requested(stop_event) -> bool:
@@ -419,158 +308,6 @@ class OpenAICompatibleProvider:
                 return False
             time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
         return not OpenAICompatibleProvider.stop_requested(stop_event)
-
-    @staticmethod
-    def extract_model_name(payload: object) -> str | None:
-        keys = (
-            "id",
-            "name",
-            "model",
-            "model_id",
-            "model_name",
-            "loaded_model",
-            "default_model",
-        )
-        visited: set[int] = set()
-
-        def candidate(value: object) -> str | None:
-            if not isinstance(value, str):
-                return None
-            text = value.strip()
-            return text or None
-
-        def walk(item: object) -> str | None:
-            if isinstance(item, dict):
-                marker = id(item)
-                if marker in visited:
-                    return None
-                visited.add(marker)
-                for key in keys:
-                    picked = candidate(item.get(key))
-                    if picked:
-                        return picked
-                for value in item.values():
-                    if isinstance(value, (dict, list)):
-                        picked = walk(value)
-                        if picked:
-                            return picked
-                return None
-            if isinstance(item, list):
-                marker = id(item)
-                if marker in visited:
-                    return None
-                visited.add(marker)
-                for value in item:
-                    picked = walk(value)
-                    if picked:
-                        return picked
-                return None
-            return None
-
-        if isinstance(payload, (dict, list)):
-            return walk(payload)
-        return None
-
-    @staticmethod
-    def extract_model_context_window(payload: object) -> int | None:
-        context_keys = (
-            "context_length",
-            "context_window",
-            "max_context_length",
-            "max_model_len",
-            "num_ctx",
-            "n_ctx",
-            "n_ctx_slot",
-            "n_ctx_train",
-        )
-        visited: set[int] = set()
-
-        def candidate_int(value: object) -> int | None:
-            if isinstance(value, bool):
-                return None
-            if isinstance(value, int):
-                return value if value > 0 else None
-            if isinstance(value, float):
-                parsed = int(value)
-                return parsed if parsed > 0 else None
-            if isinstance(value, str):
-                try:
-                    parsed = int(value.strip())
-                except ValueError:
-                    return None
-                return parsed if parsed > 0 else None
-            return None
-
-        def from_item(item: object) -> int | None:
-            if isinstance(item, dict):
-                marker = id(item)
-                if marker in visited:
-                    return None
-                visited.add(marker)
-                for key in context_keys:
-                    picked = candidate_int(item.get(key))
-                    if picked is not None:
-                        return picked
-                for value in item.values():
-                    picked = from_item(value)
-                    if picked is not None:
-                        return picked
-                return None
-            if isinstance(item, list):
-                marker = id(item)
-                if marker in visited:
-                    return None
-                visited.add(marker)
-                for value in item:
-                    picked = from_item(value)
-                    if picked is not None:
-                        return picked
-                return None
-            return None
-
-        if isinstance(payload, dict):
-            data = payload.get("data")
-            if isinstance(data, list):
-                for item in data:
-                    picked = from_item(item)
-                    if picked is not None:
-                        return picked
-            elif data is not None:
-                picked = from_item(data)
-                if picked is not None:
-                    return picked
-            return from_item(payload)
-
-        if isinstance(payload, list):
-            for item in payload:
-                picked = from_item(item)
-                if picked is not None:
-                    return picked
-        return None
-
-    @staticmethod
-    def props_endpoint_from_models_endpoint(models_endpoint: str) -> str:
-        parsed = urllib.parse.urlparse(models_endpoint)
-        path = parsed.path or ""
-        if path.endswith("/v1/models"):
-            path = path[: -len("/v1/models")] + "/props"
-        elif path.endswith("/models"):
-            path = path[: -len("/models")] + "/props"
-        else:
-            path = "/props"
-        return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
-
-    @staticmethod
-    def slots_endpoint_from_models_endpoint(models_endpoint: str) -> str:
-        parsed = urllib.parse.urlparse(models_endpoint)
-        path = parsed.path or ""
-        if path.endswith("/v1/models"):
-            path = path[: -len("/v1/models")] + "/slots"
-        elif path.endswith("/models"):
-            path = path[: -len("/models")] + "/slots"
-        else:
-            path = "/slots"
-        return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
 
     def fetch_json(self, url: str, timeout_s: float | None = None) -> object:
         request = urllib.request.Request(url, headers=self.headers(), method="GET")
@@ -643,13 +380,13 @@ class OpenAICompatibleProvider:
             return remaining
 
         context_window = current.context_window
-        slots_endpoint = self.slots_endpoint_from_models_endpoint(self.models_endpoint)
+        slots_endpoint = self._metadata.slots_endpoint_from_models_endpoint(self.models_endpoint)
         try:
             slots_payload = self.fetch_json(slots_endpoint, timeout_s=remaining_timeout())
         except Exception as exc:
             self.telemetry.emit("model_slots_fetch_failed", endpoint=slots_endpoint, error=str(exc))
         else:
-            context_window = self.extract_model_context_window(slots_payload) or context_window
+            context_window = self._metadata.extract_model_context_window(slots_payload) or context_window
 
         try:
             payload = self.list_models(timeout_s=remaining_timeout())
@@ -668,17 +405,17 @@ class OpenAICompatibleProvider:
             )
         self._refresh_backend_profile(payload)
 
-        model_name = self.extract_model_name(payload) or current.model_name
+        model_name = self._metadata.extract_model_name(payload) or current.model_name
         if context_window is None:
-            context_window = self.extract_model_context_window(payload)
+            context_window = self._metadata.extract_model_context_window(payload)
         if context_window is None:
-            props_endpoint = self.props_endpoint_from_models_endpoint(self.models_endpoint)
+            props_endpoint = self._metadata.props_endpoint_from_models_endpoint(self.models_endpoint)
             try:
                 props_payload = self.fetch_json(props_endpoint, timeout_s=remaining_timeout())
             except Exception as exc:
                 self.telemetry.emit("model_props_fetch_failed", endpoint=props_endpoint, error=str(exc))
             else:
-                context_window = self.extract_model_context_window(props_payload)
+                context_window = self._metadata.extract_model_context_window(props_payload)
         return self._store_model_status(
             ModelStatus(
                 state="online",
@@ -834,7 +571,11 @@ class OpenAICompatibleProvider:
                 self.telemetry.emit("chat_pass_cancelled", pass_id=pass_id)
                 return StreamPassResult(finish_reason="cancelled")
             parsed_chunk = cast(dict[str, object], chunk)
-            parsed = self._parse_responses_chunk(parsed_chunk, tool_acc) if mode == "responses" else self._parse_chat_chunk(parsed_chunk, tool_acc)
+            parsed = (
+                self._stream_parser.parse_responses_chunk(parsed_chunk, tool_acc)
+                if mode == "responses"
+                else self._stream_parser.parse_chat_chunk(parsed_chunk, tool_acc)
+            )
             parsed_usage = parsed["usage"]
             if isinstance(parsed_usage, dict) and parsed_usage:
                 usage = {str(k): int(v) for k, v in parsed_usage.items() if isinstance(v, (int, float))}
@@ -914,144 +655,6 @@ class OpenAICompatibleProvider:
             first_token_latency_ms=first_token_latency_ms,
         )
 
-    @staticmethod
-    def _normalize_usage(payload: object) -> dict[str, int]:
-        if not isinstance(payload, dict):
-            return {}
-        usage: dict[str, int] = {}
-        for key, value in payload.items():
-            if isinstance(value, (int, float)):
-                usage[str(key)] = int(value)
-        return usage
-
-    def _parse_chat_chunk(self, chunk: dict[str, object], _tool_acc: ToolCallAccumulator) -> dict[str, object]:
-        out: dict[str, object] = {
-            "content": "",
-            "reasoning": "",
-            "tool_deltas": [],
-            "finish_reason": "",
-            "usage": {},
-        }
-        choices = chunk.get("choices", [])
-        chunk_usage = self._normalize_usage(chunk.get("usage"))
-        if chunk_usage:
-            out["usage"] = chunk_usage
-        if not isinstance(choices, list) or not choices:
-            message = chunk.get("message")
-            if isinstance(message, dict):
-                out["content"] = str(message.get("content") or "")
-            if bool(chunk.get("done")):
-                out["finish_reason"] = str(chunk.get("done_reason") or "stop")
-            return out
-        choice = choices[0] if isinstance(choices[0], dict) else {}
-        delta = choice.get("delta", {}) if isinstance(choice.get("delta"), dict) else {}
-        out["reasoning"] = str(delta.get("reasoning_content") or "")
-        out["content"] = str(delta.get("content") or "")
-        tool_deltas = delta.get("tool_calls")
-        if isinstance(tool_deltas, list):
-            out["tool_deltas"] = tool_deltas
-        if choice.get("finish_reason"):
-            out["finish_reason"] = str(choice["finish_reason"])
-        return out
-
-    def _parse_responses_chunk(self, chunk: dict[str, object], tool_acc: ToolCallAccumulator) -> dict[str, object]:
-        out: dict[str, object] = {
-            "content": "",
-            "reasoning": "",
-            "tool_deltas": [],
-            "finish_reason": "",
-            "usage": {},
-        }
-        event_type = str(chunk.get("type") or "").strip()
-        if not event_type:
-            return out
-
-        if event_type in {"response.output_text.delta", "response.output_text.annotation.added"}:
-            out["content"] = str(chunk.get("delta") or "")
-            return out
-
-        if event_type in {
-            "response.reasoning.delta",
-            "response.reasoning_summary_text.delta",
-            "response.reasoning_text.delta",
-        }:
-            out["reasoning"] = str(chunk.get("delta") or "")
-            return out
-
-        if event_type == "response.output_item.added":
-            raw_item = chunk.get("item")
-            item = raw_item if isinstance(raw_item, dict) else {}
-            item_type = str(item.get("type") or "")
-            if item_type in {"function_call", "tool_call"}:
-                output_index = chunk.get("output_index")
-                item_index = item.get("index")
-                index = int(output_index) if isinstance(output_index, (int, float, str)) and str(output_index).strip() else int(item_index) if isinstance(item_index, (int, float, str)) and str(item_index).strip() else 0
-                function_name = str(item.get("name") or item.get("function_name") or "").strip()
-                call_id = str(item.get("call_id") or item.get("id") or "").strip()
-                args = str(item.get("arguments") or "")
-                out["tool_deltas"] = [
-                    {
-                        "index": index,
-                        "id": call_id,
-                        "type": "function",
-                        "function": {"name": function_name, "arguments": args},
-                    }
-                ]
-            return out
-
-        if event_type == "response.function_call_arguments.delta":
-            output_index = chunk.get("output_index")
-            index = int(output_index) if isinstance(output_index, (int, float, str)) and str(output_index).strip() else 0
-            call_id = str(chunk.get("call_id") or chunk.get("item_id") or "").strip()
-            delta = str(chunk.get("delta") or "")
-            out["tool_deltas"] = [
-                {
-                    "index": index,
-                    "id": call_id,
-                    "type": "function",
-                    "function": {"arguments": delta},
-                }
-            ]
-            return out
-
-        if event_type in {"response.completed", "response.incomplete", "response.failed"}:
-            raw_response = chunk.get("response")
-            response_obj = raw_response if isinstance(raw_response, dict) else {}
-            usage = self._normalize_usage(response_obj.get("usage"))
-            if usage:
-                out["usage"] = usage
-            if event_type == "response.completed":
-                out["finish_reason"] = "stop"
-            elif event_type == "response.incomplete":
-                out["finish_reason"] = "length"
-            else:
-                out["finish_reason"] = "error"
-            return out
-
-        if event_type == "response.output_item.done":
-            raw_item = chunk.get("item")
-            item = raw_item if isinstance(raw_item, dict) else {}
-            if str(item.get("type") or "") in {"function_call", "tool_call"}:
-                output_index = chunk.get("output_index")
-                item_index = item.get("index")
-                index = int(output_index) if isinstance(output_index, (int, float, str)) and str(output_index).strip() else int(item_index) if isinstance(item_index, (int, float, str)) and str(item_index).strip() else 0
-                call_id = str(item.get("call_id") or item.get("id") or "").strip()
-                args = str(item.get("arguments") or "")
-                if args:
-                    out["tool_deltas"] = [
-                        {
-                            "index": index,
-                            "id": call_id,
-                            "type": "function",
-                            "function": {"arguments": args},
-                        }
-                    ]
-                if tool_acc.finalize():
-                    out["finish_reason"] = "tool_calls"
-            return out
-
-        return out
-
     def call_with_retry(self, payload: dict[str, object], stop_event, on_event, pass_id: str) -> StreamPassResult:
         attempt = 0
         mode = self._select_endpoint_mode()
@@ -1115,7 +718,10 @@ class OpenAICompatibleProvider:
                             "text": "Responses endpoint unsupported for this backend; falling back to chat completions.",
                         },
                     )
-                    payload = cast(dict[str, object], self._payload_to_mode(payload, "chat"))
+                    payload = cast(
+                        dict[str, object],
+                        self._payload_adapter.payload_to_mode(payload, "chat", default_max_tokens=self.default_max_tokens),
+                    )
                     continue
                 if self._is_transport_failure(exc):
                     self.mark_model_transport_failure(exc)
