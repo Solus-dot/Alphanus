@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import re
-import shlex
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -56,6 +55,7 @@ _ALWAYS_AVAILABLE_TOOL_NAMES = frozenset(
         _REQUEST_USER_INPUT_TOOL_NAME,
     }
 )
+
 
 def _ok(data: object, duration_ms: int) -> ToolResult:
     return ok_result(cast(JSONValue, data), duration_ms=duration_ms)
@@ -167,7 +167,6 @@ class SkillRuntime:
         self.skill_roots = self._discover_skill_roots()
         self.skills: dict[str, SkillManifest] = {}
         self._all_skills: list[SkillManifest] = []
-        self._skill_index: dict[str, dict[str, Any]] = {}
         self._tool_registry: dict[str, RegisteredTool] = {}
         self._skill_alias_index: dict[str, str] = {}
         self._skill_alias_collisions: dict[str, tuple[str, ...]] = {}
@@ -177,7 +176,6 @@ class SkillRuntime:
         self._list_skills_cache: tuple[SkillManifest, ...] | None = None
         self._enabled_skills_cache: tuple[SkillManifest, ...] | None = None
         self._skill_catalog_cache: dict[int, str] = {}
-        self._skill_cards_cache: dict[tuple[tuple[str, ...], bool], str] = {}
         self._runnable_scripts_cache: dict[tuple[str, str], tuple[str, ...]] = {}
         self._tools_schema_cache: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
         self._python_module_probe_cache: dict[str, bool] = {}
@@ -310,23 +308,19 @@ class SkillRuntime:
         self._list_skills_cache = None
         self._enabled_skills_cache = None
         self._skill_catalog_cache = {}
-        self._skill_cards_cache = {}
         self._runnable_scripts_cache = {}
         self._tools_schema_cache = {}
+
+    def _refresh_skill_runtime_indexes(self) -> None:
+        for skill in self.enabled_skills():
+            self._skill_runnable_scripts(skill)
+        self._rebuild_skill_alias_index()
 
     @staticmethod
     def _append_unique(items: list[str], value: str) -> None:
         text = str(value).strip()
         if text and text not in items:
             items.append(text)
-
-    def _rebuild_skill_index(self) -> None:
-        self._skill_index = SkillRegistry.rebuild_skill_index(
-            self.enabled_skills(),
-            skill_entrypoints=self._skill_entrypoints,
-            skill_runnable_scripts=lambda skill: tuple(self._skill_runnable_scripts(skill)),
-        )
-        self._rebuild_skill_alias_index()
 
     def _rebuild_skill_alias_index(self) -> None:
         alias_map: dict[str, list[str]] = {}
@@ -732,7 +726,7 @@ class SkillRuntime:
         skill.enabled = enabled
         self.generation += 1
         self._invalidate_skill_caches()
-        self._rebuild_skill_index()
+        self._refresh_skill_runtime_indexes()
         return True
 
     def get_skill(self, skill_id: str) -> SkillManifest | None:
@@ -876,27 +870,6 @@ class SkillRuntime:
             return False
         return True
 
-    def skill_cards_text(self, skills: list[SkillManifest]) -> str:
-        key = (tuple(getattr(skill, "id", "") for skill in skills), True)
-        cached = self._skill_cards_cache.get(key)
-        if cached is not None:
-            return cached
-        lines: list[str] = []
-        for skill in skills:
-            allowed_tools = list(getattr(skill, "allowed_tools", []) or [])
-            bundled_files = list(getattr(skill, "bundled_files", []) or [])
-            tool_text = ", ".join(allowed_tools[:4]) or "none"
-            resource_count = len([rel for rel in bundled_files if not rel.startswith("scripts/")])
-            lines.append(
-                f"- {getattr(skill, 'id', '')}: {getattr(skill, 'description', '')} | tools: {tool_text} | resources: {resource_count} | "
-                f"execution: {'yes' if getattr(skill, 'execution_allowed', True) else 'no'} | "
-                f"adapter: {getattr(skill, 'adapter', 'agentskills')} | user_invocable: {'yes' if getattr(skill, 'user_invocable', True) else 'no'} | "
-                f"model_invocable: {'no' if getattr(skill, 'disable_model_invocation', False) else 'yes'}"
-            )
-        rendered = "\n".join(lines)
-        self._skill_cards_cache[key] = rendered
-        return rendered
-
     def compose_skill_block(
         self,
         selected: list[SkillManifest],
@@ -937,23 +910,6 @@ class SkillRuntime:
 
         return "\n\n".join(out)
 
-    @staticmethod
-    def _extract_argument_item(argument_text: str, index: int) -> str:
-        if index < 0:
-            return ""
-        try:
-            parts = shlex.split(argument_text)
-        except Exception:
-            parts = argument_text.split()
-        return parts[index] if index < len(parts) else ""
-
-    @staticmethod
-    def _selection_tokens(*values: Any) -> set[str]:
-        return SkillSelector.selection_tokens(*values)
-
-    def _skill_selection_score(self, skill: SkillManifest, ctx: SkillContext) -> int:
-        return self.selector.skill_selection_score(skill, ctx)
-
     def _rebase_vendor_paths(self, text: str, skill: SkillManifest) -> str:
         out = str(text or "")
         skill_root = str(skill.path or "")
@@ -985,20 +941,6 @@ class SkillRuntime:
         for source, target in sorted(replacements.items(), key=lambda item: -len(item[0])):
             out = out.replace(source, target)
         return out
-
-    def _apply_skill_arguments(self, text: str, argument_text: str) -> str:
-        out = str(text or "")
-        if not argument_text:
-            return out
-        out = re.sub(r"\$ARGUMENTS\[(\d+)\]", lambda m: self._extract_argument_item(argument_text, int(m.group(1))), out)
-        out = re.sub(r"\$(\d+)\b", lambda m: self._extract_argument_item(argument_text, int(m.group(1))), out)
-        out = out.replace("$ARGUMENTS", argument_text)
-        if "$ARGUMENTS" not in text and "$0" not in text and "$ARGUMENTS[" not in text:
-            out = out.rstrip() + f"\n\nARGUMENTS: {argument_text}"
-        return out
-
-    def user_skill_root(self) -> Path:
-        return self.skills_dir.resolve()
 
     def _skill_linked_files(self, skill: SkillManifest) -> dict[str, list[str]]:
         linked: dict[str, list[str]] = {}
@@ -1098,9 +1040,6 @@ class SkillRuntime:
             clipped = clipped.rsplit("```", 1)[0].rstrip()
         return clipped
 
-    def core_tool_names(self) -> list[str]:
-        return sorted(name for name in self.model_exposed_tool_names() if name in _CORE_TOOL_NAMES)
-
     def core_tool_names_for_turn(
         self,
         selected: list[SkillManifest],
@@ -1170,10 +1109,6 @@ class SkillRuntime:
             names.discard(_REQUEST_USER_INPUT_TOOL_NAME)
         return sorted(name for name in names if name in self._tool_registry)
 
-    @staticmethod
-    def _active_skill_ids(selected: list[SkillManifest]) -> list[str]:
-        return sorted(dict.fromkeys(str(getattr(skill, "id", "")).strip() for skill in selected if str(getattr(skill, "id", "")).strip()))
-
     def allowed_tool_names(
         self,
         selected: list[SkillManifest],
@@ -1187,9 +1122,6 @@ class SkillRuntime:
         selected: list[SkillManifest],
     ) -> tuple[Any, ...]:
         return SkillToolSchemaBuilder.cache_key(names, selected, generation=self.generation)
-
-    def _dynamic_run_skill_schema(self, selected: list[SkillManifest], ctx: SkillContext | None) -> dict[str, Any]:
-        return self._tool_schema_builder.dynamic_run_skill_schema(selected, ctx)
 
     def _tool_schemas(
         self,
@@ -1332,15 +1264,6 @@ class SkillRuntime:
     ) -> dict[str, Any]:
         return self._run_validator.validate_run_skill_args(args, selected, ctx)
 
-    def _execute_registered_tool(
-        self,
-        reg: RegisteredTool,
-        args: dict[str, Any],
-        env: ToolExecutionEnv,
-        ctx: SkillContext,
-    ) -> Any:
-        return self._skill_executor.execute_registered_tool(reg, args, env, ctx)
-
     def execute_tool_call(
         self,
         tool_name: str,
@@ -1358,48 +1281,3 @@ class SkillRuntime:
             confirm_shell=confirm_shell,
             request_user_input=request_user_input,
         )
-
-    def _execute_run_skill_tool(
-        self,
-        args: dict[str, Any],
-        env: ToolExecutionEnv,
-    ) -> dict[str, Any]:
-        return self._skill_executor.execute_run_skill_tool(args, env)
-
-    def _execute_skill_script_tool(
-        self,
-        args: dict[str, Any],
-        env: ToolExecutionEnv,
-    ) -> dict[str, Any]:
-        return self._skill_executor.execute_skill_script_tool(args, env)
-
-    @staticmethod
-    def _resolve_entrypoint_placeholders(template: str, values: dict[str, Any]) -> str:
-        return SkillExecutor.resolve_entrypoint_placeholders(template, values)
-
-    def _run_shell_workflow_command(
-        self,
-        command: str,
-        env: ToolExecutionEnv,
-        timeout_s: int,
-        cwd: str | None = None,
-    ) -> dict[str, Any]:
-        return self._skill_executor.run_shell_workflow_command(command, env, timeout_s, cwd=cwd)
-
-    def _execute_skill_entrypoint_tool(
-        self,
-        args: dict[str, Any],
-        env: ToolExecutionEnv,
-    ) -> dict[str, Any]:
-        return self._skill_executor.execute_skill_entrypoint_tool(args, env)
-
-    @staticmethod
-    def _normalize_result(result: Any, duration_ms: int) -> dict[str, Any]:
-        if isinstance(result, dict) and {"ok", "data", "error"}.issubset(result.keys()):
-            out = dict(result)
-            raw_meta = out.get("meta")
-            meta: dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
-            meta["duration_ms"] = int(meta.get("duration_ms", duration_ms))
-            out["meta"] = meta
-            return out
-        return cast(dict[str, Any], _ok(result, duration_ms))

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import NotRequired, TypedDict
+from typing import TypedDict
 
 from core.message_types import JSONValue
 
@@ -15,10 +15,6 @@ class ToolResult(TypedDict):
     data: JSONValue
     error: ToolError | None
     meta: dict[str, JSONValue]
-
-
-class ToolResultMeta(TypedDict):
-    duration_ms: NotRequired[int]
 
 
 def ok_result(data: JSONValue, *, duration_ms: int | None = None) -> ToolResult:

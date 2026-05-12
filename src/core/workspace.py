@@ -199,10 +199,6 @@ class WorkspaceManager:
         return digest.hexdigest()
 
     @staticmethod
-    def _git_subcommand(argv: list[str]) -> str:
-        return WorkspaceCommandPolicy.git_subcommand(argv)
-
-    @staticmethod
     def _git_subcommand_index(argv: list[str]) -> int:
         return WorkspaceCommandPolicy.git_subcommand_index(argv)
 

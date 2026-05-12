@@ -21,7 +21,6 @@ from core.workspace import WorkspaceManager
 
 TEST_BASE_URL = "http://127.0.0.1:8080"
 TEST_MODEL_ENDPOINT = f"{TEST_BASE_URL}/v1/chat/completions"
-TEST_RESPONSES_ENDPOINT = f"{TEST_BASE_URL}/v1/responses"
 TEST_MODELS_ENDPOINT = f"{TEST_BASE_URL}/v1/models"
 TEST_SLOTS_ENDPOINT = f"{TEST_BASE_URL}/slots"
 TEST_PROPS_ENDPOINT = f"{TEST_BASE_URL}/props"
@@ -35,7 +34,7 @@ class FakeResponse:
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(self, *_args):
         return False
 
     def __iter__(self):

@@ -14,14 +14,13 @@ class SkillInventoryLoader:
         runtime.skill_roots = runtime._discover_skill_roots()
         runtime.skills = {}
         runtime._all_skills = []
-        runtime._skill_index = {}
         runtime._tool_registry = {}
         runtime._skill_alias_index = {}
         runtime._skill_alias_collisions = {}
         runtime._invalidate_skill_caches()
         runtime._register_runtime_tools()
         if not any(root.exists() for root in runtime.skill_roots):
-            runtime._rebuild_skill_index()
+            runtime._refresh_skill_runtime_indexes()
             return
 
         for root in runtime.skill_roots:
@@ -77,4 +76,4 @@ class SkillInventoryLoader:
                         runtime._all_skills.append(manifest)
                     elif runtime.debug:
                         print(f"[skill] failed to load {child.name}: {exc}")
-        runtime._rebuild_skill_index()
+        runtime._refresh_skill_runtime_indexes()

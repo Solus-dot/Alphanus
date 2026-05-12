@@ -1044,7 +1044,7 @@ def test_tui_restore_scroll_anchor_remeasures_current_partial_height() -> None:
         def scroll_end(self, *, animate=False) -> None:
             raise AssertionError("should not jump to bottom")
 
-        def scroll_to(self, *, y=0.0, animate=False, immediate=False, force=False) -> None:
+        def scroll_to(self, *, y=0.0, animate=False, **_kwargs) -> None:
             self.target_y = y
 
     scroll = ScrollStub()

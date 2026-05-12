@@ -79,10 +79,6 @@ class LexicalMemory:
                 return True
         return False
 
-    def _score_text(self, query_tokens: list[str], text: str) -> float:
-        text_tokens = self._tokenize(text)
-        return self._score_tokens(query_tokens, text_tokens)
-
     def _tokens_for_item(self, item: MemoryItem) -> list[str]:
         cached = self._token_cache.get(item.id)
         if cached is not None:
@@ -329,10 +325,6 @@ class LexicalMemory:
             self._mark_dirty(force=False)
         return out
 
-    def list_recent(self, count: int = 5) -> list[dict[str, Any]]:
-        ordered = sorted(self.memories, key=lambda m: m.timestamp, reverse=True)
-        return [self._to_public(item) for item in ordered[: max(1, count)]]
-
     def forget(self, memory_id: int) -> bool:
         target_id = int(memory_id)
         memory_idx = next((idx for idx, item in enumerate(self.memories) if item.id == target_id), -1)
@@ -343,6 +335,10 @@ class LexicalMemory:
         self._token_cache.pop(target_id, None)
         self._mark_dirty(force=False)
         return True
+
+    def list_recent(self, count: int = 5) -> list[dict[str, Any]]:
+        ordered = sorted(self.memories, key=lambda item: item.timestamp, reverse=True)
+        return [self._to_public(item) for item in ordered[: max(1, int(count))]]
 
     def stats(self) -> dict[str, Any]:
         by_type: dict[str, int] = {}
@@ -367,7 +363,7 @@ class LexicalMemory:
         target = Path(os.path.expanduser(path)).resolve()
         target.parent.mkdir(parents=True, exist_ok=True)
         lines = ["# Alphanus Memory Export", ""]
-        for item in sorted(self.memories, key=lambda m: m.timestamp):
+        for item in sorted(self.memories, key=lambda row: row.timestamp):
             lines.append(f"- id: {item.id}")
             lines.append(f"  type: {item.type}")
             lines.append(f"  timestamp: {item.timestamp}")

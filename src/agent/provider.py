@@ -20,7 +20,6 @@ from agent.backend_profiles import (
     rewrite_payload_for_profile,
 )
 from agent.provider_failure_policy import (
-    is_connection_refused_error,
     is_endpoint_unsupported,
     is_local_endpoint,
     is_transport_failure,
@@ -495,10 +494,6 @@ class OpenAICompatibleProvider:
     @staticmethod
     def _is_local_endpoint(endpoint: str) -> bool:
         return is_local_endpoint(endpoint)
-
-    @staticmethod
-    def _is_connection_refused_error(exc: Exception) -> bool:
-        return is_connection_refused_error(exc)
 
     def _should_retry_exception(self, exc: Exception) -> bool:
         return should_retry_provider_exception(exc, model_endpoint=self.model_endpoint)

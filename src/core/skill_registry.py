@@ -14,32 +14,6 @@ class SkillRegistry:
                 tool_registry.pop(tool_name, None)
 
     @staticmethod
-    def rebuild_skill_index(
-        enabled_skills: list[SkillManifest],
-        *,
-        skill_entrypoints: Callable[[SkillManifest], list[Any]],
-        skill_runnable_scripts: Callable[[SkillManifest], tuple[str, ...]],
-    ) -> dict[str, dict[str, Any]]:
-        index: dict[str, dict[str, Any]] = {}
-        for skill in enabled_skills:
-            index[skill.id] = {
-                "id": skill.id,
-                "name": skill.name,
-                "description": skill.description,
-                "tags": list(skill.tags),
-                "categories": list(skill.categories),
-                "tools": list(skill.allowed_tools),
-                "produces": list(skill.produces),
-                "entrypoints": [entry.name for entry in skill_entrypoints(skill)],
-                "scripts": skill_runnable_scripts(skill),
-                "execution_allowed": bool(skill.execution_allowed),
-                "adapter": skill.adapter,
-                "user_invocable": bool(skill.user_invocable),
-                "model_invocable": not bool(skill.disable_model_invocation),
-            }
-        return index
-
-    @staticmethod
     def register_tool(
         *,
         tool_registry: dict[str, Any],

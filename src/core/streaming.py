@@ -150,7 +150,6 @@ def stream_chat_completions(
                                 }
                             )
                         continue
-                return
             for raw in resp:
                 if stop_event is not None and stop_event.is_set():
                     return

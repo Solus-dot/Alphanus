@@ -121,7 +121,6 @@ class TurnTelemetry:
     started_at: float = field(default_factory=time.time)
     pass_index: int = 0
     model_usage: dict[str, int] = field(default_factory=dict)
-    classification_source: str = ""
     finalization_attempts: int = 0
     finalization_repairs: int = 0
     finalization_fallback_applied: bool = False
@@ -196,7 +195,6 @@ class TurnState:
 class _ToolCallState:
     stream_id: str
     call_id: str
-    call_type: str
     name: str
     arguments: str
 
@@ -215,7 +213,6 @@ class ToolCallAccumulator:
                 _ToolCallState(
                     stream_id=f"{self._pass_id}_call_{index}",
                     call_id="",
-                    call_type="function",
                     name="",
                     arguments="",
                 ),
@@ -223,9 +220,6 @@ class ToolCallAccumulator:
             delta_id = delta.get("id")
             if delta_id:
                 item.call_id = str(delta_id)
-            delta_type = delta.get("type")
-            if delta_type:
-                item.call_type = str(delta_type)
             fn_delta = delta.get("function") or {}
             if isinstance(fn_delta, dict):
                 fn_name = fn_delta.get("name")

@@ -62,9 +62,6 @@ class _CliTheme:
             return text
         return self._fmt(text, "1;38;2;99;102;241;48;2;26;23;48")
 
-    def heading(self, text: str) -> str:
-        return self._fg(text, self.indigo, bold=True)
-
     def accent(self, text: str) -> str:
         return self._fg(text, self.indigo, bold=True)
 

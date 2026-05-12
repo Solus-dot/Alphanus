@@ -75,7 +75,7 @@ def test_web_search_calls_tavily_and_normalizes_results(mocker, monkeypatch):
         def __enter__(self):
             return self
 
-        def __exit__(self, exc_type, exc, tb):
+        def __exit__(self, *_args):
             return False
 
         def read(self):
@@ -140,7 +140,7 @@ def test_web_search_calls_brave_and_normalizes_results(mocker, monkeypatch):
         def __enter__(self):
             return self
 
-        def __exit__(self, exc_type, exc, tb):
+        def __exit__(self, *_args):
             return False
 
         def read(self):
@@ -182,7 +182,7 @@ def test_fetch_url_extracts_title_and_text(mocker):
         def __enter__(self):
             return self
 
-        def __exit__(self, exc_type, exc, tb):
+        def __exit__(self, *_args):
             return False
 
         def read(self):
@@ -229,7 +229,7 @@ def test_web_search_falls_back_to_secondary_provider(mocker, monkeypatch):
         def __enter__(self):
             return self
 
-        def __exit__(self, exc_type, exc, tb):
+        def __exit__(self, *_args):
             return False
 
         def read(self):
@@ -283,7 +283,7 @@ def test_web_search_merges_results_from_both_providers_when_configured(mocker, m
         def __enter__(self):
             return self
 
-        def __exit__(self, exc_type, exc, tb):
+        def __exit__(self, *_args):
             return False
 
         def read(self):
@@ -334,7 +334,7 @@ def test_web_search_retries_retryable_http_error(mocker, monkeypatch):
         def __enter__(self):
             return self
 
-        def __exit__(self, exc_type, exc, tb):
+        def __exit__(self, *_args):
             return False
 
         def read(self):
@@ -417,7 +417,7 @@ def test_fetch_url_follows_safe_redirect_chain(mocker):
         def __enter__(self):
             return self
 
-        def __exit__(self, exc_type, exc, tb):
+        def __exit__(self, *_args):
             return False
 
         def read(self):
@@ -478,7 +478,7 @@ def test_fetch_url_extracts_metadata_and_headings(mocker):
         def __enter__(self):
             return self
 
-        def __exit__(self, exc_type, exc, tb):
+        def __exit__(self, *_args):
             return False
 
         def read(self):
@@ -521,7 +521,7 @@ def test_fetch_url_preserves_div_and_section_body_text(mocker):
         def __enter__(self):
             return self
 
-        def __exit__(self, exc_type, exc, tb):
+        def __exit__(self, *_args):
             return False
 
         def read(self):
@@ -572,7 +572,7 @@ def test_search_ops_skill_loads_and_executes_from_repo(tmp_path: Path, mocker, m
         def __enter__(self):
             return self
 
-        def __exit__(self, exc_type, exc, tb):
+        def __exit__(self, *_args):
             return False
 
         def read(self):

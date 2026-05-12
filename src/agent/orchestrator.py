@@ -27,7 +27,6 @@ from core.types import (
     JsonObject,
     ShellConfirmationFn,
     ToolCall,
-    ToolExecutionRecord,
     TurnPolicySnapshot,
     TurnState,
     UserInputRequestFn,
@@ -131,14 +130,6 @@ class TurnOrchestrator:
         except Exception as exc:
             logging.debug("Event emission failed: %s", exc)
             return
-
-    @staticmethod
-    def _trace_list(state: TurnState, key: str) -> list[dict[str, object]]:
-        return TurnJournalBuilder.trace_list(state, key)
-
-    @staticmethod
-    def _set_trace_list(state: TurnState, key: str, rows: list[dict[str, object]]) -> None:
-        TurnJournalBuilder.set_trace_list(state, key, rows)
 
     def _trace_add(self, state: TurnState, key: str, row: dict[str, object]) -> None:
         self.turn_journal.trace_add(state, key, row)
@@ -389,9 +380,6 @@ class TurnOrchestrator:
 
     def workspace_materialization_count(self, state: TurnState) -> int:
         return self.evidence_guard.workspace_materialization_count(state)
-
-    def _tool_counts_as_workspace_mutation(self, record: ToolExecutionRecord, _skill_runtime) -> bool:
-        return self.evidence_guard.tool_counts_as_workspace_mutation(record)
 
     def workspace_mutation_count(self, state: TurnState) -> int:
         return self.evidence_guard.workspace_mutation_count(state)

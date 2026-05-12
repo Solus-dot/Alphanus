@@ -20,7 +20,7 @@ class _StallingResponse:
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(self, *_args):
         return False
 
     def fileno(self):
@@ -43,7 +43,7 @@ def test_stream_chat_completions_cancels_during_stalled_read(mocker):
     mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
     select_calls = {"count": 0}
 
-    def fake_select(reads, writes, errs, timeout=None):
+    def fake_select(_reads, _writes, _errs, timeout=None):
         select_calls["count"] += 1
         stop_event.set()
         return ([], [], [])

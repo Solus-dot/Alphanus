@@ -26,7 +26,7 @@ def test_play_youtube_resolves_first_video_url(mocker):
         def __enter__(self):
             return self
 
-        def __exit__(self, exc_type, exc, tb):
+        def __exit__(self, *_args):
             return False
 
         def read(self):
@@ -150,7 +150,7 @@ def test_open_url_accepts_file_urls_in_runtime(mocker, tmp_path: Path):
     reg.module = module
     opened_urls: list[str] = []
 
-    def _capture_open(url: str, new: int = 0):
+    def _capture_open(url: str, *_args, **_kwargs):
         opened_urls.append(url)
         return True
 

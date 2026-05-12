@@ -31,7 +31,6 @@ class TurnPolicyEngine:
             completion=CompletionEvidence(),
             telemetry=TurnTelemetry(
                 turn_id=f"turn_{uuid.uuid4().hex[:10]}",
-                classification_source=classification.source,
             ),
             search_tools_enabled=False,
             evidence=[],

@@ -126,6 +126,39 @@ def test_recall_memory_finds_facts_by_tokens(tmp_path: Path):
     assert "favorite editor is neovim" in str(hits[0]["text"]).lower()
 
 
+def test_memory_skill_lists_recent_memories(tmp_path: Path):
+    runtime, ws = _memory_runtime(tmp_path)
+    skill = runtime.get_skill("memory-rag")
+    assert skill is not None
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
+
+    runtime.execute_tool_call("store_memory", {"text": "First memory"}, selected=[skill], ctx=ctx)
+    runtime.execute_tool_call("store_memory", {"text": "Second memory"}, selected=[skill], ctx=ctx)
+
+    listed = runtime.execute_tool_call("list_memories", {"count": 1}, selected=[skill], ctx=ctx)
+
+    assert listed["ok"] is True
+    memories = listed["data"]["memories"]
+    assert len(memories) == 1
+    assert memories[0]["text"] == "Second memory"
+
+
+def test_memory_skill_exports_memories(tmp_path: Path):
+    runtime, ws = _memory_runtime(tmp_path)
+    skill = runtime.get_skill("memory-rag")
+    assert skill is not None
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
+
+    runtime.execute_tool_call("store_memory", {"text": "Exported memory"}, selected=[skill], ctx=ctx)
+    export_path = Path(ws) / "memory-export.txt"
+
+    exported = runtime.execute_tool_call("export_memories", {"filepath": str(export_path)}, selected=[skill], ctx=ctx)
+
+    assert exported["ok"] is True
+    assert exported["data"]["filepath"] == str(export_path.resolve())
+    assert "Exported memory" in export_path.read_text(encoding="utf-8")
+
+
 def test_store_memory_rejects_empty_text(tmp_path: Path):
     runtime, ws = _memory_runtime(tmp_path)
     skill = runtime.get_skill("memory-rag")
