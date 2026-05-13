@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from html import unescape
 from typing import Any
 
+from core.retrieval import SQLiteRetrievalStore, configured_store_path
 from core.skills import ToolExecutionEnv
 from core.streaming import should_retry
 
@@ -41,6 +42,45 @@ TOOL_SPECS = {
             "required": ["url"],
         },
     },
+    "retrieve_knowledge": {
+        "capability": "knowledge_retrieve",
+        "description": "Search the local SQLite retrieval index for web, memory, workspace, and tool outcome records.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "top_k": {"type": "integer"},
+                "sources": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["query"],
+        },
+    },
+    "index_workspace": {
+        "capability": "workspace_index",
+        "description": "Index explicitly selected workspace files into the local retrieval store.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "paths": {"type": "array", "items": {"type": "string"}},
+                "max_chars_per_file": {"type": "integer"},
+            },
+            "required": ["paths"],
+        },
+    },
+    "retrieval_stats": {
+        "capability": "retrieval_stats",
+        "description": "Return local retrieval database statistics and embedding availability.",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    "forget_retrieval_record": {
+        "capability": "retrieval_forget",
+        "description": "Delete a retrieval record by id.",
+        "parameters": {
+            "type": "object",
+            "properties": {"record_id": {"type": "integer"}},
+            "required": ["record_id"],
+        },
+    },
 }
 
 _USER_AGENT = (
@@ -56,7 +96,6 @@ _ATTR_RE = re.compile(r'([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*("([^"]*)"|\'([^\']*)
 _HEADING_RE = re.compile(r"<h([1-3])[^>]*>(.*?)</h\1>", re.IGNORECASE | re.DOTALL)
 _BLOCK_CAPTURE_RE = re.compile(r"<(?:p|li|blockquote|h[1-6]|td|th)[^>]*>(.*?)</(?:p|li|blockquote|h[1-6]|td|th)>", re.IGNORECASE | re.DOTALL)
 _TAVILY_ENDPOINT = "https://api.tavily.com/search"
-_BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 _ALLOWED_FETCH_CONTENT_TYPES = ("text/html", "text/plain", "application/json", "application/xml", "text/xml")
 _REDIRECT_HTTP_STATUS = {301, 302, 303, 307, 308}
 _PRIVATE_HOST_SUFFIXES = (".local", ".internal", ".lan", ".home.arpa")
@@ -276,7 +315,12 @@ def _ranking_bonus(source_type: str) -> float:
 
 def _provider_name(env: ToolExecutionEnv) -> str:
     search_cfg = env.config.get("search", {}) if isinstance(env.config, dict) else {}
-    return str(search_cfg.get("provider", "tavily")).strip().lower() or "tavily"
+    return str(search_cfg.get("provider", "searxng")).strip().lower() or "searxng"
+
+
+def _fallback_provider_name(env: ToolExecutionEnv) -> str:
+    search_cfg = env.config.get("search", {}) if isinstance(env.config, dict) else {}
+    return str(search_cfg.get("fallback_provider", "tavily")).strip().lower()
 
 
 def _search_cfg(env: ToolExecutionEnv) -> dict[str, Any]:
@@ -333,44 +377,158 @@ def _fetch_max_redirects(env: ToolExecutionEnv) -> int:
     return _cfg_int(_search_cfg(env), "fetch_max_redirects", 5, minimum=0)
 
 
-def _merge_providers_enabled(env: ToolExecutionEnv) -> bool:
-    return _cfg_bool(_search_cfg(env), "merge_providers", True)
+def _web_ttl_seconds(env: ToolExecutionEnv) -> int:
+    cfg = env.config.get("retrieval", {}) if isinstance(env.config, dict) else {}
+    raw_hours = cfg.get("web_ttl_hours", 72) if isinstance(cfg, dict) else 72
+    try:
+        hours = float(raw_hours)
+    except (TypeError, ValueError):
+        hours = 72.0
+    return max(0, int(hours * 3600))
 
 
-def _per_provider_limit(limit: int, env: ToolExecutionEnv) -> int:
+def _retrieval_enabled(env: ToolExecutionEnv) -> bool:
+    cfg = env.config.get("retrieval", {}) if isinstance(env.config, dict) else {}
+    return _cfg_bool(cfg, "enabled", True) if isinstance(cfg, dict) else True
+
+
+def _retrieval_store(env: ToolExecutionEnv) -> SQLiteRetrievalStore:
+    return SQLiteRetrievalStore(configured_store_path(env.config if isinstance(env.config, dict) else {}))
+
+
+def _embedding_cfg(env: ToolExecutionEnv) -> dict[str, Any]:
+    retrieval_cfg = env.config.get("retrieval", {}) if isinstance(env.config, dict) else {}
+    embeddings_cfg = retrieval_cfg.get("embeddings", {}) if isinstance(retrieval_cfg, dict) else {}
+    return embeddings_cfg if isinstance(embeddings_cfg, dict) else {}
+
+
+def _embedding_endpoint(base_url: str) -> str:
+    trimmed = base_url.rstrip("/")
+    return trimmed if trimmed.endswith("/embeddings") else f"{trimmed}/v1/embeddings"
+
+
+def _embedding_vectors(texts: list[str], env: ToolExecutionEnv) -> tuple[str, list[list[float]]]:
+    cfg = _embedding_cfg(env)
+    if not bool(cfg.get("enabled", False)):
+        return "", []
+    base_url = str(cfg.get("base_url") or "").strip()
+    model = str(cfg.get("model") or "").strip()
+    if not base_url or not model or not texts:
+        return "", []
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    api_key_env = str(cfg.get("api_key_env") or "").strip()
+    api_key = os.environ.get(api_key_env, "").strip() if api_key_env else ""
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    payload = json.dumps({"model": model, "input": texts}).encode("utf-8")
+    req = _request(_embedding_endpoint(base_url), data=payload, headers=headers)
+    response = _request_json(req, provider_name="Embeddings", timeout_s=_request_timeout_s(env), retries=0, retry_backoff_s=0.0)
+    rows = response.get("data")
+    if not isinstance(rows, list):
+        raise RuntimeError("Embeddings response missing data list")
+    vectors: list[list[float]] = []
+    for row in rows:
+        embedding = row.get("embedding") if isinstance(row, dict) else None
+        if not isinstance(embedding, list):
+            continue
+        vectors.append([float(item) for item in embedding])
+    return model, vectors
+
+
+def _embed_record_chunks(store: SQLiteRetrievalStore, record_id: int, env: ToolExecutionEnv) -> dict[str, Any]:
+    chunks = store.chunk_texts_for_record(record_id)
+    if not chunks:
+        return {"enabled": False, "stored": 0}
+    try:
+        model, vectors = _embedding_vectors([str(chunk["text"]) for chunk in chunks], env)
+    except RuntimeError as exc:
+        return {"enabled": True, "stored": 0, "error": str(exc)}
+    if not model or not vectors:
+        return {"enabled": False, "stored": 0}
+    stored = 0
+    for chunk, vector in zip(chunks, vectors, strict=False):
+        store.set_chunk_embedding(chunk_id=int(chunk["chunk_id"]), model=model, vector=vector)
+        stored += 1
+    return {"enabled": True, "stored": stored, "model": model}
+
+
+def _searxng_base_url(env: ToolExecutionEnv) -> str:
     cfg = _search_cfg(env)
-    requested = _cfg_int(cfg, "per_provider_limit", limit, minimum=1)
-    return max(1, min(requested, 10))
+    base_url = str(cfg.get("searxng_base_url") or cfg.get("base_url") or "").strip().rstrip("/")
+    if not base_url:
+        raise RuntimeError("SearXNG base URL not configured")
+    parsed = urllib.parse.urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("SearXNG base URL must be an absolute http(s) URL")
+    return base_url
 
 
-def _provider_order(env: ToolExecutionEnv) -> list[str]:
-    primary = _provider_name(env)
-    if primary == "brave":
-        return ["brave", "tavily"]
-    return ["tavily", "brave"]
+def _search_with_searxng(
+    query: str,
+    limit: int,
+    env: ToolExecutionEnv,
+    *,
+    timeout_s: float = 20.0,
+    retries: int = 1,
+    retry_backoff_s: float = 0.5,
+) -> dict[str, Any]:
+    if _provider_name(env) != "searxng":
+        raise RuntimeError("Only the SearXNG search provider is supported")
+    params = urllib.parse.urlencode({"q": query, "format": "json", "language": "auto", "safesearch": "0"})
+    req = _request(f"{_searxng_base_url(env)}/search?{params}", headers={"Accept": "application/json"})
+    payload = _request_json(req, provider_name="SearXNG", timeout_s=timeout_s, retries=retries, retry_backoff_s=retry_backoff_s)
+    raw_results = payload.get("results")
+    if not isinstance(raw_results, list):
+        raise RuntimeError("SearXNG response missing results list")
+    out = _provider_payload(raw_results, limit, provider="searxng", provider_rank=0, query=query)
+    out["query"] = query
+    out["provider_chain"] = [{"provider": "searxng", "status": "ok"}]
+    return out
 
 
-def _provider_configured(provider: str) -> bool:
-    if provider == "tavily":
-        return bool(os.environ.get("TAVILY_API_KEY", "").strip())
-    if provider == "brave":
-        return bool(os.environ.get("BRAVE_SEARCH_API_KEY", "").strip())
-    return False
-
-
-def _api_key(env_var: str, missing_message: str) -> str:
-    key = os.environ.get(env_var, "").strip()
+def _tavily_api_key(env: ToolExecutionEnv) -> str:
+    cfg = _search_cfg(env)
+    env_name = str(cfg.get("tavily_api_key_env") or "TAVILY_API_KEY").strip()
+    key = os.environ.get(env_name, "").strip()
     if not key:
-        raise RuntimeError(missing_message)
+        raise RuntimeError(f"Tavily API key not configured: {env_name}")
     return key
 
 
-def _tavily_api_key() -> str:
-    return _api_key("TAVILY_API_KEY", "Tavily API key not configured")
-
-
-def _brave_api_key() -> str:
-    return _api_key("BRAVE_SEARCH_API_KEY", "Brave Search API key not configured")
+def _search_with_tavily(
+    query: str,
+    limit: int,
+    env: ToolExecutionEnv,
+    *,
+    provider_rank: int = 0,
+    timeout_s: float = 20.0,
+    retries: int = 1,
+    retry_backoff_s: float = 0.5,
+) -> dict[str, Any]:
+    key = _tavily_api_key(env)
+    lowered = query.lower()
+    is_newsish = any(token in lowered for token in ("latest", "today", "recent", "current", "news", "update"))
+    req = _request(
+        _TAVILY_ENDPOINT,
+        data=json.dumps(
+            {
+                "query": query,
+                "topic": "news" if is_newsish else "general",
+                "search_depth": "advanced" if is_newsish else "basic",
+                "max_results": limit,
+                "include_answer": False,
+                "include_raw_content": False,
+            }
+        ).encode("utf-8"),
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+    )
+    payload = _request_json(req, provider_name="Tavily", timeout_s=timeout_s, retries=retries, retry_backoff_s=retry_backoff_s)
+    raw_results = payload.get("results")
+    if not isinstance(raw_results, list):
+        raise RuntimeError("Tavily response missing results list")
+    out = _provider_payload(raw_results, limit, provider="tavily", provider_rank=provider_rank, query=query)
+    out["query"] = query
+    return out
 
 
 def _normalize_result_item(item: dict, *, provider: str, provider_rank: int, query: str) -> dict[str, Any] | None:
@@ -412,67 +570,6 @@ def _provider_payload(raw_results: list[dict], limit: int, *, provider: str, pro
     if not results:
         raise RuntimeError(f"{provider.title()} returned no usable results")
     return {"results": results, "provider": provider, "search_engine": provider}
-
-
-def _result_score(item: dict[str, Any]) -> float:
-    trust_score = float(item.get("trust_score", 0.0) or 0.0)
-    query_match_score = float(item.get("query_match_score", 0.0) or 0.0)
-    freshness_score = float(item.get("freshness_score", 0.0) or 0.0)
-    provider_rank = int(item.get("provider_rank", 0) or 0)
-    source_type = str(item.get("source_type", "") or "")
-    return (
-        (trust_score * 0.5)
-        + (query_match_score * 0.35)
-        + (freshness_score * 0.1)
-        + _ranking_bonus(source_type)
-        + max(0.0, 0.05 - provider_rank * 0.02)
-    )
-
-
-def _merge_search_payloads(payloads: list[dict[str, Any]], limit: int) -> dict[str, Any]:
-    deduped: dict[str, dict[str, Any]] = {}
-    for payload in payloads:
-        for item in payload.get("results", []):
-            if not isinstance(item, dict):
-                continue
-            record = dict(item)
-            key = str(record.get("canonical_url") or record.get("url") or "").strip()
-            if not key:
-                continue
-            score = _result_score(record)
-            record["_score"] = score
-            existing = deduped.get(key)
-            if existing is None or score > float(existing.get("_score", -1.0)):
-                deduped[key] = record
-
-    ranked = sorted(
-        deduped.values(),
-        key=lambda item: (
-            -float(item.get("_score", 0.0)),
-            -float(item.get("trust_score", 0.0)),
-            str(item.get("domain", "")),
-            str(item.get("title", "")),
-        ),
-    )
-    trimmed = ranked[:limit]
-    for index, item in enumerate(trimmed, start=1):
-        item["rank"] = index
-        item.pop("_score", None)
-
-    providers_used: list[str] = []
-    for payload in payloads:
-        provider = str(payload.get("provider", "")).strip().lower()
-        if provider and provider not in providers_used:
-            providers_used.append(provider)
-
-    query = str(payloads[0].get("query", "")).strip() if payloads else ""
-    return {
-        "query": query,
-        "provider": "multi",
-        "search_engine": "multi",
-        "providers_used": providers_used,
-        "results": trimmed,
-    }
 
 
 def _request_json(
@@ -535,164 +632,43 @@ def _normalize_results(raw_results: list[dict], limit: int, *, provider: str, pr
     return trimmed
 
 
-def _search_with_tavily(
-    query: str,
-    limit: int,
-    *,
-    provider_rank: int = 0,
-    timeout_s: float = 20.0,
-    retries: int = 1,
-    retry_backoff_s: float = 0.5,
-) -> dict[str, Any]:
-    key = _tavily_api_key()
-    lowered = query.lower()
-    is_newsish = any(token in lowered for token in ("latest", "today", "recent", "current", "news", "update"))
-    payload = {
-        "query": query,
-        "topic": "news" if is_newsish else "general",
-        "search_depth": "advanced" if is_newsish else "basic",
-        "max_results": limit,
-        "include_answer": False,
-        "include_raw_content": False,
-    }
-    req = _request(
-        _TAVILY_ENDPOINT,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-        },
-    )
-    payload = _request_json(
-        req,
-        provider_name="Tavily",
-        timeout_s=timeout_s,
-        retries=retries,
-        retry_backoff_s=retry_backoff_s,
-    )
-
-    raw_results = payload.get("results")
-    if not isinstance(raw_results, list):
-        raise RuntimeError("Tavily response missing results list")
-
-    payload = _provider_payload(raw_results, limit, provider="tavily", provider_rank=provider_rank, query=query)
-    payload["query"] = query
-    return payload
-
-
-def _search_with_brave(
-    query: str,
-    limit: int,
-    *,
-    provider_rank: int = 0,
-    timeout_s: float = 20.0,
-    retries: int = 1,
-    retry_backoff_s: float = 0.5,
-) -> dict[str, Any]:
-    key = _brave_api_key()
-    params = urllib.parse.urlencode(
-        {
-            "q": query,
-            "count": limit,
-            "extra_snippets": "true",
-            "text_decorations": "false",
-            "spellcheck": "false",
-        }
-    )
-    req = _request(
-        f"{_BRAVE_ENDPOINT}?{params}",
-        headers={
-            "Accept": "application/json",
-            "X-Subscription-Token": key,
-        },
-    )
-    payload = _request_json(
-        req,
-        provider_name="Brave",
-        timeout_s=timeout_s,
-        retries=retries,
-        retry_backoff_s=retry_backoff_s,
-    )
-
-    web = payload.get("web", {})
-    raw_results = web.get("results")
-    if not isinstance(raw_results, list):
-        raise RuntimeError("Brave response missing web.results list")
-
-    out = _provider_payload(raw_results, limit, provider="brave", provider_rank=provider_rank, query=query)
-    out["query"] = query
-    return out
-
-
 def _search(query: str, limit: int, env: ToolExecutionEnv) -> dict[str, Any]:
-    errors: list[str] = []
-    provider_chain: list[dict[str, Any]] = []
-    successful_payloads: list[dict[str, Any]] = []
-    merge_providers = _merge_providers_enabled(env)
     timeout_s = _request_timeout_s(env)
     retries = _request_retries(env)
     retry_backoff_s = _request_retry_backoff_s(env)
-    provider_limit = _per_provider_limit(limit, env)
+    provider = _provider_name(env)
+    if provider == "tavily":
+        payload = _search_with_tavily(query, limit, env, timeout_s=timeout_s, retries=retries, retry_backoff_s=retry_backoff_s)
+        payload["provider_chain"] = [{"provider": "tavily", "status": "ok"}]
+        return payload
+    if provider != "searxng":
+        raise RuntimeError("Only SearXNG and Tavily search providers are supported")
 
-    for provider_rank, provider in enumerate(_provider_order(env)):
-        if not _provider_configured(provider):
-            if successful_payloads:
-                continue
-            message = (
-                "Tavily API key not configured"
-                if provider == "tavily"
-                else "Brave Search API key not configured"
-            )
-            provider_chain.append({"provider": provider, "status": "error", "error": message})
-            errors.append(message)
-            continue
+    provider_chain: list[dict[str, Any]] = []
+    searxng_error = ""
+    try:
+        return _search_with_searxng(query, limit, env, timeout_s=timeout_s, retries=retries, retry_backoff_s=retry_backoff_s)
+    except RuntimeError as exc:
+        searxng_error = str(exc)
+        provider_chain.append({"provider": "searxng", "status": "error", "error": str(exc)})
+        if _fallback_provider_name(env) != "tavily":
+            raise
 
-        try:
-            payload = (
-                _search_with_tavily(
-                    query,
-                    provider_limit,
-                    provider_rank=provider_rank,
-                    timeout_s=timeout_s,
-                    retries=retries,
-                    retry_backoff_s=retry_backoff_s,
-                )
-                if provider == "tavily"
-                else _search_with_brave(
-                    query,
-                    provider_limit,
-                    provider_rank=provider_rank,
-                    timeout_s=timeout_s,
-                    retries=retries,
-                    retry_backoff_s=retry_backoff_s,
-                )
-            )
-            provider_chain.append({"provider": provider, "status": "ok"})
-            successful_payloads.append(payload)
-            if not merge_providers:
-                payload["provider_chain"] = provider_chain
-                return payload
-        except RuntimeError as exc:
-            provider_chain.append({"provider": provider, "status": "error", "error": str(exc)})
-            errors.append(str(exc))
-            continue
-
-    if successful_payloads:
-        if len(successful_payloads) == 1:
-            payload = successful_payloads[0]
-            if len(payload.get("results", [])) > limit:
-                payload["results"] = payload["results"][:limit]
-                for index, item in enumerate(payload["results"], start=1):
-                    item["rank"] = index
-            payload["provider_chain"] = provider_chain
-            return payload
-        merged = _merge_search_payloads(successful_payloads, limit)
-        merged["provider_chain"] = provider_chain
-        return merged
-
-    if errors:
-        raise RuntimeError(errors[0])
-    raise RuntimeError("No usable search provider available")
+    try:
+        payload = _search_with_tavily(
+            query,
+            limit,
+            env,
+            provider_rank=1,
+            timeout_s=timeout_s,
+            retries=retries,
+            retry_backoff_s=retry_backoff_s,
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(f"{searxng_error}; Tavily fallback failed: {exc}") from exc
+    provider_chain.append({"provider": "tavily", "status": "ok"})
+    payload["provider_chain"] = provider_chain
+    return payload
 
 
 def _is_private_or_local_host(host: str) -> bool:
@@ -933,6 +909,109 @@ def _fetch(
     }
 
 
+def _index_fetched_page(page: dict[str, Any], env: ToolExecutionEnv) -> dict[str, Any]:
+    if not _retrieval_enabled(env):
+        return {"indexed": False, "record_id": 0, "disabled": True}
+    store = _retrieval_store(env)
+    record = store.upsert_record(
+        record_type="web_page",
+        source=str(page.get("final_url") or page.get("url") or ""),
+        canonical_source=str(page.get("canonical_url") or page.get("final_url") or page.get("url") or ""),
+        title=str(page.get("title") or page.get("domain") or ""),
+        text=str(page.get("content") or ""),
+        fetched_at=int(page.get("fetched_at") or time.time()),
+        ttl_seconds=_web_ttl_seconds(env),
+        metadata={
+            "url": page.get("url", ""),
+            "domain": page.get("domain", ""),
+            "source_type": page.get("source_type", ""),
+            "published_at": page.get("published_at", ""),
+            "author": page.get("author", ""),
+            "description": page.get("description", ""),
+        },
+    )
+    embedding = _embed_record_chunks(store, record.id, env) if record else {"enabled": False, "stored": 0}
+    return {"indexed": bool(record), "record_id": record.id if record else 0, "embedding": embedding}
+
+
+def _retrieve_knowledge(args: dict[str, Any], env: ToolExecutionEnv) -> dict[str, Any]:
+    query = " ".join(str(args["query"]).split()).strip()
+    if not query:
+        raise ValueError("Retrieval query must not be empty")
+    if not _retrieval_enabled(env):
+        return {"query": query, "hits": [], "backend": "disabled"}
+    raw_sources = args.get("sources") or []
+    sources = [str(item).strip() for item in raw_sources if str(item).strip()] if isinstance(raw_sources, list) else []
+    store = _retrieval_store(env)
+    top_k = int(args.get("top_k", 5) or 5)
+    hits = store.search(query, top_k=top_k, sources=sources)
+    try:
+        _model, vectors = _embedding_vectors([query], env)
+    except RuntimeError:
+        vectors = []
+    if vectors:
+        seen = {int(hit.get("chunk_id", 0) or 0) for hit in hits}
+        for hit in store.dense_search(vectors[0], top_k=top_k, sources=sources):
+            if int(hit.get("chunk_id", 0) or 0) not in seen:
+                hits.append(hit)
+                seen.add(int(hit.get("chunk_id", 0) or 0))
+            if len(hits) >= top_k:
+                break
+    return {"query": query, "hits": hits[:top_k], "backend": "sqlite_hybrid" if vectors else "sqlite_fts"}
+
+
+def _index_workspace(args: dict[str, Any], env: ToolExecutionEnv) -> dict[str, Any]:
+    raw_paths = args.get("paths") or []
+    if not isinstance(raw_paths, list) or not raw_paths:
+        raise ValueError("paths must contain at least one workspace file")
+    if not _retrieval_enabled(env):
+        return {"indexed": [], "count": 0, "disabled": True}
+    limit = max(500, min(int(args.get("max_chars_per_file", 20000) or 20000), 100000))
+    store = _retrieval_store(env)
+    indexed: list[dict[str, Any]] = []
+    for raw_path in raw_paths[:50]:
+        path = str(raw_path).strip()
+        if not path:
+            continue
+        content = env.workspace.read_file(path)
+        record = store.upsert_record(
+            record_type="workspace_document",
+            source=path,
+            canonical_source=path,
+            title=path,
+            text=content[:limit],
+            metadata={"path": path, "truncated": len(content) > limit},
+        )
+        embedding = _embed_record_chunks(store, record.id, env) if record else {"enabled": False, "stored": 0}
+        indexed.append({"path": path, "record_id": record.id if record else 0, "indexed": bool(record)})
+        indexed[-1]["embedding"] = embedding
+    return {"indexed": indexed, "count": sum(1 for item in indexed if item["indexed"])}
+
+
+def _retrieval_stats(env: ToolExecutionEnv) -> dict[str, Any]:
+    if not _retrieval_enabled(env):
+        return {
+            "path": str(configured_store_path(env.config if isinstance(env.config, dict) else {})),
+            "records": 0,
+            "chunks": 0,
+            "stale_records": 0,
+            "by_type": {},
+            "backend": "disabled",
+            "enabled": False,
+            "embeddings": {"enabled": False, "mode": "openai_compatible", "ready": False},
+        }
+    stats = _retrieval_store(env).stats()
+    retrieval_cfg = env.config.get("retrieval", {}) if isinstance(env.config, dict) else {}
+    embeddings_cfg = retrieval_cfg.get("embeddings", {}) if isinstance(retrieval_cfg, dict) else {}
+    stats["backend"] = "sqlite_fts"
+    stats["embeddings"] = {
+        "enabled": bool(embeddings_cfg.get("enabled", False)) if isinstance(embeddings_cfg, dict) else False,
+        "mode": "openai_compatible",
+        "ready": bool(embeddings_cfg.get("base_url") and embeddings_cfg.get("model")) if isinstance(embeddings_cfg, dict) else False,
+    }
+    return stats
+
+
 def execute(tool_name: str, args: dict[str, Any], env: ToolExecutionEnv):
     if tool_name == "web_search":
         query = str(args["query"]).strip()
@@ -945,7 +1024,7 @@ def execute(tool_name: str, args: dict[str, Any], env: ToolExecutionEnv):
         retries = _request_retries(env)
         retry_backoff_s = _request_retry_backoff_s(env)
         max_redirects = _fetch_max_redirects(env)
-        return _fetch(
+        page = _fetch(
             url,
             max(500, min(max_chars, 30000)),
             timeout_s=timeout_s,
@@ -953,4 +1032,16 @@ def execute(tool_name: str, args: dict[str, Any], env: ToolExecutionEnv):
             retry_backoff_s=retry_backoff_s,
             max_redirects=max_redirects,
         )
+        page["retrieval"] = _index_fetched_page(page, env)
+        return page
+    if tool_name == "retrieve_knowledge":
+        return _retrieve_knowledge(args, env)
+    if tool_name == "index_workspace":
+        return _index_workspace(args, env)
+    if tool_name == "retrieval_stats":
+        return _retrieval_stats(env)
+    if tool_name == "forget_retrieval_record":
+        if not _retrieval_enabled(env):
+            return {"deleted": False, "disabled": True}
+        return {"deleted": _retrieval_store(env).forget(int(args["record_id"]))}
     raise ValueError(f"Unsupported tool: {tool_name}")

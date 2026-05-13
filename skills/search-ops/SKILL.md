@@ -1,7 +1,7 @@
 ---
 name: search-ops
-description: Search the web and fetch page content for research and up-to-date information.
-allowed-tools: web_search fetch_url
+description: Search SearXNG or Tavily fallback, fetch sources, and retrieve indexed local knowledge for current research.
+allowed-tools: web_search fetch_url retrieve_knowledge index_workspace retrieval_stats forget_retrieval_record
 metadata:
   version: "1.3.0"
   tags:
@@ -32,11 +32,13 @@ metadata:
       - look up
       - search the web
 ---
-Use search tools when the user needs information from the public internet.
+Use search and retrieval tools when the user needs current public internet information or indexed local knowledge.
 
 Rules:
 - Prefer direct answers from existing context when the information is already available.
-- Use `web_search` first to gather candidate sources, then `fetch_url` only for the results you actually need.
+- Use `web_search` first to gather SearXNG candidate sources, or Tavily candidates when the fallback is active, then `fetch_url` only for the results you actually need.
+- Use `retrieve_knowledge` before searching when previously fetched sources, memories, or explicitly indexed workspace files may answer the task.
+- Use `index_workspace` only for files the user asked you to index or files directly needed for the current task.
 - Use internet search for time-sensitive or factual lookup tasks.
 - Prefer official, primary, or clearly attributable sources when they are available.
 - Keep citations compact: mention the source title or domain when summarizing fetched pages, and include dates if the fetched metadata exposes them.
@@ -55,3 +57,4 @@ Rules:
   - then briefly note the strongest sources checked
   - if the evidence is partial, stale, or mixed, say that plainly instead of sounding fully certain
 - Use fetched excerpts and source metadata when available; do not just paraphrase snippets generically.
+- Cite fetched web records when they materially influence the final answer.
