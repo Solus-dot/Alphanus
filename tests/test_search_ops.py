@@ -38,8 +38,33 @@ def _load_search_module():
     return module
 
 
-def _env(provider: str = "tavily"):
-    return SimpleNamespace(config={"search": {"provider": provider}})
+def _env(provider: str = "searxng"):
+    return SimpleNamespace(
+        config={
+            "search": {
+                "provider": provider,
+                "fallback_provider": "",
+                "searxng_base_url": "http://127.0.0.1:8888",
+                "tavily_api_key_env": "TAVILY_API_KEY",
+            },
+            "retrieval": {"store_path": "/private/tmp/alphanus-test-retrieval.sqlite", "web_ttl_hours": 24},
+        }
+    )
+
+
+def _env_with_store(path: Path, *, embeddings: bool = False):
+    cfg = {
+        "search": {"provider": "searxng", "fallback_provider": "", "searxng_base_url": "http://127.0.0.1:8888"},
+        "retrieval": {"store_path": str(path), "web_ttl_hours": 24},
+    }
+    if embeddings:
+        cfg["retrieval"]["embeddings"] = {
+            "enabled": True,
+            "base_url": "http://127.0.0.1:8080",
+            "model": "local-embed",
+            "api_key_env": "ALPHANUS_EMBEDDINGS_API_KEY",
+        }
+    return SimpleNamespace(config=cfg)
 
 
 def _location_headers(location: str) -> Message:
@@ -48,9 +73,8 @@ def _location_headers(location: str) -> Message:
     return headers
 
 
-def test_web_search_calls_tavily_and_normalizes_results(mocker, monkeypatch):
+def test_web_search_calls_searxng_and_normalizes_results(mocker):
     module = _load_search_module()
-    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
 
     payload = {
         "results": [
@@ -85,83 +109,35 @@ def test_web_search_calls_tavily_and_normalizes_results(mocker, monkeypatch):
 
     def fake_urlopen(req, timeout=None):
         opened["url"] = req.full_url
-        opened["auth"] = req.get_header("Authorization")
-        opened["body"] = json.loads(req.data.decode("utf-8"))
+        opened["accept"] = req.get_header("Accept")
         return _Resp()
 
     mocker.patch.object(module.urllib.request, "urlopen", side_effect=fake_urlopen)
     out = module.execute("web_search", {"query": "meta acquisitions", "limit": 2}, env=_env())
 
-    assert opened["url"] == "https://api.tavily.com/search"
-    assert opened["auth"] == "Bearer tvly-test-key"
-    assert opened["body"]["query"] == "meta acquisitions"
-    assert out["search_engine"] == "tavily"
+    assert opened["url"].startswith("http://127.0.0.1:8888/search?")
+    assert "q=meta+acquisitions" in opened["url"]
+    assert "format=json" in opened["url"]
+    assert opened["accept"] == "application/json"
+    assert out["search_engine"] == "searxng"
     assert out["results"][0]["domain"] == "about.fb.com"
     assert out["results"][1]["snippet"] == "Reporting on Meta acquisitions."
     assert out["results"][0]["source_type"] == "official"
     assert out["results"][0]["rank"] == 1
-    assert out["provider_chain"] == [{"provider": "tavily", "status": "ok"}]
+    assert out["provider_chain"] == [{"provider": "searxng", "status": "ok"}]
 
 
-def test_web_search_requires_api_key(monkeypatch):
+def test_web_search_requires_searxng_base_url():
     module = _load_search_module()
-    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    with pytest.raises(RuntimeError, match="Tavily API key not configured"):
-        module.execute("web_search", {"query": "meta"}, env=_env())
+    env = SimpleNamespace(config={"search": {"provider": "searxng"}})
+    with pytest.raises(RuntimeError, match="SearXNG base URL not configured"):
+        module.execute("web_search", {"query": "meta"}, env=env)
 
 
-def test_web_search_calls_brave_and_normalizes_results(mocker, monkeypatch):
+def test_web_search_rejects_unsupported_providers():
     module = _load_search_module()
-    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-test-key")
-
-    payload = {
-        "web": {
-            "results": [
-                {
-                    "title": "NIST CVE",
-                    "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-0001",
-                    "description": "Official advisory details.",
-                },
-                {
-                    "title": "Vendor advisory",
-                    "url": "https://example.com/advisory",
-                    "extra_snippets": ["Additional verified context."],
-                },
-            ]
-        }
-    }
-
-    class _Resp:
-        def __init__(self):
-            self._payload = json.dumps(payload).encode("utf-8")
-            self.headers = _Headers()
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self):
-            return self._payload
-
-    opened = {}
-
-    def fake_urlopen(req, timeout=None):
-        opened["url"] = req.full_url
-        opened["token"] = req.get_header("X-subscription-token")
-        return _Resp()
-
-    mocker.patch.object(module.urllib.request, "urlopen", side_effect=fake_urlopen)
-    out = module.execute("web_search", {"query": "latest cve", "limit": 2}, env=_env("brave"))
-
-    assert opened["url"].startswith("https://api.search.brave.com/res/v1/web/search?")
-    assert opened["token"] == "brave-test-key"
-    assert out["search_engine"] == "brave"
-    assert out["results"][0]["domain"] == "nvd.nist.gov"
-    assert out["results"][1]["snippet"] == "Additional verified context."
-    assert out["results"][0]["source_type"] == "official"
+    with pytest.raises(RuntimeError, match="Only SearXNG and Tavily search providers are supported"):
+        module.execute("web_search", {"query": "latest cve", "limit": 2}, env=_env("brave"))
 
 
 def test_fetch_url_extracts_title_and_text(mocker):
@@ -204,21 +180,129 @@ def test_fetch_url_extracts_title_and_text(mocker):
     assert out["usable_text"] is True
 
 
-def test_web_search_falls_back_to_secondary_provider(mocker, monkeypatch):
+def test_fetch_url_respects_disabled_retrieval(mocker, tmp_path: Path):
     module = _load_search_module()
-    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-test-key")
+    db_path = tmp_path / "retrieval.sqlite"
+    env = _env_with_store(db_path)
+    env.config["retrieval"]["enabled"] = False
+    html = """
+    <html>
+      <head><title>No Index</title></head>
+      <body><article><p>This fetched page should not be persisted.</p></article></body>
+    </html>
+    """
 
+    class _Resp:
+        headers = _Headers("text/html; charset=utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return html.encode("utf-8")
+
+        def geturl(self):
+            return "https://example.com/no-index"
+
+    mocker.patch.object(module, "_open_no_redirect", return_value=_Resp())
+
+    out = module.execute("fetch_url", {"url": "https://example.com/no-index"}, env=env)
+    stats = module.execute("retrieval_stats", {}, env=env)
+
+    assert out["retrieval"] == {"indexed": False, "record_id": 0, "disabled": True}
+    assert stats["backend"] == "disabled"
+    assert stats["enabled"] is False
+    assert not db_path.exists()
+
+
+def test_fetch_url_indexes_embeddings_and_retrieve_uses_dense_query(mocker, tmp_path: Path):
+    module = _load_search_module()
+    env = _env_with_store(tmp_path / "retrieval.sqlite", embeddings=True)
+    html = """
+    <html>
+      <head><title>Vector Page</title></head>
+      <body><article><p>Semantic alpha release notes are available.</p></article></body>
+    </html>
+    """
+
+    class _FetchResp:
+        headers = _Headers("text/html; charset=utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return html.encode("utf-8")
+
+        def geturl(self):
+            return "https://example.com/vector"
+
+    class _EmbeddingResp:
+        headers = _Headers()
+
+        def __init__(self, vector: list[float]):
+            self._payload = json.dumps({"data": [{"embedding": vector}]}).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return self._payload
+
+    embedding_calls: list[dict[str, object]] = []
+
+    def fake_urlopen(req, timeout=None):
+        embedding_calls.append(json.loads(req.data.decode("utf-8")))
+        return _EmbeddingResp([1.0, 0.0])
+
+    mocker.patch.object(module, "_open_no_redirect", return_value=_FetchResp())
+    mocker.patch.object(module.urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    fetched = module.execute("fetch_url", {"url": "https://example.com/vector"}, env=env)
+    retrieved = module.execute("retrieve_knowledge", {"query": "meaning not lexically overlapping", "top_k": 1}, env=env)
+
+    assert fetched["retrieval"]["embedding"]["stored"] == 1
+    assert retrieved["backend"] == "sqlite_hybrid"
+    assert retrieved["hits"][0]["title"] == "Vector Page"
+    assert embedding_calls[0]["model"] == "local-embed"
+
+
+def test_web_search_does_not_fall_back_without_fallback_provider(mocker):
+    module = _load_search_module()
+    mocker.patch.object(module.urllib.request, "urlopen", side_effect=urllib.error.URLError("offline"))
+    with pytest.raises(RuntimeError, match="SearXNG unreachable"):
+        module.execute("web_search", {"query": "service status"}, env=_env())
+
+
+def test_web_search_deduplicates_searxng_results(mocker):
+    module = _load_search_module()
     payload = {
-        "web": {
-            "results": [
-                {
-                    "title": "Official status page",
-                    "url": "https://status.example.com/update",
-                    "description": "The current service status update.",
-                }
-            ]
-        }
+        "results": [
+            {
+                "title": "Official update",
+                "url": "https://status.example.com/news?utm_source=feed",
+                "content": "Primary source details.",
+            },
+            {
+                "title": "Official update mirror",
+                "url": "https://status.example.com/news",
+                "content": "Same source without tracking params.",
+            },
+            {
+                "title": "Independent coverage",
+                "url": "https://example.org/coverage",
+                "content": "Secondary source details.",
+            },
+        ]
     }
 
     class _Resp:
@@ -236,47 +320,32 @@ def test_web_search_falls_back_to_secondary_provider(mocker, monkeypatch):
             return self._payload
 
     mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp())
-    out = module.execute("web_search", {"query": "service status"}, env=_env("tavily"))
+    out = module.execute("web_search", {"query": "status update", "limit": 5}, env=_env())
 
-    assert out["provider"] == "brave"
-    assert out["provider_chain"][0]["provider"] == "tavily"
-    assert out["provider_chain"][0]["status"] == "error"
-    assert out["provider_chain"][1] == {"provider": "brave", "status": "ok"}
+    assert out["search_engine"] == "searxng"
+    assert out["provider"] == "searxng"
+    assert len(out["results"]) == 2
+    assert {item["canonical_url"] for item in out["results"]} == {
+        "https://status.example.com/news",
+        "https://example.org/coverage",
+    }
 
 
-def test_web_search_merges_results_from_both_providers_when_configured(mocker, monkeypatch):
+def test_web_search_falls_back_to_tavily_when_searxng_unreachable(mocker, monkeypatch):
     module = _load_search_module()
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
-    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-test-key")
-
-    tavily_payload = {
+    payload = {
         "results": [
             {
-                "title": "Official update",
-                "url": "https://status.example.com/news?utm_source=feed",
-                "content": "Primary source details.",
+                "title": "Fallback result",
+                "url": "https://example.com/fallback",
+                "content": "Tavily fallback snippet.",
             }
         ]
     }
-    brave_payload = {
-        "web": {
-            "results": [
-                {
-                    "title": "Official update mirror",
-                    "url": "https://status.example.com/news",
-                    "description": "Same source without tracking params.",
-                },
-                {
-                    "title": "Independent coverage",
-                    "url": "https://example.org/coverage",
-                    "description": "Secondary source details.",
-                },
-            ]
-        }
-    }
 
     class _Resp:
-        def __init__(self, payload):
+        def __init__(self):
             self._payload = json.dumps(payload).encode("utf-8")
             self.headers = _Headers()
 
@@ -289,32 +358,60 @@ def test_web_search_merges_results_from_both_providers_when_configured(mocker, m
         def read(self):
             return self._payload
 
+    calls: list[str] = []
+
     def fake_urlopen(req, timeout=None):
-        if req.full_url == "https://api.tavily.com/search":
-            return _Resp(tavily_payload)
-        if req.full_url.startswith("https://api.search.brave.com/res/v1/web/search?"):
-            return _Resp(brave_payload)
-        raise AssertionError(f"Unexpected URL: {req.full_url}")
+        calls.append(req.full_url)
+        if "/search?" in req.full_url:
+            raise urllib.error.URLError("offline")
+        assert req.full_url == "https://api.tavily.com/search"
+        assert req.get_header("Authorization") == "Bearer tvly-test-key"
+        return _Resp()
 
+    env = _env()
+    env.config["search"]["fallback_provider"] = "tavily"
     mocker.patch.object(module.urllib.request, "urlopen", side_effect=fake_urlopen)
-    out = module.execute("web_search", {"query": "status update", "limit": 5}, env=_env("tavily"))
 
-    assert out["search_engine"] == "multi"
-    assert out["provider"] == "multi"
-    assert out["providers_used"] == ["tavily", "brave"]
-    assert [item["provider"] for item in out["provider_chain"]] == ["tavily", "brave"]
-    assert all(item["status"] == "ok" for item in out["provider_chain"])
-    assert len(out["results"]) == 2
-    assert {item["canonical_url"] for item in out["results"]} == {
-        "https://status.example.com/news",
-        "https://example.org/coverage",
-    }
+    out = module.execute("web_search", {"query": "fallback status", "limit": 1}, env=env)
+
+    assert calls[0].startswith("http://127.0.0.1:8888/search?")
+    assert calls[1] == "https://api.tavily.com/search"
+    assert out["provider"] == "tavily"
+    assert out["provider_chain"] == [
+        {"provider": "searxng", "status": "error", "error": "SearXNG unreachable: offline"},
+        {"provider": "tavily", "status": "ok"},
+    ]
 
 
-def test_web_search_retries_retryable_http_error(mocker, monkeypatch):
+def test_web_search_can_use_tavily_as_primary(mocker, monkeypatch):
     module = _load_search_module()
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
-    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
+    payload = {"results": [{"title": "Primary Tavily", "url": "https://example.com/tavily", "content": "Snippet."}]}
+
+    class _Resp:
+        headers = _Headers()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(payload).encode("utf-8")
+
+    mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp())
+    env = _env("tavily")
+
+    out = module.execute("web_search", {"query": "primary", "limit": 1}, env=env)
+
+    assert out["provider"] == "tavily"
+    assert out["results"][0]["url"] == "https://example.com/tavily"
+    assert out["provider_chain"] == [{"provider": "tavily", "status": "ok"}]
+
+
+def test_web_search_retries_retryable_http_error(mocker):
+    module = _load_search_module()
     attempts = {"count": 0}
     payload = {
         "results": [
@@ -545,9 +642,8 @@ def test_source_type_does_not_treat_unofficial_or_officials_as_official():
     assert module._source_type("news.example.com", "Officials warn about shortages", "") != "official"
 
 
-def test_search_ops_skill_loads_and_executes_from_repo(tmp_path: Path, mocker, monkeypatch):
+def test_search_ops_skill_loads_and_executes_from_repo(tmp_path: Path, mocker):
     module = _load_search_module()
-    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
     home = tmp_path / "home"
     ws = home / "ws"
     mem = tmp_path / "mem.pkl"
@@ -584,7 +680,10 @@ def test_search_ops_skill_loads_and_executes_from_repo(tmp_path: Path, mocker, m
         skills_dir=str(Path(__file__).resolve().parents[1] / "skills"),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=LexicalMemory(storage_path=str(mem)),
-        config={"search": {"provider": "tavily"}},
+        config={
+            "search": {"provider": "searxng", "searxng_base_url": "http://127.0.0.1:8888"},
+            "retrieval": {"store_path": str(tmp_path / "retrieval.sqlite")},
+        },
     )
     skill = runtime.get_skill("search-ops")
     assert skill is not None

@@ -164,7 +164,9 @@ def test_init_non_interactive_writes_global_config_and_env_template(monkeypatch,
             workspace_path=str(tmp_path / "ws"),
             model_endpoint=TEST_MODEL_ENDPOINT,
             models_endpoint=TEST_MODELS_ENDPOINT,
-            search_provider="tavily",
+            search_provider="searxng",
+            search_fallback_provider="tavily",
+            searxng_base_url="http://127.0.0.1:8888",
             theme="catppuccin-macchiato",
             debug=False,
             dangerously_skip_permissions=False,
@@ -178,6 +180,7 @@ def test_init_non_interactive_writes_global_config_and_env_template(monkeypatch,
     assert dotenv_path.exists()
     stored = json.loads(config_path.read_text(encoding="utf-8"))
     assert stored["workspace"]["path"] == str(tmp_path / "ws")
+    assert stored["search"]["fallback_provider"] == "tavily"
     assert stored["tui"]["theme"] == "catppuccin-macchiato"
 
 
@@ -272,6 +275,7 @@ def test_doctor_json_output_is_machine_readable(monkeypatch, capsys, tmp_path) -
         "agent": {"ready": True, "endpoint_policy_error": ""},
         "workspace": {"exists": True, "writable": True},
         "search": {"ready": True},
+        "retrieval": {"ready": True},
     }
     monkeypatch.setattr(
         alphanus_cli,
@@ -313,7 +317,7 @@ def test_init_partial_reset_preserves_unselected_sections(monkeypatch, tmp_path)
             "models_endpoint": "http://custom-host/v1/models",
             "tls_verify": False,
         },
-        "search": {"provider": "brave"},
+        "search": {"provider": "searxng", "searxng_base_url": "http://127.0.0.1:8888"},
     }
 
     monkeypatch.setattr(
@@ -346,7 +350,7 @@ def test_init_partial_reset_preserves_unselected_sections(monkeypatch, tmp_path)
     assert exit_code == 0
     stored = json.loads(config_path.read_text(encoding="utf-8"))
     assert stored["workspace"]["path"] == str(tmp_path / "custom-workspace")
-    assert stored["search"]["provider"] == "brave"
+    assert stored["search"]["provider"] == "searxng"
     assert stored["agent"]["tls_verify"] is False
     assert stored["agent"]["model_endpoint"] == alphanus_cli.DEFAULT_CONFIG["agent"]["model_endpoint"]
     assert stored["agent"]["models_endpoint"] == alphanus_cli.DEFAULT_CONFIG["agent"]["models_endpoint"]
@@ -361,7 +365,7 @@ def test_init_non_interactive_theme_only_updates_theme(monkeypatch, tmp_path) ->
 
     existing_config = {
         "workspace": {"path": str(tmp_path / "custom-workspace")},
-        "search": {"provider": "brave"},
+        "search": {"provider": "searxng", "searxng_base_url": "http://127.0.0.1:8888"},
         "tui": {"theme": "classic"},
     }
 
@@ -395,5 +399,48 @@ def test_init_non_interactive_theme_only_updates_theme(monkeypatch, tmp_path) ->
     assert exit_code == 0
     stored = json.loads(config_path.read_text(encoding="utf-8"))
     assert stored["workspace"]["path"] == str(tmp_path / "custom-workspace")
-    assert stored["search"]["provider"] == "brave"
+    assert stored["search"]["provider"] == "searxng"
     assert stored["tui"]["theme"] == "gruvbox-dark-soft"
+
+
+def test_retrieval_stats_prints_store_counts(monkeypatch, capsys, tmp_path) -> None:
+    db_path = tmp_path / "retrieval.sqlite"
+    monkeypatch.setattr(
+        alphanus_cli,
+        "get_app_paths",
+        lambda: SimpleNamespace(config_path=tmp_path / "config.json", dotenv_path=tmp_path / ".env", state_root=tmp_path),
+    )
+    monkeypatch.setattr(
+        alphanus_cli,
+        "_load_runtime_config",
+        lambda _app_paths, _args: ({"retrieval": {"store_path": str(db_path)}}, []),
+    )
+
+    exit_code = alphanus_cli._run_retrieval(SimpleNamespace(retrieval_command="stats", debug=False))
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "ALPHANUS RETRIEVAL" in out
+    assert "Records:" in out
+    assert str(db_path) in out
+
+
+def test_retrieval_reset_recreates_store(monkeypatch, capsys, tmp_path) -> None:
+    db_path = tmp_path / "retrieval.sqlite"
+    db_path.write_text("stale", encoding="utf-8")
+    monkeypatch.setattr(
+        alphanus_cli,
+        "get_app_paths",
+        lambda: SimpleNamespace(config_path=tmp_path / "config.json", dotenv_path=tmp_path / ".env", state_root=tmp_path),
+    )
+    monkeypatch.setattr(
+        alphanus_cli,
+        "_load_runtime_config",
+        lambda _app_paths, _args: ({"retrieval": {"store_path": str(db_path)}}, []),
+    )
+
+    exit_code = alphanus_cli._run_retrieval(SimpleNamespace(retrieval_command="reset", yes=True, debug=False))
+
+    assert exit_code == 0
+    assert "Retrieval store reset." in capsys.readouterr().out
+    assert db_path.exists()

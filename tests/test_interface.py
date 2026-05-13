@@ -580,7 +580,7 @@ def test_on_resize_refreshes_stream_partial_and_unfocuses_hidden_tree(tmp_path: 
 def test_config_editor_view_omits_secrets_and_internal_fields() -> None:
     config = {
         "agent": {"auth_header": "Authorization: Bearer secret", "context_budget_max_tokens": 2048},
-        "search": {"provider": "tavily", "tavily_api_key": "tvly-secret"},
+        "search": {"provider": "searxng", "tavily_api_key": "tvly-secret"},
         "memory": {"min_score_default": 0.3},
         "context": {"context_limit": 8192, "safety_margin": 500, "keep_last_n": 10},
     }
@@ -2740,7 +2740,7 @@ def test_cmd_doctor_shows_skill_policy_details() -> None:
             "load_recovery_count": 0,
             "backup_revisions": 2,
         },
-        "search": {"provider": "tavily", "ready": False, "reason": "missing env: TAVILY_API_KEY"},
+        "search": {"provider": "searxng", "ready": False, "reason": "missing search.searxng_base_url"},
         "skills": [
             {
                 "id": "dup-skill",

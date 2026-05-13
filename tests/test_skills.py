@@ -814,7 +814,7 @@ TOOL_SPECS = {
 }
 
 def execute(tool_name, args, env):
-    raise RuntimeError("Tavily API key not configured")
+    raise RuntimeError("SearXNG base URL not configured")
 """.strip(),
         encoding="utf-8",
     )
@@ -839,7 +839,7 @@ def execute(tool_name, args, env):
 
     assert out["ok"] is False
     assert out["error"]["code"] == "E_IO"
-    assert out["error"]["message"] == "Tavily API key not configured"
+    assert out["error"]["message"] == "SearXNG base URL not configured"
 
 
 def test_select_skills_requires_explicit_session_load(tmp_path: Path):

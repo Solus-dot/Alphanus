@@ -86,6 +86,20 @@ def test_store_memory_replace_query_replaces_user_name(tmp_path: Path):
     assert old_id in second["meta"].get("forgotten_ids", [])
 
 
+def test_store_memory_respects_disabled_retrieval(tmp_path: Path):
+    db_path = tmp_path / "retrieval.sqlite"
+    runtime, ws = _memory_runtime(tmp_path)
+    runtime.config["retrieval"] = {"enabled": False, "store_path": str(db_path)}
+    skill = runtime.get_skill("memory-rag")
+    assert skill is not None
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
+
+    result = runtime.execute_tool_call("store_memory", {"text": "User prefers concise release summaries"}, selected=[skill], ctx=ctx)
+
+    assert result["ok"] is True
+    assert not db_path.exists()
+
+
 def test_recall_memory_uses_token_matching_not_substrings(tmp_path: Path):
     runtime, ws = _memory_runtime(tmp_path)
     skill = runtime.get_skill("memory-rag")

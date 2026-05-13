@@ -3752,7 +3752,7 @@ def test_doctor_report_uses_env_auth_header(mocker, runtime: SkillRuntime, monke
             "enable_thinking": True,
             "tls_verify": True,
         },
-        "search": {"provider": "tavily"},
+        "search": {"provider": "searxng", "fallback_provider": "tavily", "searxng_base_url": "http://127.0.0.1:8888"},
     }
     agent = Agent(cfg, runtime)
 
@@ -3813,8 +3813,7 @@ def test_doctor_report_handles_non_object_runtime_and_capabilities_sections(mock
     assert report["agent"]["permission_profile"] == "full"
 
 
-def test_doctor_report_supports_brave_provider(mocker, runtime: SkillRuntime, monkeypatch):
-    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-test-key")
+def test_doctor_report_supports_searxng_provider(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
             "model_endpoint": TEST_MODEL_ENDPOINT,
@@ -3825,7 +3824,7 @@ def test_doctor_report_supports_brave_provider(mocker, runtime: SkillRuntime, mo
             "enable_thinking": True,
             "tls_verify": True,
         },
-        "search": {"provider": "brave"},
+        "search": {"provider": "searxng", "searxng_base_url": "http://127.0.0.1:8888"},
     }
     agent = Agent(cfg, runtime)
 
@@ -3836,8 +3835,10 @@ def test_doctor_report_supports_brave_provider(mocker, runtime: SkillRuntime, mo
 
     mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
     report = agent.doctor_report()
-    assert report["search"]["provider"] == "brave"
+    assert report["search"]["provider"] == "searxng"
+    assert report["search"]["fallback_provider"] == "tavily"
     assert report["search"]["ready"] is True
+    assert report["search"]["searxng_base_url"] == "http://127.0.0.1:8888"
     assert report["search"]["reason"] == ""
     assert report["agent"]["backend_profile_requested"] == "auto"
     assert report["agent"]["backend_profile_selected"] in {"unknown", "auto", "mlx_vlm", "llamacpp", "ollama", "vllm", "lmstudio"}
@@ -4410,8 +4411,7 @@ def test_refresh_model_status_detects_hot_swapped_model(mocker, runtime: SkillRu
     assert second.context_window == 16384
 
 
-def test_time_sensitive_search_without_fetch_evidence_declines(mocker, tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
+def test_time_sensitive_search_without_fetch_evidence_declines(mocker, tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"

@@ -13,13 +13,14 @@ from core.configuration import (
     normalize_config,
     validate_endpoint_policy,
 )
+from core.retrieval import configured_store_path
 from core.runtime_config import ProviderConfig, SkillsRuntimeConfig, UiRuntimeConfig
 
 
 def test_normalize_config_strips_secret_like_fields() -> None:
     raw = {
         "agent": {"auth_header": "Authorization: Bearer secret"},
-        "search": {"provider": "tavily", "tavily_api_key": "tvly-secret"},
+        "search": {"provider": "searxng", "tavily_api_key": "tvly-secret"},
         "nested": {"api_key": "abc", "keep": True},
     }
 
@@ -30,6 +31,17 @@ def test_normalize_config_strips_secret_like_fields() -> None:
     assert "api_key" not in normalized["nested"]
     assert normalized["nested"]["keep"] is True
     assert any("secret-like fields" in item for item in warnings)
+
+
+def test_default_retrieval_store_path_uses_app_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("ALPHANUS_APP_ROOT", str(state_root))
+
+    normalized, warnings = normalize_config({})
+
+    assert warnings == []
+    assert normalized["retrieval"]["store_path"] == ""
+    assert configured_store_path(normalized) == state_root / "retrieval" / "index.sqlite"
 
 
 def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
@@ -157,7 +169,7 @@ def test_load_global_config_scrubs_secret_fields_on_disk(tmp_path: Path) -> None
     cfg = tmp_path / "config" / "global_config.json"
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text(
-        '{"search":{"provider":"tavily","tavily_api_key":"secret"}}',
+        '{"search":{"provider":"searxng","tavily_api_key":"secret"}}',
         encoding="utf-8",
     )
 
@@ -183,7 +195,7 @@ def test_load_dotenv_supports_export_and_ignores_invalid_names(tmp_path: Path, m
         "\n".join(
             [
                 "EXISTING=from-file",
-                "export TAVILY_API_KEY='tvly-test'",
+                "export ALPHANUS_EMBEDDINGS_API_KEY='embed-test'",
                 "INVALID-NAME=bad",
                 "EMPTY_LINE_ONLY",
                 'QUOTED_VALUE="hello world"',
@@ -193,7 +205,7 @@ def test_load_dotenv_supports_export_and_ignores_invalid_names(tmp_path: Path, m
         encoding="utf-8",
     )
     monkeypatch.setenv("EXISTING", "from-env")
-    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.delenv("ALPHANUS_EMBEDDINGS_API_KEY", raising=False)
     monkeypatch.delenv("INVALID-NAME", raising=False)
     monkeypatch.delenv("QUOTED_VALUE", raising=False)
     monkeypatch.delenv("NULLY", raising=False)
@@ -201,7 +213,7 @@ def test_load_dotenv_supports_export_and_ignores_invalid_names(tmp_path: Path, m
     load_dotenv(env_file)
 
     assert "from-env" == os.environ["EXISTING"]
-    assert "tvly-test" == os.environ["TAVILY_API_KEY"]
+    assert "embed-test" == os.environ["ALPHANUS_EMBEDDINGS_API_KEY"]
     assert "INVALID-NAME" not in os.environ
     assert "hello world" == os.environ["QUOTED_VALUE"]
     assert "NULLY" not in os.environ
@@ -310,7 +322,7 @@ def test_typed_config_v2_groups_runtime_sections() -> None:
             "memory": {"backup_revisions": 4},
             "capabilities": {"permission_profile": "workspace"},
             "runtime": {"profile": "minimal", "ask_user_tool": False},
-            "search": {"provider": "brave"},
+            "search": {"provider": "searxng", "fallback_provider": "tavily", "searxng_base_url": "http://127.0.0.1:8888"},
             "skills": {"python_executable": "/usr/bin/python3"},
             "tui": {"theme": "gruvbox-dark-soft"},
         }
@@ -325,6 +337,9 @@ def test_typed_config_v2_groups_runtime_sections() -> None:
     assert typed.runtime_policy.runtime_profile == "minimal"
     assert typed.runtime_policy.permission_profile == "workspace"
     assert typed.runtime_policy.ask_user_tool is False
-    assert typed.search.provider == "brave"
+    assert typed.search.provider == "searxng"
+    assert typed.search.fallback_provider == "tavily"
+    assert typed.search.searxng_base_url == "http://127.0.0.1:8888"
+    assert typed.retrieval.enabled is True
     assert typed.skills.python_executable == "/usr/bin/python3"
     assert typed.ui.theme == "gruvbox-dark-soft"

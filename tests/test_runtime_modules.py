@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # pyright: reportAttributeAccessIssue=false, reportArgumentType=false, reportIndexIssue=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportCallIssue=false
 import json
+import sqlite3
 from pathlib import Path
 
 from agent.classifier import TurnClassifier
@@ -11,9 +12,10 @@ from agent.orchestrator import TurnOrchestrator
 from agent.policies import PromptPolicyRenderer
 from agent.telemetry import TelemetryEmitter, configure_logging
 from core.memory import LexicalMemory
+from core.retrieval import SQLiteRetrievalStore
 from core.skills import SkillContext, SkillRuntime
 from core.streaming import StreamError
-from core.types import ModelStatus, StreamPassResult, ToolCall, TurnClassification
+from core.types import AgentTurnResult, ModelStatus, StreamPassResult, ToolCall, TurnClassification
 from core.workspace import WorkspaceManager
 
 
@@ -605,6 +607,212 @@ def test_orchestrator_search_budget_reason_is_explicit_for_time_sensitive_turns(
 
     assert reason is not None
     assert "search-attempt budget is exhausted" in reason
+
+
+def test_policy_retrieval_injects_time_sensitive_context(tmp_path: Path) -> None:
+    db_path = tmp_path / "retrieval.sqlite"
+    SQLiteRetrievalStore(db_path).upsert_record(
+        record_type="web_page",
+        source="https://example.com/status",
+        canonical_source="https://example.com/status",
+        title="Status update",
+        text="Current release status says alpha is available today.",
+    )
+    _runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="What is the current alpha release status?",
+        time_sensitive=True,
+        workspace_action=False,
+    )
+    orchestrator.config["retrieval"] = {"store_path": str(db_path), "pre_context_top_k": 2}
+    events: list[dict[str, object]] = []
+
+    orchestrator.inject_policy_retrieval_context(state, on_event=events.append)
+    system_content = orchestrator.prompt_renderer.compose_system_content(state.selected, state.ctx)
+
+    assert state.ctx.retrieval_hits
+    assert "Retrieved context:" in system_content
+    assert "Status update" in system_content
+    assert any("Retrieved 1 local context" in str(event.get("text", "")) for event in events)
+
+
+def test_policy_retrieval_skips_non_time_sensitive_turns(tmp_path: Path) -> None:
+    db_path = tmp_path / "retrieval.sqlite"
+    SQLiteRetrievalStore(db_path).upsert_record(
+        record_type="memory_fact",
+        source="memory:1",
+        canonical_source="memory:1",
+        title="preference",
+        text="User prefers compact answers.",
+    )
+    _runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="Say hello",
+        time_sensitive=False,
+        workspace_action=False,
+    )
+    orchestrator.config["retrieval"] = {"store_path": str(db_path), "pre_context_top_k": 2}
+
+    orchestrator.inject_policy_retrieval_context(state)
+
+    assert state.ctx.retrieval_hits == []
+
+
+def test_auto_memory_capture_stores_safe_preference(tmp_path: Path) -> None:
+    db_path = tmp_path / "retrieval.sqlite"
+    runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="I prefer concise answers for this project.",
+        time_sensitive=False,
+        workspace_action=False,
+    )
+    orchestrator.config["retrieval"] = {"store_path": str(db_path)}
+
+    orchestrator.maybe_auto_capture_memory(
+        state,
+        AgentTurnResult(status="done", content="Noted.", reasoning="", skill_exchanges=[]),
+    )
+
+    memories = runtime.memory.list_recent(5)
+    assert memories[0]["type"] == "preference"
+    assert "prefer concise answers" in memories[0]["text"]
+    hits = SQLiteRetrievalStore(db_path).search("concise answers", top_k=1)
+    assert hits and hits[0]["record_type"] == "memory_fact"
+
+
+def test_auto_memory_capture_respects_disabled_retrieval(tmp_path: Path) -> None:
+    db_path = tmp_path / "retrieval.sqlite"
+    runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="I prefer concise answers for this project.",
+        time_sensitive=False,
+        workspace_action=False,
+    )
+    orchestrator.config["retrieval"] = {"enabled": False, "store_path": str(db_path)}
+
+    orchestrator.maybe_auto_capture_memory(
+        state,
+        AgentTurnResult(status="done", content="Noted.", reasoning="", skill_exchanges=[]),
+    )
+
+    assert runtime.memory.list_recent(5)
+    assert not db_path.exists()
+
+
+def test_auto_memory_capture_ignores_secret_like_text(tmp_path: Path) -> None:
+    runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="I prefer api key abc123 for tests.",
+        time_sensitive=False,
+        workspace_action=False,
+    )
+
+    orchestrator.maybe_auto_capture_memory(
+        state,
+        AgentTurnResult(status="done", content="Ok.", reasoning="", skill_exchanges=[]),
+    )
+
+    assert runtime.memory.list_recent(5) == []
+
+
+def test_successful_tool_outcome_is_indexed_for_retrieval(tmp_path: Path) -> None:
+    db_path = tmp_path / "retrieval.sqlite"
+    _runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="run checks",
+        time_sensitive=False,
+        workspace_action=False,
+    )
+    orchestrator.config["retrieval"] = {"store_path": str(db_path)}
+    call = ToolCall(stream_id="call_1", index=0, id="call_1", name="run_checks", arguments={"command": "pytest"})
+
+    orchestrator.record_tool_effects(
+        state,
+        call,
+        {"ok": True, "data": {"stdout": "all tests passed"}, "error": None, "meta": {}},
+    )
+
+    hits = SQLiteRetrievalStore(db_path).search("tests passed", top_k=1, sources=["tool_outcome"])
+    assert hits
+    assert hits[0]["record_type"] == "tool_outcome"
+
+
+def test_failed_tool_outcome_is_not_indexed(tmp_path: Path) -> None:
+    db_path = tmp_path / "retrieval.sqlite"
+    _runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="run checks",
+        time_sensitive=False,
+        workspace_action=False,
+    )
+    orchestrator.config["retrieval"] = {"store_path": str(db_path)}
+    call = ToolCall(stream_id="call_1", index=0, id="call_1", name="run_checks", arguments={"command": "pytest"})
+
+    orchestrator.record_tool_effects(
+        state,
+        call,
+        {"ok": False, "data": None, "error": {"message": "failed"}, "meta": {}},
+    )
+
+    assert SQLiteRetrievalStore(db_path).search("failed", top_k=1, sources=["tool_outcome"]) == []
+
+
+def test_retrieval_replacement_and_forget_cleanup_embeddings(tmp_path: Path) -> None:
+    db_path = tmp_path / "retrieval.sqlite"
+    store = SQLiteRetrievalStore(db_path)
+    first = store.upsert_record(
+        record_type="web_page",
+        source="https://example.com/first",
+        canonical_source="https://example.com/doc",
+        title="First",
+        text="alpha release notes " * 100,
+    )
+    assert first is not None
+    for chunk in store.chunk_texts_for_record(first.id):
+        store.set_chunk_embedding(chunk_id=int(chunk["chunk_id"]), model="test", vector=[1.0, 0.0])
+    assert store.stats()["embeddings"] > 0
+
+    second = store.upsert_record(
+        record_type="web_page",
+        source="https://example.com/second",
+        canonical_source="https://example.com/doc",
+        title="Second",
+        text="beta release notes " * 20,
+    )
+
+    assert second is not None
+    assert second.id == first.id
+    assert store.stats()["embeddings"] == 0
+    for chunk in store.chunk_texts_for_record(second.id):
+        store.set_chunk_embedding(chunk_id=int(chunk["chunk_id"]), model="test", vector=[0.0, 1.0])
+    assert store.forget(second.id) is True
+    assert store.stats()["records"] == 0
+    assert store.stats()["chunks"] == 0
+    assert store.stats()["embeddings"] == 0
+
+
+def test_retrieval_open_cleans_existing_orphans(tmp_path: Path) -> None:
+    db_path = tmp_path / "retrieval.sqlite"
+    store = SQLiteRetrievalStore(db_path)
+    record = store.upsert_record(
+        record_type="web_page",
+        source="https://example.com/orphan",
+        canonical_source="https://example.com/orphan",
+        title="Orphan",
+        text="orphan cleanup release notes " * 80,
+    )
+    assert record is not None
+    for chunk in store.chunk_texts_for_record(record.id):
+        store.set_chunk_embedding(chunk_id=int(chunk["chunk_id"]), model="test", vector=[1.0])
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM records WHERE id = ?", (record.id,))
+    raw_store = SQLiteRetrievalStore(db_path)
+
+    assert raw_store.stats()["records"] == 0
+    assert raw_store.stats()["chunks"] == 0
+    assert raw_store.stats()["embeddings"] == 0
+    assert raw_store.search("orphan cleanup", top_k=1) == []
 
 
 def test_plan_mode_blocks_mutating_tool_calls(mocker, tmp_path: Path) -> None:
