@@ -137,6 +137,6 @@ def on_config_editor_close(app: Any, result: dict[str, Any] | None, *, config_pa
     app._apply_tui_config()
     app._maybe_refresh_model_status(force=True)
     suffix = f" ({len(warnings)} normalization warning{'s' if len(warnings) != 1 else ''})." if warnings else "."
-    app._write_info("Saved global config. Use environment variables for secrets like TAVILY_API_KEY or BRAVE_SEARCH_API_KEY" + suffix)
+    app._write_info("Saved global config. Use environment variables for model and embedding API keys" + suffix)
     for warning in warnings:
         app._write_info(f"Config warning: {warning}")

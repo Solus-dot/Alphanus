@@ -86,8 +86,8 @@ uv run alphanus
 - `ALPHANUS_API_KEY` for authenticated model endpoints
 - `ALPHANUS_AUTH_HEADER` for advanced custom auth header override
 - `AUTH_HEADER` fallback if `ALPHANUS_AUTH_HEADER` is unset
-- `TAVILY_API_KEY` when `search.provider = "tavily"`
-- `BRAVE_SEARCH_API_KEY` when `search.provider = "brave"`
+- `TAVILY_API_KEY` when `search.provider = "tavily"` or `search.fallback_provider = "tavily"`
+- `ALPHANUS_EMBEDDINGS_API_KEY` when optional OpenAI-compatible retrieval embeddings use an authenticated endpoint
 
 ---
 
@@ -116,7 +116,9 @@ uv run alphanus init --non-interactive \
   --model-endpoint https://api.openai.com/v1/chat/completions \
   --responses-endpoint https://api.openai.com/v1/responses \
   --models-endpoint https://api.openai.com/v1/models \
-  --search-provider tavily \
+  --search-provider searxng \
+  --search-fallback-provider tavily \
+  --searxng-base-url http://127.0.0.1:8888 \
   --theme catppuccin-mocha
 ```
 
@@ -199,17 +201,45 @@ Memory is lexical and persistent.
 Relevant commands:
 
 - `/memory-stats`
+- `uv run alphanus retrieval stats`
+- `uv run alphanus retrieval reset --yes`
 
 ### Search
 
-Search is intended for time-sensitive queries.
+Search is intended for time-sensitive queries and feeds the local retrieval index when pages are fetched.
 
-- providers: `tavily`, `brave`
+- primary provider: `searxng`
+- fallback provider: optional `tavily` using `TAVILY_API_KEY`
+- `search.searxng_base_url` is required for SearXNG; if it is missing or unreachable, Alphanus can use Tavily when `search.fallback_provider = "tavily"`
+- retrieval store: SQLite FTS under the Alphanus state root, usually `~/.alphanus/retrieval/index.sqlite` unless `ALPHANUS_APP_ROOT` is set
+- fetched pages are indexed; search result snippets alone are not persisted
+- optional dense retrieval uses an OpenAI-compatible embeddings endpoint when `retrieval.embeddings.enabled` is true
+- safe automatic memory capture stores only obvious stable preference/project facts and skips secret-like text
 - policy: if evidence is insufficient, Alphanus declines to speculate
 - default per-turn budgets:
   - `web_search=2`
   - `fetch_url=2`
   - `recall_memory=2`
+
+Configure a local SearXNG instance:
+
+```bash
+uv run alphanus init search --non-interactive \
+  --search-provider searxng \
+  --search-fallback-provider tavily \
+  --searxng-base-url http://127.0.0.1:8888
+
+uv run alphanus doctor
+```
+
+Use Tavily directly without running SearXNG:
+
+```bash
+export TAVILY_API_KEY="tvly-..."
+
+uv run alphanus init search --non-interactive \
+  --search-provider tavily
+```
 
 ### Safety and Permission Profiles
 
