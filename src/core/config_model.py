@@ -24,6 +24,7 @@ class MemoryConfig:
     recall_min_score_default: float
     replace_min_score_default: float
     backup_revisions: int
+    auto_capture: bool
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> MemoryConfig:
@@ -34,6 +35,7 @@ class MemoryConfig:
             recall_min_score_default=float(section.get("recall_min_score_default", default_section["recall_min_score_default"])),
             replace_min_score_default=float(section.get("replace_min_score_default", default_section["replace_min_score_default"])),
             backup_revisions=int(section.get("backup_revisions", default_section["backup_revisions"])),
+            auto_capture=bool(section.get("auto_capture", default_section["auto_capture"])),
         )
 
 
@@ -63,12 +65,41 @@ class RuntimePolicyConfig:
 @dataclass(frozen=True, slots=True)
 class SearchConfig:
     provider: str
+    fallback_provider: str
+    searxng_base_url: str
+    tavily_api_key_env: str
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> SearchConfig:
         section = config.get("search", {}) if isinstance(config.get("search"), dict) else {}
         default_section = DEFAULT_CONFIG["search"]
-        return cls(provider=str(section.get("provider", default_section["provider"])))
+        return cls(
+            provider=str(section.get("provider", default_section["provider"])),
+            fallback_provider=str(section.get("fallback_provider", default_section["fallback_provider"])),
+            searxng_base_url=str(section.get("searxng_base_url", default_section["searxng_base_url"])),
+            tavily_api_key_env=str(section.get("tavily_api_key_env", default_section["tavily_api_key_env"])),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalConfig:
+    enabled: bool
+    store_path: str
+    web_ttl_hours: float
+    embeddings_enabled: bool
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> RetrievalConfig:
+        section = config.get("retrieval", {}) if isinstance(config.get("retrieval"), dict) else {}
+        default_section = DEFAULT_CONFIG["retrieval"]
+        embeddings = section.get("embeddings", {}) if isinstance(section.get("embeddings"), dict) else {}
+        default_embeddings = default_section["embeddings"]
+        return cls(
+            enabled=bool(section.get("enabled", default_section["enabled"])),
+            store_path=str(section.get("store_path", default_section["store_path"])),
+            web_ttl_hours=float(section.get("web_ttl_hours", default_section["web_ttl_hours"])),
+            embeddings_enabled=bool(embeddings.get("enabled", default_embeddings["enabled"])),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +110,7 @@ class TypedConfigV2:
     runtime_policy: RuntimePolicyConfig
     skills: SkillsRuntimeConfig
     search: SearchConfig
+    retrieval: RetrievalConfig
     ui: UiRuntimeConfig
     raw: dict[str, Any]
 
@@ -91,6 +123,7 @@ class TypedConfigV2:
             runtime_policy=RuntimePolicyConfig.from_config(config),
             skills=SkillsRuntimeConfig.from_config(config),
             search=SearchConfig.from_config(config),
+            retrieval=RetrievalConfig.from_config(config),
             ui=UiRuntimeConfig.from_config(config),
             raw=config,
         )

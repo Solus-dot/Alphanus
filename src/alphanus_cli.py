@@ -23,6 +23,7 @@ from core.configuration import (
     validate_endpoint_policy,
 )
 from core.memory import LexicalMemory
+from core.retrieval import SQLiteRetrievalStore, configured_store_path
 from core.skills import SkillRuntime
 from core.theme_catalog import BUILTIN_THEME_IDS, DEFAULT_THEME_ID, THEME_ALIASES, normalize_theme_id
 from core.workspace import WorkspaceManager
@@ -163,7 +164,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     init_parser.add_argument("--api-key", type=str, default="", help="Model API key (writes to ~/.alphanus/.env)")
     init_parser.add_argument("--api-key-env", type=str, default="", help="Environment variable name for model API key")
-    init_parser.add_argument("--search-provider", type=str, choices=["tavily", "brave"], default="", help="Search provider")
+    init_parser.add_argument("--search-provider", type=str, choices=["searxng", "tavily"], default="", help="Search provider")
+    init_parser.add_argument("--search-fallback-provider", type=str, choices=["none", "tavily"], default="", help="Search fallback provider")
+    init_parser.add_argument("--searxng-base-url", type=str, default="", help="SearXNG base URL")
     init_parser.add_argument(
         "--theme",
         type=str,
@@ -178,6 +181,12 @@ def _build_parser() -> argparse.ArgumentParser:
         parents=[common],
     )
     doctor_parser.add_argument("--json", action="store_true", help="Emit doctor report as JSON")
+
+    retrieval_parser = subparsers.add_parser("retrieval", help="Inspect or reset the local retrieval store", parents=[common])
+    retrieval_subparsers = retrieval_parser.add_subparsers(dest="retrieval_command")
+    retrieval_subparsers.add_parser("stats", help="Show retrieval store statistics")
+    reset_parser = retrieval_subparsers.add_parser("reset", help="Delete the retrieval SQLite database")
+    reset_parser.add_argument("--yes", action="store_true", help="Skip confirmation")
     return parser
 
 
@@ -326,7 +335,7 @@ def _ensure_dotenv_template(dotenv_path: Path) -> None:
             "# Uncomment and set values as needed.",
             "# ALPHANUS_API_KEY=",
             "# TAVILY_API_KEY=",
-            "# BRAVE_SEARCH_API_KEY=",
+            "# ALPHANUS_EMBEDDINGS_API_KEY=",
             "# ALPHANUS_AUTH_HEADER=Authorization: Bearer <token>",
             "",
         ]
@@ -390,6 +399,7 @@ def _run_init(args: Any) -> int:
     api_key_ref_default = str(base.get("agent", {}).get("api_key", DEFAULT_CONFIG["agent"]["api_key"]))
     api_key_env_default = str(base.get("agent", {}).get("api_key_env", DEFAULT_CONFIG["agent"]["api_key_env"]))
     search_provider_default = str(base.get("search", {}).get("provider", DEFAULT_CONFIG["search"]["provider"]))
+    search_fallback_default = str(base.get("search", {}).get("fallback_provider", DEFAULT_CONFIG["search"]["fallback_provider"])) or "none"
     theme_default = str(base.get("tui", {}).get("theme", DEFAULT_THEME_ID))
     theme_default, _ = normalize_theme_id(theme_default, default=DEFAULT_THEME_ID)
 
@@ -404,6 +414,9 @@ def _run_init(args: Any) -> int:
     api_key_ref = api_key_ref_default
     api_key_value = ""
     search_provider = search_provider_default
+    search_fallback_provider = search_fallback_default
+    searxng_base_url_default = str(base.get("search", {}).get("searxng_base_url", DEFAULT_CONFIG["search"]["searxng_base_url"]))
+    searxng_base_url = searxng_base_url_default
     ui_theme = theme_default
 
     if args.non_interactive:
@@ -423,6 +436,10 @@ def _run_init(args: Any) -> int:
             api_key_value = str(getattr(args, "api_key", "") or "").strip()
         if _section_selected(section, "search"):
             search_provider = str(getattr(args, "search_provider", "") or "").strip() or search_provider_default
+            search_fallback_provider = (
+                str(getattr(args, "search_fallback_provider", "") or "").strip() or search_fallback_default
+            )
+            searxng_base_url = str(getattr(args, "searxng_base_url", "") or "").strip() or searxng_base_url_default
         if _section_selected(section, "theme"):
             requested_theme = str(getattr(args, "theme", "") or "").strip() or theme_default
             ui_theme, _ = normalize_theme_id(requested_theme, default=theme_default)
@@ -516,15 +533,29 @@ def _run_init(args: Any) -> int:
             step_index += 1
             print("")
         if _section_selected(section, "search"):
-            print(theme.accent(f"Step {step_index}/{total_steps}: Search provider"))
+            print(theme.accent(f"Step {step_index}/{total_steps}: Search"))
             search_provider = _prompt_choice(
                 theme,
-                "Choose a provider:",
+                "Primary provider:",
                 [
-                    ("tavily", "recommended default, requires TAVILY_API_KEY"),
-                    ("brave", "alternative, requires BRAVE_SEARCH_API_KEY"),
+                    ("searxng", "local/private search when a SearXNG instance is running"),
+                    ("tavily", "hosted fallback search using TAVILY_API_KEY"),
                 ],
-                default=search_provider_default,
+                default=search_provider_default if search_provider_default in {"searxng", "tavily"} else "searxng",
+            )
+            searxng_base_url = _prompt_with_default(
+                "SearXNG base URL",
+                searxng_base_url_default,
+                hint=theme.muted("used by SearXNG, e.g. http://127.0.0.1:8888"),
+            )
+            search_fallback_provider = _prompt_choice(
+                theme,
+                "Fallback provider:",
+                [
+                    ("tavily", "use TAVILY_API_KEY if SearXNG is unavailable"),
+                    ("none", "do not use a hosted fallback"),
+                ],
+                default=search_fallback_default if search_fallback_default in {"none", "tavily"} else "tavily",
             )
             step_index += 1
             print("")
@@ -555,7 +586,11 @@ def _run_init(args: Any) -> int:
             "api_key_env": api_key_env,
         }
     if _section_selected(section, "search"):
-        updates["search"] = {"provider": search_provider}
+        updates["search"] = {
+            "provider": search_provider,
+            "fallback_provider": search_fallback_provider,
+            "searxng_base_url": searxng_base_url,
+        }
     if _section_selected(section, "theme"):
         updates["tui"] = {"theme": ui_theme}
     merged = deep_merge(base, updates)
@@ -577,6 +612,8 @@ def _run_init(args: Any) -> int:
         print(f"  {theme.label('Backend profile:')} {normalized['agent']['backend_profile']}")
         print(f"  {theme.label('API key ref:')} {normalized['agent']['api_key']}")
         print(f"  {theme.label('Search provider:')} {normalized['search']['provider']}")
+        print(f"  {theme.label('Search fallback:')} {normalized['search']['fallback_provider'] or 'none'}")
+        print(f"  {theme.label('SearXNG URL:')} {normalized['search']['searxng_base_url'] or '(not set)'}")
         print(f"  {theme.label('Theme:')} {normalized['tui']['theme']}")
         print(f"  {theme.label('Secrets file:')} {app_paths.dotenv_path}")
         if not _prompt_yes_no("Write these settings now?", default=True):
@@ -631,11 +668,13 @@ def _run_doctor(args: Any) -> int:
         agent_status = _as_object(report_obj.get("agent"))
         workspace_status = _as_object(report_obj.get("workspace"))
         search_status = _as_object(report_obj.get("search"))
+        retrieval_status = _as_object(report_obj.get("retrieval"))
         endpoint_error = str(agent_status.get("endpoint_policy_error") or "").strip()
         endpoint_ok = not endpoint_error
         model_ok = bool(agent_status.get("ready"))
         workspace_ok = bool(workspace_status.get("exists")) and bool(workspace_status.get("writable"))
         search_ok = bool(search_status.get("ready"))
+        retrieval_ok = bool(retrieval_status.get("ready"))
 
         print("")
         print(theme.brand(" ALPHANUS DOCTOR "))
@@ -653,18 +692,23 @@ def _run_doctor(args: Any) -> int:
         model_state = theme.ok("[OK]") if model_ok else theme.warn("[WAIT]")
         workspace_state = theme.ok("[OK]") if workspace_ok else theme.error("[FAIL]")
         search_state = theme.ok("[OK]") if search_ok else theme.warn("[WAIT]")
+        retrieval_state = theme.ok("[OK]") if retrieval_ok else theme.error("[FAIL]")
         search_detail = str(search_status.get("reason") or "").strip() or "ok"
+        retrieval_detail = str(retrieval_status.get("reason") or "").strip() or "ok"
         endpoint_suffix = f"  {endpoint_detail}" if endpoint_detail != "ok" else ""
         search_suffix = f"  {search_detail}" if search_detail != "ok" else ""
+        retrieval_suffix = f"  {retrieval_detail}" if retrieval_detail != "ok" else ""
         print(f"  endpoint policy:   {endpoint_state}{endpoint_suffix}")
         print(f"  model readiness:   {model_state}")
         print(f"  workspace access:  {workspace_state}")
         print(f"  search provider:   {search_state}{search_suffix}")
+        print(f"  retrieval store:   {retrieval_state}{retrieval_suffix}")
 
     failures = []
     agent_status = _as_object(report_obj.get("agent"))
     workspace_status = _as_object(report_obj.get("workspace"))
     search_status = _as_object(report_obj.get("search"))
+    retrieval_status = _as_object(report_obj.get("retrieval"))
     if str(agent_status.get("endpoint_policy_error") or "").strip():
         failures.append("endpoint-policy")
     if not bool(agent_status.get("ready")):
@@ -673,6 +717,8 @@ def _run_doctor(args: Any) -> int:
         failures.append("workspace")
     if not bool(search_status.get("ready")):
         failures.append("search")
+    if not bool(retrieval_status.get("ready")):
+        failures.append("retrieval")
     if not args.json:
         if failures:
             print("")
@@ -683,6 +729,48 @@ def _run_doctor(args: Any) -> int:
             print(theme.ok("Doctor result: PASS"))
         print("")
     return 1 if failures else 0
+
+
+def _run_retrieval(args: Any) -> int:
+    app_paths = get_app_paths()
+    theme = _CliTheme()
+    try:
+        config, warnings = _load_runtime_config(app_paths, args)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        print(f"retrieval failed: {exc}")
+        return 2
+    for warning in warnings:
+        print(f"{theme.warn('config warning:')} {warning}")
+
+    db_path = configured_store_path(config)
+    command = str(getattr(args, "retrieval_command", "") or "stats")
+    if command == "reset":
+        if not bool(getattr(args, "yes", False)) and not _prompt_yes_no(f"Delete retrieval store at {db_path}?", default=False):
+            print(theme.warn("Reset cancelled."))
+            return 1
+        deleted = []
+        for suffix in ("", "-wal", "-shm"):
+            target = Path(f"{db_path}{suffix}")
+            if target.exists():
+                target.unlink()
+                deleted.append(str(target))
+        SQLiteRetrievalStore(db_path)
+        print(theme.ok("Retrieval store reset."))
+        if deleted:
+            for path in deleted:
+                print(f"  {theme.path(path)}")
+        return 0
+
+    stats = SQLiteRetrievalStore(db_path).stats()
+    print(theme.brand(" ALPHANUS RETRIEVAL "))
+    print(f"  {theme.label('Store:')} {theme.path(str(db_path))}")
+    print(f"  {theme.label('Records:')} {stats['records']}")
+    print(f"  {theme.label('Chunks:')} {stats['chunks']}")
+    print(f"  {theme.label('Stale web records:')} {stats['stale_records']}")
+    by_type = stats.get("by_type", {})
+    if isinstance(by_type, dict) and by_type:
+        print(f"  {theme.label('By type:')} " + ", ".join(f"{key}={value}" for key, value in sorted(by_type.items())))
+    return 0
 
 
 def _run_tui(args: Any) -> int:
@@ -725,4 +813,6 @@ def main() -> int:
         return _run_init(args)
     if command == "doctor":
         return _run_doctor(args)
+    if command == "retrieval":
+        return _run_retrieval(args)
     return _run_tui(args)

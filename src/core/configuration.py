@@ -30,7 +30,8 @@ _SECRET_KEYS = {
     "secret",
 }
 _SECRET_SUFFIXES = ("_api_key", "_apikey", "_token", "_secret", "_password")
-_ALLOWED_SEARCH_PROVIDERS = {"tavily", "brave"}
+_ALLOWED_SEARCH_PROVIDERS = {"searxng", "tavily"}
+_ALLOWED_SEARCH_FALLBACK_PROVIDERS = {"", "none", "tavily"}
 _RUNTIME_PROFILE_ALIASES = {
     "standard": "standard",
     "workspace": "standard",
@@ -92,6 +93,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "recall_min_score_default": 0.18,
         "replace_min_score_default": 0.72,
         "backup_revisions": 2,
+        "auto_capture": True,
     },
     "context": {
         "context_limit": 8192,
@@ -116,7 +118,29 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "tools": {},
     "search": {
-        "provider": "tavily",
+        "provider": "searxng",
+        "fallback_provider": "tavily",
+        "searxng_base_url": "",
+        "tavily_api_key_env": "TAVILY_API_KEY",
+        "request_timeout_s": 20,
+        "request_retries": 1,
+        "request_retry_backoff_s": 0.5,
+        "fetch_max_redirects": 5,
+    },
+    "retrieval": {
+        "enabled": True,
+        "store_path": "",
+        "web_ttl_hours": 72,
+        "max_chunks_per_record": 64,
+        "pre_context_top_k": 3,
+        "embeddings": {
+            "enabled": False,
+            "base_url": "",
+            "model": "",
+            "api_key_env": "ALPHANUS_EMBEDDINGS_API_KEY",
+            "dimensions": 0,
+            "batch_size": 32,
+        },
     },
     "logging": {
         "level": "INFO",
@@ -358,6 +382,14 @@ def _normalize_base_url(url: Any, *, default: str, path: str, warnings: list[str
 def _endpoint_from_base_url(base_url: str, endpoint_path: str) -> str:
     suffix = endpoint_path if endpoint_path.startswith("/") else f"/{endpoint_path}"
     return f"{base_url.rstrip('/')}{suffix}"
+
+
+def _normalize_env_name(value: Any, *, default: str, path: str, warnings: list[str]) -> str:
+    env_name = _coerce_string(value, default, path=path, warnings=warnings, allow_empty=False)
+    if not _VALID_ENV_NAME_RE.match(env_name):
+        _warn(warnings, f"{path}: invalid env name {env_name!r}, using default")
+        return default
+    return env_name
 
 
 def _base_url_from_endpoint(endpoint: Any) -> str:
@@ -718,6 +750,12 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         minimum=0,
         maximum=20,
     )
+    memory_cfg["auto_capture"] = _coerce_bool(
+        raw_memory_cfg.get("auto_capture"),
+        bool(DEFAULT_CONFIG["memory"]["auto_capture"]),
+        path="memory.auto_capture",
+        warnings=warnings,
+    )
     merged["memory"] = memory_cfg
 
     context_cfg = merged.get("context", {}) if isinstance(merged.get("context"), dict) else {}
@@ -844,7 +882,157 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         _warn(warnings, f"search.provider: unsupported {provider!r}, using default")
         provider = str(DEFAULT_CONFIG["search"]["provider"])
     search_cfg["provider"] = provider
+    fallback_provider = _coerce_string(
+        search_cfg.get("fallback_provider"),
+        str(DEFAULT_CONFIG["search"]["fallback_provider"]),
+        path="search.fallback_provider",
+        warnings=warnings,
+    ).lower()
+    if fallback_provider not in _ALLOWED_SEARCH_FALLBACK_PROVIDERS:
+        _warn(warnings, f"search.fallback_provider: unsupported {fallback_provider!r}, using default")
+        fallback_provider = str(DEFAULT_CONFIG["search"]["fallback_provider"])
+    search_cfg["fallback_provider"] = "" if fallback_provider == "none" else fallback_provider
+    raw_searxng_url = search_cfg.get("searxng_base_url") or search_cfg.get("base_url")
+    base_url = (
+        str(DEFAULT_CONFIG["search"]["searxng_base_url"])
+        if raw_searxng_url is None
+        else _coerce_string(raw_searxng_url, "", path="search.searxng_base_url", warnings=warnings)
+    )
+    if base_url:
+        parsed = urlparse(base_url)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            _warn(warnings, f"search.searxng_base_url: invalid URL {base_url!r}, using empty value")
+            base_url = ""
+        else:
+            base_url = parsed._replace(params="", query="", fragment="").geturl().rstrip("/")
+    search_cfg["searxng_base_url"] = base_url
+    search_cfg.pop("base_url", None)
+    search_cfg["tavily_api_key_env"] = _normalize_env_name(
+        search_cfg.get("tavily_api_key_env"),
+        default=str(DEFAULT_CONFIG["search"]["tavily_api_key_env"]),
+        path="search.tavily_api_key_env",
+        warnings=warnings,
+    )
+    search_cfg["request_timeout_s"] = _coerce_float(
+        search_cfg.get("request_timeout_s"),
+        float(DEFAULT_CONFIG["search"]["request_timeout_s"]),
+        path="search.request_timeout_s",
+        warnings=warnings,
+        minimum=1.0,
+    )
+    search_cfg["request_retries"] = _coerce_int(
+        search_cfg.get("request_retries"),
+        int(DEFAULT_CONFIG["search"]["request_retries"]),
+        path="search.request_retries",
+        warnings=warnings,
+        minimum=0,
+    )
+    search_cfg["request_retry_backoff_s"] = _coerce_float(
+        search_cfg.get("request_retry_backoff_s"),
+        float(DEFAULT_CONFIG["search"]["request_retry_backoff_s"]),
+        path="search.request_retry_backoff_s",
+        warnings=warnings,
+        minimum=0.0,
+    )
+    search_cfg["fetch_max_redirects"] = _coerce_int(
+        search_cfg.get("fetch_max_redirects"),
+        int(DEFAULT_CONFIG["search"]["fetch_max_redirects"]),
+        path="search.fetch_max_redirects",
+        warnings=warnings,
+        minimum=0,
+    )
     merged["search"] = search_cfg
+
+    retrieval_cfg = merged.get("retrieval", {}) if isinstance(merged.get("retrieval"), dict) else {}
+    retrieval_default = DEFAULT_CONFIG["retrieval"]
+    retrieval_cfg["enabled"] = _coerce_bool(
+        retrieval_cfg.get("enabled"),
+        bool(retrieval_default["enabled"]),
+        path="retrieval.enabled",
+        warnings=warnings,
+    )
+    raw_store_path = retrieval_cfg.get("store_path")
+    retrieval_cfg["store_path"] = (
+        ""
+        if raw_store_path is None
+        else _coerce_string(
+            raw_store_path,
+            str(retrieval_default["store_path"]),
+            path="retrieval.store_path",
+            warnings=warnings,
+        )
+    )
+    retrieval_cfg["web_ttl_hours"] = _coerce_float(
+        retrieval_cfg.get("web_ttl_hours"),
+        float(retrieval_default["web_ttl_hours"]),
+        path="retrieval.web_ttl_hours",
+        warnings=warnings,
+        minimum=0.0,
+    )
+    retrieval_cfg["max_chunks_per_record"] = _coerce_int(
+        retrieval_cfg.get("max_chunks_per_record"),
+        int(retrieval_default["max_chunks_per_record"]),
+        path="retrieval.max_chunks_per_record",
+        warnings=warnings,
+        minimum=1,
+    )
+    retrieval_cfg["pre_context_top_k"] = _coerce_int(
+        retrieval_cfg.get("pre_context_top_k"),
+        int(retrieval_default["pre_context_top_k"]),
+        path="retrieval.pre_context_top_k",
+        warnings=warnings,
+        minimum=0,
+        maximum=10,
+    )
+    embeddings_cfg = retrieval_cfg.get("embeddings", {}) if isinstance(retrieval_cfg.get("embeddings"), dict) else {}
+    embeddings_default = retrieval_default["embeddings"]
+    embeddings_cfg["enabled"] = _coerce_bool(
+        embeddings_cfg.get("enabled"),
+        bool(embeddings_default["enabled"]),
+        path="retrieval.embeddings.enabled",
+        warnings=warnings,
+    )
+    embeddings_cfg["base_url"] = _coerce_string(
+        embeddings_cfg.get("base_url"),
+        str(embeddings_default["base_url"]),
+        path="retrieval.embeddings.base_url",
+        warnings=warnings,
+    )
+    if embeddings_cfg["base_url"]:
+        embeddings_cfg["base_url"] = _normalize_base_url(
+            embeddings_cfg["base_url"],
+            default="",
+            path="retrieval.embeddings.base_url",
+            warnings=warnings,
+        )
+    embeddings_cfg["model"] = _coerce_string(
+        embeddings_cfg.get("model"),
+        str(embeddings_default["model"]),
+        path="retrieval.embeddings.model",
+        warnings=warnings,
+    )
+    embeddings_cfg["api_key_env"] = _normalize_env_name(
+        embeddings_cfg.get("api_key_env"),
+        default=str(embeddings_default["api_key_env"]),
+        path="retrieval.embeddings.api_key_env",
+        warnings=warnings,
+    )
+    embeddings_cfg["dimensions"] = _coerce_int(
+        embeddings_cfg.get("dimensions"),
+        int(embeddings_default["dimensions"]),
+        path="retrieval.embeddings.dimensions",
+        warnings=warnings,
+        minimum=0,
+    )
+    embeddings_cfg["batch_size"] = _coerce_int(
+        embeddings_cfg.get("batch_size"),
+        int(embeddings_default["batch_size"]),
+        path="retrieval.embeddings.batch_size",
+        warnings=warnings,
+        minimum=1,
+    )
+    retrieval_cfg["embeddings"] = embeddings_cfg
+    merged["retrieval"] = retrieval_cfg
 
     logging_cfg = merged.get("logging", {}) if isinstance(merged.get("logging"), dict) else {}
     level = _coerce_string(
