@@ -109,6 +109,7 @@ class SkillContext:
     attachments: list[str]
     workspace_root: str
     memory_hits: list[dict[str, JSONValue]]
+    retrieval_hits: list[dict[str, JSONValue]] = field(default_factory=list)
     loaded_skill_ids: list[str] = field(default_factory=list)
     recent_routing_hint: str = ""
     sticky_skill_ids: list[str] = field(default_factory=list)

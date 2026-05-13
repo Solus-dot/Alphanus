@@ -107,6 +107,9 @@ class PromptPolicyRenderer:
 
     def compose_system_content(self, selected: list[SkillManifest], ctx: SkillContext) -> str:
         parts = [self.system_prompt]
+        retrieval_block = self._retrieval_context_block(ctx)
+        if retrieval_block:
+            parts.append(retrieval_block)
         skill_index = self.skill_runtime.compose_skill_index()
         if skill_index:
             parts.append(skill_index)
@@ -119,6 +122,27 @@ class PromptPolicyRenderer:
             if skill_block:
                 parts.append("Loaded skill guidance:\n" + skill_block)
         return "\n\n".join(part.strip() for part in parts if part and part.strip())
+
+    @staticmethod
+    def _retrieval_context_block(ctx: SkillContext) -> str:
+        hits = getattr(ctx, "retrieval_hits", []) or []
+        if not hits:
+            return ""
+        lines = [
+            "Retrieved context:",
+            "- Use these local retrieval records only if relevant.",
+            "- If web records influence the answer, cite their title or source URL.",
+        ]
+        for index, hit in enumerate(hits[:5], start=1):
+            title = str(hit.get("title") or "Untitled").strip()
+            source = str(hit.get("source") or "").strip()
+            record_type = str(hit.get("record_type") or "record").strip()
+            stale = " stale=true" if bool(hit.get("stale")) else ""
+            text = " ".join(str(hit.get("text") or "").split())
+            if len(text) > 600:
+                text = text[:597].rstrip() + "..."
+            lines.append(f"[{index}] {record_type}{stale}: {title} ({source})\n{text}")
+        return "\n".join(lines)
 
     def render_policy_rules(self, snapshot: TurnPolicySnapshot) -> str:
         blocks: list[str] = []

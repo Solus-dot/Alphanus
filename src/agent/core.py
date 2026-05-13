@@ -19,6 +19,7 @@ from agent.telemetry import TelemetryEmitter
 from core.config_model import TypedConfigV2
 from core.configuration import validate_endpoint_policy
 from core.message_types import ChatMessage, JsonObject
+from core.retrieval import SQLiteRetrievalStore, configured_store_path
 from core.skills import SkillRuntime
 from core.types import AgentTurnResult, ModelStatus, ShellConfirmationFn
 
@@ -150,10 +151,29 @@ class Agent:
         runtime_cfg = get_json_object(config_obj, "runtime")
         capabilities_cfg = get_json_object(config_obj, "capabilities")
         search_cfg = get_json_object(config_obj, "search")
-        provider = str(search_cfg.get("provider", "tavily")).strip().lower() or "tavily"
-        provider_env = {"tavily": "TAVILY_API_KEY", "brave": "BRAVE_SEARCH_API_KEY"}
-        required_env = provider_env.get(provider, "")
-        search_ready = bool(os.environ.get(required_env, "").strip()) if required_env else False
+        provider = str(search_cfg.get("provider", "searxng")).strip().lower() or "searxng"
+        fallback_provider = str(search_cfg.get("fallback_provider", "tavily")).strip().lower()
+        searxng_base_url = str(search_cfg.get("searxng_base_url", "")).strip()
+        tavily_api_key_env = str(search_cfg.get("tavily_api_key_env", "TAVILY_API_KEY")).strip() or "TAVILY_API_KEY"
+        tavily_ready = bool(os.environ.get(tavily_api_key_env, "").strip())
+        search_ready = (provider == "searxng" and bool(searxng_base_url)) or provider == "tavily" and tavily_ready
+        if provider == "searxng" and fallback_provider == "tavily":
+            search_ready = bool(searxng_base_url) or tavily_ready
+        search_reason = ""
+        if not search_ready:
+            search_reason = f"missing env: {tavily_api_key_env}" if provider == "tavily" else "missing search.searxng_base_url"
+            if provider == "searxng" and fallback_provider == "tavily":
+                search_reason = f"missing search.searxng_base_url and env: {tavily_api_key_env}"
+        retrieval_cfg = get_json_object(config_obj, "retrieval")
+        retrieval_enabled = bool(retrieval_cfg.get("enabled", True))
+        try:
+            retrieval_stats = SQLiteRetrievalStore(configured_store_path(config_obj)).stats() if retrieval_enabled else {}
+            retrieval_ready = retrieval_enabled
+            retrieval_reason = ""
+        except Exception as exc:
+            retrieval_stats = {}
+            retrieval_ready = False
+            retrieval_reason = str(exc)
         ready = self.ensure_ready(timeout_s=min(self.readiness_timeout_s, 3.0))
         backend_info = self.llm_client.backend_profile_info()
         return {
@@ -193,8 +213,18 @@ class Agent:
             },
             "search": {
                 "provider": provider,
+                "fallback_provider": fallback_provider,
                 "ready": search_ready,
-                "reason": "" if search_ready or not required_env else f"missing env: {required_env}",
+                "searxng_base_url": searxng_base_url,
+                "tavily_api_key_env": tavily_api_key_env,
+                "tavily_ready": tavily_ready,
+                "reason": search_reason,
+            },
+            "retrieval": {
+                "enabled": retrieval_enabled,
+                "ready": retrieval_ready,
+                "reason": retrieval_reason,
+                **retrieval_stats,
             },
             "harness_metrics": self.harness_metrics.snapshot(),
             "skills": self.skill_runtime.skill_health_report(),

@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+from core.retrieval import SQLiteRetrievalStore, configured_store_path
 from core.skills import ToolExecutionEnv
 
 TOOL_SPECS = {
@@ -87,6 +88,24 @@ def _memory_cfg(env: ToolExecutionEnv) -> dict[str, object]:
         return {}
     cfg = env.config.get("memory")
     return cfg if isinstance(cfg, dict) else {}
+
+
+def _retrieval_enabled(env: ToolExecutionEnv) -> bool:
+    if not isinstance(getattr(env, "config", None), dict):
+        return True
+    cfg = env.config.get("retrieval")
+    if not isinstance(cfg, dict):
+        return True
+    raw = cfg.get("enabled", True)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        lowered = raw.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return bool(raw)
 
 
 def _cfg_score(cfg: dict[str, object], key: str, default: float) -> float:
@@ -195,6 +214,15 @@ def _store_memory(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, o
         importance=args.get("importance"),
     )
     memory.flush()
+    if _retrieval_enabled(env):
+        SQLiteRetrievalStore(configured_store_path(env.config)).upsert_record(
+            record_type="memory_fact",
+            source=f"memory:{item['id']}",
+            canonical_source=f"memory:{item['id']}",
+            title=memory_type,
+            text=text,
+            metadata={"memory_id": item["id"], "memory_type": memory_type, **metadata},
+        )
 
     meta: dict[str, object] = {}
     if forgotten_ids:
@@ -235,10 +263,13 @@ def _list_memories(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, 
 
 
 def _forget_memory(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
-    deleted = env.memory.forget(int(args["memory_id"]))
+    memory_id = int(args["memory_id"])
+    deleted = env.memory.forget(memory_id)
     if not deleted:
         raise FileNotFoundError("Memory id not found")
     env.memory.flush()
+    if _retrieval_enabled(env):
+        SQLiteRetrievalStore(configured_store_path(env.config)).forget_source("memory_fact", f"memory:{memory_id}")
     return {"deleted": True}
 
 
