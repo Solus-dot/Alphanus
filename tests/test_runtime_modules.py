@@ -13,10 +13,10 @@ from agent.policies import PromptPolicyRenderer
 from agent.telemetry import TelemetryEmitter, configure_logging
 from core.memory import LexicalMemory
 from core.retrieval import SQLiteRetrievalStore
-from core.skills import SkillContext, SkillRuntime
 from core.streaming import StreamError
 from core.types import AgentTurnResult, ModelStatus, StreamPassResult, ToolCall, TurnClassification
 from core.workspace import WorkspaceManager
+from skills.runtime import SkillContext, SkillRuntime
 
 
 def _runtime(tmp_path: Path) -> SkillRuntime:

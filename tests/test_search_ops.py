@@ -12,8 +12,8 @@ from typing import cast
 import pytest
 
 from core.memory import LexicalMemory
-from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
+from skills.runtime import SkillContext, SkillRuntime
 
 
 class _Headers:
@@ -30,7 +30,7 @@ class _Headers:
 
 
 def _load_search_module():
-    path = Path(__file__).resolve().parents[1] / "skills" / "search-ops" / "tools.py"
+    path = Path(__file__).resolve().parents[1] / "bundled-skills" / "search-ops" / "tools.py"
     spec = importlib.util.spec_from_file_location("search_ops_test", str(path))
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -677,7 +677,7 @@ def test_search_ops_skill_loads_and_executes_from_repo(tmp_path: Path, mocker):
     mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp())
 
     runtime = SkillRuntime(
-        skills_dir=str(Path(__file__).resolve().parents[1] / "skills"),
+        skills_dir=str(Path(__file__).resolve().parents[1] / "bundled-skills"),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=LexicalMemory(storage_path=str(mem)),
         config={

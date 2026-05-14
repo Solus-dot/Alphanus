@@ -2744,7 +2744,7 @@ def test_cmd_doctor_shows_skill_policy_details() -> None:
         "skills": [
             {
                 "id": "dup-skill",
-                "provenance": "repo/skills",
+                "provenance": "user/skills",
                 "availability_code": "shadowed",
                 "availability_reason": "shadowed by dup-skill (workspace/.claude/skills/dup-skill)",
                 "status": "shadowed",

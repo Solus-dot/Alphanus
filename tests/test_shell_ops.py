@@ -6,8 +6,8 @@ from typing import cast
 from agent.core import Agent
 from core.memory import LexicalMemory
 from core.message_types import ChatMessage
-from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
+from skills.runtime import SkillContext, SkillRuntime
 
 
 def _runtime(tmp_path: Path, config: dict) -> SkillRuntime:
@@ -18,7 +18,7 @@ def _runtime(tmp_path: Path, config: dict) -> SkillRuntime:
     ws.mkdir()
     memory = LexicalMemory(storage_path=str(tmp_path / "mem.pkl"))
     return SkillRuntime(
-        skills_dir=str(repo_root / "skills"),
+        skills_dir=str(repo_root / "bundled-skills"),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=memory,
         config=config,

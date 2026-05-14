@@ -4,14 +4,14 @@ import importlib.util
 import urllib.error
 from pathlib import Path
 
-from core.attachments import build_content
+from core.attachments import build_content, classify_attachment
 from core.memory import LexicalMemory
-from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
+from skills.runtime import SkillContext, SkillRuntime
 
 
 def _load_play_youtube_module():
-    path = Path(__file__).resolve().parents[1] / "skills" / "utilities" / "tools.py"
+    path = Path(__file__).resolve().parents[1] / "bundled-skills" / "utilities" / "tools.py"
     spec = importlib.util.spec_from_file_location("play_youtube_test", str(path))
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -56,7 +56,7 @@ def _runtime(tmp_path: Path) -> SkillRuntime:
     home.mkdir()
     ws.mkdir()
     return SkillRuntime(
-        skills_dir=str(repo_root / "skills"),
+        skills_dir=str(repo_root / "bundled-skills"),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
@@ -135,6 +135,30 @@ def test_build_content_places_user_text_before_image_parts(tmp_path: Path) -> No
     assert content[0]["type"] == "text"
     assert content[0]["text"].endswith("describe the image")
     assert content[1]["type"] == "image_url"
+
+
+def test_classify_attachment_accepts_utf8_text_without_known_extension(tmp_path: Path) -> None:
+    path = tmp_path / "module.cxx"
+    path.write_text("#include <iostream>\nint main() { return 0; }\n", encoding="utf-8")
+
+    assert classify_attachment(str(path)) == "text"
+
+
+def test_classify_attachment_rejects_binary_and_invalid_utf8(tmp_path: Path) -> None:
+    binary_path = tmp_path / "artifact.bin"
+    invalid_path = tmp_path / "legacy.data"
+    binary_path.write_bytes(b"\x00\x01valid utf-8 around a nul byte")
+    invalid_path.write_bytes(b"\xff\xfe\xfd")
+
+    assert classify_attachment(str(binary_path)) == "unknown"
+    assert classify_attachment(str(invalid_path)) == "unknown"
+
+
+def test_classify_attachment_rejects_late_invalid_utf8(tmp_path: Path) -> None:
+    path = tmp_path / "late-invalid.cxx"
+    path.write_bytes(("int main() { return 0; }\n" * 300).encode("utf-8") + b"\xff")
+
+    assert classify_attachment(str(path)) == "unknown"
 
 
 def test_open_url_accepts_file_urls_in_runtime(mocker, tmp_path: Path):

@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from core.memory import LexicalMemory
-from core.skills import SkillContext, SkillRuntime
 from core.workspace import WorkspaceManager
+from skills.runtime import SkillContext, SkillRuntime
 
 
 def _memory_runtime(tmp_path: Path) -> tuple[SkillRuntime, str]:
@@ -18,7 +18,7 @@ def _memory_runtime(tmp_path: Path) -> tuple[SkillRuntime, str]:
     home.mkdir()
     ws.mkdir()
     runtime = SkillRuntime(
-        skills_dir=str(repo_root / "skills"),
+        skills_dir=str(repo_root / "bundled-skills"),
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},

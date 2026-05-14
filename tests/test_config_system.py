@@ -250,7 +250,7 @@ def test_normalize_config_preserves_new_runtime_boundary_fields() -> None:
             "per_turn_retries": "2",
             "retry_backoff_s": "0.75",
         },
-        "skills": {"python_executable": "/usr/bin/python3"},
+        "skills": {"python_executable": "/usr/bin/python3", "paths": ["~/agent-skills"]},
         "tui": {"timing": {"stream_drain_interval_s": "0.02", "shell_confirm_timeout_s": "90"}},
     }
 
@@ -261,6 +261,7 @@ def test_normalize_config_preserves_new_runtime_boundary_fields() -> None:
     assert normalized["agent"]["per_turn_retries"] == 2
     assert normalized["agent"]["retry_backoff_s"] == 0.75
     assert normalized["skills"]["python_executable"] == "/usr/bin/python3"
+    assert normalized["skills"]["paths"] == ["~/agent-skills"]
     assert normalized["tui"]["timing"]["stream_drain_interval_s"] == 0.02
     assert normalized["tui"]["timing"]["shell_confirm_timeout_s"] == 90.0
 
@@ -295,7 +296,7 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
     normalized, _warnings = normalize_config(
         {
             "agent": {"connect_timeout_s": 3, "per_turn_retries": 2},
-            "skills": {"python_executable": "/usr/bin/python3"},
+            "skills": {"python_executable": "/usr/bin/python3", "paths": ["~/agent-skills"]},
             "tui": {"theme": "gruvbox-dark-soft", "chat_log_max_lines": 1234, "timing": {"model_refresh_interval_s": 9}},
         }
     )
@@ -309,6 +310,7 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
     assert provider.backend_profile == "auto"
     assert provider.auth_header == "Authorization: Bearer demo"
     assert skills.python_executable == "/usr/bin/python3"
+    assert skills.paths == ["~/agent-skills"]
     assert ui.theme == "gruvbox-dark-soft"
     assert ui.chat_log_max_lines == 1234
     assert ui.timing.model_refresh_interval_s == 9.0
@@ -323,7 +325,7 @@ def test_typed_config_v2_groups_runtime_sections() -> None:
             "capabilities": {"permission_profile": "workspace"},
             "runtime": {"profile": "minimal", "ask_user_tool": False},
             "search": {"provider": "searxng", "fallback_provider": "tavily", "searxng_base_url": "http://127.0.0.1:8888"},
-            "skills": {"python_executable": "/usr/bin/python3"},
+            "skills": {"python_executable": "/usr/bin/python3", "paths": ["~/agent-skills"]},
             "tui": {"theme": "gruvbox-dark-soft"},
         }
     )
@@ -342,4 +344,5 @@ def test_typed_config_v2_groups_runtime_sections() -> None:
     assert typed.search.searxng_base_url == "http://127.0.0.1:8888"
     assert typed.retrieval.enabled is True
     assert typed.skills.python_executable == "/usr/bin/python3"
+    assert typed.skills.paths == ["~/agent-skills"]
     assert typed.ui.theme == "gruvbox-dark-soft"

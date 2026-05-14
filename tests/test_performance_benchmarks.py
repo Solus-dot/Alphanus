@@ -5,8 +5,8 @@ from pathlib import Path
 from agent.llm_client import LLMClient
 from core.memory import LexicalMemory
 from core.message_types import ChatMessage
-from core.skills import SkillRuntime
 from core.workspace import WorkspaceManager
+from skills.runtime import SkillRuntime
 
 
 def test_benchmark_memory_search(benchmark, tmp_path: Path) -> None:

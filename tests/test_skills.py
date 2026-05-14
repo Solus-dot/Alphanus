@@ -4,10 +4,11 @@ from pathlib import Path
 
 import pytest
 
-import core.skill_process_env as skill_process_env_module
+import skills.skill_process_env as skill_process_env_module
 from core.memory import LexicalMemory
-from core.skills import SkillContext, SkillRuntime
+from core.skills import ToolExecutionEnv as LegacyToolExecutionEnv
 from core.workspace import WorkspaceManager
+from skills.runtime import SkillContext, SkillRuntime
 
 
 def _tool_names(runtime: SkillRuntime, selected, ctx: SkillContext | None = None) -> list[str]:
@@ -18,6 +19,12 @@ def _always_available_tool_names() -> set[str]:
     return {"request_user_input", "skill_view", "skills_list"}
 
 
+def test_core_skills_legacy_import_reexports_runtime_types() -> None:
+    from skills.runtime import ToolExecutionEnv
+
+    assert LegacyToolExecutionEnv is ToolExecutionEnv
+
+
 def test_runtime_minimal_profile_restricts_optional_tools(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
@@ -25,7 +32,7 @@ def test_runtime_minimal_profile_restricts_optional_tools(tmp_path: Path):
     ws.mkdir()
 
     runtime = SkillRuntime(
-        skills_dir="skills",
+        skills_dir="bundled-skills",
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={"runtime": {"profile": "minimal", "ask_user_tool": True}},
@@ -59,7 +66,7 @@ def test_permission_profile_safe_allows_read_only_workspace_tools(tmp_path: Path
     ws.mkdir()
 
     runtime = SkillRuntime(
-        skills_dir="skills",
+        skills_dir="bundled-skills",
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={"capabilities": {"permission_profile": "safe"}},
@@ -84,7 +91,7 @@ def test_permission_profile_workspace_allows_workspace_mutation_but_blocks_web_a
     ws.mkdir()
 
     runtime = SkillRuntime(
-        skills_dir="skills",
+        skills_dir="bundled-skills",
         workspace=WorkspaceManager(str(ws), home_root=str(home)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={"capabilities": {"permission_profile": "workspace"}},
@@ -2255,7 +2262,7 @@ Hello
     )
     report = runtime.skill_health_report()
 
-    assert report[0]["provenance"] == "repo/skills"
+    assert report[0]["provenance"] == "user/skills"
     assert report[0]["availability_code"] == "ready"
 
 
@@ -2309,7 +2316,7 @@ def execute(tool_name, args, env):
 
     skill = runtime.get_skill("repo-helper")
     assert skill is not None
-    assert runtime.skill_provenance_label(skill) == "repo/skills"
+    assert runtime.skill_provenance_label(skill) == "user/skills"
     assert skill.execution_allowed is True
     assert skill.available is True
     assert set(_tool_names(runtime, [skill])) == (_always_available_tool_names() | {"echo_text"})
@@ -2345,12 +2352,12 @@ Bundled repo helper.
 
     skill = runtime.get_skill("repo-helper")
     assert skill is not None
-    assert runtime.skill_provenance_label(skill) == "repo/skills"
+    assert runtime.skill_provenance_label(skill) == "user/skills"
     assert skill.execution_allowed is True
     assert skill.available is True
     report = runtime.skill_health_report()
     skill_report = next(item for item in report if item["id"] == "repo-helper")
-    assert skill_report["provenance"] == "repo/skills"
+    assert skill_report["provenance"] == "user/skills"
     assert skill_report["execution_allowed"] is True
 
 
@@ -2463,8 +2470,90 @@ Workspace version.
     active = runtime.get_skill("dup-skill")
     assert active is not None
     assert active.description == "bundled"
-    assert runtime.skill_provenance_label(active) == "repo/skills"
+    assert runtime.skill_provenance_label(active) == "user/skills"
     assert len(runtime.list_skills()) == 1
+
+
+def test_runtime_discovers_user_bundled_and_configured_skill_roots(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    user_root = tmp_path / "user-skills"
+    bundled_root = tmp_path / "bundled-skills"
+    configured_root = tmp_path / "extra-skills"
+    home.mkdir()
+    ws.mkdir()
+    for root, skill_id, description in (
+        (user_root, "user-helper", "user helper"),
+        (bundled_root, "bundled-helper", "bundled helper"),
+        (configured_root, "configured-helper", "configured helper"),
+    ):
+        skill_dir = root / skill_id
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"""
+---
+name: {skill_id}
+description: {description}
+version: 1.0.0
+---
+{description}.
+""".strip(),
+            encoding="utf-8",
+        )
+
+    runtime = SkillRuntime(
+        skills_dir=str(user_root),
+        bundled_skills_dir=str(bundled_root),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"skills": {"paths": [str(configured_root)]}},
+    )
+
+    user_skill = runtime.get_skill("user-helper")
+    bundled_skill = runtime.get_skill("bundled-helper")
+    configured_skill = runtime.get_skill("configured-helper")
+    assert user_skill is not None
+    assert bundled_skill is not None
+    assert configured_skill is not None
+    assert runtime.skill_provenance_label(user_skill) == "user/skills"
+    assert runtime.skill_provenance_label(bundled_skill) == "bundled"
+    assert runtime.skill_provenance_label(configured_skill) == "configured"
+
+
+def test_user_skill_root_overrides_bundled_duplicate(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    user_root = tmp_path / "user-skills"
+    bundled_root = tmp_path / "bundled-skills"
+    home.mkdir()
+    ws.mkdir()
+    for root, description in ((user_root, "user version"), (bundled_root, "bundled version")):
+        skill_dir = root / "dup-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"""
+---
+name: dup-skill
+description: {description}
+version: 1.0.0
+---
+{description}.
+""".strip(),
+            encoding="utf-8",
+        )
+
+    runtime = SkillRuntime(
+        skills_dir=str(user_root),
+        bundled_skills_dir=str(bundled_root),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    active = runtime.get_skill("dup-skill")
+    assert active is not None
+    assert active.description == "user version"
+    assert runtime.skill_provenance_label(active) == "user/skills"
+    assert any("duplicate skill id" in item for item in active.validation_errors)
 
 
 def test_request_user_input_runtime_tool_uses_callback(tmp_path: Path):
