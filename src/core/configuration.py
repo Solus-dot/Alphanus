@@ -108,6 +108,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "skills": {
         "strict_capability_policy": False,
         "python_executable": "",
+        "paths": [],
     },
     "agents": {
         "enable_skill_agents": True,
@@ -830,6 +831,12 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         skills_cfg.get("python_executable"),
         str(DEFAULT_CONFIG["skills"]["python_executable"]),
         path="skills.python_executable",
+        warnings=warnings,
+    )
+    skills_cfg["paths"] = _coerce_string_list(
+        skills_cfg.get("paths"),
+        DEFAULT_CONFIG["skills"]["paths"],
+        path="skills.paths",
         warnings=warnings,
     )
     skills_cfg.pop("load", None)

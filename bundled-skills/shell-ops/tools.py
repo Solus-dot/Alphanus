@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.skills import ToolExecutionEnv
+from skills.runtime import ToolExecutionEnv
 
 TOOL_SPECS = {
     "shell_command": {

@@ -269,6 +269,7 @@ class ProviderConfig:
 @dataclass(slots=True)
 class SkillsRuntimeConfig:
     python_executable: str = sys.executable
+    paths: list[str] = field(default_factory=list)
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> SkillsRuntimeConfig:
@@ -279,4 +280,7 @@ class SkillsRuntimeConfig:
         )
         return cls(
             python_executable=configured_python or sys.executable,
+            paths=[str(item) for item in skills_cfg.get("paths", []) if str(item).strip()]
+            if isinstance(skills_cfg.get("paths", []), list)
+            else [],
         )

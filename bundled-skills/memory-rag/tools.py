@@ -4,7 +4,7 @@ import math
 from pathlib import Path
 
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
-from core.skills import ToolExecutionEnv
+from skills.runtime import ToolExecutionEnv
 
 TOOL_SPECS = {
     "store_memory": {

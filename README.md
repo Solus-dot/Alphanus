@@ -162,7 +162,11 @@ Commands:
 
 ### Skills and Tool Loading
 
-- Skills are discovered under `<repo>/skills/<skill-id>/SKILL.md`
+- Python skill runtime code lives in `src/skills/`
+- Built-in shipped skills live in `bundled-skills/`
+- Downloaded AgentSkills can be dropped into `<repo>/skills/<skill-id>/SKILL.md` in a checkout, or `~/.alphanus/skills/<skill-id>/SKILL.md` when installed
+- Extra skill roots can be configured with `skills.paths`
+- User skills are loaded before bundled skills, so a downloaded skill can override a bundled skill with the same id
 - Skills can be enabled/disabled globally
 - Tools from a skill are only available when that skill is loaded in the active session
 - Skill execution is explicit through `run_skill` and tool schemas

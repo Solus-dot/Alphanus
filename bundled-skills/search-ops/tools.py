@@ -14,8 +14,8 @@ from html import unescape
 from typing import Any
 
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
-from core.skills import ToolExecutionEnv
 from core.streaming import should_retry
+from skills.runtime import ToolExecutionEnv
 
 TOOL_SPECS = {
     "web_search": {

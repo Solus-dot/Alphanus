@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from core.skills import ToolExecutionEnv
+from skills.runtime import ToolExecutionEnv
 
 TOOL_SPECS = {
     "git_status": {

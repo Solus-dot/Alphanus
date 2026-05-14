@@ -4,7 +4,7 @@ import difflib
 import re
 from pathlib import Path
 
-from core.skills import ToolExecutionEnv
+from skills.runtime import ToolExecutionEnv
 
 TOOL_SPECS = {
     "create_directory": {

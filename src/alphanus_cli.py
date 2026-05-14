@@ -2,9 +2,7 @@ import argparse
 import copy
 import getpass
 import json
-import logging
 import os
-import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -24,9 +22,9 @@ from core.configuration import (
 )
 from core.memory import LexicalMemory
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
-from core.skills import SkillRuntime
 from core.theme_catalog import BUILTIN_THEME_IDS, DEFAULT_THEME_ID, THEME_ALIASES, normalize_theme_id
 from core.workspace import WorkspaceManager
+from skills.runtime import SkillRuntime
 from tui.interface import AlphanusTUI
 from tui.themes import theme_spec
 
@@ -89,35 +87,14 @@ class _CliTheme:
 
 
 def _resolve_runtime_skills_dir(app_paths) -> Path:
-    repo_root = getattr(app_paths, "repo_root", None)
-    if repo_root is not None:
-        return (Path(repo_root).resolve() / "skills").resolve()
-    return (Path(app_paths.app_root).resolve() / "skills").resolve()
+    user_skills_dir = getattr(app_paths, "user_skills_dir", None)
+    if user_skills_dir is not None:
+        return Path(user_skills_dir).resolve()
+    return (Path(app_paths.state_root).resolve() / "skills").resolve()
 
 
 def _as_object(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
-
-
-def _seed_runtime_skills(runtime_skills_dir: Path, bundled_skills_dir: Path) -> None:
-    runtime_skills_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        if runtime_skills_dir.resolve() == bundled_skills_dir.resolve():
-            return
-    except Exception as exc:
-        logging.debug("failed to compare skills directories during seeding: %s", exc)
-        return
-    if not bundled_skills_dir.exists():
-        return
-    for child in sorted(bundled_skills_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        if not (child / "SKILL.md").exists():
-            continue
-        target = runtime_skills_dir / child.name
-        if target.exists():
-            continue
-        shutil.copytree(child, target)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -228,9 +205,10 @@ def _build_agent_runtime(
         backup_revisions=int(memory_cfg.get("backup_revisions", 2)),
     )
     runtime_skills_dir = _resolve_runtime_skills_dir(app_paths)
-    _seed_runtime_skills(runtime_skills_dir, Path(app_paths.bundled_skills_dir))
+    runtime_skills_dir.mkdir(parents=True, exist_ok=True)
     runtime = SkillRuntime(
         skills_dir=str(runtime_skills_dir),
+        bundled_skills_dir=str(app_paths.bundled_skills_dir),
         workspace=workspace,
         memory=memory,
         config=config,

@@ -36,8 +36,8 @@ select = ["E", "F", "I", "W", "UP"]
 ignore = ["E501"]
 
 [tool.setuptools]
-package-dir = {"" = "src", "alphanus_bundled" = "skills"}
-packages = ["agent", "core", "tui", "alphanus_bundled"]
+package-dir = {"" = "src", "alphanus_bundled" = "bundled-skills"}
+packages = ["agent", "core", "tui", "skills", "alphanus_bundled"]
 py-modules = ["alphanus_cli", "alphanus_paths"]
 
 [tool.setuptools.package-data]
