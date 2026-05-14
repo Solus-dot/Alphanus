@@ -15,55 +15,16 @@ IMAGE_MIME: dict[str, str] = {
     ".tiff": "image/tiff",
 }
 
-TEXT_EXTS = {
-    ".txt",
-    ".md",
-    ".markdown",
-    ".py",
-    ".js",
-    ".ts",
-    ".tsx",
-    ".jsx",
-    ".json",
-    ".yaml",
-    ".yml",
-    ".toml",
-    ".ini",
-    ".cfg",
-    ".csv",
-    ".sql",
-    ".html",
-    ".css",
-    ".sh",
-    ".go",
-    ".rs",
-    ".java",
-    ".kt",
-    ".c",
-    ".h",
-    ".cpp",
-    ".hpp",
-    ".rb",
-    ".php",
-    ".swift",
-    ".xml",
-    ".env",
-    ".log",
-}
-
-
 def classify_attachment(path: str) -> str:
     ext = Path(path).suffix.lower()
     if ext in IMAGE_MIME:
         return "image"
-    if ext in TEXT_EXTS or ext == "":
-        try:
-            with open(path, "rb") as handle:
-                handle.read(512).decode("utf-8")
-            return "text"
-        except Exception:
-            return "unknown"
-    return "unknown"
+    try:
+        data = Path(path).read_bytes()
+        data.decode("utf-8")
+    except Exception:
+        return "unknown"
+    return "unknown" if b"\x00" in data else "text"
 
 
 def encode_image(path: str) -> tuple[str, str]:
@@ -75,10 +36,7 @@ def encode_image(path: str) -> tuple[str, str]:
 
 
 def read_text_file(path: str) -> str:
-    try:
-        return Path(path).read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        return Path(path).read_text(encoding="latin-1")
+    return Path(path).read_text(encoding="utf-8")
 
 
 def build_content(text: str, attachments: list[tuple[str, str]]):
