@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.skill_parser import SkillManifest
+from skills.skill_parser import SkillManifest
 
 
 class SkillToolSchemaBuilder:

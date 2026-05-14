@@ -11,8 +11,8 @@ from agent.llm_client import LLMClient
 from agent.runtime_hooks import TurnRuntimeHooks
 from agent.telemetry import TelemetryEmitter
 from core.message_types import ChatMessage, JsonObject, JSONValue, MessageContentPart
-from core.skills import SkillContext, SkillRuntime
 from core.types import TurnClassification
+from skills.runtime import SkillContext, SkillRuntime
 
 _EXPLICIT_PATH_PATTERN = re.compile(
     r'(?P<quoted>(?P<quote>["\'`])(?P<quoted_path>(?:~/|/)[^"\'`]+?)(?P=quote))'

@@ -22,8 +22,6 @@ from agent.turn_journal import TurnJournalBuilder
 from agent.turn_policy_engine import TurnPolicyEngine
 from core.message_types import ChatMessage, JSONValue
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
-from core.skill_parser import SkillManifest
-from core.skills import SkillRuntime
 from core.types import (
     AgentTurnResult,
     JsonObject,
@@ -33,6 +31,8 @@ from core.types import (
     TurnState,
     UserInputRequestFn,
 )
+from skills.runtime import SkillRuntime
+from skills.skill_parser import SkillManifest
 
 _AUTO_MEMORY_PATTERNS = (
     re.compile(r"\b(?:i|we)\s+(?:prefer|like|use|work with)\s+([^.\n]{3,160})", re.IGNORECASE),

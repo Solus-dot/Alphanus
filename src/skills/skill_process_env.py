@@ -18,6 +18,7 @@ class SkillProcessEnvBuilder:
         memory_path: Path,
         python_executable: str,
         skills_dir: Path,
+        bundled_skills_dir: Path | None = None,
         config: dict[str, Any],
     ) -> dict[str, str]:
         env = os.environ.copy()
@@ -25,6 +26,9 @@ class SkillProcessEnvBuilder:
         env["ALPHANUS_HOME_ROOT"] = str(home_root)
         env["ALPHANUS_MEMORY_PATH"] = str(memory_path)
         env["ALPHANUS_MEMORY_BACKEND"] = "lexical"
+        env["ALPHANUS_USER_SKILLS_DIR"] = str(skills_dir)
+        if bundled_skills_dir is not None:
+            env["ALPHANUS_BUNDLED_SKILLS_DIR"] = str(bundled_skills_dir)
         env["ALPHANUS_SKILL_PYTHON"] = str(python_executable)
         env["ALPHANUS_CONFIG_JSON"] = json.dumps(config, ensure_ascii=False)
 

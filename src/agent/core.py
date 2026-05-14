@@ -20,8 +20,8 @@ from core.config_model import TypedConfigV2
 from core.configuration import validate_endpoint_policy
 from core.message_types import ChatMessage, JsonObject
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
-from core.skills import SkillRuntime
 from core.types import AgentTurnResult, ModelStatus, ShellConfirmationFn
+from skills.runtime import SkillRuntime
 
 
 class Agent:

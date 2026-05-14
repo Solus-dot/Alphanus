@@ -3,9 +3,9 @@ from __future__ import annotations
 import re
 
 from agent.context import DEFAULT_CONTEXT_LIMIT
-from core.skill_parser import SkillManifest
-from core.skills import SkillContext, SkillRuntime
 from core.types import TurnPolicySnapshot
+from skills.runtime import SkillContext, SkillRuntime
+from skills.skill_parser import SkillManifest
 
 
 def search_rule(*lines: str) -> str:

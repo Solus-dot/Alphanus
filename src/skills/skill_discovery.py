@@ -4,13 +4,22 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 
-from core.skill_parser import SKILL_DOC
+from skills.skill_parser import SKILL_DOC
 
 
 class SkillDiscovery:
     @staticmethod
-    def discover_skill_roots(skills_dir: Path) -> list[Path]:
-        return [skills_dir]
+    def discover_skill_roots(skills_dirs: Path | list[Path]) -> list[Path]:
+        raw_roots = skills_dirs if isinstance(skills_dirs, list) else [skills_dirs]
+        roots: list[Path] = []
+        seen: set[Path] = set()
+        for root in raw_roots:
+            resolved = root.expanduser().resolve()
+            if resolved in seen:
+                continue
+            roots.append(resolved)
+            seen.add(resolved)
+        return roots
 
     @staticmethod
     def discover_skill_dirs(root: Path, *, is_relative_to: Callable[[Path, Path], bool]) -> list[Path]:

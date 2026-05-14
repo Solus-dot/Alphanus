@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from typing import Literal, cast
 
 from core.message_types import ChatMessage, JSONValue, ToolCallDelta, ToolCallUpdate
-from core.skill_parser import SkillManifest
-from core.skills import SkillContext
+from skills.runtime import SkillContext
+from skills.skill_parser import SkillManifest
 
 
 @dataclass(slots=True)

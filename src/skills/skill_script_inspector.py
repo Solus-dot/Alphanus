@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from core.skill_parser import SkillManifest
+from skills.skill_parser import SkillManifest
 
 SCRIPT_INTERPRETER_BY_EXT = {
     ".py": [sys.executable],
