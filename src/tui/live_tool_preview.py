@@ -14,6 +14,31 @@ WriteCodeFn = Callable[[list[str], str | None, int], None]
 UpdatePreviewFn = Callable[[list[str], str | None], None]
 ClearPreviewFn = Callable[[], None]
 
+LANGUAGE_BY_SUFFIX = {
+    ".bash": "bash",
+    ".c": "c",
+    ".cc": "cpp",
+    ".cjs": "javascript",
+    ".cpp": "cpp",
+    ".css": "css",
+    ".cxx": "cpp",
+    ".h": "c",
+    ".hh": "cpp",
+    ".htm": "html",
+    ".html": "html",
+    ".hpp": "cpp",
+    ".hxx": "cpp",
+    ".js": "javascript",
+    ".json": "json",
+    ".md": "markdown",
+    ".mjs": "javascript",
+    ".py": "python",
+    ".sh": "bash",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".zsh": "bash",
+}
+
 
 @dataclass(slots=True)
 class LivePreviewState:
@@ -321,28 +346,7 @@ class LiveToolPreviewManager:
 
     @staticmethod
     def _guess_language(filepath: str) -> str | None:
-        suffix = Path(filepath).suffix.lower()
-        if suffix == ".py":
-            return "python"
-        if suffix in {".c", ".h"}:
-            return "c"
-        if suffix in {".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"}:
-            return "cpp"
-        if suffix in {".js", ".mjs", ".cjs"}:
-            return "javascript"
-        if suffix in {".ts", ".tsx"}:
-            return "typescript"
-        if suffix in {".json"}:
-            return "json"
-        if suffix in {".html", ".htm"}:
-            return "html"
-        if suffix in {".css"}:
-            return "css"
-        if suffix in {".md"}:
-            return "markdown"
-        if suffix in {".sh", ".bash", ".zsh"}:
-            return "bash"
-        return None
+        return LANGUAGE_BY_SUFFIX.get(Path(filepath).suffix.lower())
 
     @staticmethod
     def _extract_partial_json_string_field(raw: str, key: str) -> tuple[str | None, bool]:

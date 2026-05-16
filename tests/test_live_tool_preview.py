@@ -62,6 +62,12 @@ def test_live_preview_does_not_emit_truncation_marker_for_long_stream():
     assert code_blocks[-1] == ([long_line], "javascript", 2)
 
 
+def test_live_preview_language_detection_is_data_driven():
+    assert LiveToolPreviewManager._guess_language("module.cxx") == "cpp"  # noqa: SLF001
+    assert LiveToolPreviewManager._guess_language("component.tsx") == "typescript"  # noqa: SLF001
+    assert LiveToolPreviewManager._guess_language("unknown.nope") is None  # noqa: SLF001
+
+
 def test_static_file_preview_reports_display_clipping_not_write_truncation():
     manager = LiveToolPreviewManager(max_static_preview_chars=5)
     writes = []

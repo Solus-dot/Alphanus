@@ -4,7 +4,7 @@ import importlib.util
 import urllib.error
 from pathlib import Path
 
-from core.attachments import build_content, classify_attachment
+from core.attachments import build_content, classify_attachment, image_mime_type
 from core.memory import LexicalMemory
 from core.workspace import WorkspaceManager
 from skills.runtime import SkillContext, SkillRuntime
@@ -142,6 +142,14 @@ def test_classify_attachment_accepts_utf8_text_without_known_extension(tmp_path:
     path.write_text("#include <iostream>\nint main() { return 0; }\n", encoding="utf-8")
 
     assert classify_attachment(str(path)) == "text"
+
+
+def test_attachment_image_mime_uses_standard_mimetype_registry(tmp_path: Path) -> None:
+    path = tmp_path / "photo.png"
+    path.write_bytes(b"not-a-real-png")
+
+    assert classify_attachment(str(path)) == "image"
+    assert image_mime_type(str(path)) == "image/png"
 
 
 def test_classify_attachment_rejects_binary_and_invalid_utf8(tmp_path: Path) -> None:

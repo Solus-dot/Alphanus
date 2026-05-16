@@ -1,23 +1,20 @@
 from __future__ import annotations
 
 import base64
+import mimetypes
 import os
 from pathlib import Path
 
-IMAGE_MIME: dict[str, str] = {
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".png": "image/png",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".bmp": "image/bmp",
-    ".tif": "image/tiff",
-    ".tiff": "image/tiff",
-}
+DEFAULT_IMAGE_MIME = "image/jpeg"
+
+
+def image_mime_type(path: str) -> str | None:
+    mime, _encoding = mimetypes.guess_type(path)
+    return mime if mime and mime.startswith("image/") else None
+
 
 def classify_attachment(path: str) -> str:
-    ext = Path(path).suffix.lower()
-    if ext in IMAGE_MIME:
+    if image_mime_type(path):
         return "image"
     try:
         data = Path(path).read_bytes()
@@ -28,8 +25,7 @@ def classify_attachment(path: str) -> str:
 
 
 def encode_image(path: str) -> tuple[str, str]:
-    ext = Path(path).suffix.lower()
-    mime = IMAGE_MIME.get(ext, "image/jpeg")
+    mime = image_mime_type(path) or DEFAULT_IMAGE_MIME
     with open(path, "rb") as handle:
         data = base64.b64encode(handle.read()).decode("utf-8")
     return data, mime
