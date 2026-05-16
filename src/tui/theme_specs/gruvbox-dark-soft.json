@@ -1,0 +1,43 @@
+{
+  "colors": {
+    "accent": "#fabd2f",
+    "assistant_bar": "#fabd2f",
+    "chip_bg": "#4a443f",
+    "chip_text": "#f2e5bc",
+    "error": "#fb4934",
+    "muted": "#bdae93",
+    "panel_bg": "#282828",
+    "panel_border": "#504945",
+    "subtle": "#a89984",
+    "success": "#b8bb26",
+    "text": "#f2e5bc",
+    "user_bar": "#8ec07c",
+    "warning": "#fabd2f"
+  },
+  "description": "Warm low-contrast earthy dark palette",
+  "id": "gruvbox-dark-soft",
+  "syntax_theme": "github-dark",
+  "text_area_theme": "dracula",
+  "theme": {
+    "accent": "#fabd2f",
+    "background": "#32302f",
+    "dark": true,
+    "error": "#fb4934",
+    "foreground": "#ebdbb2",
+    "panel": "#282828",
+    "primary": "#83a598",
+    "secondary": "#d3869b",
+    "success": "#b8bb26",
+    "surface": "#3c3836",
+    "variables": {
+      "app-border": "#504945",
+      "app-chip-bg": "#4a443f",
+      "app-chip-text": "#f2e5bc",
+      "app-muted": "#bdae93",
+      "app-selection-bg": "#665c54",
+      "app-subtle": "#a89984"
+    },
+    "warning": "#fabd2f"
+  },
+  "title": "Gruvbox Dark Soft"
+}

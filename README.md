@@ -181,6 +181,13 @@ Useful commands:
 - `/skill-reload`
 - `/skill-info <id>`
 
+### Themes
+
+- Built-in themes are JSON files under `src/tui/theme_specs/`
+- Custom themes can be added as `~/.alphanus/themes/<theme-id>.json`
+- Extra theme directories can be supplied with `ALPHANUS_THEME_PATHS` using the platform path separator
+- A theme JSON file contains `id`, `title`, `description`, Textual `theme` colors, UI `colors`, and optional `syntax_theme` / `text_area_theme`
+
 ### Workspace Operations
 
 `workspace-ops` covers create/read/edit/move/delete with guardrails.

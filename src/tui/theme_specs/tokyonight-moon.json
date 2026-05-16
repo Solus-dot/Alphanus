@@ -1,0 +1,43 @@
+{
+  "colors": {
+    "accent": "#82aaff",
+    "assistant_bar": "#82aaff",
+    "chip_bg": "#2b3560",
+    "chip_text": "#d5deff",
+    "error": "#ff757f",
+    "muted": "#9aa7de",
+    "panel_bg": "#1a1b28",
+    "panel_border": "#3a4165",
+    "subtle": "#7a88cf",
+    "success": "#86e1fc",
+    "text": "#d5deff",
+    "user_bar": "#86e1fc",
+    "warning": "#ffc777"
+  },
+  "description": "Cool moonlit dark with restrained electric accents",
+  "id": "tokyonight-moon",
+  "syntax_theme": "github-dark",
+  "text_area_theme": "dracula",
+  "theme": {
+    "accent": "#82aaff",
+    "background": "#1e2030",
+    "dark": true,
+    "error": "#ff757f",
+    "foreground": "#c8d3f5",
+    "panel": "#1a1b28",
+    "primary": "#82aaff",
+    "secondary": "#c099ff",
+    "success": "#86e1fc",
+    "surface": "#2a2e45",
+    "variables": {
+      "app-border": "#3a4165",
+      "app-chip-bg": "#2b3560",
+      "app-chip-text": "#d5deff",
+      "app-muted": "#9aa7de",
+      "app-selection-bg": "#3c4b83",
+      "app-subtle": "#7a88cf"
+    },
+    "warning": "#ffc777"
+  },
+  "title": "Tokyo Night Moon"
+}

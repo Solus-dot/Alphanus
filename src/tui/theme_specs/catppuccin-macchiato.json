@@ -1,0 +1,43 @@
+{
+  "colors": {
+    "accent": "#c6a0f6",
+    "assistant_bar": "#c6a0f6",
+    "chip_bg": "#363a4f",
+    "chip_text": "#cad3f5",
+    "error": "#ed8796",
+    "muted": "#a5adcb",
+    "panel_bg": "#1e2030",
+    "panel_border": "#6e738d",
+    "subtle": "#8087a2",
+    "success": "#a6da95",
+    "text": "#cad3f5",
+    "user_bar": "#a6da95",
+    "warning": "#eed49f"
+  },
+  "description": "Official Catppuccin Macchiato flavor",
+  "id": "catppuccin-macchiato",
+  "syntax_theme": "dracula",
+  "text_area_theme": "dracula",
+  "theme": {
+    "accent": "#c6a0f6",
+    "background": "#24273a",
+    "dark": true,
+    "error": "#ed8796",
+    "foreground": "#cad3f5",
+    "panel": "#1e2030",
+    "primary": "#c6a0f6",
+    "secondary": "#b7bdf8",
+    "success": "#a6da95",
+    "surface": "#363a4f",
+    "variables": {
+      "app-border": "#6e738d",
+      "app-chip-bg": "#363a4f",
+      "app-chip-text": "#cad3f5",
+      "app-muted": "#a5adcb",
+      "app-selection-bg": "#494d64",
+      "app-subtle": "#8087a2"
+    },
+    "warning": "#eed49f"
+  },
+  "title": "Catppuccin Macchiato"
+}

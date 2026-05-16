@@ -4,6 +4,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any
 
+from core.coercion import coerce_bool
 from core.configuration import DEFAULT_CONFIG
 from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
 
@@ -14,17 +15,7 @@ def _section(config: dict[str, Any], key: str) -> dict[str, Any]:
 
 
 def _coerce_bool(value: Any, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)) and value in (0, 1):
-        return bool(value)
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"1", "true", "yes", "on"}:
-            return True
-        if lowered in {"0", "false", "no", "off"}:
-            return False
-    return default
+    return coerce_bool(value, default)
 
 
 def _coerce_int(value: Any, default: int, *, minimum: int | None = None) -> int:
@@ -77,6 +68,15 @@ def _coerce_string_list(value: Any) -> list[str]:
         if text and text not in out:
             out.append(text)
     return out
+
+
+def _available_theme_ids() -> list[str] | None:
+    try:
+        from tui.themes import available_theme_ids
+
+        return available_theme_ids()
+    except Exception:
+        return None
 
 
 @dataclass(slots=True)
@@ -145,7 +145,7 @@ class UiRuntimeConfig:
         default_tree = _section(default_tui, "tree_compaction")
         chat_log_max_lines = _coerce_int(tui_cfg.get("chat_log_max_lines"), int(default_tui["chat_log_max_lines"]), minimum=1)
         theme_raw = _coerce_string(tui_cfg.get("theme"), str(default_tui["theme"]))
-        theme, _ = normalize_theme_id(theme_raw, default=DEFAULT_THEME_ID)
+        theme, _ = normalize_theme_id(theme_raw, default=DEFAULT_THEME_ID, available=_available_theme_ids())
         return cls(
             theme=theme,
             chat_log_max_lines=chat_log_max_lines if chat_log_max_lines > 0 else None,

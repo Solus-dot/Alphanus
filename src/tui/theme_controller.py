@@ -21,6 +21,11 @@ class ThemeController:
     def variable_defaults() -> dict[str, str]:
         return default_theme_variables()
 
+    @staticmethod
+    def _normalize_theme_id(raw_theme_id: str, *, default: str = DEFAULT_THEME_ID) -> str:
+        resolved, _ = normalize_theme_id(raw_theme_id, default=default, available=available_theme_ids())
+        return resolved
+
     def timing_config(self):
         timing = getattr(self.app, "_ui_timing", None)
         if timing is None:
@@ -31,12 +36,10 @@ class ThemeController:
     def theme_id(self) -> str:
         current = str(getattr(self.app, "_active_theme_id", "") or "").strip().lower()
         if current:
-            resolved, _ = normalize_theme_id(current, default=DEFAULT_THEME_ID)
-            return resolved
+            return self._normalize_theme_id(current)
         ui_cfg = getattr(self.app, "_ui_config", None)
         configured = str(getattr(ui_cfg, "theme", "") or "").strip().lower()
-        resolved, _ = normalize_theme_id(configured, default=DEFAULT_THEME_ID)
-        return resolved
+        return self._normalize_theme_id(configured)
 
     def theme_spec(self) -> ThemeSpec:
         return theme_spec(self.theme_id())
@@ -53,7 +56,7 @@ class ThemeController:
         self.app._themes_registered = True
 
     def apply_theme(self, raw_theme_id: str) -> str:
-        resolved, _ = normalize_theme_id(raw_theme_id, default=DEFAULT_THEME_ID)
+        resolved = self._normalize_theme_id(raw_theme_id)
         self.register_themes()
         self.app.theme = resolved
         self.app._active_theme_id = resolved
@@ -99,6 +102,6 @@ class ThemeController:
         try:
             return self.apply_theme(configured_theme)
         except Exception:
-            resolved, _ = normalize_theme_id(configured_theme, default=DEFAULT_THEME_ID)
+            resolved = self._normalize_theme_id(configured_theme)
             self.app._active_theme_id = resolved
             return resolved

@@ -1,0 +1,43 @@
+{
+  "colors": {
+    "accent": "#cba6f7",
+    "assistant_bar": "#cba6f7",
+    "chip_bg": "#313244",
+    "chip_text": "#cdd6f4",
+    "error": "#f38ba8",
+    "muted": "#a6adc8",
+    "panel_bg": "#181825",
+    "panel_border": "#6c7086",
+    "subtle": "#7f849c",
+    "success": "#a6e3a1",
+    "text": "#cdd6f4",
+    "user_bar": "#a6e3a1",
+    "warning": "#f9e2af"
+  },
+  "description": "Official Catppuccin Mocha flavor",
+  "id": "catppuccin-mocha",
+  "syntax_theme": "dracula",
+  "text_area_theme": "dracula",
+  "theme": {
+    "accent": "#cba6f7",
+    "background": "#1e1e2e",
+    "dark": true,
+    "error": "#f38ba8",
+    "foreground": "#cdd6f4",
+    "panel": "#181825",
+    "primary": "#cba6f7",
+    "secondary": "#b4befe",
+    "success": "#a6e3a1",
+    "surface": "#313244",
+    "variables": {
+      "app-border": "#6c7086",
+      "app-chip-bg": "#313244",
+      "app-chip-text": "#cdd6f4",
+      "app-muted": "#a6adc8",
+      "app-selection-bg": "#45475a",
+      "app-subtle": "#7f849c"
+    },
+    "warning": "#f9e2af"
+  },
+  "title": "Catppuccin Mocha"
+}

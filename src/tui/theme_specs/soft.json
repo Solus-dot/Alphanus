@@ -1,0 +1,43 @@
+{
+  "colors": {
+    "accent": "#7fbbb3",
+    "assistant_bar": "#7fbbb3",
+    "chip_bg": "#34403d",
+    "chip_text": "#d3c6aa",
+    "error": "#e67e80",
+    "muted": "#9da9a0",
+    "panel_bg": "#1f2528",
+    "panel_border": "#4f5b58",
+    "subtle": "#859289",
+    "success": "#a7c080",
+    "text": "#d3c6aa",
+    "user_bar": "#a7c080",
+    "warning": "#dbbc7f"
+  },
+  "description": "Low-glare forest slate with warm text",
+  "id": "soft",
+  "syntax_theme": "github-dark",
+  "text_area_theme": "dracula",
+  "theme": {
+    "accent": "#7fbbb3",
+    "background": "#232a2e",
+    "dark": true,
+    "error": "#e67e80",
+    "foreground": "#d3c6aa",
+    "panel": "#1f2528",
+    "primary": "#7fbbb3",
+    "secondary": "#a7c080",
+    "success": "#a7c080",
+    "surface": "#2d353b",
+    "variables": {
+      "app-border": "#4f5b58",
+      "app-chip-bg": "#34403d",
+      "app-chip-text": "#d3c6aa",
+      "app-muted": "#9da9a0",
+      "app-selection-bg": "#3d4a46",
+      "app-subtle": "#859289"
+    },
+    "warning": "#dbbc7f"
+  },
+  "title": "Soft"
+}
