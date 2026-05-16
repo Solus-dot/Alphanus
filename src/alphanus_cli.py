@@ -10,6 +10,7 @@ from typing import Any
 from agent.core import Agent
 from agent.telemetry import configure_logging
 from alphanus_paths import get_app_paths
+from core.backend_profiles import VALID_BACKEND_PROFILES
 from core.configuration import (
     DEFAULT_CONFIG,
     config_for_editor_view,
@@ -20,13 +21,15 @@ from core.configuration import (
     resolve_path,
     validate_endpoint_policy,
 )
+from core.endpoint_modes import ENDPOINT_MODE_AUTO, ENDPOINT_MODE_CHAT, ENDPOINT_MODE_RESPONSES, ENDPOINT_MODES
 from core.memory import LexicalMemory
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
-from core.theme_catalog import BUILTIN_THEME_IDS, DEFAULT_THEME_ID, THEME_ALIASES, normalize_theme_id
+from core.search_providers import SEARCH_FALLBACK_PROVIDERS, SEARCH_PROVIDER_SEARXNG, SEARCH_PROVIDER_TAVILY, SEARCH_PROVIDERS
+from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
 from core.workspace import WorkspaceManager
 from skills.runtime import SkillRuntime
 from tui.interface import AlphanusTUI
-from tui.themes import theme_spec
+from tui.themes import available_theme_ids, theme_spec
 
 INIT_SECTIONS = ("all", "workspace", "model", "search", "theme")
 
@@ -128,26 +131,25 @@ def _build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument(
         "--endpoint-mode",
         type=str,
-        choices=["auto", "responses", "chat"],
+        choices=sorted(ENDPOINT_MODES),
         default="",
         help="Preferred endpoint mode",
     )
     init_parser.add_argument(
         "--backend-profile",
         type=str,
-        choices=["auto", "mlx_vlm", "llamacpp", "ollama", "vllm", "lmstudio"],
+        choices=sorted(VALID_BACKEND_PROFILES),
         default="",
         help="Backend compatibility profile",
     )
     init_parser.add_argument("--api-key", type=str, default="", help="Model API key (writes to ~/.alphanus/.env)")
     init_parser.add_argument("--api-key-env", type=str, default="", help="Environment variable name for model API key")
-    init_parser.add_argument("--search-provider", type=str, choices=["searxng", "tavily"], default="", help="Search provider")
-    init_parser.add_argument("--search-fallback-provider", type=str, choices=["none", "tavily"], default="", help="Search fallback provider")
+    init_parser.add_argument("--search-provider", type=str, choices=list(SEARCH_PROVIDERS), default="", help="Search provider")
+    init_parser.add_argument("--search-fallback-provider", type=str, choices=list(SEARCH_FALLBACK_PROVIDERS), default="", help="Search fallback provider")
     init_parser.add_argument("--searxng-base-url", type=str, default="", help="SearXNG base URL")
     init_parser.add_argument(
         "--theme",
         type=str,
-        choices=list(BUILTIN_THEME_IDS) + sorted(THEME_ALIASES.keys()),
         default="",
         help="Theme id",
     )
@@ -379,7 +381,8 @@ def _run_init(args: Any) -> int:
     search_provider_default = str(base.get("search", {}).get("provider", DEFAULT_CONFIG["search"]["provider"]))
     search_fallback_default = str(base.get("search", {}).get("fallback_provider", DEFAULT_CONFIG["search"]["fallback_provider"])) or "none"
     theme_default = str(base.get("tui", {}).get("theme", DEFAULT_THEME_ID))
-    theme_default, _ = normalize_theme_id(theme_default, default=DEFAULT_THEME_ID)
+    theme_ids = available_theme_ids()
+    theme_default, _ = normalize_theme_id(theme_default, default=DEFAULT_THEME_ID, available=theme_ids)
 
     workspace_path = workspace_default
     base_url = base_url_default
@@ -420,7 +423,7 @@ def _run_init(args: Any) -> int:
             searxng_base_url = str(getattr(args, "searxng_base_url", "") or "").strip() or searxng_base_url_default
         if _section_selected(section, "theme"):
             requested_theme = str(getattr(args, "theme", "") or "").strip() or theme_default
-            ui_theme, _ = normalize_theme_id(requested_theme, default=theme_default)
+            ui_theme, _ = normalize_theme_id(requested_theme, default=theme_default, available=theme_ids)
     else:
         steps = [name for name in ("workspace", "model", "search", "theme") if _section_selected(section, name)]
         total_steps = max(len(steps), 1)
@@ -478,11 +481,11 @@ def _run_init(args: Any) -> int:
                     theme,
                     "Endpoint mode:",
                     [
-                        ("auto", "responses first with fallback to chat"),
-                        ("responses", "force /v1/responses"),
-                        ("chat", "force /v1/chat/completions"),
+                        (ENDPOINT_MODE_AUTO, "responses first with fallback to chat"),
+                        (ENDPOINT_MODE_RESPONSES, "force /v1/responses"),
+                        (ENDPOINT_MODE_CHAT, "force /v1/chat/completions"),
                     ],
-                    default=endpoint_mode_default if endpoint_mode_default in {"auto", "responses", "chat"} else "auto",
+                    default=endpoint_mode_default if endpoint_mode_default in ENDPOINT_MODES else ENDPOINT_MODE_AUTO,
                 )
                 backend_profile = _prompt_choice(
                     theme,
@@ -497,7 +500,7 @@ def _run_init(args: Any) -> int:
                     ],
                     default=(
                         backend_profile_default
-                        if backend_profile_default in {"auto", "mlx_vlm", "llamacpp", "ollama", "vllm", "lmstudio"}
+                        if backend_profile_default in VALID_BACKEND_PROFILES
                         else "auto"
                     ),
                 )
@@ -519,7 +522,7 @@ def _run_init(args: Any) -> int:
                     ("searxng", "local/private search when a SearXNG instance is running"),
                     ("tavily", "hosted fallback search using TAVILY_API_KEY"),
                 ],
-                default=search_provider_default if search_provider_default in {"searxng", "tavily"} else "searxng",
+                default=search_provider_default if search_provider_default in SEARCH_PROVIDERS else SEARCH_PROVIDER_SEARXNG,
             )
             searxng_base_url = _prompt_with_default(
                 "SearXNG base URL",
@@ -533,20 +536,20 @@ def _run_init(args: Any) -> int:
                     ("tavily", "use TAVILY_API_KEY if SearXNG is unavailable"),
                     ("none", "do not use a hosted fallback"),
                 ],
-                default=search_fallback_default if search_fallback_default in {"none", "tavily"} else "tavily",
+                default=search_fallback_default if search_fallback_default in SEARCH_FALLBACK_PROVIDERS else SEARCH_PROVIDER_TAVILY,
             )
             step_index += 1
             print("")
         if _section_selected(section, "theme"):
             print(theme.accent(f"Step {step_index}/{total_steps}: Theme"))
-            theme_options = [(name, theme_spec(name).description) for name in BUILTIN_THEME_IDS]
+            theme_options = [(name, theme_spec(name).description) for name in theme_ids]
             selected_theme = _prompt_choice(
                 theme,
                 "Choose a UI theme:",
                 theme_options,
                 default=theme_default,
             )
-            ui_theme, _ = normalize_theme_id(selected_theme, default=theme_default)
+            ui_theme, _ = normalize_theme_id(selected_theme, default=theme_default, available=theme_ids)
             print("")
 
     updates: dict[str, Any] = {}

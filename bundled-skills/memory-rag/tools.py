@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+from core.coercion import coerce_bool
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
 from skills.runtime import ToolExecutionEnv
 
@@ -97,15 +98,7 @@ def _retrieval_enabled(env: ToolExecutionEnv) -> bool:
     if not isinstance(cfg, dict):
         return True
     raw = cfg.get("enabled", True)
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, str):
-        lowered = raw.strip().lower()
-        if lowered in {"1", "true", "yes", "on"}:
-            return True
-        if lowered in {"0", "false", "no", "off"}:
-            return False
-    return bool(raw)
+    return coerce_bool(raw, True)
 
 
 def _cfg_score(cfg: dict[str, object], key: str, default: float) -> float:

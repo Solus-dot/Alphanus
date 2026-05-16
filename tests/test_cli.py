@@ -249,6 +249,14 @@ def test_parser_accepts_init_theme_section_and_alias() -> None:
     assert args.theme == "catppuccin"
 
 
+def test_parser_accepts_custom_theme_id() -> None:
+    parser = alphanus_cli._build_parser()
+
+    args = parser.parse_args(["init", "theme", "--non-interactive", "--theme", "custom-oxide"])
+
+    assert args.theme == "custom-oxide"
+
+
 def test_parser_accepts_backend_profile_flag() -> None:
     parser = alphanus_cli._build_parser()
 

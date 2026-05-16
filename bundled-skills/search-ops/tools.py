@@ -13,7 +13,9 @@ from datetime import UTC, datetime
 from html import unescape
 from typing import Any
 
+from core.coercion import coerce_bool
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
+from core.search_providers import DEFAULT_TAVILY_API_KEY_ENV, SEARCH_PROVIDER_SEARXNG, SEARCH_PROVIDER_TAVILY
 from core.streaming import should_retry
 from skills.runtime import ToolExecutionEnv
 
@@ -315,12 +317,12 @@ def _ranking_bonus(source_type: str) -> float:
 
 def _provider_name(env: ToolExecutionEnv) -> str:
     search_cfg = env.config.get("search", {}) if isinstance(env.config, dict) else {}
-    return str(search_cfg.get("provider", "searxng")).strip().lower() or "searxng"
+    return str(search_cfg.get("provider", SEARCH_PROVIDER_SEARXNG)).strip().lower() or SEARCH_PROVIDER_SEARXNG
 
 
 def _fallback_provider_name(env: ToolExecutionEnv) -> str:
     search_cfg = env.config.get("search", {}) if isinstance(env.config, dict) else {}
-    return str(search_cfg.get("fallback_provider", "tavily")).strip().lower()
+    return str(search_cfg.get("fallback_provider", SEARCH_PROVIDER_TAVILY)).strip().lower()
 
 
 def _search_cfg(env: ToolExecutionEnv) -> dict[str, Any]:
@@ -349,16 +351,7 @@ def _cfg_int(search_cfg: dict[str, Any], key: str, default: int, *, minimum: int
 
 
 def _cfg_bool(search_cfg: dict[str, Any], key: str, default: bool) -> bool:
-    raw = search_cfg.get(key, default)
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, str):
-        lowered = raw.strip().lower()
-        if lowered in {"1", "true", "yes", "on"}:
-            return True
-        if lowered in {"0", "false", "no", "off"}:
-            return False
-    return bool(raw)
+    return coerce_bool(search_cfg.get(key, default), default)
 
 
 def _request_timeout_s(env: ToolExecutionEnv) -> float:
@@ -472,23 +465,23 @@ def _search_with_searxng(
     retries: int = 1,
     retry_backoff_s: float = 0.5,
 ) -> dict[str, Any]:
-    if _provider_name(env) != "searxng":
-        raise RuntimeError("Only the SearXNG search provider is supported")
+    if _provider_name(env) != SEARCH_PROVIDER_SEARXNG:
+        raise RuntimeError("SearXNG search provider is not selected")
     params = urllib.parse.urlencode({"q": query, "format": "json", "language": "auto", "safesearch": "0"})
     req = _request(f"{_searxng_base_url(env)}/search?{params}", headers={"Accept": "application/json"})
     payload = _request_json(req, provider_name="SearXNG", timeout_s=timeout_s, retries=retries, retry_backoff_s=retry_backoff_s)
     raw_results = payload.get("results")
     if not isinstance(raw_results, list):
         raise RuntimeError("SearXNG response missing results list")
-    out = _provider_payload(raw_results, limit, provider="searxng", provider_rank=0, query=query)
+    out = _provider_payload(raw_results, limit, provider=SEARCH_PROVIDER_SEARXNG, provider_rank=0, query=query)
     out["query"] = query
-    out["provider_chain"] = [{"provider": "searxng", "status": "ok"}]
+    out["provider_chain"] = [{"provider": SEARCH_PROVIDER_SEARXNG, "status": "ok"}]
     return out
 
 
 def _tavily_api_key(env: ToolExecutionEnv) -> str:
     cfg = _search_cfg(env)
-    env_name = str(cfg.get("tavily_api_key_env") or "TAVILY_API_KEY").strip()
+    env_name = str(cfg.get("tavily_api_key_env") or DEFAULT_TAVILY_API_KEY_ENV).strip()
     key = os.environ.get(env_name, "").strip()
     if not key:
         raise RuntimeError(f"Tavily API key not configured: {env_name}")
@@ -526,7 +519,7 @@ def _search_with_tavily(
     raw_results = payload.get("results")
     if not isinstance(raw_results, list):
         raise RuntimeError("Tavily response missing results list")
-    out = _provider_payload(raw_results, limit, provider="tavily", provider_rank=provider_rank, query=query)
+    out = _provider_payload(raw_results, limit, provider=SEARCH_PROVIDER_TAVILY, provider_rank=provider_rank, query=query)
     out["query"] = query
     return out
 
@@ -637,11 +630,11 @@ def _search(query: str, limit: int, env: ToolExecutionEnv) -> dict[str, Any]:
     retries = _request_retries(env)
     retry_backoff_s = _request_retry_backoff_s(env)
     provider = _provider_name(env)
-    if provider == "tavily":
+    if provider == SEARCH_PROVIDER_TAVILY:
         payload = _search_with_tavily(query, limit, env, timeout_s=timeout_s, retries=retries, retry_backoff_s=retry_backoff_s)
-        payload["provider_chain"] = [{"provider": "tavily", "status": "ok"}]
+        payload["provider_chain"] = [{"provider": SEARCH_PROVIDER_TAVILY, "status": "ok"}]
         return payload
-    if provider != "searxng":
+    if provider != SEARCH_PROVIDER_SEARXNG:
         raise RuntimeError("Only SearXNG and Tavily search providers are supported")
 
     provider_chain: list[dict[str, Any]] = []
@@ -650,8 +643,8 @@ def _search(query: str, limit: int, env: ToolExecutionEnv) -> dict[str, Any]:
         return _search_with_searxng(query, limit, env, timeout_s=timeout_s, retries=retries, retry_backoff_s=retry_backoff_s)
     except RuntimeError as exc:
         searxng_error = str(exc)
-        provider_chain.append({"provider": "searxng", "status": "error", "error": str(exc)})
-        if _fallback_provider_name(env) != "tavily":
+        provider_chain.append({"provider": SEARCH_PROVIDER_SEARXNG, "status": "error", "error": str(exc)})
+        if _fallback_provider_name(env) != SEARCH_PROVIDER_TAVILY:
             raise
 
     try:
@@ -666,7 +659,7 @@ def _search(query: str, limit: int, env: ToolExecutionEnv) -> dict[str, Any]:
         )
     except RuntimeError as exc:
         raise RuntimeError(f"{searxng_error}; Tavily fallback failed: {exc}") from exc
-    provider_chain.append({"provider": "tavily", "status": "ok"})
+    provider_chain.append({"provider": SEARCH_PROVIDER_TAVILY, "status": "ok"})
     payload["provider_chain"] = provider_chain
     return payload
 

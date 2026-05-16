@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import cast
 
+from core.endpoint_modes import CONCRETE_ENDPOINT_MODES, ENDPOINT_MODE_CHAT, ENDPOINT_MODE_RESPONSES
 from core.message_types import JSONValue
 from core.types import JsonObject
 
@@ -61,8 +62,8 @@ class ProviderPayloadAdapter:
         *,
         default_max_tokens: int | None,
     ) -> JsonObject:
-        if mode not in {"responses", "chat"}:
-            mode = "chat"
+        if mode not in CONCRETE_ENDPOINT_MODES:
+            mode = ENDPOINT_MODE_CHAT
         messages = payload.get("messages")
         if not isinstance(messages, list):
             messages = payload.get("input")
@@ -83,7 +84,7 @@ class ProviderPayloadAdapter:
         model_override = str(payload.get("model", "")).strip()
         converted_tools: list[JsonObject] | None = None
         if tools is not None:
-            converted_tools = self.chat_tools_to_responses(tools) if mode == "responses" else self.responses_tools_to_chat(tools)
+            converted_tools = self.chat_tools_to_responses(tools) if mode == ENDPOINT_MODE_RESPONSES else self.responses_tools_to_chat(tools)
         return self.build_payload(
             model_messages=cast(list[JsonObject], message_list),
             thinking=thinking,
@@ -105,9 +106,9 @@ class ProviderPayloadAdapter:
         mode: str,
         default_max_tokens: int | None,
     ) -> JsonObject:
-        selected_mode = mode if mode in {"responses", "chat"} else "chat"
+        selected_mode = mode if mode in CONCRETE_ENDPOINT_MODES else ENDPOINT_MODE_CHAT
         limit = default_max_tokens if max_tokens_override is None else max_tokens_override
-        if selected_mode == "responses":
+        if selected_mode == ENDPOINT_MODE_RESPONSES:
             payload: JsonObject = {
                 "input": cast(JSONValue, model_messages),
                 "stream": True,

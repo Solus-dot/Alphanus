@@ -29,6 +29,7 @@ from agent.provider_metadata import ProviderMetadataExtractor
 from agent.provider_payload import ProviderPayloadAdapter
 from agent.provider_stream_parser import ProviderStreamParser
 from agent.telemetry import TelemetryEmitter
+from core.endpoint_modes import CONCRETE_ENDPOINT_MODES, ENDPOINT_MODE_AUTO, ENDPOINT_MODE_CHAT, ENDPOINT_MODE_RESPONSES, ENDPOINT_MODES
 from core.message_types import ToolCallDelta
 from core.runtime_config import ProviderConfig
 from core.streaming import build_ssl_context
@@ -38,7 +39,7 @@ from core.types import JsonObject, ModelStatus, StreamPassResult, ToolCallAccumu
 
 @dataclass(slots=True)
 class ProviderCompatibilityProfile:
-    selected_endpoint_mode: str = "chat"
+    selected_endpoint_mode: str = ENDPOINT_MODE_CHAT
     supports_responses: bool = False
     supports_chat: bool = True
     supports_tools: bool = True
@@ -93,8 +94,8 @@ class OpenAICompatibleProvider:
         self.model_endpoint = config.model_endpoint
         self.responses_endpoint = config.responses_endpoint
         self.models_endpoint = config.models_endpoint
-        endpoint_mode = str(config.endpoint_mode or "auto").strip().lower()
-        self.endpoint_mode = endpoint_mode if endpoint_mode in {"auto", "responses", "chat"} else "auto"
+        endpoint_mode = str(config.endpoint_mode or ENDPOINT_MODE_AUTO).strip().lower()
+        self.endpoint_mode = endpoint_mode if endpoint_mode in ENDPOINT_MODES else ENDPOINT_MODE_AUTO
         self.backend_profile_requested = normalize_backend_profile(config.backend_profile)
         self.tls_verify = config.tls_verify
         self.ca_bundle_path = config.ca_bundle_path
@@ -112,9 +113,9 @@ class OpenAICompatibleProvider:
         self._ready_checked = False
         self._model_status = ModelStatus(endpoint=self.models_endpoint)
         self._profile_cache_key: tuple[str, str, str, str] = ("", "", "", "")
-        self._resolved_endpoint_mode = "chat"
+        self._resolved_endpoint_mode = ENDPOINT_MODE_CHAT
         self._fallback_events: list[dict[str, object]] = []
-        self._compatibility = ProviderCompatibilityProfile(selected_endpoint_mode="chat")
+        self._compatibility = ProviderCompatibilityProfile(selected_endpoint_mode=ENDPOINT_MODE_CHAT)
         self._backend_profile_detected = UNKNOWN_BACKEND_PROFILE
         self._backend_profile_reason = "not detected"
         self._backend_incompatibility_last = ""
@@ -233,31 +234,31 @@ class OpenAICompatibleProvider:
     def _select_endpoint_mode(self) -> str:
         selected_backend = self._selected_backend_profile()
         backend_capabilities = profile_capabilities(selected_backend)
-        if self.endpoint_mode in {"responses", "chat"}:
+        if self.endpoint_mode in CONCRETE_ENDPOINT_MODES:
             selected = self.endpoint_mode
-            if selected == "responses" and not backend_capabilities.supports_responses:
-                selected = "chat"
+            if selected == ENDPOINT_MODE_RESPONSES and not backend_capabilities.supports_responses:
+                selected = ENDPOINT_MODE_CHAT
             self._resolved_endpoint_mode = selected
             self._compatibility = ProviderCompatibilityProfile(
                 selected_endpoint_mode=selected,
-                supports_responses=backend_capabilities.supports_responses and selected == "responses",
-                supports_chat=selected == "chat",
+                supports_responses=backend_capabilities.supports_responses and selected == ENDPOINT_MODE_RESPONSES,
+                supports_chat=selected == ENDPOINT_MODE_CHAT,
                 supports_tools=backend_capabilities.supports_tools,
                 supports_stream=True,
                 supports_reasoning=True,
-                supports_multimodal_input=backend_capabilities.supports_multimodal_input and selected == "responses",
-                supports_multimodal_output=selected == "responses",
-                supports_structured_output=selected == "responses",
+                supports_multimodal_input=backend_capabilities.supports_multimodal_input and selected == ENDPOINT_MODE_RESPONSES,
+                supports_multimodal_output=selected == ENDPOINT_MODE_RESPONSES,
+                supports_structured_output=selected == ENDPOINT_MODE_RESPONSES,
                 tier="tier1-guaranteed",
             )
             self._profile_cache_key = self._compatibility_cache_key()
             return selected
 
         key = self._compatibility_cache_key()
-        if key == self._profile_cache_key and self._resolved_endpoint_mode in {"responses", "chat"}:
+        if key == self._profile_cache_key and self._resolved_endpoint_mode in CONCRETE_ENDPOINT_MODES:
             return self._resolved_endpoint_mode
         self._profile_cache_key = key
-        self._resolved_endpoint_mode = "responses" if backend_capabilities.supports_responses else "chat"
+        self._resolved_endpoint_mode = ENDPOINT_MODE_RESPONSES if backend_capabilities.supports_responses else ENDPOINT_MODE_CHAT
         self._compatibility = ProviderCompatibilityProfile(
             selected_endpoint_mode=self._resolved_endpoint_mode,
             supports_responses=backend_capabilities.supports_responses,
@@ -266,8 +267,9 @@ class OpenAICompatibleProvider:
             supports_stream=True,
             supports_reasoning=True,
             supports_multimodal_input=backend_capabilities.supports_multimodal_input,
-            supports_multimodal_output=backend_capabilities.supports_multimodal_input and self._resolved_endpoint_mode == "responses",
-            supports_structured_output=self._resolved_endpoint_mode == "responses",
+            supports_multimodal_output=backend_capabilities.supports_multimodal_input
+            and self._resolved_endpoint_mode == ENDPOINT_MODE_RESPONSES,
+            supports_structured_output=self._resolved_endpoint_mode == ENDPOINT_MODE_RESPONSES,
             tier="tier1-guaranteed",
         )
         return self._resolved_endpoint_mode
@@ -282,7 +284,7 @@ class OpenAICompatibleProvider:
         model_override: str = "",
         mode: str | None = None,
     ) -> JsonObject:
-        selected_mode = mode if mode in {"responses", "chat"} else self._select_endpoint_mode()
+        selected_mode = mode if mode in CONCRETE_ENDPOINT_MODES else self._select_endpoint_mode()
         return self._payload_adapter.build_payload(
             model_messages=model_messages,
             thinking=thinking,
@@ -522,7 +524,7 @@ class OpenAICompatibleProvider:
         pass_id: str,
         mode: str | None = None,
     ) -> StreamPassResult:
-        selected_mode = mode if mode in {"responses", "chat"} else self._select_endpoint_mode()
+        selected_mode = mode if mode in CONCRETE_ENDPOINT_MODES else self._select_endpoint_mode()
         return self._stream_one_pass(payload, stop_event, on_event, pass_id, selected_mode)
 
     def _stream_one_pass(
@@ -546,7 +548,7 @@ class OpenAICompatibleProvider:
         usage: dict[str, int] = {}
         stream_started_at = time.time()
         first_output_at: float | None = None
-        endpoint = self.responses_endpoint if mode == "responses" else self.model_endpoint
+        endpoint = self.responses_endpoint if mode == ENDPOINT_MODE_RESPONSES else self.model_endpoint
         self.telemetry.emit("chat_pass_start", pass_id=pass_id, endpoint=endpoint, payload=payload, mode=mode)
 
         stream_chunks = cast(
@@ -568,7 +570,7 @@ class OpenAICompatibleProvider:
             parsed_chunk = cast(dict[str, object], chunk)
             parsed = (
                 self._stream_parser.parse_responses_chunk(parsed_chunk, tool_acc)
-                if mode == "responses"
+                if mode == ENDPOINT_MODE_RESPONSES
                 else self._stream_parser.parse_chat_chunk(parsed_chunk, tool_acc)
             )
             parsed_usage = parsed["usage"]
@@ -673,9 +675,9 @@ class OpenAICompatibleProvider:
                 result = self.stream_completion(normalized_payload, stop_event, on_event, pass_id=pass_id, mode=mode)
                 self._resolved_endpoint_mode = mode
                 self._compatibility.selected_endpoint_mode = mode
-                if mode == "responses":
+                if mode == ENDPOINT_MODE_RESPONSES:
                     self._compatibility.supports_responses = True
-                if mode == "chat":
+                if mode == ENDPOINT_MODE_CHAT:
                     self._compatibility.supports_chat = True
                 if self._backend_model_integrity_state != "violation":
                     self._backend_model_integrity_state = "ok"
@@ -690,17 +692,22 @@ class OpenAICompatibleProvider:
                     )
                     self._record_backend_incompatibility(message, pass_id=pass_id)
                     raise RuntimeError(message) from exc
-                if self.endpoint_mode == "auto" and mode == "responses" and not fallback_attempted and self._is_endpoint_unsupported(exc):
+                if (
+                    self.endpoint_mode == ENDPOINT_MODE_AUTO
+                    and mode == ENDPOINT_MODE_RESPONSES
+                    and not fallback_attempted
+                    and self._is_endpoint_unsupported(exc)
+                ):
                     fallback_attempted = True
-                    mode = "chat"
-                    self._resolved_endpoint_mode = "chat"
-                    self._compatibility.selected_endpoint_mode = "chat"
+                    mode = ENDPOINT_MODE_CHAT
+                    self._resolved_endpoint_mode = ENDPOINT_MODE_CHAT
+                    self._compatibility.selected_endpoint_mode = ENDPOINT_MODE_CHAT
                     self._compatibility.supports_responses = False
                     self._compatibility.supports_chat = True
                     self._compatibility.tier = "tier2-best-effort"
                     event = {
-                        "from_mode": "responses",
-                        "to_mode": "chat",
+                        "from_mode": ENDPOINT_MODE_RESPONSES,
+                        "to_mode": ENDPOINT_MODE_CHAT,
                         "reason": str(exc),
                         "at": time.time(),
                     }
@@ -715,7 +722,7 @@ class OpenAICompatibleProvider:
                     )
                     payload = cast(
                         dict[str, object],
-                        self._payload_adapter.payload_to_mode(payload, "chat", default_max_tokens=self.default_max_tokens),
+                        self._payload_adapter.payload_to_mode(payload, ENDPOINT_MODE_CHAT, default_max_tokens=self.default_max_tokens),
                     )
                     continue
                 if self._is_transport_failure(exc):

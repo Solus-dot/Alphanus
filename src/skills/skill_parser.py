@@ -7,6 +7,8 @@ from typing import Any
 
 import yaml
 
+from core.coercion import coerce_bool
+
 SKILL_DOC = "SKILL.md"
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 
@@ -42,15 +44,7 @@ def _as_tool_name_list(value: Any) -> list[str]:
 
 
 def _coerce_bool(value: Any, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"true", "yes", "1", "on"}:
-            return True
-        if lowered in {"false", "no", "0", "off"}:
-            return False
-    return default
+    return coerce_bool(value, default)
 
 
 def extract_skill_doc(skill_doc: Path, include_prompt: bool = True) -> tuple[dict[str, Any], str | None]:

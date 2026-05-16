@@ -346,3 +346,59 @@ def test_typed_config_v2_groups_runtime_sections() -> None:
     assert typed.skills.python_executable == "/usr/bin/python3"
     assert typed.skills.paths == ["~/agent-skills"]
     assert typed.ui.theme == "gruvbox-dark-soft"
+
+
+def test_normalize_config_accepts_loadable_custom_theme(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    theme_dir = tmp_path / "themes"
+    theme_dir.mkdir()
+    (theme_dir / "custom-oxide.json").write_text(
+        """
+{
+  "id": "custom-oxide",
+  "title": "Custom Oxide",
+  "description": "Custom config theme",
+  "theme": {
+    "primary": "#111111",
+    "secondary": "#222222",
+    "accent": "#333333",
+    "foreground": "#eeeeee",
+    "background": "#000000",
+    "surface": "#111111",
+    "panel": "#050505",
+    "success": "#00ff00",
+    "warning": "#ffff00",
+    "error": "#ff0000",
+    "dark": true
+  },
+  "colors": {
+    "accent": "#333333",
+    "text": "#eeeeee",
+    "muted": "#999999",
+    "subtle": "#777777",
+    "success": "#00ff00",
+    "warning": "#ffff00",
+    "error": "#ff0000",
+    "user_bar": "#00ff00",
+    "assistant_bar": "#333333",
+    "chip_bg": "#111111",
+    "chip_text": "#eeeeee",
+    "panel_bg": "#050505",
+    "panel_border": "#555555"
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ALPHANUS_THEME_PATHS", str(theme_dir))
+    from tui import themes
+
+    themes.reload_theme_specs()
+    try:
+        normalized, warnings = normalize_config({"tui": {"theme": "custom-oxide"}})
+        ui = UiRuntimeConfig.from_config(normalized)
+    finally:
+        themes.reload_theme_specs()
+
+    assert normalized["tui"]["theme"] == "custom-oxide"
+    assert ui.theme == "custom-oxide"
+    assert warnings == []

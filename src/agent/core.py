@@ -20,6 +20,7 @@ from core.config_model import TypedConfigV2
 from core.configuration import validate_endpoint_policy
 from core.message_types import ChatMessage, JsonObject
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
+from core.search_providers import DEFAULT_TAVILY_API_KEY_ENV, SEARCH_PROVIDER_SEARXNG, SEARCH_PROVIDER_TAVILY
 from core.types import AgentTurnResult, ModelStatus, ShellConfirmationFn
 from skills.runtime import SkillRuntime
 
@@ -151,18 +152,18 @@ class Agent:
         runtime_cfg = get_json_object(config_obj, "runtime")
         capabilities_cfg = get_json_object(config_obj, "capabilities")
         search_cfg = get_json_object(config_obj, "search")
-        provider = str(search_cfg.get("provider", "searxng")).strip().lower() or "searxng"
-        fallback_provider = str(search_cfg.get("fallback_provider", "tavily")).strip().lower()
+        provider = str(search_cfg.get("provider", SEARCH_PROVIDER_SEARXNG)).strip().lower() or SEARCH_PROVIDER_SEARXNG
+        fallback_provider = str(search_cfg.get("fallback_provider", SEARCH_PROVIDER_TAVILY)).strip().lower()
         searxng_base_url = str(search_cfg.get("searxng_base_url", "")).strip()
-        tavily_api_key_env = str(search_cfg.get("tavily_api_key_env", "TAVILY_API_KEY")).strip() or "TAVILY_API_KEY"
+        tavily_api_key_env = str(search_cfg.get("tavily_api_key_env", DEFAULT_TAVILY_API_KEY_ENV)).strip() or DEFAULT_TAVILY_API_KEY_ENV
         tavily_ready = bool(os.environ.get(tavily_api_key_env, "").strip())
-        search_ready = (provider == "searxng" and bool(searxng_base_url)) or provider == "tavily" and tavily_ready
-        if provider == "searxng" and fallback_provider == "tavily":
+        search_ready = (provider == SEARCH_PROVIDER_SEARXNG and bool(searxng_base_url)) or provider == SEARCH_PROVIDER_TAVILY and tavily_ready
+        if provider == SEARCH_PROVIDER_SEARXNG and fallback_provider == SEARCH_PROVIDER_TAVILY:
             search_ready = bool(searxng_base_url) or tavily_ready
         search_reason = ""
         if not search_ready:
-            search_reason = f"missing env: {tavily_api_key_env}" if provider == "tavily" else "missing search.searxng_base_url"
-            if provider == "searxng" and fallback_provider == "tavily":
+            search_reason = f"missing env: {tavily_api_key_env}" if provider == SEARCH_PROVIDER_TAVILY else "missing search.searxng_base_url"
+            if provider == SEARCH_PROVIDER_SEARXNG and fallback_provider == SEARCH_PROVIDER_TAVILY:
                 search_reason = f"missing search.searxng_base_url and env: {tavily_api_key_env}"
         retrieval_cfg = get_json_object(config_obj, "retrieval")
         retrieval_enabled = bool(retrieval_cfg.get("enabled", True))

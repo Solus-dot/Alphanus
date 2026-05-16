@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-AUTO_BACKEND_PROFILE = "auto"
-UNKNOWN_BACKEND_PROFILE = "unknown"
-LOCAL_BACKEND_PROFILES = {"mlx_vlm", "llamacpp", "ollama", "vllm", "lmstudio"}
-VALID_BACKEND_PROFILES = {AUTO_BACKEND_PROFILE, *LOCAL_BACKEND_PROFILES}
+from core.backend_profiles import (
+    AUTO_BACKEND_PROFILE,
+    LOCAL_BACKEND_PROFILES,
+    UNKNOWN_BACKEND_PROFILE,
+    normalize_backend_profile,
+)
+from core.endpoint_modes import ENDPOINT_MODE_CHAT, ENDPOINT_MODE_RESPONSES
 
 
 @dataclass(slots=True)
@@ -32,11 +35,6 @@ class BackendCapabilities:
             "responses_input_blocks": self.responses_input_blocks,
             "strict_model_integrity": self.strict_model_integrity,
         }
-
-
-def normalize_backend_profile(value: object) -> str:
-    candidate = str(value or "").strip().lower()
-    return candidate if candidate in VALID_BACKEND_PROFILES else AUTO_BACKEND_PROFILE
 
 
 def profile_capabilities(profile: str) -> BackendCapabilities:
@@ -253,7 +251,7 @@ def rewrite_payload_for_profile(
             changes.append("rewrite_multimodal_blocks")
         return updated
 
-    key = "input" if mode == "responses" else "messages"
+    key = "input" if mode == ENDPOINT_MODE_RESPONSES else "messages"
     items = out.get(key)
     if isinstance(items, list):
         updated_messages: list[object] = []
@@ -267,8 +265,8 @@ def rewrite_payload_for_profile(
             if isinstance(content, list):
                 msg["content"] = rewrite_content_parts(
                     content,
-                    responses_blocks=bool(capabilities.responses_input_blocks and mode == "responses"),
-                    flatten_chat_image=bool(capabilities.flatten_chat_image_url and mode == "chat"),
+                    responses_blocks=bool(capabilities.responses_input_blocks and mode == ENDPOINT_MODE_RESPONSES),
+                    flatten_chat_image=bool(capabilities.flatten_chat_image_url and mode == ENDPOINT_MODE_CHAT),
                 )
                 if msg["content"] != content:
                     list_mutated = True

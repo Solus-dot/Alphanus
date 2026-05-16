@@ -9,12 +9,21 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from core.backend_profiles import AUTO_BACKEND_PROFILE, VALID_BACKEND_PROFILES
+from core.coercion import parse_bool
+from core.endpoint_modes import ENDPOINT_MODE_AUTO, ENDPOINT_MODE_CHAT, ENDPOINT_MODES
+from core.search_providers import (
+    DEFAULT_TAVILY_API_KEY_ENV,
+    SEARCH_FALLBACK_NONE,
+    SEARCH_FALLBACK_PROVIDERS,
+    SEARCH_PROVIDER_SEARXNG,
+    SEARCH_PROVIDER_TAVILY,
+    SEARCH_PROVIDERS,
+)
 from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
 
 MAX_CONFIG_BYTES = 512 * 1024
 
-_TRUE_VALUES = {"1", "true", "yes", "on"}
-_FALSE_VALUES = {"0", "false", "no", "off"}
 _SECRET_KEYS = {
     "auth_header",
     "authorization",
@@ -30,8 +39,6 @@ _SECRET_KEYS = {
     "secret",
 }
 _SECRET_SUFFIXES = ("_api_key", "_apikey", "_token", "_secret", "_password")
-_ALLOWED_SEARCH_PROVIDERS = {"searxng", "tavily"}
-_ALLOWED_SEARCH_FALLBACK_PROVIDERS = {"", "none", "tavily"}
 _RUNTIME_PROFILE_ALIASES = {
     "standard": "standard",
     "workspace": "standard",
@@ -58,7 +65,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
         "responses_endpoint": "http://127.0.0.1:8080/v1/responses",
         "models_endpoint": "http://127.0.0.1:8080/v1/models",
-        "endpoint_mode": "chat",
+        "endpoint_mode": ENDPOINT_MODE_CHAT,
         "backend_profile": "auto",
         "api_key": "env:ALPHANUS_API_KEY",
         "api_key_env": "ALPHANUS_API_KEY",
@@ -119,10 +126,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "tools": {},
     "search": {
-        "provider": "searxng",
-        "fallback_provider": "tavily",
+        "provider": SEARCH_PROVIDER_SEARXNG,
+        "fallback_provider": SEARCH_PROVIDER_TAVILY,
         "searxng_base_url": "",
-        "tavily_api_key_env": "TAVILY_API_KEY",
+        "tavily_api_key_env": DEFAULT_TAVILY_API_KEY_ENV,
         "request_timeout_s": 20,
         "request_retries": 1,
         "request_retry_backoff_s": 0.5,
@@ -184,16 +191,9 @@ def _warn(warnings: list[str], message: str) -> None:
 
 
 def _coerce_bool(value: Any, default: bool, *, path: str, warnings: list[str]) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)) and value in (0, 1):
-        return bool(value)
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in _TRUE_VALUES:
-            return True
-        if lowered in _FALSE_VALUES:
-            return False
+    parsed = parse_bool(value)
+    if parsed is not None:
+        return parsed
     _warn(warnings, f"{path}: expected boolean, using default")
     return default
 
@@ -469,14 +469,14 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
     )
     endpoint_mode = _coerce_string(
         agent_cfg.get("endpoint_mode"),
-        str(default_agent.get("endpoint_mode", "auto")),
+        str(default_agent.get("endpoint_mode", ENDPOINT_MODE_AUTO)),
         path="agent.endpoint_mode",
         warnings=warnings,
         allow_empty=False,
     ).lower()
-    if endpoint_mode not in {"auto", "responses", "chat"}:
+    if endpoint_mode not in ENDPOINT_MODES:
         _warn(warnings, f"agent.endpoint_mode: unsupported {endpoint_mode!r}, using 'auto'")
-        endpoint_mode = "auto"
+        endpoint_mode = ENDPOINT_MODE_AUTO
     agent_cfg["endpoint_mode"] = endpoint_mode
     backend_profile = _coerce_string(
         agent_cfg.get("backend_profile"),
@@ -485,9 +485,9 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         warnings=warnings,
         allow_empty=False,
     ).lower()
-    if backend_profile not in {"auto", "mlx_vlm", "llamacpp", "ollama", "vllm", "lmstudio"}:
+    if backend_profile not in VALID_BACKEND_PROFILES:
         _warn(warnings, f"agent.backend_profile: unsupported {backend_profile!r}, using 'auto'")
-        backend_profile = "auto"
+        backend_profile = AUTO_BACKEND_PROFILE
     agent_cfg["backend_profile"] = backend_profile
     api_key_value = _coerce_string(
         agent_cfg.get("api_key"),
@@ -885,7 +885,7 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         warnings=warnings,
         allow_empty=False,
     ).lower()
-    if provider not in _ALLOWED_SEARCH_PROVIDERS:
+    if provider not in SEARCH_PROVIDERS:
         _warn(warnings, f"search.provider: unsupported {provider!r}, using default")
         provider = str(DEFAULT_CONFIG["search"]["provider"])
     search_cfg["provider"] = provider
@@ -895,10 +895,10 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         path="search.fallback_provider",
         warnings=warnings,
     ).lower()
-    if fallback_provider not in _ALLOWED_SEARCH_FALLBACK_PROVIDERS:
+    if fallback_provider not in {"", *SEARCH_FALLBACK_PROVIDERS}:
         _warn(warnings, f"search.fallback_provider: unsupported {fallback_provider!r}, using default")
         fallback_provider = str(DEFAULT_CONFIG["search"]["fallback_provider"])
-    search_cfg["fallback_provider"] = "" if fallback_provider == "none" else fallback_provider
+    search_cfg["fallback_provider"] = "" if fallback_provider == SEARCH_FALLBACK_NONE else fallback_provider
     raw_searxng_url = search_cfg.get("searxng_base_url") or search_cfg.get("base_url")
     base_url = (
         str(DEFAULT_CONFIG["search"]["searxng_base_url"])
@@ -1080,7 +1080,13 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         warnings=warnings,
         allow_empty=False,
     )
-    resolved_theme, changed = normalize_theme_id(raw_theme, default=str(DEFAULT_THEME_ID))
+    try:
+        from tui.themes import available_theme_ids
+
+        theme_ids = available_theme_ids()
+    except Exception:
+        theme_ids = None
+    resolved_theme, changed = normalize_theme_id(raw_theme, default=str(DEFAULT_THEME_ID), available=theme_ids)
     if changed:
         if raw_theme.strip():
             _warn(warnings, f"tui.theme: unsupported {raw_theme!r}, using {resolved_theme!r}")
