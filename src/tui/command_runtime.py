@@ -55,7 +55,7 @@ def handle_command(app, text: str) -> bool:
         if not arg:
             return app._write_usage("/rename <name>")
         session = app._save_active_session(rename_to=arg)
-        app._update_topbar()
+        app._update_metadata()
         app._write_command_action(f"Renamed session to '{session.title}'", icon="✓")
         return True
 
@@ -115,7 +115,7 @@ def handle_command(app, text: str) -> bool:
     if cmd == "/save":
         try:
             session = app._save_active_session(rename_to=arg or None)
-            app._update_topbar()
+            app._update_metadata()
             app._write_command_action(f"Saved session '{session.title}'", icon="✓")
         except OSError as exc:
             app._write_error(f"Save failed: {exc}")
@@ -135,7 +135,7 @@ def handle_command(app, text: str) -> bool:
             app._update_status2,
             app._update_sidebar,
             app._update_input_placeholder,
-            app._update_topbar,
+            app._update_metadata,
         ):
             update()
         return True

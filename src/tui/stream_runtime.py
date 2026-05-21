@@ -459,7 +459,7 @@ def finish_turn_stream(app: Any, turn_id: str, result: AgentTurnResult) -> None:
         run_cleanup_step("update status1", app._update_status1)
         run_cleanup_step("update status2", app._update_status2)
         run_cleanup_step("update sidebar", app._update_sidebar)
-        run_cleanup_step("update topbar", app._update_topbar)
+        run_cleanup_step("update metadata", app._update_metadata)
         if finalization_error or cleanup_errors:
             parts: list[str] = []
             if finalization_error:

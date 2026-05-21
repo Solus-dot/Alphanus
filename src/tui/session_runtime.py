@@ -77,6 +77,6 @@ def switch_to_session(app, session: ChatSession, *, clear_pending: bool = True) 
         app._update_status1,
         app._update_status2,
         app._update_input_placeholder,
-        app._update_topbar,
+        app._update_metadata,
     ):
         update()

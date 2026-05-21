@@ -278,8 +278,8 @@ def test_finish_turn_stream_restores_ui_even_when_finalization_raises() -> None:
         def _update_sidebar(self):
             events.append("sidebar")
 
-        def _update_topbar(self):
-            events.append("topbar")
+        def _update_metadata(self):
+            events.append("metadata")
 
         def _save_active_session(self):
             raise RuntimeError("save exploded")

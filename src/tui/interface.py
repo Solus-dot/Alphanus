@@ -257,10 +257,10 @@ from tui.status_runtime import (
     start_startup_readiness_poll as start_tui_startup_readiness_poll,
 )
 from tui.status_runtime import (
-    update_status2 as update_tui_status2,
+    update_metadata as update_tui_metadata,
 )
 from tui.status_runtime import (
-    update_topbar as update_tui_topbar,
+    update_status2 as update_tui_status2,
 )
 from tui.stream_runtime import (
     StreamRuntimeState,
@@ -626,7 +626,7 @@ class AlphanusTUI(App):
         self._sync_tree_cursor()
         self._apply_sidebar_layout(self.size.width)
         self._apply_focus_classes()
-        self._update_topbar()
+        self._update_metadata()
         self._update_status1()
         self._update_status2()
         self._update_footer_separator()
@@ -663,7 +663,7 @@ class AlphanusTUI(App):
 
     def _redraw_after_resize(self) -> None:
         self._apply_focus_classes()
-        self._update_topbar()
+        self._update_metadata()
         self._update_status1()
         self._update_status2()
         self._update_footer_separator()
@@ -701,7 +701,7 @@ class AlphanusTUI(App):
         self._update_status1()
         if persist:
             self._save_active_session()
-            self._update_topbar()
+            self._update_metadata()
         return normalized
 
     def _open_session_manager(self) -> None:
@@ -761,7 +761,7 @@ class AlphanusTUI(App):
             if isinstance(value, (int, float)):
                 self._last_model_context_tokens = max(0, int(value))
                 break
-        self._update_topbar()
+        self._update_metadata()
 
     def _apply_focus_classes(self) -> None:
         apply_tui_focus_classes(self)
@@ -1195,19 +1195,17 @@ class AlphanusTUI(App):
         colors = self._theme_spec().colors
         text = status_right_markup(
             model_name=self._status_runtime.model_name,
-            branch_armed=bool(self.conv_tree._pending_branch),
-            branch_label=self.conv_tree._pending_branch_label,
             thinking=self.thinking,
             collaboration_mode=str(getattr(self, "_collaboration_mode", "execute")),
             width=self.size.width,
             colors=colors,
         )
         if text == self._last_status_right:
-            self._update_topbar()
+            self._update_metadata()
             return
         self._last_status_right = text
-        self.query_one("#status-right", Static).update(text)
-        self._update_topbar()
+        self.query_one("#status-left", Static).update(text)
+        self._update_metadata()
 
     def _current_model_refresh_interval(self) -> float:
         return tui_model_refresh_interval(self)
@@ -1241,8 +1239,8 @@ class AlphanusTUI(App):
     def _update_status2(self) -> None:
         update_tui_status2(self)
 
-    def _update_topbar(self) -> None:
-        update_tui_topbar(self)
+    def _update_metadata(self) -> None:
+        update_tui_metadata(self)
 
     def _update_input_placeholder(self) -> None:
         self.query_one(ChatInput).placeholder = "Type to start branch…" if self.conv_tree._pending_branch else "Type a message…"

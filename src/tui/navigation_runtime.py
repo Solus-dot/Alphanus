@@ -24,11 +24,12 @@ def apply_sidebar_layout(app: Any, width: int) -> None:
     sidebar = app.query_one("#sidebar", Vertical)
     app._last_sidebar_layout_width = width
     override = getattr(app, "_sidebar_visible_override", None)
-    target_width = sidebar_target_width(width)
-    if override is False:
+    if override is True:
+        target_width = sidebar_target_width(width)
+        if target_width <= 0:
+            target_width = 32
+    else:
         target_width = 0
-    elif override is True and target_width <= 0:
-        target_width = 32
     sidebar.display = target_width > 0
     if target_width > 0 and hasattr(sidebar, "styles"):
         sidebar.styles.width = target_width
@@ -46,7 +47,7 @@ def toggle_sidebar(app: Any) -> None:
     app._apply_focus_classes()
     app._update_footer_separator()
     app._update_sidebar()
-    app._update_topbar()
+    app._update_metadata()
 
 
 def apply_focus_classes(app: Any) -> None:
@@ -66,12 +67,21 @@ def apply_focus_classes(app: Any) -> None:
 
 def set_focused_panel(app: Any, panel: str) -> None:
     if panel == "tree" and not app.query_one("#sidebar", Vertical).display:
-        panel = "chat"
+        app._sidebar_visible_override = True
+        current_width = int(getattr(app, "_last_sidebar_layout_width", 0) or 0)
+        if current_width <= 0:
+            current_width = int(getattr(getattr(app, "size", None), "width", 0) or 0)
+        apply_sidebar_layout(app, current_width)
+        if not app.query_one("#sidebar", Vertical).display:
+            panel = "chat"
+        else:
+            app._update_footer_separator()
+            app._update_sidebar()
     app._focused_panel = panel
     if panel == "input":
         app.query_one(app._chat_input_cls).focus()
     apply_focus_classes(app)
-    app._update_topbar()
+    app._update_metadata()
 
 
 def _shift_focus(app: Any, direction: int) -> None:
@@ -94,7 +104,7 @@ def _active_tree_ids(app: Any) -> list[str]:
 
 def _set_tree_cursor(app: Any, target_id: str) -> None:
     app._tree_cursor_id = target_id
-    for update in (app._update_sidebar, app._update_topbar):
+    for update in (app._update_sidebar, app._update_metadata):
         update()
 
 
@@ -150,5 +160,5 @@ def action_tree_open(app: Any) -> None:
     app.conv_tree.current_id = app._tree_cursor_id
     app._save_active_session()
     app._rebuild_viewport()
-    for update in (app._update_sidebar, app._update_topbar):
+    for update in (app._update_sidebar, app._update_metadata):
         update()

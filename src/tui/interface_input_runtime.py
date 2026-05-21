@@ -15,10 +15,10 @@ KEYBOARD_SHORTCUT_SECTIONS = [
             ("Ctrl+K", "Open quick palette"),
             ("Ctrl+P / /", "Open slash command palette"),
             ("Ctrl+F", "Open file picker"),
-            ("Ctrl+B", "Toggle conversation sidebar"),
+            ("Ctrl+B", "Toggle conversation split"),
             ("Ctrl+G", "Focus composer"),
             ("Tab / Shift+Tab", "Cycle active panels"),
-            ("Ctrl+H / Ctrl+L", "Focus transcript or tree"),
+            ("Ctrl+H / Ctrl+L", "Focus transcript or open tree split"),
             ("F2", "Toggle live tool details"),
             ("F3", "Toggle thinking mode"),
             ("Ctrl+C / Ctrl+D", "Quit app"),
@@ -133,7 +133,7 @@ def on_config_editor_close(app: Any, result: dict[str, Any] | None, *, config_pa
             else None
         ),
     )
-    app._update_topbar()
+    app._update_metadata()
     app._apply_tui_config()
     app._maybe_refresh_model_status(force=True)
     suffix = f" ({len(warnings)} normalization warning{'s' if len(warnings) != 1 else ''})." if warnings else "."
