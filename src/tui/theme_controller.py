@@ -81,7 +81,7 @@ class ThemeController:
         try:
             self.app.refresh_css(animate=False)
             self.app._apply_focus_classes()
-            self.app._update_topbar()
+            self.app._update_metadata()
             self.app._update_status1()
             self.app._update_status2()
             self.app._update_footer_separator()

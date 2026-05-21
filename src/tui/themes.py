@@ -180,8 +180,7 @@ def fallback_theme_spec() -> ThemeSpec:
 
 def fallback_color(key: str, default: str = "") -> str:
     spec = fallback_theme_spec()
-    colors = {**spec.colors, "badge_bg": str(spec.colors.get("chip_bg", default))}
-    return str(colors.get(key, default))
+    return str(spec.colors.get(key, default))
 
 
 def fallback_theme_variables() -> dict[str, str]:
