@@ -24,7 +24,13 @@ from core.configuration import (
 from core.endpoint_modes import ENDPOINT_MODE_AUTO, ENDPOINT_MODE_CHAT, ENDPOINT_MODE_RESPONSES, ENDPOINT_MODES
 from core.memory import LexicalMemory
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
-from core.search_providers import SEARCH_FALLBACK_PROVIDERS, SEARCH_PROVIDER_SEARXNG, SEARCH_PROVIDER_TAVILY, SEARCH_PROVIDERS
+from core.search_providers import (
+    DEFAULT_TAVILY_API_KEY_ENV,
+    SEARCH_FALLBACK_PROVIDERS,
+    SEARCH_PROVIDER_SEARXNG,
+    SEARCH_PROVIDER_TAVILY,
+    SEARCH_PROVIDERS,
+)
 from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
 from core.workspace import WorkspaceManager
 from skills.runtime import SkillRuntime
@@ -147,6 +153,8 @@ def _build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--search-provider", type=str, choices=list(SEARCH_PROVIDERS), default="", help="Search provider")
     init_parser.add_argument("--search-fallback-provider", type=str, choices=list(SEARCH_FALLBACK_PROVIDERS), default="", help="Search fallback provider")
     init_parser.add_argument("--searxng-base-url", type=str, default="", help="SearXNG base URL")
+    init_parser.add_argument("--tavily-api-key", type=str, default="", help="Tavily API key (writes to ~/.alphanus/.env)")
+    init_parser.add_argument("--tavily-api-key-env", type=str, default="", help="Environment variable name for Tavily API key")
     init_parser.add_argument(
         "--theme",
         type=str,
@@ -380,6 +388,12 @@ def _run_init(args: Any) -> int:
     api_key_env_default = str(base.get("agent", {}).get("api_key_env", DEFAULT_CONFIG["agent"]["api_key_env"]))
     search_provider_default = str(base.get("search", {}).get("provider", DEFAULT_CONFIG["search"]["provider"]))
     search_fallback_default = str(base.get("search", {}).get("fallback_provider", DEFAULT_CONFIG["search"]["fallback_provider"])) or "none"
+    tavily_api_key_env_default = str(
+        base.get("search", {}).get(
+            "tavily_api_key_env",
+            DEFAULT_CONFIG["search"].get("tavily_api_key_env", DEFAULT_TAVILY_API_KEY_ENV),
+        )
+    )
     theme_default = str(base.get("tui", {}).get("theme", DEFAULT_THEME_ID))
     theme_ids = available_theme_ids()
     theme_default, _ = normalize_theme_id(theme_default, default=DEFAULT_THEME_ID, available=theme_ids)
@@ -398,6 +412,8 @@ def _run_init(args: Any) -> int:
     search_fallback_provider = search_fallback_default
     searxng_base_url_default = str(base.get("search", {}).get("searxng_base_url", DEFAULT_CONFIG["search"]["searxng_base_url"]))
     searxng_base_url = searxng_base_url_default
+    tavily_api_key_env = tavily_api_key_env_default
+    tavily_api_key_value = ""
     ui_theme = theme_default
 
     if args.non_interactive:
@@ -421,6 +437,8 @@ def _run_init(args: Any) -> int:
                 str(getattr(args, "search_fallback_provider", "") or "").strip() or search_fallback_default
             )
             searxng_base_url = str(getattr(args, "searxng_base_url", "") or "").strip() or searxng_base_url_default
+            tavily_api_key_env = str(getattr(args, "tavily_api_key_env", "") or "").strip() or tavily_api_key_env_default
+            tavily_api_key_value = str(getattr(args, "tavily_api_key", "") or "").strip()
         if _section_selected(section, "theme"):
             requested_theme = str(getattr(args, "theme", "") or "").strip() or theme_default
             ui_theme, _ = normalize_theme_id(requested_theme, default=theme_default, available=theme_ids)
@@ -538,6 +556,15 @@ def _run_init(args: Any) -> int:
                 ],
                 default=search_fallback_default if search_fallback_default in SEARCH_FALLBACK_PROVIDERS else SEARCH_PROVIDER_TAVILY,
             )
+            if search_provider == SEARCH_PROVIDER_TAVILY or search_fallback_provider == SEARCH_PROVIDER_TAVILY:
+                tavily_api_key_env = _prompt_with_default(
+                    "Tavily API key env var",
+                    tavily_api_key_env_default or DEFAULT_TAVILY_API_KEY_ENV,
+                    hint=theme.muted("where init stores the Tavily key"),
+                )
+                tavily_api_key_value = getpass.getpass(
+                    "Tavily API key (stored in ~/.alphanus/.env; leave blank to keep current): "
+                ).strip()
             step_index += 1
             print("")
         if _section_selected(section, "theme"):
@@ -571,6 +598,7 @@ def _run_init(args: Any) -> int:
             "provider": search_provider,
             "fallback_provider": search_fallback_provider,
             "searxng_base_url": searxng_base_url,
+            "tavily_api_key_env": tavily_api_key_env,
         }
     if _section_selected(section, "theme"):
         updates["tui"] = {"theme": ui_theme}
@@ -595,6 +623,7 @@ def _run_init(args: Any) -> int:
         print(f"  {theme.label('Search provider:')} {normalized['search']['provider']}")
         print(f"  {theme.label('Search fallback:')} {normalized['search']['fallback_provider'] or 'none'}")
         print(f"  {theme.label('SearXNG URL:')} {normalized['search']['searxng_base_url'] or '(not set)'}")
+        print(f"  {theme.label('Tavily key env:')} {normalized['search']['tavily_api_key_env']}")
         print(f"  {theme.label('Theme:')} {normalized['tui']['theme']}")
         print(f"  {theme.label('Secrets file:')} {app_paths.dotenv_path}")
         if not _prompt_yes_no("Write these settings now?", default=True):
@@ -607,6 +636,8 @@ def _run_init(args: Any) -> int:
     _ensure_dotenv_template(app_paths.dotenv_path)
     if _section_selected(section, "model") and api_key_value:
         _upsert_env_var(app_paths.dotenv_path, normalized["agent"]["api_key_env"], api_key_value)
+    if _section_selected(section, "search") and tavily_api_key_value:
+        _upsert_env_var(app_paths.dotenv_path, normalized["search"]["tavily_api_key_env"], tavily_api_key_value)
 
     for warning in existing_warnings + warnings:
         print(f"{theme.warn('config warning:')} {warning}")

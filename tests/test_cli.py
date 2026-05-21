@@ -167,6 +167,8 @@ def test_init_non_interactive_writes_global_config_and_env_template(monkeypatch,
             search_provider="searxng",
             search_fallback_provider="tavily",
             searxng_base_url="http://127.0.0.1:8888",
+            tavily_api_key="",
+            tavily_api_key_env="",
             theme="catppuccin-macchiato",
             debug=False,
             dangerously_skip_permissions=False,
@@ -182,6 +184,50 @@ def test_init_non_interactive_writes_global_config_and_env_template(monkeypatch,
     assert stored["workspace"]["path"] == str(tmp_path / "ws")
     assert stored["search"]["fallback_provider"] == "tavily"
     assert stored["tui"]["theme"] == "catppuccin-macchiato"
+
+
+def test_init_search_section_writes_tavily_key_to_env(monkeypatch, tmp_path) -> None:
+    state_root = tmp_path / ".alphanus"
+    config_path = state_root / "config" / "global_config.json"
+    dotenv_path = state_root / ".env"
+
+    monkeypatch.setattr(
+        alphanus_cli,
+        "get_app_paths",
+        lambda: SimpleNamespace(
+            app_root=tmp_path,
+            state_root=state_root,
+            config_path=config_path,
+            dotenv_path=dotenv_path,
+            bundled_skills_dir=tmp_path / "skills",
+            repo_root=tmp_path,
+        ),
+    )
+
+    exit_code = alphanus_cli._run_init(
+        SimpleNamespace(
+            section="search",
+            non_interactive=True,
+            reset=False,
+            workspace_path="",
+            model_endpoint="",
+            models_endpoint="",
+            search_provider="searxng",
+            search_fallback_provider="tavily",
+            searxng_base_url="",
+            tavily_api_key="tvly-demo",
+            tavily_api_key_env="CUSTOM_TAVILY_KEY",
+            theme="",
+        )
+    )
+
+    assert exit_code == 0
+    stored = json.loads(config_path.read_text(encoding="utf-8"))
+    assert stored["search"]["provider"] == "searxng"
+    assert stored["search"]["fallback_provider"] == "tavily"
+    assert stored["search"]["tavily_api_key_env"] == "CUSTOM_TAVILY_KEY"
+    dotenv = dotenv_path.read_text(encoding="utf-8")
+    assert "CUSTOM_TAVILY_KEY=tvly-demo" in dotenv
 
 
 def test_init_non_interactive_model_section_writes_api_key_to_env(monkeypatch, tmp_path) -> None:
@@ -265,6 +311,29 @@ def test_parser_accepts_backend_profile_flag() -> None:
     assert args.command == "init"
     assert args.section == "model"
     assert args.backend_profile == "mlx_vlm"
+
+
+def test_parser_accepts_tavily_key_flags() -> None:
+    parser = alphanus_cli._build_parser()
+
+    args = parser.parse_args(
+        [
+            "init",
+            "search",
+            "--non-interactive",
+            "--search-fallback-provider",
+            "tavily",
+            "--tavily-api-key-env",
+            "CUSTOM_TAVILY_KEY",
+            "--tavily-api-key",
+            "tvly-demo",
+        ]
+    )
+
+    assert args.command == "init"
+    assert args.section == "search"
+    assert args.tavily_api_key_env == "CUSTOM_TAVILY_KEY"
+    assert args.tavily_api_key == "tvly-demo"
 
 
 def test_doctor_json_output_is_machine_readable(monkeypatch, capsys, tmp_path) -> None:
