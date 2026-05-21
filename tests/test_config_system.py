@@ -266,17 +266,13 @@ def test_normalize_config_preserves_new_runtime_boundary_fields() -> None:
     assert normalized["tui"]["timing"]["shell_confirm_timeout_s"] == 90.0
 
 
-def test_normalize_config_clamps_memory_robustness_fields() -> None:
+def test_normalize_config_clamps_memory_fields() -> None:
     raw = {
         "memory": {
-            "path": "./legacy/memory.pkl",
             "min_score_default": 2.0,
             "recall_min_score_default": "-1",
             "replace_min_score_default": "bad",
             "backup_revisions": -4,
-            "allow_schema_migration": "false",
-            "model_name": "legacy-model",
-            "allow_model_download": True,
         },
     }
 
@@ -286,10 +282,23 @@ def test_normalize_config_clamps_memory_robustness_fields() -> None:
     assert normalized["memory"]["recall_min_score_default"] == 0.0
     assert normalized["memory"]["replace_min_score_default"] == DEFAULT_CONFIG["memory"]["replace_min_score_default"]
     assert normalized["memory"]["backup_revisions"] == 0
+
+
+def test_normalize_config_does_not_accept_old_section_aliases() -> None:
+    normalized, warnings = normalize_config(
+        {
+            "search": {"base_url": "http://127.0.0.1:8888"},
+            "skills": {"load": ["search-ops"]},
+            "memory": {"path": "./memory.pkl", "model_name": "unused"},
+        }
+    )
+
+    assert normalized["search"]["searxng_base_url"] == ""
+    assert "base_url" not in normalized["search"]
+    assert "load" not in normalized["skills"]
     assert "path" not in normalized["memory"]
-    assert "allow_schema_migration" not in normalized["memory"]
     assert "model_name" not in normalized["memory"]
-    assert "allow_model_download" not in normalized["memory"]
+    assert warnings == []
 
 
 def test_typed_runtime_configs_parse_normalized_config() -> None:

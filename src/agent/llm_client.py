@@ -67,7 +67,7 @@ class LLMClient:
             str(agent_cfg.get("auth_header_template", "Authorization: Bearer {api_key}")).strip() or "Authorization: Bearer {api_key}"
         )
 
-        explicit_header = os.environ.get("ALPHANUS_AUTH_HEADER", "").strip() or os.environ.get("AUTH_HEADER", "").strip() or ""
+        explicit_header = os.environ.get("ALPHANUS_AUTH_HEADER", "").strip()
         if api_key_ref.lower().startswith("env:"):
             env_name = api_key_ref[4:].strip()
             key = os.environ.get(env_name, "").strip() if env_name else ""

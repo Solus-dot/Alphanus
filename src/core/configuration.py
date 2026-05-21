@@ -820,26 +820,26 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
     caps_cfg["permission_profile"] = permission_profile
     merged["capabilities"] = caps_cfg
 
-    skills_cfg = merged.get("skills", {}) if isinstance(merged.get("skills"), dict) else {}
+    raw_skills_cfg = merged.get("skills", {}) if isinstance(merged.get("skills"), dict) else {}
+    skills_cfg: dict[str, Any] = {}
     skills_cfg["strict_capability_policy"] = _coerce_bool(
-        skills_cfg.get("strict_capability_policy"),
+        raw_skills_cfg.get("strict_capability_policy"),
         bool(DEFAULT_CONFIG["skills"]["strict_capability_policy"]),
         path="skills.strict_capability_policy",
         warnings=warnings,
     )
     skills_cfg["python_executable"] = _coerce_string(
-        skills_cfg.get("python_executable"),
+        raw_skills_cfg.get("python_executable"),
         str(DEFAULT_CONFIG["skills"]["python_executable"]),
         path="skills.python_executable",
         warnings=warnings,
     )
     skills_cfg["paths"] = _coerce_string_list(
-        skills_cfg.get("paths"),
+        raw_skills_cfg.get("paths"),
         DEFAULT_CONFIG["skills"]["paths"],
         path="skills.paths",
         warnings=warnings,
     )
-    skills_cfg.pop("load", None)
     merged["skills"] = skills_cfg
 
     agents_cfg = merged.get("agents", {}) if isinstance(merged.get("agents"), dict) else {}
@@ -873,13 +873,12 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
     merged["runtime"] = runtime_cfg
 
     tools_cfg = merged.get("tools", {}) if isinstance(merged.get("tools"), dict) else {}
-    tools_cfg.pop("enabled_toolsets", None)
-    tools_cfg.pop("disabled_toolsets", None)
     merged["tools"] = tools_cfg
 
-    search_cfg = merged.get("search", {}) if isinstance(merged.get("search"), dict) else {}
+    raw_search_cfg = merged.get("search", {}) if isinstance(merged.get("search"), dict) else {}
+    search_cfg: dict[str, Any] = {}
     provider = _coerce_string(
-        search_cfg.get("provider"),
+        raw_search_cfg.get("provider"),
         str(DEFAULT_CONFIG["search"]["provider"]),
         path="search.provider",
         warnings=warnings,
@@ -890,7 +889,7 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         provider = str(DEFAULT_CONFIG["search"]["provider"])
     search_cfg["provider"] = provider
     fallback_provider = _coerce_string(
-        search_cfg.get("fallback_provider"),
+        raw_search_cfg.get("fallback_provider"),
         str(DEFAULT_CONFIG["search"]["fallback_provider"]),
         path="search.fallback_provider",
         warnings=warnings,
@@ -899,7 +898,7 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         _warn(warnings, f"search.fallback_provider: unsupported {fallback_provider!r}, using default")
         fallback_provider = str(DEFAULT_CONFIG["search"]["fallback_provider"])
     search_cfg["fallback_provider"] = "" if fallback_provider == SEARCH_FALLBACK_NONE else fallback_provider
-    raw_searxng_url = search_cfg.get("searxng_base_url") or search_cfg.get("base_url")
+    raw_searxng_url = raw_search_cfg.get("searxng_base_url")
     base_url = (
         str(DEFAULT_CONFIG["search"]["searxng_base_url"])
         if raw_searxng_url is None
@@ -913,36 +912,35 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         else:
             base_url = parsed._replace(params="", query="", fragment="").geturl().rstrip("/")
     search_cfg["searxng_base_url"] = base_url
-    search_cfg.pop("base_url", None)
     search_cfg["tavily_api_key_env"] = _normalize_env_name(
-        search_cfg.get("tavily_api_key_env"),
+        raw_search_cfg.get("tavily_api_key_env"),
         default=str(DEFAULT_CONFIG["search"]["tavily_api_key_env"]),
         path="search.tavily_api_key_env",
         warnings=warnings,
     )
     search_cfg["request_timeout_s"] = _coerce_float(
-        search_cfg.get("request_timeout_s"),
+        raw_search_cfg.get("request_timeout_s"),
         float(DEFAULT_CONFIG["search"]["request_timeout_s"]),
         path="search.request_timeout_s",
         warnings=warnings,
         minimum=1.0,
     )
     search_cfg["request_retries"] = _coerce_int(
-        search_cfg.get("request_retries"),
+        raw_search_cfg.get("request_retries"),
         int(DEFAULT_CONFIG["search"]["request_retries"]),
         path="search.request_retries",
         warnings=warnings,
         minimum=0,
     )
     search_cfg["request_retry_backoff_s"] = _coerce_float(
-        search_cfg.get("request_retry_backoff_s"),
+        raw_search_cfg.get("request_retry_backoff_s"),
         float(DEFAULT_CONFIG["search"]["request_retry_backoff_s"]),
         path="search.request_retry_backoff_s",
         warnings=warnings,
         minimum=0.0,
     )
     search_cfg["fetch_max_redirects"] = _coerce_int(
-        search_cfg.get("fetch_max_redirects"),
+        raw_search_cfg.get("fetch_max_redirects"),
         int(DEFAULT_CONFIG["search"]["fetch_max_redirects"]),
         path="search.fetch_max_redirects",
         warnings=warnings,
