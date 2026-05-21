@@ -177,24 +177,42 @@ async def test_command_popup_narrows_from_he_to_hel_and_keeps_help_visible(tmp_p
 
 
 @pytest.mark.anyio
-async def test_footer_stays_in_chat_column_and_sidebar_uses_full_height(tmp_path: Path) -> None:
+async def test_minimal_shell_uses_bottom_metadata_and_prompt_marker(tmp_path: Path) -> None:
     tui = AlphanusTUI(_tui_agent_stub(tmp_path))
     tui._open_startup_session_manager = lambda: None
     tui._maybe_refresh_model_status = lambda force=False: None
 
     async with tui.run_test(size=(160, 40)) as pilot:
         await pilot.pause()
-        footer = tui.query_one("#footer")
+
+        assert tui.query_one("#sidebar").display is False
+        assert str(tui.query_one("#prompt-marker").render()) == ">"
+        assert tui.query_one("#prompt-marker").region.x == tui.query_one("#status-left").region.x
+        assert "model:" in str(tui.query_one("#status-left").render())
+        assert "Esc to Clear" in str(tui.query_one("#status-right").render())
+        assert tui.query_one("#status-bar").region.y < tui.query_one("#meta-bar").region.y
+        assert "session:" in str(tui.query_one("#meta-center").render())
+        assert "ctx:" in str(tui.query_one("#meta-right").render())
+
+
+@pytest.mark.anyio
+async def test_ctrl_l_opens_and_focuses_hidden_tree_split(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    tui._open_startup_session_manager = lambda: None
+    tui._maybe_refresh_model_status = lambda force=False: None
+
+    async with tui.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
         sidebar = tui.query_one("#sidebar")
-        inspector = tui.query_one("#sidebar-inspector-scroll")
-        chat_input = tui.query_one(ChatInput)
-        chat_log = tui.query_one("#chat-log")
+
+        assert sidebar.display is False
+
+        await pilot.press("ctrl+l")
+        await pilot.pause()
 
         assert sidebar.display is True
-        assert footer.region.right <= sidebar.region.x
-        assert chat_input.region.x > chat_log.region.x
-        assert inspector.region.bottom == sidebar.region.bottom
-        assert inspector.region.y > sidebar.region.y + (sidebar.region.height // 3)
+        assert sidebar.region.width == 32
+        assert tui._focused_panel == "tree"
 
 
 @pytest.mark.anyio
@@ -218,42 +236,9 @@ async def test_attachment_name_renders_in_separator_without_moving_it(tmp_path: 
 
         assert separator.region.y == separator_y_before
         assert attachment_bar.region.y > separator.region.y
-        assert attach_file.region.y >= chat_input.region.y
-        assert attach_file.region.x > chat_input.region.x
+        assert attach_file.display is False
         assert chat_input.region.x >= composer.region.x + 2
-        assert attach_file.region.right <= composer.region.right - 2
         assert "notes.txt" in str(attachment_bar.render())
-
-
-@pytest.mark.anyio
-async def test_sidebar_width_changes_at_resize_thresholds(tmp_path: Path) -> None:
-    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
-    tui._open_startup_session_manager = lambda: None
-    tui._maybe_refresh_model_status = lambda force=False: None
-
-    async with tui.run_test(size=(160, 40)) as pilot:
-        await pilot.pause()
-        sidebar = tui.query_one("#sidebar")
-        footer = tui.query_one("#footer")
-
-        assert sidebar.display is True
-        assert sidebar.region.width == 38
-        assert footer.region.right <= sidebar.region.x
-
-        await pilot.resize_terminal(120, 40)
-        await pilot.pause()
-        assert sidebar.display is True
-        assert sidebar.region.width == 32
-        assert footer.region.right <= sidebar.region.x
-
-        await pilot.resize_terminal(119, 40)
-        await pilot.pause()
-        assert sidebar.display is False
-
-        await pilot.resize_terminal(140, 40)
-        await pilot.pause()
-        assert sidebar.display is True
-        assert sidebar.region.width == 38
 
 
 def test_active_command_span_covers_command_token() -> None:
@@ -442,54 +427,6 @@ def test_app_bindings_include_open_file_picker_shortcut() -> None:
     assert bindings["ctrl+b"] == "toggle_sidebar"
 
 
-def test_toggle_sidebar_hides_and_restores_sidebar(tmp_path: Path) -> None:
-    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
-    sidebar = SimpleNamespace(display=True, styles=SimpleNamespace(width=38))
-    calls: list[str] = []
-    tui._focused_panel = "tree"
-    tui._sidebar_visible_override = None
-    tui._last_sidebar_layout_width = 160
-    tui.query_one = lambda selector, _type=None: sidebar if selector == "#sidebar" else None
-    tui._apply_focus_classes = lambda: calls.append("focus")
-    tui._update_footer_separator = lambda: calls.append("footer")
-    tui._update_sidebar = lambda: calls.append("sidebar")
-    tui._update_topbar = lambda: calls.append("topbar")
-
-    tui.action_toggle_sidebar()
-
-    assert sidebar.display is False
-    assert tui._focused_panel == "chat"
-    assert tui._sidebar_visible_override is False
-    assert calls == ["focus", "footer", "sidebar", "topbar"]
-
-    calls.clear()
-    tui.action_toggle_sidebar()
-
-    assert sidebar.display is True
-    assert sidebar.styles.width == 38
-    assert tui._sidebar_visible_override is True
-    assert calls == ["focus", "footer", "sidebar", "topbar"]
-
-
-def test_toggle_sidebar_can_restore_sidebar_below_auto_width(tmp_path: Path) -> None:
-    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
-    sidebar = SimpleNamespace(display=False, styles=SimpleNamespace(width=0))
-    tui._focused_panel = "input"
-    tui._sidebar_visible_override = None
-    tui._last_sidebar_layout_width = 100
-    tui.query_one = lambda selector, _type=None: sidebar if selector == "#sidebar" else None
-    tui._apply_focus_classes = lambda: None
-    tui._update_footer_separator = lambda: None
-    tui._update_sidebar = lambda: None
-    tui._update_topbar = lambda: None
-
-    tui.action_toggle_sidebar()
-
-    assert sidebar.display is True
-    assert sidebar.styles.width == 32
-    assert tui._sidebar_visible_override is True
-
-
 def test_on_resize_rebuilds_idle_viewport_and_updates_chrome(tmp_path: Path) -> None:
     tui = AlphanusTUI(_tui_agent_stub(tmp_path))
     sidebar = SimpleNamespace(display=False)
@@ -511,7 +448,7 @@ def test_on_resize_rebuilds_idle_viewport_and_updates_chrome(tmp_path: Path) -> 
         else None
     )
     tui._apply_focus_classes = lambda: calls.append("focus")
-    tui._update_topbar = lambda: calls.append("topbar")
+    tui._update_metadata = lambda: calls.append("metadata")
     tui._update_status1 = lambda: calls.append("status1")
     tui._update_status2 = lambda: calls.append("status2")
     tui._update_sidebar = lambda: calls.append("sidebar")
@@ -526,11 +463,11 @@ def test_on_resize_rebuilds_idle_viewport_and_updates_chrome(tmp_path: Path) -> 
 
     tui.on_resize(SimpleNamespace(size=SimpleNamespace(width=130)))
 
-    assert sidebar.display is True
+    assert sidebar.display is False
     assert len(scheduled) == 1
     assert calls == []
     scheduled.pop()()
-    assert calls == ["focus", "topbar", "status1", "status2", "sidebar", "attachments", "transcript", "popup"]
+    assert calls == ["focus", "metadata", "status1", "status2", "sidebar", "attachments", "transcript", "popup"]
 
 
 def test_on_resize_refreshes_stream_partial_and_unfocuses_hidden_tree(tmp_path: Path) -> None:
@@ -554,7 +491,7 @@ def test_on_resize_refreshes_stream_partial_and_unfocuses_hidden_tree(tmp_path: 
         else None
     )
     tui._apply_focus_classes = lambda: calls.append("focus")
-    tui._update_topbar = lambda: calls.append("topbar")
+    tui._update_metadata = lambda: calls.append("metadata")
     tui._update_status1 = lambda: calls.append("status1")
     tui._update_status2 = lambda: calls.append("status2")
     tui._update_sidebar = lambda: calls.append("sidebar")
@@ -574,7 +511,7 @@ def test_on_resize_refreshes_stream_partial_and_unfocuses_hidden_tree(tmp_path: 
     assert len(scheduled) == 1
     assert calls == []
     scheduled.pop()()
-    assert calls == ["focus", "topbar", "status1", "status2", "sidebar", "attachments", "transcript", "partial", "popup"]
+    assert calls == ["focus", "metadata", "status1", "status2", "sidebar", "attachments", "transcript", "partial", "popup"]
 
 
 def test_config_editor_view_omits_secrets_and_internal_fields() -> None:
@@ -826,6 +763,105 @@ def test_refresh_themed_transcript_entries_rebuilds_historical_code_panel() -> N
     assert view._entries[0].renderable == Text("transient command output")
     assert calls == [("print('theme')", "python")]
     assert view._entries[1].source == ("code_block", ["print('theme')"], "python", 2)
+
+
+def test_refresh_themed_transcript_entries_rebuilds_historical_tool_panel() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    view = TranscriptView(id="chat-log")
+    calls: list[tuple[str, str, bool]] = []
+    bar_colors: list[str] = []
+    view.set_entries(
+        [
+            TranscriptEntry(
+                "renderable",
+                Padding(Text("old tool panel"), pad=(0, 0, 0, 0)),
+                source=("tool_lifecycle", "web_search", "connection refused", False),
+            )
+        ]
+    )
+    tui._log = lambda: view
+    tui._theme_color = lambda key, default: {"assistant_bar": "#bd93f9", "error": "#ff5555"}.get(key, default)
+    tui._tool_lifecycle_panel = lambda name, detail, ok: calls.append((name, detail, ok)) or Text(
+        f"new:{name}:{detail}:{ok}"
+    )
+    tui._bar_renderable = lambda renderable, color, **_kwargs: bar_colors.append(color) or renderable
+
+    tui._refresh_themed_transcript_entries()
+
+    assert calls == [("web_search", "connection refused", False)]
+    assert bar_colors == ["#bd93f9"]
+    assert view._entries[0].source == ("tool_lifecycle", "web_search", "connection refused", False)
+
+
+def test_failed_tool_lifecycle_block_records_theme_refresh_source() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    writes: list[tuple[object, str, tuple[object, ...] | None]] = []
+    tui._theme_color = lambda _key, default: default
+    tui._tool_lifecycle_panel = lambda name, detail, ok: Text(f"{name}:{detail}:{ok}")
+    tui._write_bar_renderable = lambda renderable, *, bar_color, source=None, **_kwargs: writes.append(
+        (renderable, bar_color, source)
+    )
+
+    tui._write_tool_lifecycle_block("web_search", False, "connection refused")
+
+    assert writes
+    assert writes[0][2] == ("tool_lifecycle", "web_search", "connection refused", False)
+
+
+def test_web_search_failure_refreshes_with_active_theme_colors() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    view = TranscriptView(id="chat-log")
+    panel_calls: list[tuple[str, str, bool]] = []
+    bar_colors: list[str] = []
+    view.set_entries(
+        [
+            TranscriptEntry(
+                "renderable",
+                Padding(Text("old web search failure"), pad=(0, 0, 0, 0)),
+                source=("tool_lifecycle", "web_search", "limit=5, query=python   connection refused", False),
+            )
+        ]
+    )
+    tui._log = lambda: view
+    tui._theme_color = lambda key, default: {"assistant_bar": "#88c0d0", "error": "#bf616a"}.get(key, default)
+    tui._tool_lifecycle_panel = lambda name, detail, ok: panel_calls.append((name, detail, ok)) or Text(
+        f"{name}:{detail}:{ok}"
+    )
+    tui._bar_renderable = lambda renderable, color, **_kwargs: bar_colors.append(color) or renderable
+
+    tui._refresh_themed_transcript_entries()
+
+    assert panel_calls == [("web_search", "limit=5, query=python   connection refused", False)]
+    assert bar_colors == ["#88c0d0"]
+    assert view._entries[0].source == (
+        "tool_lifecycle",
+        "web_search",
+        "limit=5, query=python   connection refused",
+        False,
+    )
+
+
+def test_error_lines_refresh_with_active_theme_color() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    view = TranscriptView(id="chat-log")
+    view.set_entries(
+        [
+            TranscriptEntry(
+                "markup_line",
+                Text.from_markup("[bold red]  ✖ SearXNG unreachable[/bold red]"),
+                source=("error_line", "SearXNG unreachable"),
+            )
+        ]
+    )
+    tui._log = lambda: view
+    tui._theme_color = lambda key, default: {"error": "#bf616a"}.get(key, default)
+
+    tui._refresh_themed_transcript_entries()
+
+    lines = _render_lines(view.render(), width=80)
+    assert lines == ["  ✖ SearXNG unreachable"]
+    assert "#bf616a" in str(view._entries[0].renderable.spans[0].style)
+    assert view._entries[0].source == ("error_line", "SearXNG unreachable")
 
 
 def test_successful_tool_lifecycle_line_has_vertical_spacing() -> None:
@@ -1463,24 +1499,24 @@ def test_update_context_usage_ignores_total_tokens_without_prompt_tokens() -> No
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._last_model_context_tokens = 321
     updates: list[str] = []
-    tui._update_topbar = lambda: updates.append("topbar")
+    tui._update_metadata = lambda: updates.append("metadata")
 
     tui._update_context_usage_from_payload({"total_tokens": 999})
 
     assert tui._last_model_context_tokens == 321
-    assert updates == ["topbar"]
+    assert updates == ["metadata"]
 
 
 def test_update_context_usage_accepts_llamacpp_prompt_eval_count() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._last_model_context_tokens = None
     updates: list[str] = []
-    tui._update_topbar = lambda: updates.append("topbar")
+    tui._update_metadata = lambda: updates.append("metadata")
 
     tui._update_context_usage_from_payload({"prompt_eval_count": 512, "eval_count": 32})
 
     assert tui._last_model_context_tokens == 512
-    assert updates == ["topbar"]
+    assert updates == ["metadata"]
 
 
 def test_apply_theme_refreshes_transcript_and_preview_theme(tmp_path: Path) -> None:
@@ -1489,7 +1525,7 @@ def test_apply_theme_refreshes_transcript_and_preview_theme(tmp_path: Path) -> N
     preview_updates: list[dict[str, str]] = []
     tui.refresh_css = lambda animate=False: events.append(f"css:{animate}")
     tui._apply_focus_classes = lambda: events.append("focus")
-    tui._update_topbar = lambda: events.append("topbar")
+    tui._update_metadata = lambda: events.append("metadata")
     tui._update_status1 = lambda: events.append("status1")
     tui._update_status2 = lambda: events.append("status2")
     tui._update_footer_separator = lambda: events.append("footer")
@@ -1523,7 +1559,7 @@ def test_apply_theme_rerenders_streaming_live_preview(tmp_path: Path) -> None:
     events: list[str] = []
     tui.refresh_css = lambda animate=False: events.append(f"css:{animate}")
     tui._apply_focus_classes = lambda: events.append("focus")
-    tui._update_topbar = lambda: events.append("topbar")
+    tui._update_metadata = lambda: events.append("metadata")
     tui._update_status1 = lambda: events.append("status1")
     tui._update_status2 = lambda: events.append("status2")
     tui._update_footer_separator = lambda: events.append("footer")
@@ -1550,12 +1586,12 @@ def test_update_context_usage_replaces_previous_turn_value() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._last_model_context_tokens = 768
     updates: list[str] = []
-    tui._update_topbar = lambda: updates.append("topbar")
+    tui._update_metadata = lambda: updates.append("metadata")
 
     tui._update_context_usage_from_payload({"prompt_tokens": 256})
 
     assert tui._last_model_context_tokens == 256
-    assert updates == ["topbar"]
+    assert updates == ["metadata"]
 
 
 def test_apply_model_status_refresh_updates_visible_status_and_hot_swap_state() -> None:
@@ -1574,7 +1610,7 @@ def test_apply_model_status_refresh_updates_visible_status_and_hot_swap_state() 
     )
     updates: list[str] = []
     tui._update_status1 = lambda: updates.append("status")
-    tui._update_topbar = lambda: updates.append("topbar")
+    tui._update_metadata = lambda: updates.append("metadata")
 
     tui._apply_model_status_refresh(
         ModelStatus(
@@ -1593,7 +1629,7 @@ def test_apply_model_status_refresh_updates_visible_status_and_hot_swap_state() 
     assert state.model_name == "qwen-4"
     assert state.model_context_window == 16384
     assert state.refresh_fast_until > 0.0
-    assert updates == ["status", "topbar"]
+    assert updates == ["status", "metadata"]
 
 
 def test_current_model_refresh_interval_is_adaptive() -> None:
@@ -1627,7 +1663,7 @@ def test_apply_model_status_refresh_keeps_model_name_when_offline() -> None:
     )
     updates: list[str] = []
     tui._update_status1 = lambda: updates.append("status")
-    tui._update_topbar = lambda: updates.append("topbar")
+    tui._update_metadata = lambda: updates.append("metadata")
 
     tui._apply_model_status_refresh(
         ModelStatus(
@@ -1644,7 +1680,7 @@ def test_apply_model_status_refresh_keeps_model_name_when_offline() -> None:
     assert state.model_name == "qwen-stale"
     assert state.model_context_window == 8192
     assert state.refresh_fast_until > 0.0
-    assert updates == ["status", "topbar"]
+    assert updates == ["status", "metadata"]
 
 
 def test_should_startup_readiness_poll_only_for_cold_local_model() -> None:
@@ -1921,7 +1957,7 @@ def test_handle_save_renames_and_persists_active_session() -> None:
     tui.conv_tree = tree
     tui._write_command_action = lambda text, **_kwargs: actions.append(text)
     tui._write_error = errors.append
-    tui._update_topbar = lambda: None
+    tui._update_metadata = lambda: None
 
     assert tui._handle_command("/save Backend Work") is True
     assert saved_calls == [("sess-1", "Backend Work", "2026-03-20T10:00:00+00:00", [])]
@@ -2535,7 +2571,7 @@ def test_activate_session_state_uses_newest_leaf_not_rightmost_descendant() -> N
     assert tui._tree_cursor_id == newest.id
 
 
-def test_switch_to_session_resets_context_usage_and_refreshes_topbar() -> None:
+def test_switch_to_session_resets_context_usage_and_refreshes_metadata() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     session = ChatSession(
         id="sess-4",
@@ -2554,16 +2590,16 @@ def test_switch_to_session_resets_context_usage_and_refreshes_topbar() -> None:
     tui._update_status1 = lambda: events.append("status1")
     tui._update_status2 = lambda: events.append("status2")
     tui._update_input_placeholder = lambda: events.append("placeholder")
-    tui._update_topbar = lambda: events.append("topbar")
+    tui._update_metadata = lambda: events.append("metadata")
 
     tui._switch_to_session(session)
 
     assert tui._last_model_context_tokens is None
     assert tui.pending == []
-    assert events == ["activate:Next Session", "rebuild", "sidebar", "attachments", "status1", "status2", "placeholder", "topbar"]
+    assert events == ["activate:Next Session", "rebuild", "sidebar", "attachments", "status1", "status2", "placeholder", "metadata"]
 
 
-def test_handle_clear_resets_context_usage_and_refreshes_topbar() -> None:
+def test_handle_clear_resets_context_usage_and_refreshes_metadata() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._id = "app"
     tui._reactive_streaming = False
@@ -2581,13 +2617,13 @@ def test_handle_clear_resets_context_usage_and_refreshes_topbar() -> None:
     tui._update_status2 = lambda: events.append("status2")
     tui._update_sidebar = lambda: events.append("sidebar")
     tui._update_input_placeholder = lambda: events.append("placeholder")
-    tui._update_topbar = lambda: events.append("topbar")
+    tui._update_metadata = lambda: events.append("metadata")
 
     assert tui._handle_command("/clear") is True
     assert tui.conv_tree is fresh_tree
     assert tui.pending == []
     assert tui._last_model_context_tokens is None
-    assert events == ["log", "partial", "save", "attachments", "status1", "status2", "sidebar", "placeholder", "topbar"]
+    assert events == ["log", "partial", "save", "attachments", "status1", "status2", "sidebar", "placeholder", "metadata"]
 
 
 def test_session_manager_new_action_opens_name_prompt() -> None:

@@ -153,8 +153,12 @@ def append_transcript_entry(app: Any, entry: TranscriptEntry) -> None:
     app._maybe_scroll_end()
 
 
-def write_markup(app: Any, markup: str) -> None:
-    entry = TranscriptEntry("blank", Text("")) if markup == "" else TranscriptEntry("markup_line", Text.from_markup(markup))
+def write_markup(app: Any, markup: str, *, source: tuple[Any, ...] | None = None) -> None:
+    entry = (
+        TranscriptEntry("blank", Text(""), source=source)
+        if markup == ""
+        else TranscriptEntry("markup_line", Text.from_markup(markup), source=source)
+    )
     append_transcript_entry(app, entry)
     app._last_log_was_blank = markup == ""
 
@@ -338,6 +342,7 @@ def tool_lifecycle_panel(app: Any, name: str, detail: str, *, ok: bool) -> Panel
 
 
 def write_tool_lifecycle_block(app: Any, name: str, ok: bool, detail: str = "") -> None:
+    normalized_detail = detail or ("completed" if ok else "failed")
     if ok:
         success = _theme_color(app, "success", DEFAULT_SUCCESS_COLOR)
         muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
@@ -351,8 +356,10 @@ def write_tool_lifecycle_block(app: Any, name: str, ok: bool, detail: str = "") 
             content_indent=2,
         )
         return
-    app._write_assistant_bar_renderable(
-        app._tool_lifecycle_panel(name, detail or ("completed" if ok else "failed"), ok=ok),
+    app._write_bar_renderable(
+        app._tool_lifecycle_panel(name, normalized_detail, ok=ok),
+        bar_color=_theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
+        source=("tool_lifecycle", name, normalized_detail, ok),
     )
 
 
@@ -418,6 +425,29 @@ def refresh_themed_transcript_entries(app: Any) -> None:
                     ),
                     pad=(0, 0, 0, 0),
                 ),
+                source=source,
+            )
+        if kind == "tool_lifecycle" and len(source) == 4:
+            name = str(source[1])
+            detail = str(source[2])
+            ok = bool(source[3])
+            return TranscriptEntry(
+                entry.kind,
+                Padding(
+                    app._bar_renderable(
+                        app._tool_lifecycle_panel(name, detail, ok=ok),
+                        _theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
+                    ),
+                    pad=(0, 0, 0, 0),
+                ),
+                source=source,
+            )
+        if kind == "error_line" and len(source) == 2:
+            text = str(source[1])
+            error = _theme_color(app, "error", DEFAULT_ERROR_COLOR)
+            return TranscriptEntry(
+                entry.kind,
+                Text.from_markup(f"[bold {error}]  ✖ {esc(text)}[/bold {error}]"),
                 source=source,
             )
         if kind == "user_line" and len(source) == 3:
@@ -636,7 +666,8 @@ def write_info(app: Any, text: str, *, accent_color: str) -> None:
 
 
 def write_error(app: Any, text: str) -> None:
-    app._write(f"[bold red]  ✖ {esc(text)}[/bold red]")
+    error = _theme_color(app, "error", DEFAULT_ERROR_COLOR)
+    write_markup(app, f"[bold {error}]  ✖ {esc(text)}[/bold {error}]", source=("error_line", text))
 
 
 def write_section_heading(app: Any, title: str, *, color: str) -> None:
