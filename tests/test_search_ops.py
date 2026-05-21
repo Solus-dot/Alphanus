@@ -383,6 +383,44 @@ def test_web_search_falls_back_to_tavily_when_searxng_unreachable(mocker, monkey
     ]
 
 
+def test_web_search_falls_back_to_tavily_when_searxng_url_missing(mocker, monkeypatch):
+    module = _load_search_module()
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
+    payload = {"results": [{"title": "Fallback without SearXNG", "url": "https://example.com/fallback", "content": "Snippet."}]}
+
+    class _Resp:
+        headers = _Headers()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(payload).encode("utf-8")
+
+    calls: list[str] = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(req.full_url)
+        return _Resp()
+
+    env = _env()
+    env.config["search"]["fallback_provider"] = "tavily"
+    env.config["search"]["searxng_base_url"] = ""
+    mocker.patch.object(module.urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    out = module.execute("web_search", {"query": "fallback status", "limit": 1}, env=env)
+
+    assert calls == ["https://api.tavily.com/search"]
+    assert out["provider"] == "tavily"
+    assert out["provider_chain"] == [
+        {"provider": "searxng", "status": "error", "error": "SearXNG base URL not configured"},
+        {"provider": "tavily", "status": "ok"},
+    ]
+
+
 def test_web_search_can_use_tavily_as_primary(mocker, monkeypatch):
     module = _load_search_module()
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key")
