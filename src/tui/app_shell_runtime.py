@@ -106,10 +106,6 @@ def initialize_shell_state(app: Any, *, agent: Any, debug: bool) -> None:
 
 
 def compose_shell(app: Any, *, chat_input_cls: Any, transcript_view_cls: Any):
-    with Horizontal(id="topbar"):
-        yield Static("", id="topbar-left")
-        yield Static("", id="topbar-center")
-        yield Static("", id="topbar-right")
     with Horizontal(id="main-area"):
         with Vertical(id="chat-column"):
             with ScrollableContainer(id="chat-scroll"):
@@ -120,12 +116,16 @@ def compose_shell(app: Any, *, chat_input_cls: Any, transcript_view_cls: Any):
                 yield Static("", id="attachment-bar", markup=True)
                 with Horizontal(id="input-row"):
                     with Horizontal(id="composer-shell"):
+                        yield Static(">", id="prompt-marker")
                         yield chat_input_cls(id="chat-input", placeholder="Type a message…")
                         with Horizontal(id="input-accessories"):
                             yield Button("+ File (Ctrl+F)", id="attach-file")
                 with Horizontal(id="status-bar"):
                     yield Static("", id="status-left")
                     yield Static("", id="status-right")
+                with Horizontal(id="meta-bar"):
+                    yield Static("", id="meta-center")
+                    yield Static("", id="meta-right")
         with Vertical(id="sidebar"):
             with Vertical(id="sidebar-tree-section"):
                 yield Static("Conversation Tree", id="sidebar-tree-header")

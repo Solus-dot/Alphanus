@@ -5,34 +5,6 @@ ALPHANUS_TUI_CSS = """
         color: $foreground;
     }
 
-    #topbar {
-        height: 3;
-        layout: horizontal;
-        background: $panel;
-        border-bottom: solid $app-border;
-        padding: 0 2;
-    }
-
-    #topbar-left {
-        width: 1fr;
-        height: 3;
-        content-align: left middle;
-    }
-
-    #topbar-center {
-        width: auto;
-        min-width: 0;
-        height: 3;
-        content-align: left middle;
-    }
-
-    #topbar-right {
-        width: auto;
-        height: 3;
-        content-align: right middle;
-        padding-left: 2;
-    }
-
     #main-area {
         height: 1fr;
         layout: horizontal;
@@ -62,7 +34,7 @@ ALPHANUS_TUI_CSS = """
     }
 
     #chat-scroll.-active-panel {
-        border: round $accent;
+        border-left: solid $secondary;
     }
 
     #chat-log {
@@ -143,7 +115,7 @@ ALPHANUS_TUI_CSS = """
     }
 
     #sidebar.-active-panel {
-        border-left: solid $accent;
+        border-left: solid $secondary;
     }
 
     #sidebar-tree-content {
@@ -185,10 +157,10 @@ ALPHANUS_TUI_CSS = """
 
     #footer {
         width: 1fr;
-        height: 6;
+        height: 5;
         background: $panel;
         layout: vertical;
-        padding: 0 0 0 1;
+        padding: 0 0 0 0;
     }
 
     #command-popup {
@@ -266,45 +238,78 @@ ALPHANUS_TUI_CSS = """
         width: 1fr;
         height: 1;
         layout: horizontal;
-        padding: 0 1;
+        padding: 0 2;
         background: $panel;
     }
 
     #status-left {
-        width: 1fr;
+        width: auto;
         height: 1;
         content-align: left middle;
     }
 
     #status-right {
-        width: auto;
+        width: 1fr;
         height: 1;
         content-align: right middle;
+        padding-left: 1;
+    }
+
+    #meta-bar {
+        width: 1fr;
+        height: 1;
+        layout: horizontal;
+        padding: 0 2;
+        background: $panel;
+    }
+
+    #meta-center {
+        width: auto;
+        min-width: 0;
+        height: 1;
+        content-align: left middle;
+        padding-left: 0;
+    }
+
+    #meta-right {
+        width: auto;
+        height: 1;
+        content-align: left middle;
+        padding-left: 1;
     }
 
     #input-row {
         width: 1fr;
-        height: 3;
-        layout: vertical;
+        height: 1;
+        layout: horizontal;
         background: $panel;
-        padding: 0 0 0 0;
-        min-height: 3;
+        padding: 0 2;
+        min-height: 1;
     }
 
     #composer-shell {
         width: 1fr;
-        height: 3;
+        height: 1;
         layout: horizontal;
         background: $panel;
-        border: round $app-border;
-        padding: 0 1;
+        border: none;
+        padding: 0 2 0 0;
         margin: 0 0 0 0;
         align: left middle;
     }
 
+    #prompt-marker {
+        width: auto;
+        height: 1;
+        color: $secondary;
+        text-style: bold;
+        content-align: left middle;
+        padding: 0 1 0 0;
+    }
+
     ChatInput {
         width: 1fr;
-        height: 3;
+        height: 1;
         border: none;
         background: transparent;
         color: $foreground;
@@ -317,21 +322,23 @@ ALPHANUS_TUI_CSS = """
     }
 
     #input-row.-active-panel #composer-shell {
-        border: round $accent;
+        border: none;
     }
 
     #input-accessories {
-        width: auto;
+        width: 0;
         height: 1;
         layout: horizontal;
         align: right middle;
-        padding-left: 1;
+        padding-left: 0;
+        display: none;
     }
 
     #attach-file {
-        width: auto;
-        min-width: 8;
+        width: 0;
+        min-width: 0;
         height: 1;
+        display: none;
         background: $app-selection-bg;
         color: $accent;
         border: none;
