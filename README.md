@@ -25,6 +25,7 @@
 - [Model Endpoint Setup](#model-endpoint-setup)
 - [Major Features](#major-features)
   - [Sessions and Branching](#sessions-and-branching)
+  - [Terminal UI](#terminal-ui)
   - [Collaboration Modes](#collaboration-modes)
   - [Skills and Tool Loading](#skills-and-tool-loading)
   - [Workspace Operations](#workspace-operations)
@@ -85,7 +86,6 @@ uv run alphanus
 
 - `ALPHANUS_API_KEY` for authenticated model endpoints
 - `ALPHANUS_AUTH_HEADER` for advanced custom auth header override
-- `AUTH_HEADER` fallback if `ALPHANUS_AUTH_HEADER` is unset
 - `TAVILY_API_KEY` when `search.provider = "tavily"` or `search.fallback_provider = "tavily"`
 - `ALPHANUS_EMBEDDINGS_API_KEY` when optional OpenAI-compatible retrieval embeddings use an authenticated endpoint
 
@@ -118,6 +118,7 @@ uv run alphanus init --non-interactive \
   --models-endpoint https://api.openai.com/v1/models \
   --search-provider searxng \
   --search-fallback-provider tavily \
+  --tavily-api-key "$TAVILY_API_KEY" \
   --searxng-base-url http://127.0.0.1:8888 \
   --theme catppuccin-mocha
 ```
@@ -136,7 +137,7 @@ Notes:
 
 - Named sessions are autosaved after each turn
 - A conversation can branch at any point and switch between branches
-- Tree view makes alternate solution paths explicit
+- The conversation tree can be opened on demand for branch navigation and turn inspection
 - Loaded skill IDs are persisted with each session
 
 Branching commands:
@@ -146,6 +147,25 @@ Branching commands:
 - `/branches`
 - `/switch <n>`
 - `/tree`
+
+### Terminal UI
+
+The TUI keeps the primary view focused on the transcript and composer.
+
+- Bottom metadata shows model, thinking state, session, branch, endpoint, LLM state, and context usage
+- Keyboard hints sit beside the input instead of a persistent top header
+- The conversation tree and inspector live in a hidden split that opens only when requested
+- Tool execution details, reasoning text, streamed file previews, and themes remain available in the transcript flow
+
+Useful controls:
+
+- `Tab` / `Shift+Tab`: cycle active panels
+- `Ctrl+B`: toggle the conversation split
+- `Ctrl+L`: open and focus the tree split
+- `Ctrl+H`: focus the transcript
+- `Ctrl+G`: focus the composer
+- `PgUp` / `PgDn`: scroll transcript
+- `j` / `k`, `Enter` / `o`, `[` / `]`, `g` / `G`: navigate the tree split
 
 ### Collaboration Modes
 
@@ -222,6 +242,7 @@ Search is intended for time-sensitive queries and feeds the local retrieval inde
 - primary provider: `searxng`
 - fallback provider: optional `tavily` using `TAVILY_API_KEY`
 - `search.searxng_base_url` is required for SearXNG; if it is missing or unreachable, Alphanus can use Tavily when `search.fallback_provider = "tavily"`
+- `uv run alphanus init search --tavily-api-key ...` stores the key in `~/.alphanus/.env`
 - retrieval store: SQLite FTS under the Alphanus state root, usually `~/.alphanus/retrieval/index.sqlite` unless `ALPHANUS_APP_ROOT` is set
 - fetched pages are indexed; search result snippets alone are not persisted
 - optional dense retrieval uses an OpenAI-compatible embeddings endpoint when `retrieval.embeddings.enabled` is true
@@ -238,6 +259,7 @@ Configure a local SearXNG instance:
 uv run alphanus init search --non-interactive \
   --search-provider searxng \
   --search-fallback-provider tavily \
+  --tavily-api-key "$TAVILY_API_KEY" \
   --searxng-base-url http://127.0.0.1:8888
 
 uv run alphanus doctor
@@ -249,7 +271,8 @@ Use Tavily directly without running SearXNG:
 export TAVILY_API_KEY="tvly-..."
 
 uv run alphanus init search --non-interactive \
-  --search-provider tavily
+  --search-provider tavily \
+  --tavily-api-key "$TAVILY_API_KEY"
 ```
 
 ### Safety and Permission Profiles
@@ -284,8 +307,10 @@ Per-turn journal includes:
 ### Conversation
 
 - `/help`
+- `/shortcuts`, `/keymap`, `/keys`
 - `/details`
 - `/think`
+- `/mode [plan|execute]`
 - `/clear`
 - `/quit`, `/exit`, `/q`
 
@@ -295,10 +320,17 @@ Per-turn journal includes:
 - `/rename <name>`
 - `/save [name]`
 
+### Branching
+
+- `/branch [label]`
+- `/unbranch`
+- `/branches`
+- `/switch <n>`
+- `/tree`
+
 ### Files and Attachments
 
 - `/file [path]`
-- `/image [path]`
 - `/detach [n|last|all]`
 - `/code [n|last]`
 
@@ -307,6 +339,15 @@ Per-turn journal includes:
 - `/skills`
 - `/reload`
 - `/doctor`
+- `/skill-on <id>`
+- `/skill-off <id>`
+- `/skill-unload <id>`
+- `/skill-unload-all`
+- `/skill-reload`
+- `/skill-info <id>`
+- `/memory-stats`
+- `/context`
+- `/workspace-tree`
 - `/theme`
 - `/config`
 - `/report [file]`
@@ -317,9 +358,18 @@ Per-turn journal includes:
 - `Ctrl+K`: quick palette
 - `Ctrl+P` or `/`: slash-command palette
 - `Ctrl+F`: file picker
+- `Ctrl+B`: toggle conversation split
 - `Ctrl+G`: focus composer
+- `Ctrl+H`: focus transcript
+- `Ctrl+L`: open/focus tree split
+- `Tab` / `Shift+Tab`: cycle panels
+- `PgUp` / `PgDn`: scroll transcript
 - `F2`: toggle tool details
 - `F3`: toggle thinking mode
+- `Esc`: clear input or stop stream
+- `Backspace` on empty input: remove last attachment
+- `Ctrl+Backspace`: remove last attachment
+- `Ctrl+Shift+Backspace`: clear attachments
 - `Ctrl+U`: clear draft
 - `Ctrl+Shift+K`: delete to end of line
 
