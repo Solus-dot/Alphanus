@@ -12,10 +12,18 @@ BUILTIN_THEME_IDS: Final[tuple[str, ...]] = (
     "catppuccin-macchiato",
     "tokyonight-moon",
     "gruvbox-dark-soft",
+    "dracula",
+    "nord",
+    "rose-pine-moon",
+    "ayu-dark",
+    "one-dark-pro",
 )
 
 THEME_ALIASES: Final[dict[str, str]] = {
     "catppuccin": "catppuccin-mocha",
+    "rose-pine": "rose-pine-moon",
+    "onedark": "one-dark-pro",
+    "one-dark": "one-dark-pro",
 }
 
 def normalize_theme_id(raw: str, *, default: str = DEFAULT_THEME_ID, available: Iterable[str] | None = None) -> tuple[str, bool]:

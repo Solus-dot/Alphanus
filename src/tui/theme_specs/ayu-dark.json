@@ -1,0 +1,43 @@
+{
+  "colors": {
+    "accent": "#39bae6",
+    "assistant_bar": "#39bae6",
+    "chip_bg": "#273747",
+    "chip_text": "#e6e1cf",
+    "error": "#f07178",
+    "muted": "#8a9199",
+    "panel_bg": "#0d1017",
+    "panel_border": "#3b4554",
+    "subtle": "#626a73",
+    "success": "#aad94c",
+    "text": "#e6e1cf",
+    "user_bar": "#95e6cb",
+    "warning": "#ffb454"
+  },
+  "description": "Blue amber",
+  "id": "ayu-dark",
+  "syntax_theme": "github-dark",
+  "text_area_theme": "dracula",
+  "theme": {
+    "accent": "#39bae6",
+    "background": "#10141c",
+    "dark": true,
+    "error": "#f07178",
+    "foreground": "#bfbdb6",
+    "panel": "#0d1017",
+    "primary": "#39bae6",
+    "secondary": "#d2a6ff",
+    "success": "#aad94c",
+    "surface": "#1c2430",
+    "variables": {
+      "app-border": "#3b4554",
+      "app-chip-bg": "#273747",
+      "app-chip-text": "#e6e1cf",
+      "app-muted": "#8a9199",
+      "app-selection-bg": "#273747",
+      "app-subtle": "#626a73"
+    },
+    "warning": "#ffb454"
+  },
+  "title": "Ayu Dark"
+}

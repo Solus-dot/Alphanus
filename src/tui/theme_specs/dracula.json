@@ -1,0 +1,43 @@
+{
+  "colors": {
+    "accent": "#bd93f9",
+    "assistant_bar": "#bd93f9",
+    "chip_bg": "#343746",
+    "chip_text": "#f8f8f2",
+    "error": "#ff5555",
+    "muted": "#a8b0d8",
+    "panel_bg": "#21222c",
+    "panel_border": "#6272a4",
+    "subtle": "#8892bf",
+    "success": "#50fa7b",
+    "text": "#f8f8f2",
+    "user_bar": "#8be9fd",
+    "warning": "#f1fa8c"
+  },
+  "description": "Violet cyan",
+  "id": "dracula",
+  "syntax_theme": "dracula",
+  "text_area_theme": "dracula",
+  "theme": {
+    "accent": "#bd93f9",
+    "background": "#282a36",
+    "dark": true,
+    "error": "#ff5555",
+    "foreground": "#f8f8f2",
+    "panel": "#21222c",
+    "primary": "#bd93f9",
+    "secondary": "#ff79c6",
+    "success": "#50fa7b",
+    "surface": "#343746",
+    "variables": {
+      "app-border": "#6272a4",
+      "app-chip-bg": "#343746",
+      "app-chip-text": "#f8f8f2",
+      "app-muted": "#a8b0d8",
+      "app-selection-bg": "#44475a",
+      "app-subtle": "#8892bf"
+    },
+    "warning": "#f1fa8c"
+  },
+  "title": "Dracula"
+}

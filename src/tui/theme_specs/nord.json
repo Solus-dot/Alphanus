@@ -1,0 +1,43 @@
+{
+  "colors": {
+    "accent": "#88c0d0",
+    "assistant_bar": "#88c0d0",
+    "chip_bg": "#3b4252",
+    "chip_text": "#eceff4",
+    "error": "#bf616a",
+    "muted": "#aeb8c8",
+    "panel_bg": "#252b36",
+    "panel_border": "#4c566a",
+    "subtle": "#8f9bad",
+    "success": "#a3be8c",
+    "text": "#eceff4",
+    "user_bar": "#8fbcbb",
+    "warning": "#ebcb8b"
+  },
+  "description": "Arctic blue",
+  "id": "nord",
+  "syntax_theme": "github-dark",
+  "text_area_theme": "dracula",
+  "theme": {
+    "accent": "#88c0d0",
+    "background": "#2e3440",
+    "dark": true,
+    "error": "#bf616a",
+    "foreground": "#d8dee9",
+    "panel": "#252b36",
+    "primary": "#88c0d0",
+    "secondary": "#81a1c1",
+    "success": "#a3be8c",
+    "surface": "#3b4252",
+    "variables": {
+      "app-border": "#4c566a",
+      "app-chip-bg": "#3b4252",
+      "app-chip-text": "#eceff4",
+      "app-muted": "#aeb8c8",
+      "app-selection-bg": "#434c5e",
+      "app-subtle": "#8f9bad"
+    },
+    "warning": "#ebcb8b"
+  },
+  "title": "Nord"
+}

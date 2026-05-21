@@ -76,6 +76,24 @@ def test_catppuccin_themes_use_official_palette_values() -> None:
     assert macchiato.colors["panel_border"] == "#6e738d"
 
 
+def test_curated_ide_themes_are_available_and_dark() -> None:
+    expected = {
+        "dracula": ("#282a36", "#bd93f9"),
+        "nord": ("#2e3440", "#88c0d0"),
+        "rose-pine-moon": ("#232136", "#c4a7e7"),
+        "ayu-dark": ("#10141c", "#39bae6"),
+        "one-dark-pro": ("#282c34", "#61afef"),
+    }
+
+    for theme_id, (background, accent) in expected.items():
+        spec = theme_spec(theme_id)
+        assert spec.id == theme_id
+        assert spec.theme.dark is True
+        assert spec.theme.background == background
+        assert spec.theme.accent == accent
+        assert spec.colors["panel_bg"] != spec.theme.background
+
+
 def test_custom_theme_json_loads_from_theme_path(tmp_path, monkeypatch) -> None:
     theme_dir = tmp_path / "themes"
     _write_custom_theme(theme_dir)

@@ -1,0 +1,43 @@
+{
+  "colors": {
+    "accent": "#c4a7e7",
+    "assistant_bar": "#c4a7e7",
+    "chip_bg": "#393552",
+    "chip_text": "#e0def4",
+    "error": "#eb6f92",
+    "muted": "#908caa",
+    "panel_bg": "#1f1d2e",
+    "panel_border": "#6e6a86",
+    "subtle": "#908caa",
+    "success": "#3e8fb0",
+    "text": "#e0def4",
+    "user_bar": "#9ccfd8",
+    "warning": "#f6c177"
+  },
+  "description": "Rose iris",
+  "id": "rose-pine-moon",
+  "syntax_theme": "github-dark",
+  "text_area_theme": "dracula",
+  "theme": {
+    "accent": "#c4a7e7",
+    "background": "#232136",
+    "dark": true,
+    "error": "#eb6f92",
+    "foreground": "#e0def4",
+    "panel": "#1f1d2e",
+    "primary": "#c4a7e7",
+    "secondary": "#9ccfd8",
+    "success": "#3e8fb0",
+    "surface": "#2a273f",
+    "variables": {
+      "app-border": "#6e6a86",
+      "app-chip-bg": "#393552",
+      "app-chip-text": "#e0def4",
+      "app-muted": "#908caa",
+      "app-selection-bg": "#44415a",
+      "app-subtle": "#908caa"
+    },
+    "warning": "#f6c177"
+  },
+  "title": "Rosé Pine Moon"
+}

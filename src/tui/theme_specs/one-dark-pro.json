@@ -1,0 +1,43 @@
+{
+  "colors": {
+    "accent": "#61afef",
+    "assistant_bar": "#61afef",
+    "chip_bg": "#3f4451",
+    "chip_text": "#d7dae0",
+    "error": "#e05561",
+    "muted": "#abb2bf",
+    "panel_bg": "#21252b",
+    "panel_border": "#4f5666",
+    "subtle": "#8e99ab",
+    "success": "#98c379",
+    "text": "#d7dae0",
+    "user_bar": "#56b6c2",
+    "warning": "#e5c07b"
+  },
+  "description": "Atom balanced",
+  "id": "one-dark-pro",
+  "syntax_theme": "github-dark",
+  "text_area_theme": "dracula",
+  "theme": {
+    "accent": "#61afef",
+    "background": "#282c34",
+    "dark": true,
+    "error": "#e05561",
+    "foreground": "#abb2bf",
+    "panel": "#21252b",
+    "primary": "#61afef",
+    "secondary": "#c678dd",
+    "success": "#98c379",
+    "surface": "#2c313a",
+    "variables": {
+      "app-border": "#4f5666",
+      "app-chip-bg": "#3f4451",
+      "app-chip-text": "#d7dae0",
+      "app-muted": "#abb2bf",
+      "app-selection-bg": "#3e4451",
+      "app-subtle": "#8e99ab"
+    },
+    "warning": "#e5c07b"
+  },
+  "title": "One Dark Pro"
+}
