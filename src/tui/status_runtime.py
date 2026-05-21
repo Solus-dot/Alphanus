@@ -6,7 +6,7 @@ from typing import Any
 
 from agent.provider_failure_policy import is_local_endpoint
 from agent.types import ModelStatus
-from tui.status import status_left_markup, topbar_center, topbar_left, topbar_right
+from tui.status import metadata_center_markup, metadata_right_markup, status_left_markup
 
 
 @dataclass(slots=True)
@@ -86,7 +86,7 @@ def maybe_refresh_model_status(host: Any, *, force: bool = False) -> None:
 def apply_model_status(host: Any, status: ModelStatus) -> None:
     host._status_runtime.apply_model_status(status, host._timing_config())
     host._update_status1()
-    host._update_topbar()
+    host._update_metadata()
 
 
 def update_status2(app: Any) -> None:
@@ -105,11 +105,10 @@ def update_status2(app: Any) -> None:
     if left == app._last_status_left:
         return
     app._last_status_left = left
-    app.query_one("#status-left").update(left)
+    app.query_one("#status-right").update(left)
 
 
-def update_topbar(app: Any) -> None:
-    workspace_root = str(app.agent.skill_runtime.workspace.workspace_root)
+def update_metadata(app: Any) -> None:
     width = app.size.width
     colors = app._theme_spec().colors if hasattr(app, "_theme_spec") else None
     backend_info = {}
@@ -122,19 +121,16 @@ def update_topbar(app: Any) -> None:
                 backend_info = payload
         except Exception:
             backend_info = {}
-    app.query_one("#topbar-left").update(topbar_left(workspace_root, width=width, colors=colors))
-    app.query_one("#topbar-center").update(
-        topbar_center(session_name=app._session_title or "Session", branch_name=app._current_branch_name(), width=width, colors=colors)
+    app.query_one("#meta-center").update(
+        metadata_center_markup(session_name=app._session_title or "Session", branch_name=app._current_branch_name(), width=width, colors=colors)
     )
-    app.query_one("#topbar-right").update(
-        topbar_right(
+    app.query_one("#meta-right").update(
+        metadata_right_markup(
             endpoint=app.agent.model_endpoint,
             context_tokens=app._context_tokens(),
             context_window=app._context_window_tokens(),
             width=width,
             endpoint_state=app._status_runtime.model_status.state,
-            collaboration_mode=str(getattr(app, "_collaboration_mode", "execute")),
-            backend_profile=str(backend_info.get("selected", "")),
             model_integrity=str(backend_info.get("model_integrity", "unknown")),
             colors=colors,
         )

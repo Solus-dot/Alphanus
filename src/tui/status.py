@@ -10,7 +10,6 @@ _DEFAULT_COLORS = {
     "text": fallback_color("text"),
     "success": fallback_color("success"),
     "error": fallback_color("error"),
-    "badge_bg": fallback_color("badge_bg"),
 }
 
 
@@ -38,8 +37,8 @@ def _short_endpoint(endpoint: str) -> str:
     return endpoint
 
 
-def _join_topbar_segments(*segments: str) -> str:
-    return "  ".join(segment for segment in segments if segment)
+def _join_metadata_segments(*segments: str) -> str:
+    return " [dim]·[/dim] ".join(segment for segment in segments if segment)
 
 
 def context_usage_percent(context_tokens: int | None, context_window: int | None) -> int | None:
@@ -72,45 +71,34 @@ def _endpoint_state_markup(state: str, *, width: int, colors: dict[str, str] | N
     return f"[dim]llm:[/dim] [{color}]{esc(label)}[/{color}]"
 
 
-def topbar_left(workspace_root: str, *, width: int, colors: dict[str, str] | None = None) -> str:
-    _ = workspace_root
-    _ = width
-    theme = _theme_colors(colors)
-    return f"[bold {theme['accent']} on {theme['badge_bg']}] ALPHANUS [/bold {theme['accent']} on {theme['badge_bg']}]"
-
-
-def topbar_center(*, session_name: str, branch_name: str, width: int, colors: dict[str, str] | None = None) -> str:
+def metadata_center_markup(*, session_name: str, branch_name: str, width: int, colors: dict[str, str] | None = None) -> str:
     theme = _theme_colors(colors)
     if width < 105:
-        return _join_topbar_segments(
+        return _join_metadata_segments(
             f"[dim]ss:[/dim] [{theme['text']}]{esc(_truncate(session_name, 10))}[/{theme['text']}]",
             f"[dim]br:[/dim] [{theme['accent']}]{esc(_truncate(branch_name, 10))}[/{theme['accent']}]",
         )
     if width < 140:
-        return _join_topbar_segments(
+        return _join_metadata_segments(
             f"[dim]session:[/dim] [{theme['text']}]{esc(_truncate(session_name, 14))}[/{theme['text']}]",
             f"[dim]branch:[/dim] [{theme['accent']}]{esc(_truncate(branch_name, 12))}[/{theme['accent']}]",
         )
-    return _join_topbar_segments(
+    return _join_metadata_segments(
         f"[dim]session:[/dim] [{theme['text']}]{esc(session_name)}[/{theme['text']}]",
         f"[dim]branch:[/dim] [{theme['accent']}]{esc(branch_name)}[/{theme['accent']}]",
     )
 
 
-def topbar_right(
+def metadata_right_markup(
     *,
     endpoint: str,
     context_tokens: int | None,
     context_window: int | None,
     width: int,
     endpoint_state: str = "unknown",
-    collaboration_mode: str = "execute",
-    backend_profile: str = "",
     model_integrity: str = "unknown",
     colors: dict[str, str] | None = None,
 ) -> str:
-    _ = backend_profile
-    _ = collaboration_mode
     theme = _theme_colors(colors)
     short_endpoint = _short_endpoint(endpoint)
     if width < 105:
@@ -118,24 +106,25 @@ def topbar_right(
     ctx_markup = _context_usage_markup(context_tokens, context_window, colors=theme)
     endpoint_markup = ""
     if short_endpoint:
-        endpoint_markup = f"[{theme['muted']}]{esc(_truncate(short_endpoint, 22 if width < 140 else 28))}[/{theme['muted']}]"
+        endpoint_markup = (
+            f"[dim]endpoint:[/dim] [{theme['muted']}]{esc(_truncate(short_endpoint, 22 if width < 140 else 28))}[/{theme['muted']}]"
+        )
     integrity = str(model_integrity or "").strip().lower()
     integrity_markup = ""
     if integrity == "violation":
         integrity_markup = f"[dim]int:[/dim] [{theme['error']}]fail[/{theme['error']}]"
-    return _join_topbar_segments(
+    rendered = _join_metadata_segments(
         endpoint_markup,
         integrity_markup,
         _endpoint_state_markup(endpoint_state, width=width, colors=theme),
         f"[dim]ctx:[/dim] {ctx_markup}",
     )
+    return f"[dim]·[/dim] {rendered}" if rendered else ""
 
 
 def status_right_markup(
     *,
     model_name: str | None,
-    branch_armed: bool,
-    branch_label: str | None,
     thinking: bool,
     collaboration_mode: str = "execute",
     width: int,
@@ -149,20 +138,11 @@ def status_right_markup(
         return model_markup
 
     parts = [model_markup]
-    if branch_armed:
-        if branch_label:
-            label = _truncate(branch_label, 10 if width < 120 else 18)
-            parts.append(f"[{theme['accent']}]branch: {esc(label)}[/{theme['accent']}]")
-        else:
-            parts.append(f"[{theme['accent']}]branch: armed[/{theme['accent']}]")
-    else:
-        parts.append("[dim]branch:[/dim] idle")
-
     think_label = "auto" if thinking else "off"
     parts.append(f"[dim]thinking:[/dim] [{theme['accent']}]{think_label}[/{theme['accent']}]")
-    mode_label = "plan" if str(collaboration_mode or "").strip().lower() == "plan" else "execute"
-    parts.append(f"[dim]mode:[/dim] [{theme['accent']}]{mode_label}[/{theme['accent']}]")
-    return "  ".join(parts)
+    if str(collaboration_mode or "").strip().lower() == "plan":
+        parts.append(f"[dim]mode:[/dim] [{theme['accent']}]plan[/{theme['accent']}]")
+    return " [dim]·[/dim] ".join(parts)
 
 
 def status_left_markup(
@@ -194,10 +174,13 @@ def status_left_markup(
         return f"[dim]{spinner_frame}[/dim] [dim]generating[/dim] [dim]esc stop[/dim]"
     if focus_panel == "tree":
         if width < 110:
-            return f"[dim]j/k move[/dim]   [{theme['accent']}]enter[/{theme['accent']}]"
-        return f"[dim]j/k move[/dim]   [{theme['accent']}]enter open[/{theme['accent']}]   [dim][/] sib[/dim]   [dim]g/G ends[/dim]"
+            return f"[dim]j/k move[/dim] [dim]·[/dim] [{theme['accent']}]enter[/{theme['accent']}]"
+        return (
+            f"[dim]tree split[/dim] [dim]·[/dim] [dim]j/k move[/dim] [dim]·[/dim] "
+            f"[{theme['accent']}]enter open[/{theme['accent']}] [dim]·[/dim] [dim]\\[/] sib[/dim] [dim]·[/dim] [dim]g/G ends[/dim]"
+        )
     if focus_panel == "chat":
-        return "[dim]pgup/dn scroll[/dim]   [dim]tab panel[/dim]" if width >= 110 else "[dim]tab panel[/dim]"
+        return "[dim]PgUp/PgDn to Scroll[/dim] [dim]·[/dim] [dim]Tab for Panel[/dim]" if width >= 110 else "[dim]Tab for Panel[/dim]"
     if width >= 110:
-        return "[dim]esc clear[/dim]   [dim]ctrl+f file[/dim]   [dim]tab panel[/dim]"
-    return "[dim]esc clear[/dim]   [dim]ctrl+f[/dim]"
+        return "[dim]Esc to Clear[/dim] [dim]·[/dim] [dim]Ctrl+F to Upload File[/dim] [dim]·[/dim] [dim]Tab for Panel[/dim]"
+    return "[dim]Esc to Clear[/dim] [dim]·[/dim] [dim]Ctrl+F[/dim]"

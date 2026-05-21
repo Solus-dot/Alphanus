@@ -24,7 +24,7 @@ class _Host:
         self.refresh_calls = 0
         self.startup_calls = 0
         self.update_status_calls = 0
-        self.update_topbar_calls = 0
+        self.update_metadata_calls = 0
 
     def _timing_config(self) -> UiTimingConfig:
         return self._timing
@@ -38,8 +38,8 @@ class _Host:
     def _update_status1(self) -> None:
         self.update_status_calls += 1
 
-    def _update_topbar(self) -> None:
-        self.update_topbar_calls += 1
+    def _update_metadata(self) -> None:
+        self.update_metadata_calls += 1
 
 
 def test_start_startup_readiness_poll_sets_flag_and_starts_worker() -> None:
@@ -71,7 +71,7 @@ def test_apply_model_status_updates_host_views() -> None:
     assert host._status_runtime.model_name == "qwen"
     assert host._status_runtime.model_context_window == 8192
     assert host.update_status_calls == 1
-    assert host.update_topbar_calls == 1
+    assert host.update_metadata_calls == 1
 
 
 def test_apply_model_status_keeps_last_known_model_when_offline() -> None:
