@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from core.conv_tree import ConvTree
 from core.sessions import SessionStore
 
 
@@ -38,6 +39,46 @@ def test_save_tree_roundtrip_preserves_branching_state(tmp_path: Path) -> None:
         assert loaded.tree.current_id == branch.id
         assert loaded.tree.nodes[branch.id].branch_root is True
         assert loaded.tree.nodes[branch.id].assistant_content == "alt-done"
+
+
+def test_search_sessions_matches_content_and_turn_ids(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path, tmp_path / "sessions")
+    tree = ConvTree()
+    first = tree.add_turn("Investigate transcript virtualization")
+    tree.complete_turn(first.id, "The viewport renderer should keep scroll stable.")
+    tree.arm_branch("perf branch")
+    second = tree.add_turn("Check health panel")
+    second.skill_exchanges.append({"role": "tool", "name": "workspace_tree", "content": "{}"})
+    tree.complete_turn(second.id, "done")
+    session = store.create_session("Performance Notes", tree=tree)
+
+    results = store.search_sessions("viewport")
+
+    assert results
+    assert results[0].session_id == session.id
+    assert results[0].turn_id == first.id
+    assert results[0].kind == "assistant"
+    assert "viewport renderer" in results[0].preview
+
+    tool_results = store.search_sessions("workspace_tree")
+    assert tool_results[0].turn_id == second.id
+    assert tool_results[0].kind == "tool"
+
+
+def test_search_sessions_title_match_does_not_target_root_turn(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path, tmp_path / "sessions")
+    tree = ConvTree()
+    turn = tree.add_turn("Keep this position")
+    tree.complete_turn(turn.id, "done")
+    tree.current_id = turn.id
+    session = store.create_session("Architecture Notes", tree=tree)
+
+    results = store.search_sessions("Architecture")
+
+    assert results
+    assert results[0].session_id == session.id
+    assert results[0].kind == "title"
+    assert results[0].turn_id == ""
 
 
 def test_bootstrap_skips_unreadable_fallback_session(tmp_path: Path) -> None:

@@ -31,6 +31,21 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
             os.unlink(tmp_path)
 
 
+def _search_preview(text: str, tokens: list[str], *, max_len: int = 96) -> str:
+    collapsed = " ".join(str(text or "").split())
+    if len(collapsed) <= max_len:
+        return collapsed
+    lower = collapsed.casefold()
+    positions = [lower.find(token) for token in tokens if lower.find(token) >= 0]
+    center = min(positions) if positions else 0
+    start = max(0, center - max_len // 3)
+    end = min(len(collapsed), start + max_len)
+    start = max(0, end - max_len)
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(collapsed) else ""
+    return f"{prefix}{collapsed[start:end].strip()}{suffix}"
+
+
 @dataclass
 class ChatSession:
     id: str
@@ -72,6 +87,21 @@ class SessionSummary:
     id: str
     title: str
     created_at: str
+    updated_at: str
+    turn_count: int
+    branch_count: int
+    is_active: bool = False
+
+
+@dataclass(frozen=True)
+class SessionSearchResult:
+    id: str
+    session_id: str
+    turn_id: str
+    title: str
+    kind: str
+    preview: str
+    score: int
     updated_at: str
     turn_count: int
     branch_count: int
@@ -129,6 +159,67 @@ class SessionStore:
             )
         summaries.sort(key=lambda item: (item.updated_at, item.created_at, item.title.casefold()), reverse=True)
         return summaries
+
+    def search_sessions(self, query: str, *, limit: int = 80) -> list[SessionSearchResult]:
+        needle = " ".join(str(query or "").casefold().split())
+        if not needle:
+            return []
+        tokens = [part for part in needle.split() if part]
+        if not tokens:
+            return []
+        summaries = {summary.id: summary for summary in self.list_sessions()}
+        results: list[SessionSearchResult] = []
+        for summary in summaries.values():
+            try:
+                session = self.load_session(summary.id, activate=False)
+            except (FileNotFoundError, ValueError, KeyError, json.JSONDecodeError):
+                continue
+            candidates: list[tuple[str, str, str, int]] = [("title", "", session.title, 0)]
+            for turn in session.tree.nodes.values():
+                if turn.id == "root":
+                    continue
+                candidates.extend(
+                    [
+                        ("user", turn.id, turn.user_text(), 2),
+                        ("assistant", turn.id, str(turn.assistant_content or ""), 3),
+                        ("branch", turn.id, turn.label, 1),
+                    ]
+                )
+                tool_names = []
+                for exchange in turn.skill_exchanges:
+                    name = str(exchange.get("name") or "").strip() if isinstance(exchange, dict) else ""
+                    if name and name not in tool_names:
+                        tool_names.append(name)
+                if tool_names:
+                    candidates.append(("tool", turn.id, ", ".join(tool_names), 4))
+            for kind, turn_id, text, rank in candidates:
+                normalized = " ".join(str(text or "").casefold().split())
+                if not normalized or any(token not in normalized for token in tokens):
+                    continue
+                score = rank * 100
+                if normalized.startswith(needle):
+                    score -= 20
+                elif needle in normalized:
+                    score -= 10
+                preview = _search_preview(str(text or ""), tokens)
+                results.append(
+                    SessionSearchResult(
+                        id=f"{summary.id}:{turn_id}:{kind}:{len(results)}",
+                        session_id=summary.id,
+                        turn_id=turn_id,
+                        title=summary.title,
+                        kind=kind,
+                        preview=preview,
+                        score=score,
+                        updated_at=summary.updated_at,
+                        turn_count=summary.turn_count,
+                        branch_count=summary.branch_count,
+                        is_active=summary.is_active,
+                    )
+                )
+        results.sort(key=lambda item: (item.updated_at, item.title.casefold()), reverse=True)
+        results.sort(key=lambda item: item.score)
+        return results[: max(1, int(limit))]
 
     def create_session(self, title: str = "", tree: ConvTree | None = None, *, activate: bool = True) -> ChatSession:
         manifest = self._load_manifest()

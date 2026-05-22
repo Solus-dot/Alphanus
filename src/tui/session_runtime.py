@@ -47,10 +47,15 @@ def open_new_session(app, title: str = "") -> ChatSession:
     return app._session_store.create_session(title.strip())
 
 
-def load_session_from_manager(app, session_id: str) -> ChatSession:
+def load_session_from_manager(app, session_id: str, *, turn_id: str = "") -> ChatSession:
     app._save_active_session()
     loaded = app._session_store.load_session(session_id)
+    if turn_id and turn_id in loaded.tree.nodes:
+        loaded.tree.current_id = turn_id
     app._switch_to_session(loaded)
+    if turn_id and turn_id in app.conv_tree.nodes:
+        app._tree_cursor_id = turn_id
+        app._update_sidebar()
     return loaded
 
 

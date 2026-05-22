@@ -29,10 +29,14 @@ def on_session_manager_close(app: Any, result: dict[str, str] | None) -> None:
         return
     if action == "open":
         session_id = str((result or {}).get("session_id") or "").strip()
+        turn_id = str((result or {}).get("turn_id") or "").strip()
         if not session_id:
             return
         try:
-            app._load_session_from_manager(session_id)
+            if turn_id:
+                app._load_session_from_manager(session_id, turn_id=turn_id)
+            else:
+                app._load_session_from_manager(session_id)
         except (ValueError, OSError, KeyError) as exc:
             app._write_error(f"Load failed: {exc}")
         return
