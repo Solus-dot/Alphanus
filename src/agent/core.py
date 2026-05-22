@@ -144,7 +144,7 @@ class Agent:
             return str(exc)
         return None
 
-    def doctor_report(self) -> dict[str, object]:
+    def doctor_report(self, *, probe_ready: bool = True) -> dict[str, object]:
         config_obj = self.config if isinstance(self.config, dict) else {}
         endpoint_error = self._validate_endpoints()
         workspace_root = Path(self.skill_runtime.workspace.workspace_root)
@@ -175,7 +175,10 @@ class Agent:
             retrieval_stats = {}
             retrieval_ready = False
             retrieval_reason = str(exc)
-        ready = self.ensure_ready(timeout_s=min(self.readiness_timeout_s, 3.0))
+        if probe_ready:
+            ready = self.ensure_ready(timeout_s=min(self.readiness_timeout_s, 3.0))
+        else:
+            ready = self.get_model_status().state == "online"
         backend_info = self.llm_client.backend_profile_info()
         return {
             "agent": {

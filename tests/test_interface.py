@@ -12,13 +12,13 @@ from rich.text import Text
 
 from agent.policies import OutputSanitizer
 from core.conv_tree import ConvTree
-from core.sessions import ChatSession
+from core.sessions import ChatSession, SessionSearchResult
 from core.types import ModelStatus
 from core.workspace import WorkspaceManager
 from tui.commands import active_command_query, active_command_span, command_entries_for_query, popup_command_query
 from tui.interface import AlphanusTUI, ChatInput
 from tui.live_tool_preview import LiveToolPreviewManager
-from tui.popups import CommandPaletteModal, SelectionPickerModal, SessionManagerModal, SessionNameModal
+from tui.popups import CommandPaletteModal, HealthModal, SelectionPickerModal, SessionManagerModal, SessionNameModal, health_report_markup
 from tui.status_runtime import StatusRuntimeState
 from tui.stream_runtime import StreamRuntimeState
 from tui.transcript import ScrollAnchor, TranscriptEntry, TranscriptView
@@ -955,6 +955,28 @@ def test_transcript_view_render_tracks_last_render_width() -> None:
     _ = view.render()
 
     assert view._last_render_width == 37
+
+
+def test_transcript_view_render_virtualizes_visible_window() -> None:
+    class Parent:
+        pass
+
+    view = TranscriptView(id="chat-log")
+    view._available_width = lambda: 40
+    view._VIRTUAL_BUFFER_LINES = 1
+    view.set_entries([TranscriptEntry("markup_line", Text(f"line-{idx}")) for idx in range(10)])
+    parent = Parent()
+    parent.scroll_y = 5
+    parent.max_scroll_y = 10
+    parent.region = SimpleNamespace(height=2)
+    view._parent = parent
+
+    rendered = _render_lines(view.render(), width=40)
+
+    assert "line-4" in rendered
+    assert "line-7" in rendered
+    assert "line-0" not in rendered
+    assert "line-9" not in rendered
 
 
 def test_transcript_view_restores_scroll_anchor_by_entry_and_line() -> None:
@@ -1999,6 +2021,77 @@ def test_handle_theme_opens_theme_picker() -> None:
     assert opened == ["theme"]
 
 
+def test_handle_health_opens_health_panel() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    opened: list[str] = []
+    tui._open_health_panel = lambda: opened.append("health")
+
+    assert tui._handle_command("/health") is True
+    assert opened == ["health"]
+
+
+def test_health_report_markup_groups_readiness_statuses() -> None:
+    markup = health_report_markup(
+        {
+            "agent": {
+                "ready": True,
+                "endpoint_mode": "chat",
+                "backend_profile_selected": "openai",
+                "backend_model_integrity": "ok",
+                "runtime_profile": "standard",
+                "permission_profile": "full",
+            },
+            "workspace": {"exists": True, "writable": True, "path": "/tmp/ws"},
+            "search": {"ready": False, "provider": "searxng", "reason": "missing search.searxng_base_url"},
+            "retrieval": {"ready": True},
+            "memory": {"backend": "lexical", "count": 3},
+            "skills": [{"id": "search", "status": "ready", "availability_code": "ready"}],
+        }
+    )
+
+    plain = Text.from_markup(markup).plain
+    assert "Workspace Health" in plain
+    assert "model endpoint" in plain
+    assert "search" in plain
+    assert "missing search.searxng_base_url" in plain
+
+
+def test_health_report_markup_treats_on_and_off_skills_as_healthy() -> None:
+    markup = health_report_markup(
+        {
+            "agent": {"ready": True, "backend_model_integrity": "ok"},
+            "workspace": {"exists": True, "writable": True},
+            "search": {"ready": True, "provider": "searxng"},
+            "retrieval": {"ready": True},
+            "memory": {"backend": "lexical", "count": 0},
+            "skills": [
+                {"id": "one", "status": "on", "available": True, "availability_code": "ready"},
+                {"id": "two", "status": "off", "available": True, "availability_code": "ready"},
+            ],
+        }
+    )
+
+    plain = Text.from_markup(markup).plain
+    assert "skills" in plain
+    assert "2 installed" in plain
+    assert "need attention" not in plain
+
+
+def test_open_health_panel_pushes_modal() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    captured: list[object] = []
+    calls: list[bool] = []
+    tui.agent = SimpleNamespace(doctor_report=lambda *, probe_ready=True: calls.append(probe_ready) or {"agent": {"ready": True}})
+    tui.push_screen = lambda modal: captured.append(modal)
+
+    tui._open_health_panel()
+
+    assert isinstance(captured[0], HealthModal)
+    assert calls == [False]
+
+
 def test_handle_theme_rejects_arguments() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._id = "app"
@@ -2391,6 +2484,86 @@ def test_load_session_from_manager_switches_sessions() -> None:
     assert switched == ["Loaded Session"]
 
 
+def test_load_session_from_manager_without_turn_id_preserves_saved_position() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    current_tree = ConvTree()
+    loaded_tree = ConvTree()
+    saved_turn = loaded_tree.add_turn("saved position")
+    loaded_tree.complete_turn(saved_turn.id, "done")
+    loaded_tree.current_id = saved_turn.id
+
+    tui._session_store = SimpleNamespace(
+        save_tree=lambda *_args, **_kwargs: ChatSession(
+            id="sess-1",
+            title="Session 1",
+            created_at="2026-03-20T10:00:00+00:00",
+            updated_at="2026-03-20T10:01:00+00:00",
+            tree=current_tree,
+        ),
+        load_session=lambda _selector: ChatSession(
+            id="sess-2",
+            title="Loaded Session",
+            created_at="2026-03-20T10:06:00+00:00",
+            updated_at="2026-03-20T10:07:00+00:00",
+            tree=loaded_tree,
+        ),
+    )
+    tui._session_id = "sess-1"
+    tui._session_title = "Session 1"
+    tui._session_created_at = "2026-03-20T10:00:00+00:00"
+    tui.conv_tree = current_tree
+    tui._loaded_skill_ids = []
+    tui._collaboration_mode = "execute"
+    tui._switch_to_session = lambda _session, clear_pending=True: None
+
+    loaded = tui._load_session_from_manager("sess-2", turn_id="")
+
+    assert loaded.tree.current_id == saved_turn.id
+
+
+def test_load_session_from_manager_with_turn_id_focuses_match() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    current_tree = ConvTree()
+    loaded_tree = ConvTree()
+    first = loaded_tree.add_turn("first")
+    loaded_tree.complete_turn(first.id, "done")
+    second = loaded_tree.add_turn("second")
+    loaded_tree.complete_turn(second.id, "done")
+    loaded_tree.current_id = first.id
+    sidebar_updates: list[str] = []
+
+    tui._session_store = SimpleNamespace(
+        save_tree=lambda *_args, **_kwargs: ChatSession(
+            id="sess-1",
+            title="Session 1",
+            created_at="2026-03-20T10:00:00+00:00",
+            updated_at="2026-03-20T10:01:00+00:00",
+            tree=current_tree,
+        ),
+        load_session=lambda _selector: ChatSession(
+            id="sess-2",
+            title="Loaded Session",
+            created_at="2026-03-20T10:06:00+00:00",
+            updated_at="2026-03-20T10:07:00+00:00",
+            tree=loaded_tree,
+        ),
+    )
+    tui._session_id = "sess-1"
+    tui._session_title = "Session 1"
+    tui._session_created_at = "2026-03-20T10:00:00+00:00"
+    tui.conv_tree = current_tree
+    tui._loaded_skill_ids = []
+    tui._collaboration_mode = "execute"
+    tui._switch_to_session = lambda session, clear_pending=True: setattr(tui, "conv_tree", session.tree)
+    tui._update_sidebar = lambda: sidebar_updates.append("sidebar")
+
+    loaded = tui._load_session_from_manager("sess-2", turn_id=second.id)
+
+    assert loaded.tree.current_id == second.id
+    assert tui._tree_cursor_id == second.id
+    assert sidebar_updates == ["sidebar"]
+
+
 def test_delete_session_from_manager_reopens_modal_without_switching_for_non_active() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     events: list[str] = []
@@ -2704,6 +2877,78 @@ def test_session_manager_row_selection_opens_selected_session() -> None:
 
     assert dismissed == [{"action": "open", "session_id": "sess-1"}]
     assert syncs == []
+
+
+def test_session_manager_search_result_opens_matched_turn() -> None:
+    result = SessionSearchResult(
+        id="result-1",
+        session_id="sess-1",
+        turn_id="turn-2",
+        title="Search Session",
+        kind="assistant",
+        preview="matched answer",
+        score=0,
+        updated_at="2026-03-20T10:00:00+00:00",
+        turn_count=2,
+        branch_count=1,
+    )
+    modal = SessionManagerModal([], "sess-1")
+    modal._search_results = [result]
+    modal.query_one = lambda *_args, **_kwargs: SimpleNamespace(highlighted_option=SimpleNamespace(id="search:result-1"))
+    dismissed: list[dict[str, str]] = []
+    modal.dismiss = lambda payload=None: dismissed.append(payload)
+
+    modal.action_open_selected()
+
+    assert dismissed == [{"action": "open", "session_id": "sess-1", "turn_id": "turn-2"}]
+
+
+def test_session_manager_empty_search_result_does_not_open_first_session() -> None:
+    modal = SessionManagerModal([], "sess-1")
+    dismissed: list[dict[str, str]] = []
+    modal.dismiss = lambda payload=None: dismissed.append(payload)
+    modal._search_results = []
+    modal._query = lambda: "no matches"
+    modal._selected_session_id = lambda: "sess-1"
+
+    modal.action_open_selected()
+
+    assert dismissed == []
+
+
+def test_session_manager_title_search_result_opens_without_turn_override() -> None:
+    result = SessionSearchResult(
+        id="result-1",
+        session_id="sess-1",
+        turn_id="",
+        title="Architecture Notes",
+        kind="title",
+        preview="Architecture Notes",
+        score=0,
+        updated_at="2026-03-20T10:00:00+00:00",
+        turn_count=2,
+        branch_count=1,
+    )
+    modal = SessionManagerModal([], "sess-1")
+    modal._search_results = [result]
+    modal.query_one = lambda *_args, **_kwargs: SimpleNamespace(highlighted_option=SimpleNamespace(id="search:result-1"))
+    dismissed: list[dict[str, str]] = []
+    modal.dismiss = lambda payload=None: dismissed.append(payload)
+
+    modal.action_open_selected()
+
+    assert dismissed == [{"action": "open", "session_id": "sess-1", "turn_id": ""}]
+
+
+def test_session_manager_close_passes_search_turn_id_to_loader() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    loaded: list[tuple[str, str]] = []
+    tui._load_session_from_manager = lambda session_id, *, turn_id="": loaded.append((session_id, turn_id))
+    tui._write_error = lambda _text: None
+
+    tui._on_session_manager_close({"action": "open", "session_id": "sess-1", "turn_id": "turn-2"})
+
+    assert loaded == [("sess-1", "turn-2")]
 
 
 def test_session_manager_modal_bindings_use_enter_and_escape() -> None:

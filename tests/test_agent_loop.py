@@ -3813,6 +3813,28 @@ def test_doctor_report_handles_non_object_runtime_and_capabilities_sections(mock
     assert report["agent"]["permission_profile"] == "full"
 
 
+def test_doctor_report_can_skip_readiness_probe(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+        },
+    }
+    agent = Agent(cfg, runtime)
+    mocker.patch.object(agent.llm_client.provider, "get_model_status", return_value=ModelStatus(state="online"))
+    ensure_ready = mocker.patch.object(agent, "ensure_ready", side_effect=AssertionError("should not probe readiness"))
+
+    report = agent.doctor_report(probe_ready=False)
+
+    assert report["agent"]["ready"] is True
+    ensure_ready.assert_not_called()
+
+
 def test_doctor_report_supports_searxng_provider(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {

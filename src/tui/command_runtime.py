@@ -23,6 +23,7 @@ def handle_command(app, text: str) -> bool:
         "/tree": "_cmd_tree",
         "/skills": "_cmd_skills",
         "/doctor": "_cmd_doctor",
+        "/health": "_open_health_panel",
         "/config": "_open_config_editor",
     }.get(cmd):
         getattr(app, method)()

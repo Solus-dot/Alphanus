@@ -211,6 +211,7 @@ from tui.popups import (
     CommandPaletteItem,
     CommandPaletteModal,
     ConfigEditorModal,
+    HealthModal,
     PickerItem,
     SelectionPickerModal,
     SessionManagerModal,
@@ -706,13 +707,20 @@ class AlphanusTUI(App):
 
     def _open_session_manager(self) -> None:
         sessions = self._session_store.list_sessions()
-        self.push_screen(SessionManagerModal(sessions, self._session_id), self._on_session_manager_close)
+        self.push_screen(
+            SessionManagerModal(
+                sessions,
+                self._session_id,
+                search_sessions=lambda query: self._session_store.search_sessions(query),
+            ),
+            self._on_session_manager_close,
+        )
 
     def _open_session_name_modal(self) -> None:
         self.push_screen(SessionNameModal(), self._on_session_name_close)
 
-    def _load_session_from_manager(self, session_id: str) -> ChatSession:
-        return load_tui_session_from_manager(self, session_id)
+    def _load_session_from_manager(self, session_id: str, *, turn_id: str = "") -> ChatSession:
+        return load_tui_session_from_manager(self, session_id, turn_id=turn_id)
 
     def _open_new_session(self, title: str = "") -> ChatSession:
         return open_tui_new_session(self, title)
@@ -1353,6 +1361,9 @@ class AlphanusTUI(App):
         )
         for warning in warnings:
             self._write_info(f"Config warning: {warning}")
+
+    def _open_health_panel(self) -> None:
+        self.push_screen(HealthModal(self.agent.doctor_report(probe_ready=False)))
 
     def _cmd_theme(self) -> None:
         open_tui_theme_picker(self, picker_item_cls=PickerItem, selection_picker_modal_cls=SelectionPickerModal)

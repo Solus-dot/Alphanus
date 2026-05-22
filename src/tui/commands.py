@@ -64,6 +64,7 @@ _COMMAND_SECTIONS: tuple[_CommandSection, ...] = (
             CommandEntry("/skills", "/skills", "List installed skills"),
             CommandEntry("/reload", "/reload", "Reload skills from disk"),
             CommandEntry("/doctor", "/doctor", "Run readiness diagnostics"),
+            CommandEntry("/health", "/health", "Open workspace health summary"),
             CommandEntry("/skill-on <id>", "/skill-on ", "Enable a skill"),
             CommandEntry("/skill-off <id>", "/skill-off ", "Disable a skill"),
             CommandEntry(

@@ -1,4 +1,5 @@
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
-from core.sessions import SessionSummary
+from core.sessions import SessionSearchResult, SessionSummary
 from tui.themes import fallback_color
 
 DEFAULT_ACCENT_COLOR = fallback_color("accent")
@@ -261,6 +262,147 @@ class ConfigEditorModal(ModalScreen[dict[str, Any] | None]):
         self.dismiss({"config": parsed, "text": formatted})
 
 
+def _health_status(ok: bool, *, warn: bool = False) -> str:
+    if ok and not warn:
+        return "OK"
+    return "WARN" if warn else "ERROR"
+
+
+def _skill_needs_attention(skill: dict[str, Any]) -> bool:
+    availability = str(skill.get("availability_code", "ready") or "ready")
+    status = str(skill.get("status", "unknown") or "unknown")
+    if availability != "ready":
+        return True
+    if status not in {"on", "off", "ready", "loaded", "available"}:
+        return True
+    if not bool(skill.get("available", True)):
+        return True
+    if skill.get("validation_errors"):
+        return True
+    return False
+
+
+def health_report_markup(report: dict[str, Any]) -> str:
+    agent = report.get("agent", {}) if isinstance(report.get("agent"), dict) else {}
+    workspace = report.get("workspace", {}) if isinstance(report.get("workspace"), dict) else {}
+    search = report.get("search", {}) if isinstance(report.get("search"), dict) else {}
+    retrieval = report.get("retrieval", {}) if isinstance(report.get("retrieval"), dict) else {}
+    memory = report.get("memory", {}) if isinstance(report.get("memory"), dict) else {}
+    skills = report.get("skills", []) if isinstance(report.get("skills"), list) else []
+
+    def line(label: str, status: str, detail: str = "") -> str:
+        color = "#10b981" if status == "OK" else ("#f59e0b" if status == "WARN" else "#f87171")
+        suffix = f" [dim]{esc(detail)}[/dim]" if detail else ""
+        return f"[{color}]{status:<5}[/{color}] [bold]{esc(label)}[/bold]{suffix}"
+
+    skill_errors = []
+    for skill in skills:
+        if not isinstance(skill, dict):
+            continue
+        if _skill_needs_attention(skill):
+            skill_errors.append(skill)
+    endpoint_policy_error = str(agent.get("endpoint_policy_error") or "")
+    backend_integrity = str(agent.get("backend_model_integrity", "unknown"))
+    search_reason = str(search.get("reason") or "")
+    retrieval_reason = str(retrieval.get("reason") or "")
+    lines = [
+        "[bold]Workspace Health[/bold]",
+        "",
+        line("model endpoint", _health_status(bool(agent.get("ready")), warn=bool(endpoint_policy_error)), str(agent.get("endpoint_mode", ""))),
+        line("endpoint policy", _health_status(not bool(endpoint_policy_error)), endpoint_policy_error or "valid"),
+        line(
+            "backend profile",
+            _health_status(backend_integrity != "violation", warn=backend_integrity in {"unknown", ""}),
+            f"{agent.get('backend_profile_selected', 'unknown')} · integrity {backend_integrity}",
+        ),
+        line(
+            "workspace",
+            _health_status(bool(workspace.get("exists")) and bool(workspace.get("writable"))),
+            str(workspace.get("path", "")),
+        ),
+        line("search", _health_status(bool(search.get("ready"))), search_reason or str(search.get("provider", ""))),
+        line("retrieval", _health_status(bool(retrieval.get("ready"))), retrieval_reason or "ready"),
+        line("memory", _health_status(True), f"{memory.get('backend', 'lexical')} · {memory.get('count', 0)} items"),
+        line(
+            "skills",
+            _health_status(not skill_errors, warn=bool(skill_errors)),
+            f"{len(skills)} installed" + (f" · {len(skill_errors)} need attention" if skill_errors else ""),
+        ),
+        line(
+            "runtime",
+            _health_status(True),
+            f"{agent.get('runtime_profile', 'standard')} · permissions {agent.get('permission_profile', 'full')}",
+        ),
+    ]
+    return "\n".join(lines)
+
+
+class HealthModal(ModalScreen[None]):
+    CSS = """
+    HealthModal {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.76);
+    }
+
+    #health-modal {
+        width: 76;
+        max-width: 94%;
+        height: auto;
+        background: $background;
+        border: solid $app-border;
+        padding: 0 1;
+    }
+
+    #health-content {
+        width: 1fr;
+        color: $foreground;
+        padding: 0;
+    }
+
+    #health-hint {
+        color: $app-subtle;
+        padding: 0;
+    }
+
+    #health-close {
+        width: 1fr;
+        border: none;
+        content-align: left middle;
+        height: 1;
+        padding: 0 1 0 1;
+        margin: 0;
+        background: $surface;
+        color: $foreground;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", show=False),
+        Binding("enter", "cancel", show=False),
+        Binding("return", "cancel", show=False),
+    ]
+
+    def __init__(self, report: dict[str, Any]) -> None:
+        super().__init__()
+        self._report = report
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="health-modal"):
+            yield Static(Text.from_markup(health_report_markup(self._report)), id="health-content")
+            yield Static("Use /doctor for the verbose diagnostic report.", id="health-hint")
+            yield Button("Close [Enter]", id="health-close", variant="primary")
+
+    def on_mount(self) -> None:
+        self.query_one("#health-close", Button).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    @on(Button.Pressed, "#health-close")
+    def _close_button(self) -> None:
+        self.action_cancel()
+
+
 class SessionManagerModal(ModalScreen[dict[str, str] | None]):
     CSS = """
     SessionManagerModal {
@@ -290,6 +432,14 @@ class SessionManagerModal(ModalScreen[dict[str, str] | None]):
     #session-modal-hint {
         color: $app-subtle;
         padding: 0;
+    }
+
+    #session-search-input {
+        width: 1fr;
+        margin: 0;
+        background: $panel;
+        color: $foreground;
+        border: round $app-border;
     }
 
     #session-modal-list-label,
@@ -357,10 +507,18 @@ class SessionManagerModal(ModalScreen[dict[str, str] | None]):
         Binding("n", "create_new", show=False),
     ]
 
-    def __init__(self, sessions: list[SessionSummary], active_session_id: str) -> None:
+    def __init__(
+        self,
+        sessions: list[SessionSummary],
+        active_session_id: str,
+        *,
+        search_sessions: Callable[[str], list[SessionSearchResult]] | None = None,
+    ) -> None:
         super().__init__()
         self._sessions = sessions
         self._active_session_id = active_session_id
+        self._search_sessions = search_sessions
+        self._search_results: list[SessionSearchResult] = []
         self._pending_delete_session_id = ""
 
     def compose(self) -> ComposeResult:
@@ -371,9 +529,9 @@ class SessionManagerModal(ModalScreen[dict[str, str] | None]):
                 Text("Shortcuts: [Enter] opens selected · [D] deletes selected · [N] creates new · [Esc] closes"),
                 id="session-modal-hint",
             )
-            if self._sessions:
-                yield Static("Saved Sessions", id="session-modal-list-label")
-                yield OptionList(*self._session_options(), id="session-modal-list")
+            yield Input(placeholder="Search saved sessions", id="session-search-input")
+            yield Static("Saved Sessions", id="session-modal-list-label")
+            yield OptionList(id="session-modal-list")
             yield Static("Actions", id="session-modal-action-label")
             with Vertical(id="session-modal-footer"):
                 yield Button(Text("Open Selected Session [Enter]"), id="session-open", variant="primary", disabled=not self._sessions)
@@ -401,7 +559,54 @@ class SessionManagerModal(ModalScreen[dict[str, str] | None]):
             options.append(Option(prompt, id=session.id))
         return options
 
+    def _search_options(self) -> list[Option]:
+        theme_color = getattr(self.app, "_theme_color", None)
+        accent = str(theme_color("accent", DEFAULT_ACCENT_COLOR)) if callable(theme_color) else DEFAULT_ACCENT_COLOR
+        subtle = str(theme_color("subtle", DEFAULT_SUBTLE_COLOR)) if callable(theme_color) else DEFAULT_SUBTLE_COLOR
+        text_color = str(theme_color("text", DEFAULT_TEXT_COLOR)) if callable(theme_color) else DEFAULT_TEXT_COLOR
+        options: list[Option] = []
+        for index, result in enumerate(self._search_results, start=1):
+            marker = f"[bold {accent}]active[/bold {accent}]" if result.is_active else f"[{subtle}]match[/{subtle}]"
+            title = f"[{text_color}]{esc(result.title)}[/{text_color}]"
+            prompt = (
+                f"[bold {accent}]{index}.[/bold {accent}] {marker} {title} "
+                f"[dim]{esc(result.kind)} · {result.turn_count} turns · {result.branch_count} branches[/dim]\n"
+                f"   [{subtle}]{esc(result.preview)}[/{subtle}]"
+            )
+            options.append(Option(prompt, id=f"search:{result.id}"))
+        return options
+
+    def _query(self) -> str:
+        try:
+            return self.query_one("#session-search-input", Input).value.strip()
+        except Exception:
+            return ""
+
+    def _in_search_mode(self) -> bool:
+        return bool(self._query())
+
+    def _refresh_session_options(self, query: str = "") -> None:
+        if query and self._search_sessions is not None:
+            self._search_results = self._search_sessions(query)
+            options = self._search_options()
+            label = f"Search Results ({len(options)})"
+        else:
+            self._search_results = []
+            options = self._session_options()
+            label = "Saved Sessions"
+        option_list = self.query_one("#session-modal-list", OptionList)
+        option_list.clear_options()
+        if options:
+            option_list.add_options(options)
+            option_list.highlighted = 0
+        self.query_one("#session-modal-list-label", Static).update(label)
+        has_items = bool(options)
+        self.query_one("#session-open", Button).disabled = not has_items
+        self.query_one("#session-delete", Button).disabled = not self._sessions or bool(query)
+        self._sync_delete_button()
+
     def on_mount(self) -> None:
+        self._refresh_session_options("")
         if self._sessions:
             options = self.query_one("#session-modal-list", OptionList)
             highlighted = next(
@@ -409,9 +614,9 @@ class SessionManagerModal(ModalScreen[dict[str, str] | None]):
                 0,
             )
             options.highlighted = highlighted
-            options.focus()
+            self.query_one("#session-search-input", Input).focus()
         else:
-            self.query_one("#session-new", Button).focus()
+            self.query_one("#session-search-input", Input).focus()
         self._sync_delete_button()
 
     def action_cancel(self) -> None:
@@ -426,6 +631,20 @@ class SessionManagerModal(ModalScreen[dict[str, str] | None]):
             selected = self._session_options()[0]
         return str(selected.id)
 
+    def _selected_search_result(self) -> SessionSearchResult | None:
+        if not self._search_results:
+            return None
+        try:
+            options = self.query_one("#session-modal-list", OptionList)
+        except Exception:
+            return None
+        selected = options.highlighted_option
+        selected_id = str(selected.id) if selected is not None and selected.id is not None else ""
+        if selected_id.startswith("search:"):
+            result_id = selected_id.removeprefix("search:")
+            return next((result for result in self._search_results if result.id == result_id), None)
+        return None
+
     def _clear_delete_confirmation(self) -> None:
         if not self._pending_delete_session_id:
             return
@@ -436,17 +655,31 @@ class SessionManagerModal(ModalScreen[dict[str, str] | None]):
         if not self._sessions:
             return
         button = self.query_one("#session-delete", Button)
+        if self._in_search_mode():
+            button.label = Text("Delete Selected Session [D]")
+            button.variant = "default"
+            button.disabled = True
+            return
         confirming = bool(self._pending_delete_session_id and self._pending_delete_session_id == self._selected_session_id())
         button.label = Text("Confirm Delete [D]") if confirming else Text("Delete Selected Session [D]")
         button.variant = "error" if confirming else "default"
+        button.disabled = False
 
     def action_open_selected(self) -> None:
+        result = self._selected_search_result()
+        if result is not None:
+            self.dismiss({"action": "open", "session_id": result.session_id, "turn_id": result.turn_id})
+            return
+        if self._in_search_mode():
+            return
         session_id = self._selected_session_id()
         if not session_id:
             return
         self.dismiss({"action": "open", "session_id": session_id})
 
     def action_delete_selected(self) -> None:
+        if self._in_search_mode():
+            return
         session_id = self._selected_session_id()
         if not session_id:
             return
@@ -482,6 +715,15 @@ class SessionManagerModal(ModalScreen[dict[str, str] | None]):
     def _session_highlighted(self, _event: OptionList.OptionHighlighted) -> None:
         self._clear_delete_confirmation()
         self._sync_delete_button()
+
+    @on(Input.Changed, "#session-search-input")
+    def _session_query_changed(self, event: Input.Changed) -> None:
+        self._clear_delete_confirmation()
+        self._refresh_session_options(event.value.strip())
+
+    @on(Input.Submitted, "#session-search-input")
+    def _session_query_submitted(self, _event: Input.Submitted) -> None:
+        self.action_open_selected()
 
 
 class SessionNameModal(ModalScreen[dict[str, str] | None]):

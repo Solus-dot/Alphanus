@@ -155,6 +155,7 @@ The TUI keeps the primary view focused on the transcript and composer.
 - Bottom metadata shows model, thinking state, session, branch, endpoint, LLM state, and context usage
 - Keyboard hints sit beside the input instead of a persistent top header
 - The conversation tree and inspector live in a hidden split that opens only when requested
+- Saved sessions can be searched by title, messages, branch labels, and tool names from `/sessions`
 - Tool execution details, reasoning text, streamed file previews, and themes remain available in the transcript flow
 
 Useful controls:
@@ -339,6 +340,7 @@ Per-turn journal includes:
 - `/skills`
 - `/reload`
 - `/doctor`
+- `/health`
 - `/skill-on <id>`
 - `/skill-off <id>`
 - `/skill-unload <id>`
