@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import ipaddress
 import json
 import os
@@ -9,6 +7,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from html import unescape
 from typing import Any
@@ -119,6 +118,66 @@ _DATE_FORMATS = (
     "%Y-%m-%dT%H:%M:%S",
     "%Y-%m-%d",
 )
+_FAILURE_CONFIG = "config"
+_FAILURE_NETWORK = "network"
+_FAILURE_RATE_LIMIT = "rate_limit"
+_FAILURE_INVALID_RESPONSE = "invalid_response"
+_FAILURE_EMPTY_RESULTS = "empty_results"
+_FAILURE_UNSUPPORTED = "unsupported_provider"
+_FAILURE_FETCH_BLOCKED = "fetch_blocked"
+_FAILURE_FETCH_UNUSABLE = "fetch_unusable"
+
+
+class SearchError(RuntimeError):
+    def __init__(self, message: str, *, failure_class: str, recoverable: bool = True) -> None:
+        super().__init__(message)
+        self.failure_class = failure_class
+        self.recoverable = recoverable
+
+
+@dataclass(frozen=True, slots=True)
+class SearchRequest:
+    query: str
+    limit: int
+    freshness_intent: str = "current"
+    source_preference: str = "best"
+
+
+@dataclass(slots=True)
+class SearchAttempt:
+    provider: str
+    status: str
+    failure_class: str = ""
+    error: str = ""
+    latency_ms: int = 0
+    result_count: int = 0
+
+
+@dataclass(slots=True)
+class SearchResponse:
+    request: SearchRequest
+    results: list[dict[str, Any]]
+    attempts: list[SearchAttempt] = field(default_factory=list)
+    cache_hits: list[dict[str, Any]] = field(default_factory=list)
+    provider: str = ""
+    degraded: bool = False
+    failure_class: str = ""
+    evidence_quality: str = "none"
+
+    def to_payload(self) -> dict[str, Any]:
+        provider = self.provider or (self.results[0].get("provider", "") if self.results else "")
+        payload = {
+            "query": self.request.query,
+            "results": self.results,
+            "provider": provider,
+            "search_engine": provider,
+            "attempts": [asdict(attempt) for attempt in self.attempts],
+            "degraded": self.degraded,
+            "failure_class": self.failure_class,
+            "evidence_quality": self.evidence_quality,
+            "cache_hits": self.cache_hits,
+        }
+        return payload
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -322,7 +381,7 @@ def _provider_name(env: ToolExecutionEnv) -> str:
 
 def _fallback_provider_name(env: ToolExecutionEnv) -> str:
     search_cfg = env.config.get("search", {}) if isinstance(env.config, dict) else {}
-    return str(search_cfg.get("fallback_provider", SEARCH_PROVIDER_TAVILY)).strip().lower()
+    return str(search_cfg.get("fallback_provider", "")).strip().lower()
 
 
 def _search_cfg(env: ToolExecutionEnv) -> dict[str, Any]:
@@ -368,6 +427,44 @@ def _request_retry_backoff_s(env: ToolExecutionEnv) -> float:
 
 def _fetch_max_redirects(env: ToolExecutionEnv) -> int:
     return _cfg_int(_search_cfg(env), "fetch_max_redirects", 5, minimum=0)
+
+
+def _cache_first(env: ToolExecutionEnv) -> bool:
+    return _cfg_bool(_search_cfg(env), "cache_first", True)
+
+
+def _min_usable_results(env: ToolExecutionEnv) -> int:
+    return _cfg_int(_search_cfg(env), "min_usable_results", 1, minimum=1)
+
+
+def _fetch_min_chars(env: ToolExecutionEnv) -> int:
+    return _cfg_int(_search_cfg(env), "fetch_min_chars", 20, minimum=1)
+
+
+def _provider_chain(env: ToolExecutionEnv) -> list[str]:
+    cfg = _search_cfg(env)
+    raw_chain = cfg.get("provider_chain")
+    chain: list[str] = []
+    if isinstance(raw_chain, list):
+        chain = [str(item).strip().lower() for item in raw_chain if str(item).strip()]
+    elif isinstance(raw_chain, str) and raw_chain.strip():
+        chain = [item.strip().lower() for item in raw_chain.split(",") if item.strip()]
+    if not chain:
+        provider = _provider_name(env)
+        fallback = _fallback_provider_name(env)
+        chain = [provider]
+        if fallback and fallback != provider:
+            chain.append(fallback)
+    out: list[str] = []
+    for provider in chain:
+        if provider == "none":
+            continue
+        if provider not in {SEARCH_PROVIDER_SEARXNG, SEARCH_PROVIDER_TAVILY}:
+            out.append(provider)
+            continue
+        if provider not in out:
+            out.append(provider)
+    return out or [SEARCH_PROVIDER_SEARXNG]
 
 
 def _web_ttl_seconds(env: ToolExecutionEnv) -> int:
@@ -449,10 +546,10 @@ def _searxng_base_url(env: ToolExecutionEnv) -> str:
     cfg = _search_cfg(env)
     base_url = str(cfg.get("searxng_base_url") or cfg.get("base_url") or "").strip().rstrip("/")
     if not base_url:
-        raise RuntimeError("SearXNG base URL not configured")
+        raise SearchError("SearXNG base URL not configured", failure_class=_FAILURE_CONFIG, recoverable=True)
     parsed = urllib.parse.urlparse(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise RuntimeError("SearXNG base URL must be an absolute http(s) URL")
+        raise SearchError("SearXNG base URL must be an absolute http(s) URL", failure_class=_FAILURE_CONFIG, recoverable=True)
     return base_url
 
 
@@ -465,8 +562,6 @@ def _search_with_searxng(
     retries: int = 1,
     retry_backoff_s: float = 0.5,
 ) -> dict[str, Any]:
-    if _provider_name(env) != SEARCH_PROVIDER_SEARXNG:
-        raise RuntimeError("SearXNG search provider is not selected")
     params = urllib.parse.urlencode({"q": query, "format": "json", "language": "auto", "safesearch": "0"})
     req = _request(f"{_searxng_base_url(env)}/search?{params}", headers={"Accept": "application/json"})
     payload = _request_json(req, provider_name="SearXNG", timeout_s=timeout_s, retries=retries, retry_backoff_s=retry_backoff_s)
@@ -475,7 +570,6 @@ def _search_with_searxng(
         raise RuntimeError("SearXNG response missing results list")
     out = _provider_payload(raw_results, limit, provider=SEARCH_PROVIDER_SEARXNG, provider_rank=0, query=query)
     out["query"] = query
-    out["provider_chain"] = [{"provider": SEARCH_PROVIDER_SEARXNG, "status": "ok"}]
     return out
 
 
@@ -484,7 +578,7 @@ def _tavily_api_key(env: ToolExecutionEnv) -> str:
     env_name = str(cfg.get("tavily_api_key_env") or DEFAULT_TAVILY_API_KEY_ENV).strip()
     key = os.environ.get(env_name, "").strip()
     if not key:
-        raise RuntimeError(f"Tavily API key not configured: {env_name}")
+        raise SearchError(f"Tavily API key not configured: {env_name}", failure_class=_FAILURE_CONFIG, recoverable=True)
     return key
 
 
@@ -561,8 +655,16 @@ def _normalize_result_item(item: dict, *, provider: str, provider_rank: int, que
 def _provider_payload(raw_results: list[dict], limit: int, *, provider: str, provider_rank: int, query: str) -> dict[str, Any]:
     results = _normalize_results(raw_results, limit, provider=provider, provider_rank=provider_rank, query=query)
     if not results:
-        raise RuntimeError(f"{provider.title()} returned no usable results")
+        raise SearchError(f"{provider.title()} returned no usable results", failure_class=_FAILURE_EMPTY_RESULTS, recoverable=True)
     return {"results": results, "provider": provider, "search_engine": provider}
+
+
+def _classify_http_status(status: int) -> str:
+    if status == 429:
+        return _FAILURE_RATE_LIMIT
+    if 500 <= status <= 599:
+        return _FAILURE_NETWORK
+    return _FAILURE_INVALID_RESPONSE
 
 
 def _request_json(
@@ -584,22 +686,26 @@ def _request_json(
                 if retry_backoff_s > 0:
                     time.sleep(retry_backoff_s * attempt)
                 continue
-            raise RuntimeError(f"{provider_name} returned HTTP {exc.code}") from exc
+            raise SearchError(
+                f"{provider_name} returned HTTP {exc.code}",
+                failure_class=_classify_http_status(int(exc.code)),
+                recoverable=True,
+            ) from exc
         except urllib.error.URLError as exc:
             if should_retry(exc) and attempt < retries:
                 attempt += 1
                 if retry_backoff_s > 0:
                     time.sleep(retry_backoff_s * attempt)
                 continue
-            raise RuntimeError(f"{provider_name} unreachable: {exc.reason}") from exc
+            raise SearchError(f"{provider_name} unreachable: {exc.reason}", failure_class=_FAILURE_NETWORK, recoverable=True) from exc
 
         if "json" not in content_type.lower():
-            raise RuntimeError(f"{provider_name} returned a non-JSON response")
+            raise SearchError(f"{provider_name} returned a non-JSON response", failure_class=_FAILURE_INVALID_RESPONSE, recoverable=True)
 
         try:
             return json.loads(body)
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"{provider_name} returned invalid JSON") from exc
+            raise SearchError(f"{provider_name} returned invalid JSON", failure_class=_FAILURE_INVALID_RESPONSE, recoverable=True) from exc
 
 
 def _normalize_results(raw_results: list[dict], limit: int, *, provider: str, provider_rank: int, query: str) -> list[dict]:
@@ -625,43 +731,244 @@ def _normalize_results(raw_results: list[dict], limit: int, *, provider: str, pr
     return trimmed
 
 
-def _search(query: str, limit: int, env: ToolExecutionEnv) -> dict[str, Any]:
+def _cache_hit_to_result(hit: dict[str, Any], *, query: str, rank: int) -> dict[str, Any]:
+    metadata = hit.get("metadata") if isinstance(hit.get("metadata"), dict) else {}
+    source = str(hit.get("source") or metadata.get("url") or "").strip()
+    canonical_url = _canonicalize_url(source) or source
+    domain = str(metadata.get("domain") or _host(canonical_url)).strip()
+    title = _clean_text(str(hit.get("title") or domain or source))
+    snippet = _clean_text(str(hit.get("text") or ""))
+    if len(snippet) > 500:
+        snippet = snippet[:497].rstrip() + "..."
+    source_type = str(metadata.get("source_type") or _source_type(domain, title, snippet))
+    published_at = _parse_dateish(metadata.get("published_at"))
+    query_match_score = _query_match_score(" ".join((title, snippet, domain)), query)
+    return {
+        "provider_rank": -1,
+        "title": title,
+        "url": source,
+        "canonical_url": canonical_url,
+        "snippet": snippet,
+        "description": str(metadata.get("description") or ""),
+        "published_at": published_at,
+        "domain": domain,
+        "source_type": source_type,
+        "trust_score": round(_trust_score(domain, source_type), 2),
+        "freshness_score": _freshness_score(published_at),
+        "query_match_score": query_match_score,
+        "selection_reason": "fresh cached source" if not bool(hit.get("stale")) else "stale cached source",
+        "provider": "cache",
+        "rank": rank,
+        "cached": True,
+        "stale": bool(hit.get("stale")),
+        "record_id": int(hit.get("record_id", 0) or 0),
+    }
+
+
+def _cached_web_results(request: SearchRequest, env: ToolExecutionEnv) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not _cache_first(env) or not _retrieval_enabled(env):
+        return [], []
+    try:
+        hit_limit = max(request.limit, _min_usable_results(env)) * 4
+        hits = _retrieval_store(env).search(request.query, top_k=hit_limit, sources=["web_page"])
+    except Exception:
+        return [], []
+    results: list[dict[str, Any]] = []
+    cache_hits: list[dict[str, Any]] = []
+    seen_sources: set[str] = set()
+    for hit in hits:
+        result = _cache_hit_to_result(hit, query=request.query, rank=len(results) + 1)
+        if not result["url"]:
+            continue
+        source_key = str(result.get("canonical_url") or result.get("url") or result.get("record_id") or "").strip()
+        if source_key and source_key in seen_sources:
+            continue
+        if source_key:
+            seen_sources.add(source_key)
+        results.append(result)
+        cache_hits.append(
+            {
+                "record_id": result["record_id"],
+                "source": result["url"],
+                "title": result["title"],
+                "stale": result["stale"],
+            }
+        )
+        if len(results) >= request.limit:
+            break
+    return results, cache_hits
+
+
+def _result_rank_score(item: dict[str, Any]) -> float:
+    trust = float(item.get("trust_score", 0.0) or 0.0)
+    query_match = float(item.get("query_match_score", 0.0) or 0.0)
+    freshness = float(item.get("freshness_score", 0.0) or 0.0)
+    source_bonus = _ranking_bonus(str(item.get("source_type", "")))
+    provider_bonus = 0.08 if str(item.get("provider", "")) != "cache" else 0.0
+    stale_penalty = 0.25 if bool(item.get("stale")) else 0.0
+    return (trust * 0.5) + (query_match * 0.35) + (freshness * 0.1) + source_bonus + provider_bonus - stale_penalty
+
+
+def _merge_search_results(cached_results: list[dict[str, Any]], provider_results: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    deduped: dict[str, dict[str, Any]] = {}
+    for item in [*cached_results, *provider_results]:
+        key = str(item.get("canonical_url") or item.get("url") or "").strip()
+        if not key:
+            continue
+        existing = deduped.get(key)
+        if existing is None or _result_rank_score(item) > _result_rank_score(existing):
+            deduped[key] = dict(item)
+    ranked = sorted(
+        deduped.values(),
+        key=lambda item: (
+            -_result_rank_score(item),
+            bool(item.get("stale")),
+            str(item.get("provider", "")) == "cache",
+            str(item.get("domain", "")),
+            str(item.get("title", "")),
+        ),
+    )
+    trimmed = ranked[:limit]
+    for rank, item in enumerate(trimmed, start=1):
+        item["rank"] = rank
+    return trimmed
+
+
+def _evidence_quality(results: list[dict[str, Any]], *, min_usable: int) -> str:
+    if not results:
+        return "none"
+    fresh = [item for item in results if not bool(item.get("stale"))]
+    high_signal = [
+        item
+        for item in fresh
+        if float(item.get("trust_score", 0.0) or 0.0) >= 0.75 or str(item.get("source_type", "")) in {"official", "documentation", "reference"}
+    ]
+    if len(high_signal) >= min_usable:
+        return "high"
+    if len(fresh) >= min_usable:
+        return "medium"
+    return "low"
+
+
+def _search_provider(provider: str, request: SearchRequest, env: ToolExecutionEnv, *, provider_rank: int) -> dict[str, Any]:
     timeout_s = _request_timeout_s(env)
     retries = _request_retries(env)
     retry_backoff_s = _request_retry_backoff_s(env)
-    provider = _provider_name(env)
-    if provider == SEARCH_PROVIDER_TAVILY:
-        payload = _search_with_tavily(query, limit, env, timeout_s=timeout_s, retries=retries, retry_backoff_s=retry_backoff_s)
-        payload["provider_chain"] = [{"provider": SEARCH_PROVIDER_TAVILY, "status": "ok"}]
-        return payload
-    if provider != SEARCH_PROVIDER_SEARXNG:
-        raise RuntimeError("Only SearXNG and Tavily search providers are supported")
-
-    provider_chain: list[dict[str, Any]] = []
-    searxng_error = ""
-    try:
-        return _search_with_searxng(query, limit, env, timeout_s=timeout_s, retries=retries, retry_backoff_s=retry_backoff_s)
-    except RuntimeError as exc:
-        searxng_error = str(exc)
-        provider_chain.append({"provider": SEARCH_PROVIDER_SEARXNG, "status": "error", "error": str(exc)})
-        if _fallback_provider_name(env) != SEARCH_PROVIDER_TAVILY:
-            raise
-
-    try:
-        payload = _search_with_tavily(
-            query,
-            limit,
+    if provider == SEARCH_PROVIDER_SEARXNG:
+        return _search_with_searxng(
+            request.query,
+            request.limit,
             env,
-            provider_rank=1,
             timeout_s=timeout_s,
             retries=retries,
             retry_backoff_s=retry_backoff_s,
         )
-    except RuntimeError as exc:
-        raise RuntimeError(f"{searxng_error}; Tavily fallback failed: {exc}") from exc
-    provider_chain.append({"provider": SEARCH_PROVIDER_TAVILY, "status": "ok"})
-    payload["provider_chain"] = provider_chain
-    return payload
+    if provider == SEARCH_PROVIDER_TAVILY:
+        return _search_with_tavily(
+            request.query,
+            request.limit,
+            env,
+            provider_rank=provider_rank,
+            timeout_s=timeout_s,
+            retries=retries,
+            retry_backoff_s=retry_backoff_s,
+        )
+    raise SearchError("Only SearXNG and Tavily search providers are supported", failure_class=_FAILURE_UNSUPPORTED, recoverable=False)
+
+
+def _search(query: str, limit: int, env: ToolExecutionEnv) -> dict[str, Any]:
+    request = SearchRequest(query=query, limit=limit)
+    min_usable = _min_usable_results(env)
+    cached_results, cache_hits = _cached_web_results(request, env)
+    if len([item for item in cached_results if not bool(item.get("stale"))]) >= min_usable:
+        return SearchResponse(
+            request=request,
+            results=cached_results[:limit],
+            cache_hits=cache_hits,
+            provider="cache",
+            degraded=False,
+            evidence_quality=_evidence_quality(cached_results, min_usable=min_usable),
+        ).to_payload()
+
+    attempts: list[SearchAttempt] = []
+    first_error: SearchError | None = None
+    chain = _provider_chain(env)
+    for provider_rank, provider in enumerate(chain):
+        started = time.monotonic()
+        try:
+            payload = _search_provider(provider, request, env, provider_rank=provider_rank)
+        except SearchError as exc:
+            attempt = SearchAttempt(
+                provider=provider,
+                status="error",
+                failure_class=exc.failure_class,
+                error=str(exc),
+                latency_ms=int((time.monotonic() - started) * 1000),
+            )
+            attempts.append(attempt)
+            if first_error is None:
+                first_error = exc
+            if not exc.recoverable:
+                break
+            continue
+        except RuntimeError as exc:
+            wrapped = SearchError(str(exc), failure_class=_FAILURE_INVALID_RESPONSE, recoverable=True)
+            attempts.append(
+                SearchAttempt(
+                    provider=provider,
+                    status="error",
+                    failure_class=wrapped.failure_class,
+                    error=str(wrapped),
+                    latency_ms=int((time.monotonic() - started) * 1000),
+                )
+            )
+            if first_error is None:
+                first_error = wrapped
+            continue
+
+        provider_results = payload.get("results") if isinstance(payload, dict) else []
+        results = provider_results if isinstance(provider_results, list) else []
+        attempts.append(
+            SearchAttempt(
+                provider=provider,
+                status="ok",
+                latency_ms=int((time.monotonic() - started) * 1000),
+                result_count=len(results),
+            )
+        )
+        merged = _merge_search_results(cached_results, results, limit)
+        if not merged:
+            merged = [dict(item) for item in results[:limit]]
+        quality = _evidence_quality(merged, min_usable=min_usable)
+        return SearchResponse(
+            request=request,
+            results=merged,
+            attempts=attempts,
+            cache_hits=cache_hits,
+            provider=str(payload.get("provider") or provider),
+            degraded=bool(cache_hits) or len(attempts) > 1 or quality == "low",
+            failure_class=attempts[0].failure_class if attempts and attempts[0].status == "error" else "",
+            evidence_quality=quality,
+        ).to_payload()
+
+    if cached_results:
+        quality = _evidence_quality(cached_results, min_usable=min_usable)
+        return SearchResponse(
+            request=request,
+            results=cached_results[:limit],
+            attempts=attempts,
+            cache_hits=cache_hits,
+            provider="cache",
+            degraded=True,
+            failure_class=attempts[-1].failure_class if attempts else "",
+            evidence_quality=quality,
+        ).to_payload()
+
+    if len(chain) == 1 and first_error is not None:
+        raise first_error
+    errors = "; ".join(f"{attempt.provider}: {attempt.error}" for attempt in attempts if attempt.error)
+    failure_class = attempts[-1].failure_class if attempts else _FAILURE_UNSUPPORTED
+    raise SearchError(errors or "Search provider chain failed", failure_class=failure_class, recoverable=False)
 
 
 def _is_private_or_local_host(host: str) -> bool:
@@ -786,6 +1093,7 @@ def _fetch(
     retries: int = 1,
     retry_backoff_s: float = 0.5,
     max_redirects: int = 5,
+    min_chars: int = 20,
 ) -> dict[str, Any]:
     if not (url.startswith("http://") or url.startswith("https://")):
         raise ValueError("URL must start with http:// or https://")
@@ -793,7 +1101,7 @@ def _fetch(
     parsed_url = urllib.parse.urlparse(url)
     host = (parsed_url.hostname or "").strip()
     if _is_private_or_local_host(host):
-        raise RuntimeError("Refusing to fetch private or local network URL")
+        raise SearchError("Refusing to fetch private or local network URL", failure_class=_FAILURE_FETCH_BLOCKED, recoverable=False)
 
     attempt = 0
     redirect_count = 0
@@ -811,17 +1119,17 @@ def _fetch(
                 if exc.headers is not None:
                     location = str(exc.headers.get("Location", "") or "").strip()
                 if not location:
-                    raise RuntimeError("Page fetch redirect missing Location header") from exc
+                    raise SearchError("Page fetch redirect missing Location header", failure_class=_FAILURE_INVALID_RESPONSE) from exc
                 if redirect_count >= max_redirects:
-                    raise RuntimeError("Page fetch exceeded redirect limit") from exc
+                    raise SearchError("Page fetch exceeded redirect limit", failure_class=_FAILURE_INVALID_RESPONSE) from exc
 
                 next_url = urllib.parse.urljoin(current_url, location)
                 parsed_next = urllib.parse.urlparse(next_url)
                 if parsed_next.scheme not in {"http", "https"}:
-                    raise RuntimeError("Refusing to follow non-http redirect URL") from exc
+                    raise SearchError("Refusing to follow non-http redirect URL", failure_class=_FAILURE_FETCH_BLOCKED, recoverable=False) from exc
                 next_host = (parsed_next.hostname or "").strip()
                 if _is_private_or_local_host(next_host):
-                    raise RuntimeError("Refusing to fetch private or local network URL") from exc
+                    raise SearchError("Refusing to fetch private or local network URL", failure_class=_FAILURE_FETCH_BLOCKED, recoverable=False) from exc
 
                 current_url = next_url
                 redirect_count += 1
@@ -833,22 +1141,26 @@ def _fetch(
                 if retry_backoff_s > 0:
                     time.sleep(retry_backoff_s * attempt)
                 continue
-            raise RuntimeError(f"Page fetch returned HTTP {exc.code}") from exc
+            raise SearchError(
+                f"Page fetch returned HTTP {exc.code}",
+                failure_class=_classify_http_status(int(exc.code)),
+                recoverable=True,
+            ) from exc
         except urllib.error.URLError as exc:
             if should_retry(exc) and attempt < retries:
                 attempt += 1
                 if retry_backoff_s > 0:
                     time.sleep(retry_backoff_s * attempt)
                 continue
-            raise RuntimeError(f"Page fetch failed: {exc.reason}") from exc
+            raise SearchError(f"Page fetch failed: {exc.reason}", failure_class=_FAILURE_NETWORK, recoverable=True) from exc
 
     final_host = (urllib.parse.urlparse(final_url).hostname or "").strip()
     if _is_private_or_local_host(final_host):
-        raise RuntimeError("Refusing to fetch private or local network URL")
+        raise SearchError("Refusing to fetch private or local network URL", failure_class=_FAILURE_FETCH_BLOCKED, recoverable=False)
 
     normalized_content_type = content_type.split(";", 1)[0].strip().lower()
     if normalized_content_type and normalized_content_type not in _ALLOWED_FETCH_CONTENT_TYPES:
-        raise RuntimeError(f"Unsupported content type: {normalized_content_type}")
+        raise SearchError(f"Unsupported content type: {normalized_content_type}", failure_class=_FAILURE_FETCH_BLOCKED, recoverable=False)
 
     title_match = _TITLE_RE.search(payload)
     title = _clean_text(title_match.group(1)) if title_match else ""
@@ -875,7 +1187,7 @@ def _fetch(
     source_type = _source_type(domain, title, description or excerpt)
     trust_score = round(_trust_score(domain, source_type), 2)
     extraction_quality = "high" if len(content) >= 1200 and headings else "medium" if len(content) >= 300 else "low"
-    usable_text = len(content) >= 20 and bool(best_passages)
+    usable_text = len(content) >= min_chars and bool(best_passages)
 
     return {
         "url": url,
@@ -897,6 +1209,8 @@ def _fetch(
         "extraction_quality": extraction_quality,
         "content_chars": len(content),
         "usable_text": usable_text,
+        "failure_class": "" if usable_text else _FAILURE_FETCH_UNUSABLE,
+        "blocked_reason": "",
         "trust_score": trust_score,
         "fetched_at": int(time.time()),
     }
@@ -1024,6 +1338,7 @@ def execute(tool_name: str, args: dict[str, Any], env: ToolExecutionEnv):
             retries=retries,
             retry_backoff_s=retry_backoff_s,
             max_redirects=max_redirects,
+            min_chars=_fetch_min_chars(env),
         )
         page["retrieval"] = _index_fetched_page(page, env)
         return page
