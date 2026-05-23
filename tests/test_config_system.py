@@ -75,6 +75,25 @@ def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
     assert normalized["tui"]["chat_log_max_lines"] == 100
 
 
+def test_normalize_config_accepts_search_architecture_knobs() -> None:
+    normalized, warnings = normalize_config(
+        {
+            "search": {
+                "provider_chain": ["searxng", "bad", "tavily", "searxng"],
+                "cache_first": "false",
+                "min_usable_results": 2,
+                "fetch_min_chars": 80,
+            }
+        }
+    )
+
+    assert normalized["search"]["provider_chain"] == ["searxng", "tavily"]
+    assert normalized["search"]["cache_first"] is False
+    assert normalized["search"]["min_usable_results"] == 2
+    assert normalized["search"]["fetch_min_chars"] == 80
+    assert any("search.provider_chain: unsupported 'bad'" in warning for warning in warnings)
+
+
 def test_normalize_config_preserves_api_key_env_reference() -> None:
     normalized, warnings = normalize_config(
         {

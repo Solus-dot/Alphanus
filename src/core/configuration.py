@@ -134,6 +134,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "request_retries": 1,
         "request_retry_backoff_s": 0.5,
         "fetch_max_redirects": 5,
+        "provider_chain": [],
+        "cache_first": True,
+        "min_usable_results": 1,
+        "fetch_min_chars": 20,
     },
     "retrieval": {
         "enabled": True,
@@ -898,6 +902,22 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         _warn(warnings, f"search.fallback_provider: unsupported {fallback_provider!r}, using default")
         fallback_provider = str(DEFAULT_CONFIG["search"]["fallback_provider"])
     search_cfg["fallback_provider"] = "" if fallback_provider == SEARCH_FALLBACK_NONE else fallback_provider
+    raw_provider_chain = raw_search_cfg.get("provider_chain", DEFAULT_CONFIG["search"]["provider_chain"])
+    provider_chain: list[str] = []
+    if isinstance(raw_provider_chain, list):
+        provider_chain = [str(item).strip().lower() for item in raw_provider_chain if str(item).strip()]
+    elif isinstance(raw_provider_chain, str) and raw_provider_chain.strip():
+        provider_chain = [item.strip().lower() for item in raw_provider_chain.split(",") if item.strip()]
+    cleaned_provider_chain: list[str] = []
+    for item in provider_chain:
+        if item == SEARCH_FALLBACK_NONE:
+            continue
+        if item not in SEARCH_PROVIDERS:
+            _warn(warnings, f"search.provider_chain: unsupported {item!r}, skipping")
+            continue
+        if item not in cleaned_provider_chain:
+            cleaned_provider_chain.append(item)
+    search_cfg["provider_chain"] = cleaned_provider_chain
     raw_searxng_url = raw_search_cfg.get("searxng_base_url")
     base_url = (
         str(DEFAULT_CONFIG["search"]["searxng_base_url"])
@@ -945,6 +965,26 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         path="search.fetch_max_redirects",
         warnings=warnings,
         minimum=0,
+    )
+    search_cfg["cache_first"] = _coerce_bool(
+        raw_search_cfg.get("cache_first"),
+        bool(DEFAULT_CONFIG["search"]["cache_first"]),
+        path="search.cache_first",
+        warnings=warnings,
+    )
+    search_cfg["min_usable_results"] = _coerce_int(
+        raw_search_cfg.get("min_usable_results"),
+        int(DEFAULT_CONFIG["search"]["min_usable_results"]),
+        path="search.min_usable_results",
+        warnings=warnings,
+        minimum=1,
+    )
+    search_cfg["fetch_min_chars"] = _coerce_int(
+        raw_search_cfg.get("fetch_min_chars"),
+        int(DEFAULT_CONFIG["search"]["fetch_min_chars"]),
+        path="search.fetch_min_chars",
+        warnings=warnings,
+        minimum=1,
     )
     merged["search"] = search_cfg
 

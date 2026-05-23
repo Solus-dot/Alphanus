@@ -68,6 +68,10 @@ class SearchConfig:
     fallback_provider: str
     searxng_base_url: str
     tavily_api_key_env: str
+    provider_chain: tuple[str, ...]
+    cache_first: bool
+    min_usable_results: int
+    fetch_min_chars: int
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> SearchConfig:
@@ -78,6 +82,10 @@ class SearchConfig:
             fallback_provider=str(section.get("fallback_provider", default_section["fallback_provider"])),
             searxng_base_url=str(section.get("searxng_base_url", default_section["searxng_base_url"])),
             tavily_api_key_env=str(section.get("tavily_api_key_env", default_section["tavily_api_key_env"])),
+            provider_chain=tuple(str(item) for item in section.get("provider_chain", default_section["provider_chain"])),
+            cache_first=bool(section.get("cache_first", default_section["cache_first"])),
+            min_usable_results=int(section.get("min_usable_results", default_section["min_usable_results"])),
+            fetch_min_chars=int(section.get("fetch_min_chars", default_section["fetch_min_chars"])),
         )
 
 
