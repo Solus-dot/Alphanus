@@ -67,6 +67,20 @@ def _env_with_store(path: Path, *, embeddings: bool = False):
     return SimpleNamespace(config=cfg)
 
 
+def _env_with_search_store(path: Path):
+    return SimpleNamespace(
+        config={
+            "search": {
+                "provider": "searxng",
+                "fallback_provider": "",
+                "searxng_base_url": "http://127.0.0.1:8888",
+                "cache_first": True,
+            },
+            "retrieval": {"store_path": str(path), "web_ttl_hours": 24},
+        }
+    )
+
+
 def _location_headers(location: str) -> Message:
     headers = Message()
     headers["Location"] = location
@@ -124,7 +138,10 @@ def test_web_search_calls_searxng_and_normalizes_results(mocker):
     assert out["results"][1]["snippet"] == "Reporting on Meta acquisitions."
     assert out["results"][0]["source_type"] == "official"
     assert out["results"][0]["rank"] == 1
-    assert out["provider_chain"] == [{"provider": "searxng", "status": "ok"}]
+    assert out["attempts"][0]["provider"] == "searxng"
+    assert out["attempts"][0]["status"] == "ok"
+    assert out["evidence_quality"] in {"medium", "high"}
+    assert out["failure_class"] == ""
 
 
 def test_web_search_requires_searxng_base_url():
@@ -178,6 +195,36 @@ def test_fetch_url_extracts_title_and_text(mocker):
     assert out["excerpt"]
     assert out["best_passages"]
     assert out["usable_text"] is True
+
+
+def test_fetch_url_marks_short_extraction_unusable(mocker):
+    module = _load_search_module()
+
+    html = "<html><head><title>Tiny</title></head><body><p>Short text.</p></body></html>"
+
+    class _Resp:
+        headers = _Headers("text/html; charset=utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return html.encode("utf-8")
+
+        def geturl(self):
+            return "https://example.com/tiny"
+
+    env = _env()
+    env.config["search"]["fetch_min_chars"] = 100
+    mocker.patch.object(module, "_open_no_redirect", return_value=_Resp())
+
+    out = module.execute("fetch_url", {"url": "https://example.com/tiny"}, env=env)
+
+    assert out["usable_text"] is False
+    assert out["failure_class"] == "fetch_unusable"
 
 
 def test_fetch_url_respects_disabled_retrieval(mocker, tmp_path: Path):
@@ -283,6 +330,152 @@ def test_web_search_does_not_fall_back_without_fallback_provider(mocker):
         module.execute("web_search", {"query": "service status"}, env=_env())
 
 
+def test_web_search_uses_fresh_cached_web_record_before_provider(mocker, tmp_path: Path):
+    module = _load_search_module()
+    env = _env_with_search_store(tmp_path / "retrieval.sqlite")
+    store = module._retrieval_store(env)
+    store.upsert_record(
+        record_type="web_page",
+        source="https://docs.example.com/status",
+        canonical_source="https://docs.example.com/status",
+        title="Official status documentation",
+        text="Official status documentation says the service is healthy.",
+        fetched_at=9999999999,
+        ttl_seconds=3600,
+        metadata={"domain": "docs.example.com", "source_type": "documentation"},
+    )
+    urlopen = mocker.patch.object(module.urllib.request, "urlopen")
+
+    out = module.execute("web_search", {"query": "official status documentation", "limit": 3}, env=env)
+
+    assert out["provider"] == "cache"
+    assert out["attempts"] == []
+    assert out["cache_hits"][0]["source"] == "https://docs.example.com/status"
+    assert out["results"][0]["cached"] is True
+    assert out["evidence_quality"] == "high"
+    urlopen.assert_not_called()
+
+
+def test_web_search_returns_stale_cache_as_degraded_when_provider_fails(mocker, tmp_path: Path):
+    module = _load_search_module()
+    env = _env_with_search_store(tmp_path / "retrieval.sqlite")
+    store = module._retrieval_store(env)
+    store.upsert_record(
+        record_type="web_page",
+        source="https://example.com/old",
+        canonical_source="https://example.com/old",
+        title="Old status page",
+        text="Old status evidence.",
+        fetched_at=1,
+        ttl_seconds=1,
+        metadata={"domain": "example.com", "source_type": "community"},
+    )
+    mocker.patch.object(module.urllib.request, "urlopen", side_effect=urllib.error.URLError("offline"))
+
+    out = module.execute("web_search", {"query": "old status evidence", "limit": 3}, env=env)
+
+    assert out["provider"] == "cache"
+    assert out["degraded"] is True
+    assert out["failure_class"] == "network"
+    assert out["attempts"][0]["provider"] == "searxng"
+    assert out["attempts"][0]["status"] == "error"
+    assert out["results"][0]["stale"] is True
+
+
+def test_web_search_deduplicates_cached_chunks_before_cache_first_decision(mocker, tmp_path: Path):
+    module = _load_search_module()
+    env = _env_with_search_store(tmp_path / "retrieval.sqlite")
+    env.config["search"]["min_usable_results"] = 2
+    store = module._retrieval_store(env)
+    store.upsert_record(
+        record_type="web_page",
+        source="https://docs.example.com/status",
+        canonical_source="https://docs.example.com/status",
+        title="Official status documentation",
+        text=("Official status documentation says the service is healthy. " * 120),
+        fetched_at=9999999999,
+        ttl_seconds=3600,
+        metadata={"domain": "docs.example.com", "source_type": "documentation"},
+    )
+    payload = {
+        "results": [
+            {
+                "title": "Live status page",
+                "url": "https://status.example.com/live",
+                "content": "Live provider evidence.",
+            }
+        ]
+    }
+
+    class _Resp:
+        headers = _Headers()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(payload).encode("utf-8")
+
+    urlopen = mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp())
+
+    out = module.execute("web_search", {"query": "official status documentation service healthy", "limit": 5}, env=env)
+
+    assert urlopen.called
+    assert len([item for item in out["results"] if item.get("cached")]) == 1
+    assert len(out["cache_hits"]) == 1
+    assert len({item["canonical_url"] for item in out["results"]}) == len(out["results"])
+
+
+def test_web_search_preserves_stale_cache_metadata_when_provider_succeeds(mocker, tmp_path: Path):
+    module = _load_search_module()
+    env = _env_with_search_store(tmp_path / "retrieval.sqlite")
+    store = module._retrieval_store(env)
+    store.upsert_record(
+        record_type="web_page",
+        source="https://example.com/old",
+        canonical_source="https://example.com/old",
+        title="Old status page",
+        text="Old status evidence.",
+        fetched_at=1,
+        ttl_seconds=1,
+        metadata={"domain": "example.com", "source_type": "community"},
+    )
+    payload = {
+        "results": [
+            {
+                "title": "Current official status",
+                "url": "https://status.example.com/current",
+                "content": "Current provider evidence.",
+            }
+        ]
+    }
+
+    class _Resp:
+        headers = _Headers()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(payload).encode("utf-8")
+
+    mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp())
+
+    out = module.execute("web_search", {"query": "old status evidence", "limit": 3}, env=env)
+
+    stale = next(item for item in out["results"] if item["canonical_url"] == "https://example.com/old")
+    assert stale["provider"] == "cache"
+    assert stale["cached"] is True
+    assert stale["stale"] is True
+    assert stale["record_id"] > 0
+
+
 def test_web_search_deduplicates_searxng_results(mocker):
     module = _load_search_module()
     payload = {
@@ -377,10 +570,13 @@ def test_web_search_falls_back_to_tavily_when_searxng_unreachable(mocker, monkey
     assert calls[0].startswith("http://127.0.0.1:8888/search?")
     assert calls[1] == "https://api.tavily.com/search"
     assert out["provider"] == "tavily"
-    assert out["provider_chain"] == [
-        {"provider": "searxng", "status": "error", "error": "SearXNG unreachable: offline"},
-        {"provider": "tavily", "status": "ok"},
-    ]
+    assert out["attempts"][0]["provider"] == "searxng"
+    assert out["attempts"][0]["status"] == "error"
+    assert out["attempts"][0]["error"] == "SearXNG unreachable: offline"
+    assert out["attempts"][1]["provider"] == "tavily"
+    assert out["attempts"][1]["status"] == "ok"
+    assert out["attempts"][0]["failure_class"] == "network"
+    assert out["attempts"][1]["result_count"] == 1
 
 
 def test_web_search_falls_back_to_tavily_when_searxng_url_missing(mocker, monkeypatch):
@@ -415,10 +611,11 @@ def test_web_search_falls_back_to_tavily_when_searxng_url_missing(mocker, monkey
 
     assert calls == ["https://api.tavily.com/search"]
     assert out["provider"] == "tavily"
-    assert out["provider_chain"] == [
-        {"provider": "searxng", "status": "error", "error": "SearXNG base URL not configured"},
-        {"provider": "tavily", "status": "ok"},
-    ]
+    assert out["attempts"][0]["provider"] == "searxng"
+    assert out["attempts"][0]["status"] == "error"
+    assert out["attempts"][0]["error"] == "SearXNG base URL not configured"
+    assert out["attempts"][1]["provider"] == "tavily"
+    assert out["attempts"][1]["status"] == "ok"
 
 
 def test_web_search_can_use_tavily_as_primary(mocker, monkeypatch):
@@ -445,7 +642,29 @@ def test_web_search_can_use_tavily_as_primary(mocker, monkeypatch):
 
     assert out["provider"] == "tavily"
     assert out["results"][0]["url"] == "https://example.com/tavily"
-    assert out["provider_chain"] == [{"provider": "tavily", "status": "ok"}]
+    assert out["attempts"][0]["provider"] == "tavily"
+    assert out["attempts"][0]["status"] == "ok"
+
+
+def test_web_search_classifies_invalid_provider_response(mocker):
+    module = _load_search_module()
+
+    class _Resp:
+        headers = _Headers("text/html; charset=utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"<html>not json</html>"
+
+    mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp())
+
+    with pytest.raises(RuntimeError, match="non-JSON"):
+        module.execute("web_search", {"query": "status update"}, env=_env())
 
 
 def test_web_search_retries_retryable_http_error(mocker):
