@@ -165,11 +165,8 @@ class SessionStore:
         if not needle:
             return []
         tokens = [part for part in needle.split() if part]
-        if not tokens:
-            return []
-        summaries = {summary.id: summary for summary in self.list_sessions()}
         results: list[SessionSearchResult] = []
-        for summary in summaries.values():
+        for summary in self.list_sessions():
             try:
                 session = self.load_session(summary.id, activate=False)
             except (FileNotFoundError, ValueError, KeyError, json.JSONDecodeError):

@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from rich.console import Console, ConsoleOptions, Group, RenderResult, RenderableType
+from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
 from rich.text import Text
 from textual.widgets import Static
 
