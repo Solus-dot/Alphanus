@@ -609,6 +609,75 @@ def test_orchestrator_search_budget_reason_is_explicit_for_time_sensitive_turns(
     assert "search-attempt budget is exhausted" in reason
 
 
+def test_search_tool_effects_record_attempt_metadata_and_empty_evidence(tmp_path: Path) -> None:
+    _runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="latest status",
+        time_sensitive=True,
+        workspace_action=False,
+    )
+    state.search_tools_enabled = True
+    call = ToolCall(
+        stream_id="call_search",
+        index=0,
+        id="call_search",
+        name="web_search",
+        arguments={"query": "latest status"},
+    )
+
+    orchestrator.record_tool_effects(
+        state,
+        call,
+        {
+            "ok": True,
+            "data": {
+                "results": [],
+                "attempts": [{"provider": "searxng", "status": "error", "failure_class": "network"}],
+                "evidence_quality": "none",
+            },
+            "error": None,
+            "meta": {},
+        },
+    )
+
+    assert state.completion.search_failure_count == 1
+    assert state.completion.search_has_success is False
+    assert state.completion.search_attempts[0]["provider"] == "searxng"
+    assert state.completion.search_failure_classes == ["network"]
+
+
+def test_fetch_tool_effects_do_not_count_unusable_text_as_fetch_evidence(tmp_path: Path) -> None:
+    _runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="latest status",
+        time_sensitive=True,
+        workspace_action=False,
+    )
+    state.search_tools_enabled = True
+    call = ToolCall(
+        stream_id="call_fetch",
+        index=0,
+        id="call_fetch",
+        name="fetch_url",
+        arguments={"url": "https://example.com/tiny"},
+    )
+
+    orchestrator.record_tool_effects(
+        state,
+        call,
+        {
+            "ok": True,
+            "data": {"url": "https://example.com/tiny", "final_url": "https://example.com/tiny", "usable_text": False},
+            "error": None,
+            "meta": {},
+        },
+    )
+
+    assert state.completion.search_has_success is True
+    assert state.completion.search_has_fetch_content is False
+    assert "https://example.com/tiny" in state.completion.fetched_urls
+
+
 def test_policy_retrieval_injects_time_sensitive_context(tmp_path: Path) -> None:
     db_path = tmp_path / "retrieval.sqlite"
     SQLiteRetrievalStore(db_path).upsert_record(

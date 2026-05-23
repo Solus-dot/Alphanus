@@ -55,11 +55,26 @@ class ToolExecutionEngine:
         if not state.search_mode or call.name not in {"web_search", "fetch_url"}:
             return
         if result.get("ok"):
+            data_obj = result.get("data")
+            payload = data_obj if isinstance(data_obj, dict) else {}
+            attempts = payload.get("attempts")
+            if call.name == "web_search" and isinstance(attempts, list):
+                for attempt in attempts:
+                    if isinstance(attempt, dict):
+                        state.completion.search_attempts.append(cast(dict[str, JSONValue], attempt))
+                        failure_class = str(attempt.get("failure_class", "")).strip()
+                        if failure_class:
+                            state.completion.search_failure_classes.append(failure_class)
+                if payload.get("failure_class"):
+                    state.completion.search_failure_classes.append(str(payload.get("failure_class")))
+                if payload.get("evidence_quality") == "none" or not payload.get("results"):
+                    state.completion.search_failure_count += 1
+                    return
             state.completion.search_has_success = True
             if call.name == "fetch_url":
-                state.completion.search_has_fetch_content = True
-                data_obj = result.get("data")
-                fetched_payload = data_obj if isinstance(data_obj, dict) else {}
+                fetched_payload = payload
+                if bool(fetched_payload.get("usable_text", True)):
+                    state.completion.search_has_fetch_content = True
                 for key in ("url", "final_url"):
                     seen_url = str(fetched_payload.get(key, "")).strip()
                     if seen_url:
@@ -73,5 +88,9 @@ class ToolExecutionEngine:
             message = str(error_obj.get("message", "")).lower()
             raw_url = str(call.arguments.get("url", "")).strip()
             host = urllib.parse.urlparse(raw_url).netloc.lower()
-            if host and any(code in message for code in ("http 401", "http 403", "http 429")):
+            if "private or local network url" in message:
+                state.completion.search_failure_classes.append("fetch_blocked")
+                if host:
+                    state.completion.blocked_fetch_domains.add(host)
+            elif host and any(code in message for code in ("http 401", "http 403", "http 429")):
                 state.completion.blocked_fetch_domains.add(host)

@@ -110,6 +110,8 @@ class CompletionEvidence:
     readback_paths: list[str] = field(default_factory=list)
     fetched_urls: set[str] = field(default_factory=set)
     blocked_fetch_domains: set[str] = field(default_factory=set)
+    search_attempts: list[dict[str, JSONValue]] = field(default_factory=list)
+    search_failure_classes: list[str] = field(default_factory=list)
     search_failure_count: int = 0
     search_has_success: bool = False
     search_has_fetch_content: bool = False
