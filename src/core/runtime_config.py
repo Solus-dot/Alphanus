@@ -21,7 +21,7 @@ def _coerce_bool(value: Any, default: bool) -> bool:
 def _coerce_int(value: Any, default: int, *, minimum: int | None = None) -> int:
     try:
         parsed = int(value)
-    except Exception:
+    except (TypeError, ValueError):
         parsed = default
     if minimum is not None and parsed < minimum:
         return minimum
@@ -31,21 +31,11 @@ def _coerce_int(value: Any, default: int, *, minimum: int | None = None) -> int:
 def _coerce_float(value: Any, default: float, *, minimum: float | None = None) -> float:
     try:
         parsed = float(value)
-    except Exception:
+    except (TypeError, ValueError):
         parsed = default
     if minimum is not None and parsed < minimum:
         return minimum
     return parsed
-
-
-def _coerce_optional_positive_int(value: Any) -> int | None:
-    if value in (None, "", 0):
-        return None
-    try:
-        parsed = int(value)
-    except Exception:
-        return None
-    return parsed if parsed > 0 else None
 
 
 def _coerce_string(value: Any, default: str = "") -> str:
@@ -68,15 +58,6 @@ def _coerce_string_list(value: Any) -> list[str]:
         if text and text not in out:
             out.append(text)
     return out
-
-
-def _available_theme_ids() -> list[str] | None:
-    try:
-        from tui.themes import available_theme_ids
-
-        return available_theme_ids()
-    except Exception:
-        return None
 
 
 @dataclass(slots=True)
@@ -145,7 +126,14 @@ class UiRuntimeConfig:
         default_tree = _section(default_tui, "tree_compaction")
         chat_log_max_lines = _coerce_int(tui_cfg.get("chat_log_max_lines"), int(default_tui["chat_log_max_lines"]), minimum=1)
         theme_raw = _coerce_string(tui_cfg.get("theme"), str(default_tui["theme"]))
-        theme, _ = normalize_theme_id(theme_raw, default=DEFAULT_THEME_ID, available=_available_theme_ids())
+        available_themes = None
+        try:
+            from tui.themes import available_theme_ids
+
+            available_themes = available_theme_ids()
+        except ImportError:
+            available_themes = None
+        theme, _ = normalize_theme_id(theme_raw, default=DEFAULT_THEME_ID, available=available_themes)
         return cls(
             theme=theme,
             chat_log_max_lines=chat_log_max_lines if chat_log_max_lines > 0 else None,
@@ -197,6 +185,12 @@ class ProviderConfig:
     def from_config(cls, config: dict[str, Any], *, auth_header: str | None = None) -> ProviderConfig:
         agent_cfg = _section(config, "agent")
         default_agent = _section(DEFAULT_CONFIG, "agent")
+        max_tokens_value = agent_cfg.get("max_tokens")
+        default_max_tokens = None
+        if max_tokens_value not in (None, "", 0):
+            parsed_max_tokens = _coerce_int(max_tokens_value, 0)
+            if parsed_max_tokens > 0:
+                default_max_tokens = parsed_max_tokens
         return cls(
             provider_name=_coerce_string(agent_cfg.get("provider"), str(default_agent["provider"])),
             base_url=_coerce_string(
@@ -255,7 +249,7 @@ class ProviderConfig:
                 float(default_agent["retry_backoff_s"]),
                 minimum=0.0,
             ),
-            default_max_tokens=_coerce_optional_positive_int(agent_cfg.get("max_tokens")),
+            default_max_tokens=default_max_tokens,
             api_key=_coerce_string(agent_cfg.get("api_key"), str(default_agent["api_key"])),
             api_key_env=_coerce_string(agent_cfg.get("api_key_env"), str(default_agent["api_key_env"])),
             auth_header_template=_coerce_string(
