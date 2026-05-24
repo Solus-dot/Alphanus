@@ -31,21 +31,6 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
             os.unlink(tmp_path)
 
 
-def _search_preview(text: str, tokens: list[str], *, max_len: int = 96) -> str:
-    collapsed = " ".join(str(text or "").split())
-    if len(collapsed) <= max_len:
-        return collapsed
-    lower = collapsed.casefold()
-    positions = [lower.find(token) for token in tokens if lower.find(token) >= 0]
-    center = min(positions) if positions else 0
-    start = max(0, center - max_len // 3)
-    end = min(len(collapsed), start + max_len)
-    start = max(0, end - max_len)
-    prefix = "…" if start > 0 else ""
-    suffix = "…" if end < len(collapsed) else ""
-    return f"{prefix}{collapsed[start:end].strip()}{suffix}"
-
-
 @dataclass
 class ChatSession:
     id: str
@@ -178,10 +163,11 @@ class SessionStore:
                 candidates.extend(
                     [
                         ("user", turn.id, turn.user_text(), 2),
-                        ("assistant", turn.id, str(turn.assistant_content or ""), 3),
                         ("branch", turn.id, turn.label, 1),
                     ]
                 )
+                if turn.assistant_state != "error":
+                    candidates.append(("assistant", turn.id, str(turn.assistant_content or ""), 3))
                 tool_names = []
                 for exchange in turn.skill_exchanges:
                     name = str(exchange.get("name") or "").strip() if isinstance(exchange, dict) else ""
@@ -198,7 +184,19 @@ class SessionStore:
                     score -= 20
                 elif needle in normalized:
                     score -= 10
-                preview = _search_preview(str(text or ""), tokens)
+                collapsed = " ".join(str(text or "").split())
+                if len(collapsed) <= 96:
+                    preview = collapsed
+                else:
+                    lower_text = collapsed.casefold()
+                    positions = [lower_text.find(token) for token in tokens if lower_text.find(token) >= 0]
+                    center = min(positions) if positions else 0
+                    start = max(0, center - 32)
+                    end = min(len(collapsed), start + 96)
+                    start = max(0, end - 96)
+                    prefix = "…" if start > 0 else ""
+                    suffix = "…" if end < len(collapsed) else ""
+                    preview = f"{prefix}{collapsed[start:end].strip()}{suffix}"
                 results.append(
                     SessionSearchResult(
                         id=f"{summary.id}:{turn_id}:{kind}:{len(results)}",
@@ -220,7 +218,11 @@ class SessionStore:
 
     def create_session(self, title: str = "", tree: ConvTree | None = None, *, activate: bool = True) -> ChatSession:
         manifest = self._load_manifest()
-        session_id = self._new_session_id(manifest)
+        seen_session_ids = set(manifest.get("sessions", {}).keys()) if isinstance(manifest.get("sessions"), dict) else set()
+        while True:
+            session_id = str(uuid.uuid4())[:8]
+            if session_id not in seen_session_ids:
+                break
         now = _utc_now_iso()
         session = ChatSession(
             id=session_id,
@@ -331,13 +333,6 @@ class SessionStore:
         if len(title_matches) > 1:
             raise ValueError(f"Multiple sessions match '{value}'. Use the numeric index or session id.")
         raise ValueError(f"No saved session matches '{value}'.")
-
-    def _new_session_id(self, manifest: dict[str, Any]) -> str:
-        seen = set(manifest.get("sessions", {}).keys()) if isinstance(manifest.get("sessions"), dict) else set()
-        while True:
-            session_id = str(uuid.uuid4())[:8]
-            if session_id not in seen:
-                return session_id
 
     def _next_default_title(self, manifest: dict[str, Any]) -> str:
         raw_sessions = manifest.get("sessions", {})

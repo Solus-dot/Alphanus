@@ -30,6 +30,16 @@ def test_fail_turn_sets_error_state_without_interrupted_marker():
     assert tree.nodes[turn.id].assistant_state == "error"
 
 
+def test_history_messages_skip_failed_assistant_content():
+    tree = ConvTree()
+    turn = tree.add_turn("lookup")
+    tree.fail_turn(turn.id, "stale fallback text")
+
+    messages = tree.history_messages()
+
+    assert messages == [{"role": "user", "content": "lookup"}]
+
+
 def test_tree_branch_state_only_tracks_branch_roots():
     tree = ConvTree()
     first = tree.add_turn("hi")

@@ -194,11 +194,8 @@ class ConvTree:
         self._history_version += 1
         self._invalidate_history_cache()
 
-    def _mark_path_changed(self) -> None:
-        self._invalidate_active_path_cache()
-
     def _mark_structure_changed(self) -> None:
-        self._mark_path_changed()
+        self._invalidate_active_path_cache()
         self._mark_history_changed()
 
     def set_compaction_policy(
@@ -310,7 +307,7 @@ class ConvTree:
                 continue
             messages.append({"role": "user", "content": turn.user_content})
             messages.extend(turn.skill_exchanges)
-            if turn.assistant_content:
+            if turn.assistant_content and turn.assistant_state != "error":
                 messages.append({"role": "assistant", "content": turn.assistant_content})
         self._history_messages_cache_key = cache_key
         self._history_messages_cache = list(messages)

@@ -65,6 +65,23 @@ def test_search_sessions_matches_content_and_turn_ids(tmp_path: Path) -> None:
     assert tool_results[0].kind == "tool"
 
 
+def test_search_sessions_skips_failed_assistant_content(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path, tmp_path / "sessions")
+    tree = ConvTree()
+    failed = tree.add_turn("Look up the weather")
+    tree.fail_turn(failed.id, "[agent error] Finalization failed: stale persisted failure")
+    done = tree.add_turn("Summarize viewport")
+    tree.complete_turn(done.id, "The viewport renderer should keep scroll stable.")
+    store.create_session("Failure Replay", tree=tree)
+
+    failed_results = store.search_sessions("stale persisted failure")
+    done_results = store.search_sessions("viewport renderer")
+
+    assert failed_results == []
+    assert done_results
+    assert done_results[0].kind == "assistant"
+
+
 def test_search_sessions_title_match_does_not_target_root_turn(tmp_path: Path) -> None:
     store = SessionStore(tmp_path, tmp_path / "sessions")
     tree = ConvTree()
