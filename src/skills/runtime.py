@@ -57,16 +57,16 @@ _ALWAYS_AVAILABLE_TOOL_NAMES = frozenset(
 )
 
 
+class ToolProtocolError(RuntimeError):
+    pass
+
+
 def _ok(data: object, duration_ms: int) -> ToolResult:
     return ok_result(cast(JSONValue, data), duration_ms=duration_ms)
 
 
 def _err(code: str, message: str, duration_ms: int) -> ToolResult:
     return error_result(code, message, duration_ms=duration_ms)
-
-
-class ToolProtocolError(RuntimeError):
-    pass
 
 
 def _recover_tool_args(raw_args: dict[str, object]) -> dict[str, object]:
@@ -394,16 +394,12 @@ class SkillRuntime:
             registered_tool_cls=RegisteredTool,
             tool_name=tool_name,
             manifest=manifest,
-            tool_scope_for_name=self._tool_scope_for_name,
+            tool_scope_for_name=lambda name: "core" if name in _CORE_TOOL_NAMES else "skill",
             append_unique=self._append_unique,
             spec=spec,
             extra=extra,
             soft=soft,
         )
-
-    @staticmethod
-    def _tool_scope_for_name(tool_name: str) -> str:
-        return "core" if tool_name in _CORE_TOOL_NAMES else "skill"
 
     def _register_runtime_tools(self) -> None:
         self._tool_registry[_SKILLS_LIST_TOOL_NAME] = RegisteredTool(
@@ -558,13 +554,16 @@ class SkillRuntime:
                 continue
             cwd = str(definition.get("cwd", "skill")).strip().lower() or "skill"
             if cwd not in {"workspace", "skill"}:
+                self._append_unique(manifest.validation_warnings, f"tool '{tool_name}' has unsupported cwd '{cwd}'; defaulting to skill")
                 cwd = "skill"
             timeout_raw = definition.get("timeout_s", 30)
             try:
                 timeout_s = int(timeout_raw)
-            except Exception:
+            except (TypeError, ValueError):
+                self._append_unique(manifest.validation_warnings, f"tool '{tool_name}' has invalid timeout {timeout_raw!r}; defaulting to 30")
                 timeout_s = 30
             if timeout_s <= 0:
+                self._append_unique(manifest.validation_warnings, f"tool '{tool_name}' has non-positive timeout {timeout_s}; defaulting to 30")
                 timeout_s = 30
             if self._register_tool(
                 tool_name,
@@ -1146,13 +1145,6 @@ class SkillRuntime:
     ) -> list[str]:
         return self._tool_names_for_turn(selected, ctx=ctx)
 
-    def _tool_schema_cache_key(
-        self,
-        names: list[str],
-        selected: list[SkillManifest],
-    ) -> tuple[Any, ...]:
-        return SkillToolSchemaBuilder.cache_key(names, selected, generation=self.generation)
-
     def _tool_schemas(
         self,
         names: list[str],
@@ -1167,7 +1159,7 @@ class SkillRuntime:
         ctx: SkillContext | None = None,
     ) -> list[dict[str, Any]]:
         names = self.allowed_tool_names(selected, ctx=ctx)
-        cache_key = self._tool_schema_cache_key(names, selected)
+        cache_key = SkillToolSchemaBuilder.cache_key(names, selected, generation=self.generation)
         cached = self._tools_schema_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -1283,16 +1275,8 @@ class SkillRuntime:
         recovered = _recover_tool_args(args)
         validated = self._validate_tool_args(reg, recovered)
         if reg.name == _RUN_SKILL_TOOL_NAME:
-            validated = self._validate_run_skill_args(validated, selected, ctx)
+            validated = self._run_validator.validate_run_skill_args(validated, selected, ctx)
         return validated
-
-    def _validate_run_skill_args(
-        self,
-        args: dict[str, Any],
-        selected: list[SkillManifest],
-        ctx: SkillContext,
-    ) -> dict[str, Any]:
-        return self._run_validator.validate_run_skill_args(args, selected, ctx)
 
     def execute_tool_call(
         self,

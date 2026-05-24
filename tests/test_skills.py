@@ -2980,3 +2980,132 @@ Use the bundled helper script when available.
     assert calls["count"] == 1
     assert docx_tools == png_tools
     assert docx_tools[0]["ctx"] == "set up report.docx"
+
+
+def test_skill_tool_definition_invalid_timeout_is_reported(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "timeout-skill").mkdir(parents=True)
+    (skills / "timeout-skill" / "SKILL.md").write_text(
+        """
+---
+name: timeout-skill
+description: exposes command tool
+version: 1.0.0
+tools:
+  definitions:
+    - name: timeout_tool
+      command: "echo ok"
+      timeout_s: nope
+      parameters:
+        type: object
+        properties: {}
+---
+Use timeout tool.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("timeout-skill")
+
+    assert skill is not None
+    assert any("invalid timeout 'nope'" in warning for warning in skill.validation_warnings)
+
+
+def test_python_script_parse_failure_is_reported_as_validation_warning(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "broken-script" / "scripts").mkdir(parents=True)
+    (skills / "broken-script" / "SKILL.md").write_text(
+        """
+---
+name: broken-script
+description: has a broken helper script
+version: 1.0.0
+---
+Use helper script.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "broken-script" / "scripts" / "broken.py").write_text("def nope(:\n", encoding="utf-8")
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("broken-script")
+    assert skill is not None
+
+    runtime._python_script_missing_modules(skill, "scripts/broken.py")
+
+    assert any("script 'scripts/broken.py' import inspection failed: SyntaxError" in warning for warning in skill.validation_warnings)
+
+
+def test_unexpected_tool_exception_message_preserves_exception_type(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "explode-skill").mkdir(parents=True)
+    (skills / "explode-skill" / "SKILL.md").write_text(
+        """
+---
+name: explode-skill
+description: tool raises unexpected exception
+version: 1.0.0
+allowed-tools:
+  - explode_tool
+---
+Explode.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "explode-skill" / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "explode_tool": {
+    "capability": "workspace_read",
+    "description": "Explodes",
+    "parameters": {"type": "object", "properties": {}, "required": []}
+  }
+}
+
+def execute(tool_name, args, env):
+    raise ArithmeticError("missing config")
+""".strip(),
+        encoding="utf-8",
+    )
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+        debug=False,
+    )
+    skill = runtime.get_skill("explode-skill")
+    assert skill is not None
+    ctx = SkillContext(
+        user_input="explode",
+        branch_labels=[],
+        attachments=[],
+        workspace_root=str(ws),
+        memory_hits=[],
+    )
+
+    out = runtime.execute_tool_call("explode_tool", {}, selected=[skill], ctx=ctx)
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_IO"
+    assert "Tool raised ArithmeticError" in out["error"]["message"]

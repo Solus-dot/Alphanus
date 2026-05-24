@@ -134,7 +134,11 @@ class SkillScriptInspector:
             return []
         try:
             tree = ast.parse(script_path.read_text(encoding="utf-8"), filename=str(script_path))
-        except Exception:
+        except (OSError, SyntaxError, UnicodeDecodeError) as exc:
+            runtime._append_unique(
+                skill.validation_warnings,
+                f"script '{rel_script}' import inspection failed: {exc.__class__.__name__}: {exc}",
+            )
             return []
 
         imported: set[str] = set()
@@ -177,7 +181,7 @@ class SkillScriptInspector:
         if python_exec == sys.executable:
             try:
                 available = importlib.util.find_spec(module_name) is not None
-            except Exception:
+            except (ImportError, AttributeError, ValueError):
                 available = False
             runtime._python_module_probe_cache[module_name] = available
             return available
@@ -196,7 +200,7 @@ class SkillScriptInspector:
                 env=runtime._proc_env_base,
             )
             available = proc.returncode == 0
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             available = False
         runtime._python_module_probe_cache[module_name] = available
         return available

@@ -324,9 +324,11 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         timeout_raw = raw.get("timeout-s", raw.get("timeout_s", 30))
         try:
             timeout_s = int(timeout_raw)
-        except Exception:
+        except (TypeError, ValueError):
+            warnings.append(f"tool '{tool_name}' has invalid timeout {timeout_raw!r}; defaulting to 30")
             timeout_s = 30
         if timeout_s <= 0:
+            warnings.append(f"tool '{tool_name}' has non-positive timeout {timeout_s}; defaulting to 30")
             timeout_s = 30
         cwd = str(raw.get("cwd", "skill")).strip().lower() or "skill"
         if cwd not in {"workspace", "skill"}:

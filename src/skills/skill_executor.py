@@ -73,7 +73,7 @@ class SkillExecutor:
             candidate = stdout.splitlines()[-1].strip()
             try:
                 parsed = json.loads(candidate)
-            except Exception:
+            except json.JSONDecodeError:
                 parsed = None
             if isinstance(parsed, dict):
                 if {"ok", "data", "error"}.issubset(parsed.keys()):
@@ -130,10 +130,13 @@ class SkillExecutor:
         except self._protocol_error_cls as exc:
             return self._err("E_PROTOCOL", str(exc), int((time.perf_counter() - start) * 1000))
         except RuntimeError as exc:
-            message = str(exc).strip() or "Action failed"
+            message = str(exc).strip() or "Tool raised RuntimeError"
             return self._err("E_IO", message, int((time.perf_counter() - start) * 1000))
         except Exception as exc:
-            message = str(exc) if runtime.debug else "Action failed"
+            detail = str(exc).strip()
+            message = f"Tool raised {exc.__class__.__name__}"
+            if detail:
+                message = f"{message}: {detail}"
             return self._err("E_IO", message, int((time.perf_counter() - start) * 1000))
 
     def execute_run_skill_tool(self, args: dict[str, Any], env) -> dict[str, Any]:
@@ -207,7 +210,7 @@ class SkillExecutor:
         candidate = out.splitlines()[-1].strip()
         try:
             parsed = json.loads(candidate)
-        except Exception:
+        except json.JSONDecodeError:
             return {
                 "skill_id": skill.id,
                 "script": rel_script,
