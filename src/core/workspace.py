@@ -163,7 +163,7 @@ class WorkspaceManager:
         return bool(PROTECTED_STATE_TOKEN_RE.search(str(text)))
 
     def _command_touches_protected_state(self, argv: list[str], cwd: Path) -> bool:
-        git_subcommand_index = self._git_subcommand_index(argv) if argv and argv[0] == "git" else -1
+        git_subcommand_index = WorkspaceCommandPolicy.git_subcommand_index(argv) if argv and argv[0] == "git" else -1
         for idx, part in enumerate(argv[1:], start=1):
             if self._text_mentions_protected_state(part):
                 return True
@@ -197,13 +197,6 @@ class WorkspaceManager:
                 rel_path = (rel_root / filename).as_posix()
                 digest.update(f"f:{rel_path}:{stat.st_mode}:{stat.st_size}:{stat.st_mtime_ns}\n".encode())
         return digest.hexdigest()
-
-    @staticmethod
-    def _git_subcommand_index(argv: list[str]) -> int:
-        return WorkspaceCommandPolicy.git_subcommand_index(argv)
-
-    def _classify_shell_command(self, argv: list[str]) -> str:
-        return WorkspaceCommandPolicy.classify_shell_command(argv)
 
     def _git_status_snapshot(self) -> tuple[str, tuple[tuple[str, str, int, int], ...]] | None:
         git_path = shutil.which("git")
@@ -982,7 +975,7 @@ class WorkspaceManager:
         run["passed"] = run["returncode"] == 0
         return run
 
-    def _validate_shell_command(self, command: str) -> None:
+    def _validate_shell_command(self, command: str) -> list[str]:
         trimmed = command.strip()
         if not trimmed:
             raise PermissionError("Empty command is not allowed")
@@ -1002,14 +995,6 @@ class WorkspaceManager:
         for pattern in DANGEROUS_SHELL_PATTERNS:
             if re.search(pattern, trimmed, flags=re.IGNORECASE):
                 raise PermissionError("Command matches blocked dangerous pattern")
-
-    def _parse_command_argv(self, command: str) -> list[str]:
-        try:
-            argv = shlex.split(command, posix=True)
-        except ValueError as exc:
-            raise PermissionError(f"Command could not be parsed safely: {exc}") from exc
-        if not argv:
-            raise PermissionError("Empty command is not allowed")
         return argv
 
     def run_shell_command(
@@ -1021,9 +1006,8 @@ class WorkspaceManager:
     ) -> dict:
         start = time.perf_counter()
         try:
-            self._validate_shell_command(command)
-            argv = self._parse_command_argv(command)
-            command_kind = self._classify_shell_command(argv)
+            argv = self._validate_shell_command(command)
+            command_kind = WorkspaceCommandPolicy.classify_shell_command(argv)
             target_cwd = self._resolve_read_path(cwd, extra_allowed_roots=allowed_cwd_roots) if cwd else self.workspace_root
             if target_cwd.is_file():
                 target_cwd = target_cwd.parent

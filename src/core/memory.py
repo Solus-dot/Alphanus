@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import os
 import re
@@ -117,33 +118,6 @@ class LexicalMemory:
             bak1.unlink()
         shutil.copy2(self.storage_path, bak1)
 
-    @staticmethod
-    def _item_to_record(item: MemoryItem) -> dict[str, Any]:
-        return {
-            "id": item.id,
-            "text": item.text,
-            "metadata": item.metadata,
-            "type": item.type,
-            "timestamp": item.timestamp,
-            "access_count": item.access_count,
-            "last_accessed": item.last_accessed,
-        }
-
-    @staticmethod
-    def _record_to_item(record: dict[str, Any]) -> MemoryItem:
-        metadata = record.get("metadata", {})
-        if not isinstance(metadata, dict):
-            raise ValueError("memory metadata must be an object")
-        return MemoryItem(
-            id=int(record["id"]),
-            text=str(record["text"]),
-            metadata=dict(metadata),
-            type=str(record.get("type", "conversation")),
-            timestamp=float(record.get("timestamp", time.time())),
-            access_count=int(record.get("access_count", 0)),
-            last_accessed=float(record.get("last_accessed", record.get("timestamp", time.time()))),
-        )
-
     def _load(self) -> None:
         if not self.storage_path.exists():
             return
@@ -174,7 +148,18 @@ class LexicalMemory:
                     continue
 
                 try:
-                    item = self._record_to_item(record)
+                    metadata = record.get("metadata", {})
+                    if not isinstance(metadata, dict):
+                        raise ValueError("memory metadata must be an object")
+                    item = MemoryItem(
+                        id=int(record["id"]),
+                        text=str(record["text"]),
+                        metadata=dict(metadata),
+                        type=str(record.get("type", "conversation")),
+                        timestamp=float(record.get("timestamp", time.time())),
+                        access_count=int(record.get("access_count", 0)),
+                        last_accessed=float(record.get("last_accessed", record.get("timestamp", time.time()))),
+                    )
                 except (KeyError, TypeError, ValueError):
                     self._load_recovery_count += 1
                     continue
@@ -223,8 +208,21 @@ class LexicalMemory:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 for item in self.memories:
-                    record = self._item_to_record(item)
-                    handle.write(json.dumps(record, sort_keys=True, ensure_ascii=False))
+                    handle.write(
+                        json.dumps(
+                            {
+                                "id": item.id,
+                                "text": item.text,
+                                "metadata": item.metadata,
+                                "type": item.type,
+                                "timestamp": item.timestamp,
+                                "access_count": item.access_count,
+                                "last_accessed": item.last_accessed,
+                            },
+                            sort_keys=True,
+                            ensure_ascii=False,
+                        )
+                    )
                     handle.write("\n")
             # Snapshot the currently committed primary file into backups first,
             # then atomically promote the new snapshot.
@@ -388,5 +386,5 @@ class LexicalMemory:
     def __del__(self) -> None:
         try:
             self.flush()
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.debug("Memory flush during object cleanup failed: %s", exc)

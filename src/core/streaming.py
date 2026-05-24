@@ -47,26 +47,6 @@ def should_retry(exc: Exception) -> bool:
     return False
 
 
-def _extract_stream_socket(resp):
-    candidates = [
-        getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None),
-        getattr(getattr(resp, "fp", None), "raw", None),
-        getattr(resp, "fp", None),
-    ]
-    for candidate in candidates:
-        if candidate is None:
-            continue
-        fileno = getattr(candidate, "fileno", None)
-        if callable(fileno):
-            try:
-                fileno()
-                return candidate
-            except Exception as exc:
-                logging.debug("Socket fileno() check failed for %s: %s", type(candidate).__name__, exc)
-                continue
-    return None
-
-
 def stream_chat_completions(
     endpoint: str,
     payload: dict,
@@ -105,9 +85,24 @@ def stream_chat_completions(
                         "status": getattr(resp, "status", None),
                         "reason": getattr(resp, "reason", ""),
                     }
-                )
+            )
             readline = getattr(resp, "readline", None)
-            stream_sock = _extract_stream_socket(resp)
+            stream_sock = None
+            for candidate in (
+                getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None),
+                getattr(getattr(resp, "fp", None), "raw", None),
+                getattr(resp, "fp", None),
+            ):
+                if candidate is None:
+                    continue
+                fileno = getattr(candidate, "fileno", None)
+                if callable(fileno):
+                    try:
+                        fileno()
+                        stream_sock = candidate
+                        break
+                    except Exception as exc:
+                        logging.debug("Socket fileno() check failed for %s: %s", type(candidate).__name__, exc)
             if callable(readline):
                 while True:
                     if stop_event is not None and stop_event.is_set():
