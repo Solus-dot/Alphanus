@@ -348,9 +348,6 @@ def write_tool_lifecycle_block(app: Any, name: str, ok: bool, detail: str = "") 
         muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
         text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
         suffix = f" [{muted}]{esc(detail)}[/{muted}]" if detail else ""
-        spaced = not bool(getattr(app, "_compact_tool_lifecycle_spacing", False))
-        if spaced:
-            app._write_assistant_bar_line()
         app._write_assistant_bar_line(
             f"[{success}]✓[/{success}] [{text_color}]{esc(name)}[/{text_color}]{suffix}",
             content_indent=2,

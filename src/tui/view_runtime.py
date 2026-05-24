@@ -150,7 +150,8 @@ def write_completed_turn_assistant(app: Any, turn: Turn) -> None:
     interrupted = state == "cancelled"
     failed = state == "error"
     display = content.replace("\n[interrupted]", "").rstrip()
-    app._render_static_markdown(display)
+    if not failed:
+        app._render_static_markdown(display)
 
     if interrupted:
         app._write("[dim red]  ✖ interrupted[/dim red]")
@@ -166,7 +167,8 @@ def rebuild_viewport(app: Any, *, preserve_scroll: bool = False) -> None:
         if turn.id == "root":
             continue
         app._write_turn_user(turn)
-        if turn.assistant_content:
+        assistant_state = str(getattr(turn, "assistant_state", "") or "").strip()
+        if turn.assistant_content or assistant_state in {"cancelled", "error"}:
             app._write_completed_turn_asst(turn)
     if scroll_anchor is not None:
         app.call_after_refresh(lambda anchor=scroll_anchor: app._restore_scroll_anchor(anchor))

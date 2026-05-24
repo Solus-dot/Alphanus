@@ -190,8 +190,7 @@ def flush_content_buffer(app: Any, include_partial: bool = False, *, update_part
 def handle_content_token(app: Any, token: str, *, update_partial: bool = True) -> None:
     if not app._content_open:
         app._content_open = True
-        if app._close_reasoning_section():
-            app._write_assistant_bar_line()
+        app._close_reasoning_section()
     app._buf_c += token
     app._append_reply_token(token)
     app._flush_content_buffer(include_partial=False, update_partial=update_partial)
@@ -414,7 +413,7 @@ def finish_turn_stream(app: Any, turn_id: str, result: AgentTurnResult) -> None:
         flush_content_buffer(app, include_partial=True)
 
         reply = result.content if result.content else app._reply_acc
-        if not app._content_open and reply.strip():
+        if result.status == "done" and not app._content_open and reply.strip():
             app._render_static_markdown(reply)
 
         if turn_id in app.conv_tree.nodes:
@@ -438,8 +437,9 @@ def finish_turn_stream(app: Any, turn_id: str, result: AgentTurnResult) -> None:
             ]
 
         if result.status != "done":
-            if result.error and result.error != app._last_stream_error_text:
-                app._write_error(result.error)
+            error_text = result.content.strip() or str(result.error or "").strip()
+            if error_text and error_text != app._last_stream_error_text:
+                app._write_error(error_text)
             if result.status == "cancelled":
                 _activity(app).mark_interrupted()
                 app._write("[bold red]  ✖ interrupted[/bold red]")

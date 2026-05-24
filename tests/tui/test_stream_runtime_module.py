@@ -295,3 +295,93 @@ def test_finish_turn_stream_restores_ui_even_when_finalization_raises() -> None:
     assert app._auto_follow_stream is True
     assert "reset" in events
     assert any(item.startswith("error:Stream finalization failed: save exploded") for item in events)
+
+
+def test_finish_turn_stream_routes_error_content_to_error_channel() -> None:
+    events: list[str] = []
+
+    class _FinishApp:
+        def __init__(self) -> None:
+            self.streaming = True
+            self._active_turn_id = "t1"
+            self._esc_pending = False
+            self._auto_follow_stream = True
+            self._reply_acc = ""
+            self._buf_r = ""
+            self._buf_c = ""
+            self._content_open = False
+            self._reasoning_open = False
+            self._last_stream_error_text = ""
+            self._pending_tool_details = []
+            self._stream_runtime = StreamRuntimeState()
+            self._loaded_skill_ids = []
+            self.conv_tree = SimpleNamespace(
+                nodes={"t1": object()},
+                append_skill_exchange=lambda turn_id, msg: events.append(f"skill:{turn_id}:{msg.get('role')}"),
+                complete_turn=lambda turn_id, reply: events.append(f"complete:{turn_id}:{reply}"),
+                cancel_turn=lambda turn_id, reply: events.append(f"cancel:{turn_id}:{reply}"),
+                fail_turn=lambda turn_id, reply: events.append(f"fail:{turn_id}:{reply}"),
+            )
+            self.agent = SimpleNamespace(skill_runtime=SimpleNamespace(skills_by_ids=lambda ids: []))
+            self._live_preview = SimpleNamespace(close_all=lambda *args, **kwargs: None, reset=lambda: None)
+
+        def _set_partial_renderable(self, _renderable, visible=None):
+            return None
+
+        def _write_assistant_bar_line(self, _markup=""):
+            return None
+
+        def _write_code_block(self, _lines, _language, _indent=2):
+            return None
+
+        def _clear_partial_preview(self):
+            return None
+
+        def _render_static_markdown(self, reply: str):
+            events.append(f"render:{reply}")
+
+        def _update_partial_content(self):
+            return None
+
+        def _update_context_usage_from_payload(self, _usage):
+            return None
+
+        def _write_error(self, text: str):
+            events.append(f"error:{text}")
+
+        def _write(self, markup: str):
+            events.append(f"write:{markup}")
+
+        def _maybe_scroll_end(self):
+            return None
+
+        def _update_status1(self):
+            return None
+
+        def _update_status2(self):
+            return None
+
+        def _update_sidebar(self):
+            return None
+
+        def _update_metadata(self):
+            return None
+
+        def _save_active_session(self):
+            return None
+
+    app = _FinishApp()
+    result = AgentTurnResult(
+        status="error",
+        content="[agent error] Finalization failed: the model repeatedly returned invalid final-answer output.",
+        reasoning="",
+        skill_exchanges=[],
+        error="finalization_failed",
+        journal={},
+    )
+
+    finish_turn_stream(app, "t1", result)
+
+    assert not any(item.startswith("render:") for item in events)
+    assert "error:[agent error] Finalization failed: the model repeatedly returned invalid final-answer output." in events
+    assert "fail:t1:[agent error] Finalization failed: the model repeatedly returned invalid final-answer output." in events
