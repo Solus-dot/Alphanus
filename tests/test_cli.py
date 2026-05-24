@@ -261,6 +261,7 @@ def test_init_non_interactive_model_section_writes_api_key_to_env(monkeypatch, t
             endpoint_mode="auto",
             api_key="sk-demo",
             api_key_env="ALPHANUS_API_KEY",
+            backend_api_key_env="",
             search_provider="",
             theme="",
         )
@@ -273,6 +274,93 @@ def test_init_non_interactive_model_section_writes_api_key_to_env(monkeypatch, t
     assert stored["agent"]["api_key"] == "env:ALPHANUS_API_KEY"
     dotenv = dotenv_path.read_text(encoding="utf-8")
     assert "ALPHANUS_API_KEY=sk-demo" in dotenv
+
+
+def test_init_non_interactive_model_section_can_mirror_api_key_for_backend(monkeypatch, tmp_path) -> None:
+    state_root = tmp_path / ".alphanus"
+    config_path = state_root / "config" / "global_config.json"
+    dotenv_path = state_root / ".env"
+
+    monkeypatch.setattr(
+        alphanus_cli,
+        "get_app_paths",
+        lambda: SimpleNamespace(
+            app_root=tmp_path,
+            state_root=state_root,
+            config_path=config_path,
+            dotenv_path=dotenv_path,
+            bundled_skills_dir=tmp_path / "skills",
+            repo_root=tmp_path,
+        ),
+    )
+
+    exit_code = alphanus_cli._run_init(
+        SimpleNamespace(
+            section="model",
+            non_interactive=True,
+            reset=False,
+            workspace_path="",
+            base_url="http://127.0.0.1:8080",
+            responses_endpoint="http://127.0.0.1:8080/v1/responses",
+            model_endpoint="http://127.0.0.1:8080/v1/chat/completions",
+            models_endpoint="http://127.0.0.1:8080/v1/models",
+            endpoint_mode="auto",
+            backend_profile="auto",
+            api_key="sk-demo",
+            api_key_env="ALPHANUS_API_KEY",
+            backend_api_key_env="OPENAI_API_KEY",
+            search_provider="",
+            theme="",
+        )
+    )
+
+    assert exit_code == 0
+    dotenv = dotenv_path.read_text(encoding="utf-8")
+    assert "ALPHANUS_API_KEY=sk-demo" in dotenv
+    assert "OPENAI_API_KEY=sk-demo" in dotenv
+
+
+def test_init_non_interactive_tavily_primary_skips_searxng_and_fallback(monkeypatch, tmp_path) -> None:
+    state_root = tmp_path / ".alphanus"
+    config_path = state_root / "config" / "global_config.json"
+    dotenv_path = state_root / ".env"
+
+    monkeypatch.setattr(
+        alphanus_cli,
+        "get_app_paths",
+        lambda: SimpleNamespace(
+            app_root=tmp_path,
+            state_root=state_root,
+            config_path=config_path,
+            dotenv_path=dotenv_path,
+            bundled_skills_dir=tmp_path / "skills",
+            repo_root=tmp_path,
+        ),
+    )
+
+    exit_code = alphanus_cli._run_init(
+        SimpleNamespace(
+            section="search",
+            non_interactive=True,
+            reset=False,
+            workspace_path="",
+            model_endpoint="",
+            models_endpoint="",
+            search_provider="tavily",
+            search_fallback_provider="tavily",
+            searxng_base_url="http://127.0.0.1:8888",
+            tavily_api_key="tvly-demo",
+            tavily_api_key_env="TAVILY_API_KEY",
+            theme="",
+        )
+    )
+
+    assert exit_code == 0
+    stored = json.loads(config_path.read_text(encoding="utf-8"))
+    assert stored["search"]["provider"] == "tavily"
+    assert stored["search"]["fallback_provider"] == ""
+    assert stored["search"]["searxng_base_url"] == ""
+    assert "TAVILY_API_KEY=tvly-demo" in dotenv_path.read_text(encoding="utf-8")
 
 
 def test_parser_accepts_global_flags_after_subcommand() -> None:
@@ -334,6 +422,34 @@ def test_parser_accepts_tavily_key_flags() -> None:
     assert args.section == "search"
     assert args.tavily_api_key_env == "CUSTOM_TAVILY_KEY"
     assert args.tavily_api_key == "tvly-demo"
+
+
+def test_parser_accepts_backend_api_key_env_flag() -> None:
+    parser = alphanus_cli._build_parser()
+
+    args = parser.parse_args(["init", "model", "--non-interactive", "--backend-api-key-env", "OPENAI_API_KEY"])
+
+    assert args.backend_api_key_env == "OPENAI_API_KEY"
+
+
+def test_prompt_env_name_rejects_secret_like_values(monkeypatch, capsys) -> None:
+    values = iter(["sk-demo-1234567890abcdef", "OPENAI_API_KEY"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(values))
+
+    result = alphanus_cli._prompt_env_name(alphanus_cli._CliTheme(), "Env var", "ALPHANUS_API_KEY")
+
+    assert result == "OPENAI_API_KEY"
+    assert "not the API key value" in capsys.readouterr().out
+
+
+def test_prompt_env_name_rejects_lowercase_key_like_value(monkeypatch, capsys) -> None:
+    values = iter(["abcd", "ALPHANUS_API_KEY"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(values))
+
+    result = alphanus_cli._prompt_env_name(alphanus_cli._CliTheme(), "Env var", "ALPHANUS_API_KEY")
+
+    assert result == "ALPHANUS_API_KEY"
+    assert "uppercase environment variable name" in capsys.readouterr().out
 
 
 def test_doctor_json_output_is_machine_readable(monkeypatch, capsys, tmp_path) -> None:

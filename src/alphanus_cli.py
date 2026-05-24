@@ -3,6 +3,7 @@ import copy
 import getpass
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,7 @@ from tui.interface import AlphanusTUI
 from tui.themes import available_theme_ids, theme_spec
 
 INIT_SECTIONS = ("all", "workspace", "model", "search", "theme")
+_VALID_CLI_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class _CliTheme:
@@ -95,13 +97,6 @@ class _CliTheme:
         return self._fg(text, (199, 210, 254))
 
 
-def _resolve_runtime_skills_dir(app_paths) -> Path:
-    user_skills_dir = getattr(app_paths, "user_skills_dir", None)
-    if user_skills_dir is not None:
-        return Path(user_skills_dir).resolve()
-    return (Path(app_paths.state_root).resolve() / "skills").resolve()
-
-
 def _as_object(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -150,6 +145,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     init_parser.add_argument("--api-key", type=str, default="", help="Model API key (writes to ~/.alphanus/.env)")
     init_parser.add_argument("--api-key-env", type=str, default="", help="Environment variable name for model API key")
+    init_parser.add_argument(
+        "--backend-api-key-env",
+        type=str,
+        default="",
+        help="Optional extra environment variable to mirror the model API key for a local backend process",
+    )
     init_parser.add_argument("--search-provider", type=str, choices=list(SEARCH_PROVIDERS), default="", help="Search provider")
     init_parser.add_argument("--search-fallback-provider", type=str, choices=list(SEARCH_FALLBACK_PROVIDERS), default="", help="Search fallback provider")
     init_parser.add_argument("--searxng-base-url", type=str, default="", help="SearXNG base URL")
@@ -214,7 +215,8 @@ def _build_agent_runtime(
         min_score=float(memory_cfg.get("min_score_default", 0.3)),
         backup_revisions=int(memory_cfg.get("backup_revisions", 2)),
     )
-    runtime_skills_dir = _resolve_runtime_skills_dir(app_paths)
+    user_skills_dir = getattr(app_paths, "user_skills_dir", None)
+    runtime_skills_dir = Path(user_skills_dir).resolve() if user_skills_dir is not None else (Path(app_paths.state_root).resolve() / "skills").resolve()
     runtime_skills_dir.mkdir(parents=True, exist_ok=True)
     runtime = SkillRuntime(
         skills_dir=str(runtime_skills_dir),
@@ -234,6 +236,27 @@ def _prompt_with_default(label: str, default: str, *, hint: str = "") -> str:
         prompt = f"{prompt}  {hint}"
     value = input(f"{prompt}: ").strip()
     return value or default
+
+
+def _prompt_env_name(theme: _CliTheme, label: str, default: str, *, hint: str = "") -> str:
+    while True:
+        value = _prompt_with_default(label, default, hint=hint).strip()
+        if not value:
+            return ""
+        lowered = value.lower()
+        looks_like_secret_value = lowered.startswith(("sk-", "tvly-", "bearer ", "key-")) or (
+            len(value) >= 24 and any(char.isdigit() for char in value) and any(char.isalpha() for char in value)
+        )
+        if looks_like_secret_value:
+            print(theme.warn("Enter an environment variable name here, not the API key value."))
+            continue
+        if not _VALID_CLI_ENV_NAME_RE.match(value):
+            print(theme.warn("Environment variable names must use letters, numbers, and underscores, and cannot start with a number."))
+            continue
+        if value != value.upper():
+            print(theme.warn("Use an uppercase environment variable name here, such as ALPHANUS_API_KEY or OPENAI_API_KEY."))
+            continue
+        return value
 
 
 def _prompt_yes_no(label: str, *, default: bool = True) -> bool:
@@ -272,68 +295,9 @@ def _section_selected(section: str, name: str) -> bool:
     return section == "all" or section == name
 
 
-def _apply_reset_scope(base: dict[str, Any], *, section: str) -> dict[str, Any]:
-    if section == "all":
-        return copy.deepcopy(DEFAULT_CONFIG)
-
-    updated = copy.deepcopy(base)
-    default_cfg = copy.deepcopy(DEFAULT_CONFIG)
-
-    if _section_selected(section, "workspace"):
-        updated["workspace"] = copy.deepcopy(default_cfg.get("workspace", {}))
-
-    if _section_selected(section, "model"):
-        current_agent = updated.get("agent", {}) if isinstance(updated.get("agent"), dict) else {}
-        default_agent = default_cfg.get("agent", {}) if isinstance(default_cfg.get("agent"), dict) else {}
-        for key in (
-            "base_url",
-            "responses_endpoint",
-            "model_endpoint",
-            "models_endpoint",
-            "endpoint_mode",
-            "backend_profile",
-            "api_key",
-            "api_key_env",
-            "auth_header_template",
-        ):
-            if key in default_agent:
-                current_agent[key] = copy.deepcopy(default_agent[key])
-        updated["agent"] = current_agent
-
-    if _section_selected(section, "search"):
-        updated["search"] = copy.deepcopy(default_cfg.get("search", {}))
-
-    if _section_selected(section, "theme"):
-        current_tui = updated.get("tui", {}) if isinstance(updated.get("tui"), dict) else {}
-        default_tui = default_cfg.get("tui", {}) if isinstance(default_cfg.get("tui"), dict) else {}
-        if "theme" in default_tui:
-            current_tui["theme"] = copy.deepcopy(default_tui["theme"])
-        updated["tui"] = current_tui
-
-    return updated
-
-
-def _ensure_dotenv_template(dotenv_path: Path) -> None:
-    dotenv_path.parent.mkdir(parents=True, exist_ok=True)
-    if dotenv_path.exists():
-        return
-    template = "\n".join(
-        [
-            "# Alphanus environment variables",
-            "# Uncomment and set values as needed.",
-            "# ALPHANUS_API_KEY=",
-            "# TAVILY_API_KEY=",
-            "# ALPHANUS_EMBEDDINGS_API_KEY=",
-            "# ALPHANUS_AUTH_HEADER=Authorization: Bearer <token>",
-            "",
-        ]
-    )
-    dotenv_path.write_text(template, encoding="utf-8")
-
-
 def _upsert_env_var(dotenv_path: Path, key: str, value: str) -> None:
     key = key.strip()
-    if not key:
+    if not key or not _VALID_CLI_ENV_NAME_RE.match(key):
         return
     dotenv_path.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
@@ -375,7 +339,37 @@ def _run_init(args: Any) -> int:
         except (OSError, ValueError):
             base = copy.deepcopy(DEFAULT_CONFIG)
     if reset_requested:
-        base = _apply_reset_scope(base, section=section)
+        if section == "all":
+            base = copy.deepcopy(DEFAULT_CONFIG)
+        else:
+            default_cfg = copy.deepcopy(DEFAULT_CONFIG)
+            if _section_selected(section, "workspace"):
+                base["workspace"] = copy.deepcopy(default_cfg.get("workspace", {}))
+            if _section_selected(section, "model"):
+                current_agent = base.get("agent", {}) if isinstance(base.get("agent"), dict) else {}
+                default_agent = default_cfg.get("agent", {}) if isinstance(default_cfg.get("agent"), dict) else {}
+                for key in (
+                    "base_url",
+                    "responses_endpoint",
+                    "model_endpoint",
+                    "models_endpoint",
+                    "endpoint_mode",
+                    "backend_profile",
+                    "api_key",
+                    "api_key_env",
+                    "auth_header_template",
+                ):
+                    if key in default_agent:
+                        current_agent[key] = copy.deepcopy(default_agent[key])
+                base["agent"] = current_agent
+            if _section_selected(section, "search"):
+                base["search"] = copy.deepcopy(default_cfg.get("search", {}))
+            if _section_selected(section, "theme"):
+                current_tui = base.get("tui", {}) if isinstance(base.get("tui"), dict) else {}
+                default_tui = default_cfg.get("tui", {}) if isinstance(default_cfg.get("tui"), dict) else {}
+                if "theme" in default_tui:
+                    current_tui["theme"] = copy.deepcopy(default_tui["theme"])
+                base["tui"] = current_tui
 
     workspace_default = str(base.get("workspace", {}).get("path", DEFAULT_CONFIG["workspace"]["path"]))
     base_url_default = str(base.get("agent", {}).get("base_url", DEFAULT_CONFIG["agent"]["base_url"]))
@@ -408,6 +402,7 @@ def _run_init(args: Any) -> int:
     api_key_env = api_key_env_default
     api_key_ref = api_key_ref_default
     api_key_value = ""
+    backend_api_key_env = ""
     search_provider = search_provider_default
     search_fallback_provider = search_fallback_default
     searxng_base_url_default = str(base.get("search", {}).get("searxng_base_url", DEFAULT_CONFIG["search"]["searxng_base_url"]))
@@ -431,6 +426,7 @@ def _run_init(args: Any) -> int:
             api_key_env = str(getattr(args, "api_key_env", "") or "").strip() or api_key_env_default
             api_key_ref = f"env:{api_key_env}"
             api_key_value = str(getattr(args, "api_key", "") or "").strip()
+            backend_api_key_env = str(getattr(args, "backend_api_key_env", "") or "").strip()
         if _section_selected(section, "search"):
             search_provider = str(getattr(args, "search_provider", "") or "").strip() or search_provider_default
             search_fallback_provider = (
@@ -439,6 +435,9 @@ def _run_init(args: Any) -> int:
             searxng_base_url = str(getattr(args, "searxng_base_url", "") or "").strip() or searxng_base_url_default
             tavily_api_key_env = str(getattr(args, "tavily_api_key_env", "") or "").strip() or tavily_api_key_env_default
             tavily_api_key_value = str(getattr(args, "tavily_api_key", "") or "").strip()
+            if search_provider == SEARCH_PROVIDER_TAVILY:
+                search_fallback_provider = "none"
+                searxng_base_url = ""
         if _section_selected(section, "theme"):
             requested_theme = str(getattr(args, "theme", "") or "").strip() or theme_default
             ui_theme, _ = normalize_theme_id(requested_theme, default=theme_default, available=theme_ids)
@@ -522,13 +521,21 @@ def _run_init(args: Any) -> int:
                         else "auto"
                     ),
                 )
-            api_key_env = _prompt_with_default(
-                "API key env var",
+            api_key_env = _prompt_env_name(
+                theme,
+                "Alphanus API key env var name",
                 api_key_env_default,
-                hint=theme.muted("where init stores the provider key"),
+                hint=theme.muted("name only, not the key value; where Alphanus reads the key"),
             )
             api_key_ref = f"env:{api_key_env.strip() or 'ALPHANUS_API_KEY'}"
             api_key_value = getpass.getpass("API key (stored in ~/.alphanus/.env; leave blank to keep current): ").strip()
+            if api_key_value:
+                backend_api_key_env = _prompt_env_name(
+                    theme,
+                    "Also write key to backend env var",
+                    "",
+                    hint=theme.muted("optional name only; use OPENAI_API_KEY if your local backend requires it"),
+                )
             step_index += 1
             print("")
         if _section_selected(section, "search"):
@@ -542,25 +549,30 @@ def _run_init(args: Any) -> int:
                 ],
                 default=search_provider_default if search_provider_default in SEARCH_PROVIDERS else SEARCH_PROVIDER_SEARXNG,
             )
-            searxng_base_url = _prompt_with_default(
-                "SearXNG base URL",
-                searxng_base_url_default,
-                hint=theme.muted("used by SearXNG, e.g. http://127.0.0.1:8888"),
-            )
-            search_fallback_provider = _prompt_choice(
-                theme,
-                "Fallback provider:",
-                [
-                    ("tavily", "use TAVILY_API_KEY if SearXNG is unavailable"),
-                    ("none", "do not use a hosted fallback"),
-                ],
-                default=search_fallback_default if search_fallback_default in SEARCH_FALLBACK_PROVIDERS else SEARCH_PROVIDER_TAVILY,
-            )
+            if search_provider == SEARCH_PROVIDER_SEARXNG:
+                searxng_base_url = _prompt_with_default(
+                    "SearXNG base URL",
+                    searxng_base_url_default,
+                    hint=theme.muted("used by SearXNG, e.g. http://127.0.0.1:8888"),
+                )
+                search_fallback_provider = _prompt_choice(
+                    theme,
+                    "Fallback provider:",
+                    [
+                        ("tavily", "use TAVILY_API_KEY if SearXNG is unavailable"),
+                        ("none", "do not use a hosted fallback"),
+                    ],
+                    default=search_fallback_default if search_fallback_default in SEARCH_FALLBACK_PROVIDERS else SEARCH_PROVIDER_TAVILY,
+                )
+            else:
+                searxng_base_url = ""
+                search_fallback_provider = "none"
             if search_provider == SEARCH_PROVIDER_TAVILY or search_fallback_provider == SEARCH_PROVIDER_TAVILY:
-                tavily_api_key_env = _prompt_with_default(
-                    "Tavily API key env var",
+                tavily_api_key_env = _prompt_env_name(
+                    theme,
+                    "Tavily API key env var name",
                     tavily_api_key_env_default or DEFAULT_TAVILY_API_KEY_ENV,
-                    hint=theme.muted("where init stores the Tavily key"),
+                    hint=theme.muted("name only, not the key value; where Alphanus reads the Tavily key"),
                 )
                 tavily_api_key_value = getpass.getpass(
                     "Tavily API key (stored in ~/.alphanus/.env; leave blank to keep current): "
@@ -633,9 +645,27 @@ def _run_init(args: Any) -> int:
     cleaned = config_for_editor_view(normalized)
     app_paths.config_path.parent.mkdir(parents=True, exist_ok=True)
     app_paths.config_path.write_text(json.dumps(cleaned, indent=2) + "\n", encoding="utf-8")
-    _ensure_dotenv_template(app_paths.dotenv_path)
+    app_paths.dotenv_path.parent.mkdir(parents=True, exist_ok=True)
+    if not app_paths.dotenv_path.exists():
+        app_paths.dotenv_path.write_text(
+            "\n".join(
+                [
+                    "# Alphanus environment variables",
+                    "# Uncomment and set values as needed.",
+                    "# ALPHANUS_API_KEY=",
+                    "# OPENAI_API_KEY=",
+                    "# TAVILY_API_KEY=",
+                    "# ALPHANUS_EMBEDDINGS_API_KEY=",
+                    "# ALPHANUS_AUTH_HEADER=Authorization: Bearer <token>",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
     if _section_selected(section, "model") and api_key_value:
         _upsert_env_var(app_paths.dotenv_path, normalized["agent"]["api_key_env"], api_key_value)
+        if backend_api_key_env:
+            _upsert_env_var(app_paths.dotenv_path, backend_api_key_env, api_key_value)
     if _section_selected(section, "search") and tavily_api_key_value:
         _upsert_env_var(app_paths.dotenv_path, normalized["search"]["tavily_api_key_env"], tavily_api_key_value)
 
