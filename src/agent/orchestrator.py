@@ -103,7 +103,9 @@ class TurnOrchestrator:
         hooks = self._runtime_hooks
         if hooks is not None:
             return hooks.select_skills(ctx, stop_event)
-        return self._default_select_skills(ctx, stop_event)
+        classification = self.classify_context(ctx, stop_event=stop_event)
+        selected = self.skill_runtime.select_skills(ctx)
+        return classification, selected
 
     def reload_config(self, config: dict[str, Any]) -> None:
         self.config = config
@@ -139,15 +141,11 @@ class TurnOrchestrator:
         self.finalization_engine = FinalizationEngine(self)
         self.response_finalizer = ResponseFinalizer(self)
 
-    def _policy_retrieval_top_k(self) -> int:
-        retrieval_cfg = get_json_object(self.config, "retrieval")
-        return coerce_int(retrieval_cfg.get("pre_context_top_k", 3), 3, minimum=0, maximum=10)
-
     def inject_policy_retrieval_context(self, state: TurnState, on_event: Callable[[JsonObject], None] | None = None) -> None:
         retrieval_cfg = get_json_object(self.config, "retrieval")
         if not bool(retrieval_cfg.get("enabled", True)) or not state.time_sensitive_query:
             return
-        top_k = self._policy_retrieval_top_k()
+        top_k = coerce_int(retrieval_cfg.get("pre_context_top_k", 3), 3, minimum=0, maximum=10)
         if top_k <= 0:
             return
         try:
@@ -399,11 +397,6 @@ class TurnOrchestrator:
     def refresh_search_tools_enabled(self, state: TurnState) -> None:
         self.policy_engine.refresh_search_tools_enabled(state)
 
-    def _default_select_skills(self, ctx, stop_event):
-        classification = self.classify_context(ctx, stop_event=stop_event)
-        selected = self.skill_runtime.select_skills(ctx)
-        return classification, selected
-
     @staticmethod
     def _message_contains_vision_content(message: ChatMessage) -> bool:
         content = message.get("content")
@@ -442,10 +435,6 @@ class TurnOrchestrator:
                 break
             kept.append(message)
         return kept
-
-    @staticmethod
-    def _is_tokenize_failure(exc: Exception) -> bool:
-        return "failed to tokenize prompt" in str(exc or "").strip().lower()
 
     def _retry_simplified_vision_payload(
         self,
@@ -535,13 +524,17 @@ class TurnOrchestrator:
         if result.status != "done" or not state.requires_workspace_action or self.workspace_mutation_count(state) > 0:
             return result
         outcome = self.workspace_action_outcome(state, result.content, stop_event=stop_event, pass_id=pass_id)
-        if outcome in {"declined_or_blocked", "needs_clarification"}:
+        if outcome in {"completed_with_evidence", "declined_or_blocked", "needs_clarification"}:
             return result
         return AgentTurnResult(
-            status="done",
-            content="I couldn't complete that workspace action because no workspace tool actually ran.",
+            status="error",
+            content=(
+                "[agent error] Workspace action was not completed: no successful mutating workspace tool ran. "
+                "The assistant draft was rejected."
+            ),
             reasoning=result.reasoning,
             skill_exchanges=result.skill_exchanges,
+            error="workspace_action_not_completed",
             journal=result.journal,
         )
 
@@ -570,7 +563,7 @@ class TurnOrchestrator:
             reasoning_chars=len(result.reasoning),
             finalization_attempts=state.telemetry.finalization_attempts,
             finalization_repairs=state.telemetry.finalization_repairs,
-            finalization_fallback_applied=state.telemetry.finalization_fallback_applied,
+            finalization_repair_failed=state.telemetry.finalization_repair_failed,
         )
 
     def build_policy_snapshot(self, state: TurnState) -> TurnPolicySnapshot:
@@ -693,7 +686,9 @@ class TurnOrchestrator:
         try:
             stream_result = self.call_with_retry(payload, stop_event, on_event, pass_id=pass_id)
         except Exception as exc:
-            if self._latest_user_message_contains_vision_content(model_messages) and self._is_tokenize_failure(exc):
+            if self._latest_user_message_contains_vision_content(model_messages) and (
+                "failed to tokenize prompt" in str(exc or "").strip().lower()
+            ):
                 try:
                     stream_result = self._retry_simplified_vision_payload(
                         model_messages=model_messages,

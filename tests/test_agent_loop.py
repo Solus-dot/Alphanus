@@ -1085,7 +1085,7 @@ def test_confirmation_workspace_action_rejects_manual_terminal_advice_after_retr
                 (),
                 {
                     "finish_reason": "stop",
-                    "content": "I couldn't complete that workspace action because no workspace tool actually ran.",
+                    "content": "No workspace tool actually ran.",
                     "reasoning": "",
                     "tool_calls": [],
                 },
@@ -1110,7 +1110,8 @@ def test_confirmation_workspace_action_rejects_manual_terminal_advice_after_retr
     )
 
     assert result.status == "done"
-    assert "couldn't complete that workspace action" in result.content.lower()
+    assert result.error is None
+    assert result.content == "No workspace tool actually ran."
     assert "rm -rf" not in result.content
     assert "pass_2_final" in calls
 
@@ -1140,7 +1141,7 @@ def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_u
                 (),
                 {
                     "finish_reason": "stop",
-                    "content": "I couldn't complete that workspace action because no workspace tool actually ran.",
+                    "content": "No workspace tool actually ran.",
                     "reasoning": "",
                     "tool_calls": [],
                 },
@@ -1165,7 +1166,8 @@ def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_u
     )
 
     assert result.status == "done"
-    assert "couldn't complete that workspace action" in result.content.lower()
+    assert result.error is None
+    assert result.content == "No workspace tool actually ran."
     assert "workspace is now empty" not in result.content.lower()
     assert "pass_2_final" in calls
 
@@ -1234,7 +1236,7 @@ def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_s
                 (),
                 {
                     "finish_reason": "stop",
-                    "content": "I couldn't complete that workspace action because no workspace tool actually ran.",
+                    "content": "No workspace tool actually ran.",
                     "reasoning": "",
                     "tool_calls": [],
                 },
@@ -1255,7 +1257,8 @@ def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_s
     )
 
     assert result.status == "done"
-    assert "couldn't complete that workspace action" in result.content.lower()
+    assert result.error is None
+    assert result.content == "No workspace tool actually ran."
     assert "pass_3" in calls
 
 
@@ -1376,7 +1379,7 @@ def test_workspace_action_classifier_failure_does_not_accept_manual_shell_advice
                 (),
                 {
                     "finish_reason": "stop",
-                    "content": "I couldn't complete that workspace action because no workspace tool actually ran.",
+                    "content": "No workspace tool actually ran.",
                     "reasoning": "",
                     "tool_calls": [],
                 },
@@ -1392,7 +1395,8 @@ def test_workspace_action_classifier_failure_does_not_accept_manual_shell_advice
     )
 
     assert result.status == "done"
-    assert "couldn't complete that workspace action" in result.content.lower()
+    assert result.error is None
+    assert result.content == "No workspace tool actually ran."
     assert "rm -rf" not in result.content.lower()
     assert calls == [
         "pass_1",
@@ -2594,10 +2598,11 @@ def test_finalization_uses_fallback_when_markup_repeats(mocker, runtime: SkillRu
     )
 
     assert result.status == "error"
-    assert "I couldn't" in result.content
+    assert result.content.startswith("[agent error] Finalization failed:")
+    assert "model repeatedly returned invalid final-answer output" in result.content
     assert '"status": "not_completed"' not in result.content
     assert "<tool_call>" not in result.content
-    assert len(chat_reqs) == 5
+    assert len(chat_reqs) == 4
 
 
 def test_finalization_strips_think_tags_from_model_output(mocker, runtime: SkillRuntime):

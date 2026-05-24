@@ -87,7 +87,7 @@ class TurnClassification:
     explicit_external_path: str = ""
     followup_kind: str = "new_request"
     used_model: bool = False
-    source: str = "fallback"
+    source: str = "rules"
 
 
 @dataclass(slots=True)
@@ -125,7 +125,7 @@ class TurnTelemetry:
     model_usage: dict[str, int] = field(default_factory=dict)
     finalization_attempts: int = 0
     finalization_repairs: int = 0
-    finalization_fallback_applied: bool = False
+    finalization_repair_failed: bool = False
 
 
 @dataclass(slots=True)

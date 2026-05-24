@@ -301,9 +301,9 @@ class TurnClassifier:
         pass_id: str,
         stop_event=None,
     ) -> str:
-        fallback = self._fallback_workspace_action_outcome(assistant_reply, evidence)
+        rules_outcome = self._rule_based_workspace_action_outcome(assistant_reply, evidence)
         if not bool(self.llm_client.enable_structured_classification):
-            return fallback
+            return rules_outcome
         prompt = (
             "Classify an assistant draft for a local workspace action request.\n"
             "Return strict JSON only with this field:\n"
@@ -334,17 +334,17 @@ class TurnClassifier:
             result = self.call_with_retry(payload, stop_event, None, pass_id=f"{pass_id}_workspace_action_outcome")
         except Exception as exc:
             self.telemetry.emit("workspace_action_outcome_classification_failed", error=str(exc))
-            return fallback
+            return rules_outcome
         if result is None:
-            return fallback
+            return rules_outcome
         parsed = self._parse_json_object(result.content)
         outcome = str(parsed.get("outcome", "")).strip().lower()
         if outcome in {"completed_with_evidence", "declined_or_blocked", "needs_clarification", "not_completed"}:
             return outcome
-        return fallback
+        return rules_outcome
 
     @staticmethod
-    def _fallback_workspace_action_outcome(assistant_reply: str, evidence: JsonObject) -> str:
+    def _rule_based_workspace_action_outcome(assistant_reply: str, evidence: JsonObject) -> str:
         if bool(evidence.get("has_successful_mutation")):
             return "completed_with_evidence"
         lowered = TurnClassifier._normalized_text(assistant_reply)
@@ -365,7 +365,7 @@ class TurnClassifier:
     def classify(self, ctx: SkillContext, stop_event=None) -> TurnClassification:
         seed = TurnClassification(
             explicit_external_path=self._explicit_path_outside_workspace(ctx.user_input),
-            source="fallback",
+            source="rules",
         )
         if not self._should_model_classify(ctx, seed):
             return seed
