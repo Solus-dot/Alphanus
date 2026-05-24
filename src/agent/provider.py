@@ -228,9 +228,6 @@ class OpenAICompatibleProvider:
             f"{self.auth_header or ''}|{self.backend_profile_requested}|{self._backend_profile_detected}",
         )
 
-    def _is_endpoint_unsupported(self, exc: Exception) -> bool:
-        return is_endpoint_unsupported(exc)
-
     def _select_endpoint_mode(self) -> str:
         selected_backend = self._selected_backend_profile()
         backend_capabilities = profile_capabilities(selected_backend)
@@ -489,20 +486,12 @@ class OpenAICompatibleProvider:
             return False
         if not self.is_model_status_fresh(status):
             return False
-        if self._is_local_endpoint(self.models_endpoint) and status.last_success_at <= 0:
+        if is_local_endpoint(self.models_endpoint) and status.last_success_at <= 0:
             return False
         return True
 
-    @staticmethod
-    def _is_local_endpoint(endpoint: str) -> bool:
-        return is_local_endpoint(endpoint)
-
     def _should_retry_exception(self, exc: Exception) -> bool:
         return should_retry_provider_exception(exc, model_endpoint=self.model_endpoint)
-
-    @staticmethod
-    def _is_transport_failure(exc: Exception) -> bool:
-        return is_transport_failure(exc)
 
     def complete(self, payload: dict[str, object], timeout_s: float | None = None) -> dict[str, object]:
         request = urllib.request.Request(
@@ -696,7 +685,7 @@ class OpenAICompatibleProvider:
                     self.endpoint_mode == ENDPOINT_MODE_AUTO
                     and mode == ENDPOINT_MODE_RESPONSES
                     and not fallback_attempted
-                    and self._is_endpoint_unsupported(exc)
+                    and is_endpoint_unsupported(exc)
                 ):
                     fallback_attempted = True
                     mode = ENDPOINT_MODE_CHAT
@@ -725,7 +714,7 @@ class OpenAICompatibleProvider:
                         self._payload_adapter.payload_to_mode(payload, ENDPOINT_MODE_CHAT, default_max_tokens=self.default_max_tokens),
                     )
                     continue
-                if self._is_transport_failure(exc):
+                if is_transport_failure(exc):
                     self.mark_model_transport_failure(exc)
                 if self._should_retry_exception(exc) and attempt < self.per_turn_retries:
                     attempt += 1

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -247,8 +248,8 @@ class Agent:
     def _record_and_return(self, result: AgentTurnResult) -> AgentTurnResult:
         try:
             self.harness_metrics.record(result)
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.debug("Harness metric recording failed: %s", exc)
         return result
 
     def run_turn(

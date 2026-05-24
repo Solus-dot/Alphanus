@@ -80,7 +80,8 @@ class LLMClient:
         if key:
             try:
                 rendered = auth_template.format(api_key=key)
-            except Exception:
+            except Exception as exc:
+                self.telemetry.emit("auth_header_template_invalid", template=auth_template, error_type=type(exc).__name__)
                 rendered = f"Authorization: Bearer {key}"
             if ":" in rendered:
                 self.auth_source = "api_key"

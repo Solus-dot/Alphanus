@@ -98,6 +98,24 @@ def test_console_logging_suppresses_info_telemetry_but_keeps_file_events(tmp_pat
     assert any(item.get("event") == "http_stream" for item in events)
 
 
+def test_malformed_auth_header_template_emits_telemetry(tmp_path: Path, monkeypatch) -> None:
+    log_path = tmp_path / "auth-events.jsonl"
+    logger = configure_logging({"logging": {"format": "json", "path": str(log_path), "level": "INFO"}})
+    monkeypatch.setenv("ALPHANUS_API_KEY", "secret-token")
+
+    client = LLMClient(
+        {"agent": {"api_key": "env:ALPHANUS_API_KEY", "auth_header_template": "Authorization: Bearer {api_key.missing}"}},
+        telemetry=TelemetryEmitter(logger),
+    )
+    client.reload_config(
+        {"agent": {"api_key": "env:ALPHANUS_API_KEY", "auth_header_template": "Authorization: Bearer {api_key.missing}"}}
+    )
+
+    assert client.auth_header == "Authorization: Bearer secret-token"
+    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert any(item.get("event") == "auth_header_template_invalid" for item in events)
+
+
 def test_classifier_uses_model_for_local_workspace_task(mocker, tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
@@ -134,6 +152,21 @@ def test_classifier_uses_model_for_local_workspace_task(mocker, tmp_path: Path) 
 
     assert classification.used_model is True
     assert classification.prefer_local_workspace_tools is True
+
+
+def test_classifier_rule_path_reports_rules_source(mocker, tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": False}}
+    llm_client = LLMClient(cfg)
+    classifier = TurnClassifier(cfg, runtime, llm_client)
+    call = mocker.patch.object(classifier, "call_with_retry")
+    ctx = classifier.build_skill_context("hello", [], [], [])
+
+    classification = classifier.classify(ctx)
+
+    assert classification.source == "rules"
+    assert classification.used_model is False
+    call.assert_not_called()
 
 
 def test_classifier_seed_keeps_explicit_external_path_without_model(tmp_path: Path) -> None:
@@ -338,7 +371,7 @@ def test_workspace_action_outcome_falls_back_to_blocked_when_classifier_call_fai
     assert outcome == "declined_or_blocked"
 
 
-def test_workspace_action_outcome_fallback_rejects_user_delegation_even_with_blocked_evidence(tmp_path: Path) -> None:
+def test_workspace_action_outcome_rules_rejects_user_delegation_even_with_blocked_evidence(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
     llm_client = LLMClient(cfg)
@@ -368,7 +401,7 @@ def test_workspace_action_outcome_fallback_rejects_user_delegation_even_with_blo
     assert outcome == "not_completed"
 
 
-def test_workspace_action_outcome_fallback_rejects_false_success_claim_even_with_blocked_evidence(tmp_path: Path) -> None:
+def test_workspace_action_outcome_rules_rejects_false_success_claim_even_with_blocked_evidence(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
     llm_client = LLMClient(cfg)
@@ -499,7 +532,7 @@ def _turn_state(tmp_path: Path, *, user_input: str, time_sensitive: bool, worksp
         time_sensitive=time_sensitive,
         requires_workspace_action=workspace_action,
         prefer_local_workspace_tools=workspace_action,
-        source="fallback",
+        source="rules",
     )
     state = orchestrator.build_turn_state(ctx, [], [], classification)
     return runtime, orchestrator, state
@@ -824,6 +857,46 @@ def test_failed_tool_outcome_is_not_indexed(tmp_path: Path) -> None:
     )
 
     assert SQLiteRetrievalStore(db_path).search("failed", top_k=1, sources=["tool_outcome"]) == []
+
+
+def test_workspace_action_coercion_preserves_clarification_reply(mocker, tmp_path: Path) -> None:
+    _runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="edit the config",
+        time_sensitive=False,
+        workspace_action=True,
+    )
+    mocker.patch.object(orchestrator, "workspace_action_outcome", return_value="needs_clarification")
+    result = AgentTurnResult(
+        status="done",
+        content="Which config file should I edit?",
+        reasoning="",
+        skill_exchanges=[],
+    )
+
+    coerced = orchestrator.coerce_workspace_action_failure(state, result, stop_event=None, pass_id="pass_1")
+
+    assert coerced is result
+
+
+def test_workspace_action_coercion_preserves_declined_or_blocked_reply(mocker, tmp_path: Path) -> None:
+    _runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="delete all workspace files",
+        time_sensitive=False,
+        workspace_action=True,
+    )
+    mocker.patch.object(orchestrator, "workspace_action_outcome", return_value="declined_or_blocked")
+    result = AgentTurnResult(
+        status="done",
+        content="No workspace tool actually ran because the requested operation was blocked.",
+        reasoning="",
+        skill_exchanges=[],
+    )
+
+    coerced = orchestrator.coerce_workspace_action_failure(state, result, stop_event=None, pass_id="pass_1")
+
+    assert coerced is result
 
 
 def test_retrieval_replacement_and_forget_cleanup_embeddings(tmp_path: Path) -> None:
