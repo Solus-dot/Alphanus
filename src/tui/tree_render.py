@@ -1,19 +1,8 @@
 from __future__ import annotations
 
-from core.conv_tree import ConvTree, Turn
+from core.conv_tree import ConvTree
 
 TreeRow = tuple[str, str, bool]
-
-
-def _status_marker(node: Turn) -> str:
-    state = str(getattr(node, "assistant_state", "pending") or "pending")
-    if state == "pending":
-        return "…"
-    if state == "cancelled":
-        return "✖"
-    if state == "error":
-        return "!"
-    return "✓"
 
 
 def _truncate(text: str, max_len: int) -> str:
@@ -39,11 +28,13 @@ def render_tree_rows(tree: ConvTree, width: int = 80) -> list[TreeRow]:
 
     def node_line(node_id: str, depth: int) -> str:
         node = tree.nodes[node_id]
+        state = str(getattr(node, "assistant_state", "pending") or "pending")
+        status_marker = {"pending": "…", "cancelled": "✖", "error": "!"}.get(state, "✓")
         label_text = _truncate(node.label, 8) if node.label else ("branch" if node.branch_root else "")
         label = f" [{label_text}]" if label_text else ""
         branch = " ⎇" if node.branch_root else ""
         indent = "  " * max(0, depth)
-        prefix = f"{indent}{dot(node_id)}{label}{branch} {_status_marker(node)}  "
+        prefix = f"{indent}{dot(node_id)}{label}{branch} {status_marker}  "
         text_width = max(0, width - len(prefix))
         text = _truncate(node.user_text().replace("\n", " ").strip(), text_width)
         return f"{prefix}{text}".rstrip()

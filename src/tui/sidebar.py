@@ -107,5 +107,6 @@ def render_sidebar_inspector_markup(
         if tool_summary:
             lines.append(_field_line("calls", tool_summary, width=width, theme=theme))
         if node.assistant_content:
-            lines.append(_field_line("assistant", f"{len(node.assistant_content)} chars", width=width, theme=theme))
+            content_label = "error" if node.assistant_state == "error" else "assistant"
+            lines.append(_field_line(content_label, f"{len(node.assistant_content)} chars", width=width, theme=theme))
     return "\n".join(lines)

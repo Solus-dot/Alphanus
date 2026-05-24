@@ -19,6 +19,7 @@ from tui.commands import active_command_query, active_command_span, command_entr
 from tui.interface import AlphanusTUI, ChatInput
 from tui.live_tool_preview import LiveToolPreviewManager
 from tui.popups import CommandPaletteModal, HealthModal, SelectionPickerModal, SessionManagerModal, SessionNameModal, health_report_markup
+from tui.sidebar import render_sidebar_inspector_markup
 from tui.status_runtime import StatusRuntimeState
 from tui.stream_runtime import StreamRuntimeState
 from tui.transcript import ScrollAnchor, TranscriptEntry, TranscriptView
@@ -188,6 +189,8 @@ async def test_minimal_shell_uses_bottom_metadata_and_prompt_marker(tmp_path: Pa
         assert tui.query_one("#sidebar").display is False
         assert str(tui.query_one("#prompt-marker").render()) == ">"
         assert tui.query_one("#prompt-marker").region.x == tui.query_one("#status-left").region.x
+        assert tui.query_one("#input-row").region.y < tui.query_one("#status-sep").region.y
+        assert tui.query_one("#status-sep").region.y < tui.query_one("#status-bar").region.y
         assert "model:" in str(tui.query_one("#status-left").render())
         assert "Esc to Clear" in str(tui.query_one("#status-right").render())
         assert tui.query_one("#status-bar").region.y < tui.query_one("#meta-bar").region.y
@@ -680,6 +683,40 @@ def test_write_completed_turn_asst_omits_role_label() -> None:
     _assert_barred(renderables[0][0], width=20)
 
 
+def test_write_completed_turn_asst_suppresses_failed_content() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    writes: list[str] = []
+    rendered: list[str] = []
+    tui._write = writes.append
+    tui._write_skill_exchanges = lambda _turn: None
+    tui._render_static_markdown = rendered.append
+
+    turn = SimpleNamespace(
+        assistant_content="[agent error] Finalization failed: stale persisted failure",
+        assistant_state="error",
+    )
+
+    tui._write_completed_turn_asst(turn)
+
+    assert rendered == []
+    assert writes == ["", "[dim red]  ! failed[/dim red]"]
+
+
+def test_sidebar_labels_failed_content_as_error() -> None:
+    tree = ConvTree()
+    turn = tree.add_turn("lookup")
+    tree.fail_turn(turn.id, "[agent error] Finalization failed")
+
+    markup = render_sidebar_inspector_markup(
+        tree,
+        width=80,
+        colors={"muted": "grey50", "text": "white", "accent": "blue", "subtle": "grey35"},
+    )
+
+    assert "error:" in markup
+    assert "assistant:" not in markup
+
+
 def test_update_partial_content_renders_assistant_bar_during_stream() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
 
@@ -864,7 +901,7 @@ def test_error_lines_refresh_with_active_theme_color() -> None:
     assert view._entries[0].source == ("error_line", "SearXNG unreachable")
 
 
-def test_successful_tool_lifecycle_line_has_vertical_spacing() -> None:
+def test_successful_tool_lifecycle_line_has_no_leading_spacer() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     lines: list[tuple[str, int]] = []
     tui._write_assistant_bar_line = lambda markup="", content_indent=0: lines.append((markup, content_indent))
@@ -872,10 +909,9 @@ def test_successful_tool_lifecycle_line_has_vertical_spacing() -> None:
 
     tui._write_tool_lifecycle_block("recall_memory", True, "query=user name")
 
-    assert len(lines) == 2
-    assert lines[0] == ("", 0)
-    assert "recall_memory" in lines[1][0]
-    assert lines[1][1] == 2
+    assert len(lines) == 1
+    assert "recall_memory" in lines[0][0]
+    assert lines[0][1] == 2
 
 
 def test_transcript_view_enforces_max_lines_when_appending() -> None:
@@ -1277,7 +1313,7 @@ def test_reasoning_renderable_uses_compact_labeled_text() -> None:
     assert lines == ["· thinking  check memory"]
 
 
-def test_handle_content_token_uses_barred_spacer_after_reasoning() -> None:
+def test_handle_content_token_does_not_insert_spacer_after_reasoning() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     writes: list[str] = []
     tui._content_open = False
@@ -1289,7 +1325,7 @@ def test_handle_content_token_uses_barred_spacer_after_reasoning() -> None:
 
     tui._handle_content_token("hello")
 
-    assert writes == [("", 0)]
+    assert writes == []
 
 
 def test_live_tool_preview_shows_edit_file_diff() -> None:

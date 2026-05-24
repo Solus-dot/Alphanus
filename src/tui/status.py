@@ -30,13 +30,6 @@ def _truncate(text: str, limit: int) -> str:
     return text[: limit - 1] + "…"
 
 
-def _short_endpoint(endpoint: str) -> str:
-    parsed = urlparse(endpoint)
-    if parsed.scheme and parsed.netloc:
-        return parsed.netloc
-    return endpoint
-
-
 def _join_metadata_segments(*segments: str) -> str:
     return " [dim]·[/dim] ".join(segment for segment in segments if segment)
 
@@ -48,27 +41,6 @@ def context_usage_percent(context_tokens: int | None, context_window: int | None
     if context_tokens > 0 and pct == 0:
         pct = 1
     return min(pct, 999)
-
-
-def _context_usage_markup(context_tokens: int | None, context_window: int | None, *, colors: dict[str, str] | None = None) -> str:
-    theme = _theme_colors(colors)
-    if context_tokens is None or context_window is None or context_window <= 0:
-        return f"[{theme['muted']}]—[/{theme['muted']}]"
-    pct = context_usage_percent(context_tokens, context_window)
-    if pct is None:
-        return f"[{theme['muted']}]—[/{theme['muted']}]"
-    return f"[{theme['accent']}]{pct}%[/{theme['accent']}]"
-
-
-def _endpoint_state_markup(state: str, *, width: int, colors: dict[str, str] | None = None) -> str:
-    theme = _theme_colors(colors)
-    normalized = (state or "unknown").strip().lower() or "unknown"
-    if width < 110:
-        label = {"online": "on", "offline": "off", "unknown": "?"}.get(normalized, "?")
-    else:
-        label = {"online": "online", "offline": "offline", "unknown": "unknown"}.get(normalized, normalized)
-    color = {"online": theme["success"], "offline": theme["error"], "unknown": theme["muted"]}.get(normalized, theme["muted"])
-    return f"[dim]llm:[/dim] [{color}]{esc(label)}[/{color}]"
 
 
 def metadata_center_markup(*, session_name: str, branch_name: str, width: int, colors: dict[str, str] | None = None) -> str:
@@ -100,10 +72,12 @@ def metadata_right_markup(
     colors: dict[str, str] | None = None,
 ) -> str:
     theme = _theme_colors(colors)
-    short_endpoint = _short_endpoint(endpoint)
+    parsed_endpoint = urlparse(endpoint)
+    short_endpoint = parsed_endpoint.netloc if parsed_endpoint.scheme and parsed_endpoint.netloc else endpoint
     if width < 105:
         short_endpoint = ""
-    ctx_markup = _context_usage_markup(context_tokens, context_window, colors=theme)
+    usage_pct = context_usage_percent(context_tokens, context_window)
+    ctx_markup = f"[{theme['muted']}]—[/{theme['muted']}]" if usage_pct is None else f"[{theme['accent']}]{usage_pct}%[/{theme['accent']}]"
     endpoint_markup = ""
     if short_endpoint:
         endpoint_markup = (
@@ -113,10 +87,16 @@ def metadata_right_markup(
     integrity_markup = ""
     if integrity == "violation":
         integrity_markup = f"[dim]int:[/dim] [{theme['error']}]fail[/{theme['error']}]"
+    normalized_state = (endpoint_state or "unknown").strip().lower() or "unknown"
+    if width < 110:
+        state_label = {"online": "on", "offline": "off", "unknown": "?"}.get(normalized_state, "?")
+    else:
+        state_label = {"online": "online", "offline": "offline", "unknown": "unknown"}.get(normalized_state, normalized_state)
+    state_color = {"online": theme["success"], "offline": theme["error"], "unknown": theme["muted"]}.get(normalized_state, theme["muted"])
     rendered = _join_metadata_segments(
         endpoint_markup,
         integrity_markup,
-        _endpoint_state_markup(endpoint_state, width=width, colors=theme),
+        f"[dim]llm:[/dim] [{state_color}]{esc(state_label)}[/{state_color}]",
         f"[dim]ctx:[/dim] {ctx_markup}",
     )
     return f"[dim]·[/dim] {rendered}" if rendered else ""

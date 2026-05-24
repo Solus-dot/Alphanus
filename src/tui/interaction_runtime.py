@@ -13,16 +13,6 @@ def _clear_chat_input_draft(chat_input: Any) -> None:
         chat_input.value = ""
 
 
-def _expanded_chat_input_text(chat_input: Any, value: str) -> str:
-    sync_placeholders = getattr(chat_input, "sync_paste_placeholders", None)
-    if callable(sync_placeholders):
-        sync_placeholders(value)
-    expand = getattr(chat_input, "expanded_value", None)
-    if callable(expand):
-        return str(expand(value))
-    return value
-
-
 def on_session_manager_close(app: Any, result: dict[str, str] | None) -> None:
     action = str((result or {}).get("action") or "").strip()
     if not action:
@@ -125,7 +115,11 @@ def finish_shell_confirm(app: Any, approved: bool) -> None:
 
 def on_input_submitted(app: Any, event: Any, *, chat_input_cls: Any) -> None:
     chat_input = app.query_one(chat_input_cls)
-    text = _expanded_chat_input_text(chat_input, event.value).strip()
+    sync_placeholders = getattr(chat_input, "sync_paste_placeholders", None)
+    if callable(sync_placeholders):
+        sync_placeholders(event.value)
+    expand = getattr(chat_input, "expanded_value", None)
+    text = str(expand(event.value) if callable(expand) else event.value).strip()
     if not text:
         _clear_chat_input_draft(chat_input)
         return

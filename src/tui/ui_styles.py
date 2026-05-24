@@ -157,7 +157,7 @@ ALPHANUS_TUI_CSS = """
 
     #footer {
         width: 1fr;
-        height: 5;
+        height: 6;
         background: $panel;
         layout: vertical;
         padding: 0 0 0 0;
@@ -240,6 +240,15 @@ ALPHANUS_TUI_CSS = """
         layout: horizontal;
         padding: 0 2;
         background: $panel;
+    }
+
+    #status-sep {
+        width: 1fr;
+        height: 1;
+        background: $panel;
+        border-top: solid $app-border;
+        color: $app-border;
+        padding: 0 0;
     }
 
     #status-left {
