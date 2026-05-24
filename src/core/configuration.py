@@ -303,17 +303,6 @@ def _coerce_string_list(value: Any, default: Iterable[str], *, path: str, warnin
     return out
 
 
-def _is_secret_key(key: str) -> bool:
-    lowered = key.strip().lower()
-    if not lowered:
-        return False
-    if lowered in _SECRET_KEYS:
-        return True
-    if lowered.endswith(_SECRET_SUFFIXES):
-        return True
-    return False
-
-
 def strip_secret_fields(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     changed = False
 
@@ -323,11 +312,11 @@ def strip_secret_fields(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
             cleaned: dict[str, Any] = {}
             for key, value in obj.items():
                 key_text = str(key)
-                if _is_secret_key(key_text):
+                lowered_key = key_text.strip().lower()
+                if lowered_key and (lowered_key in _SECRET_KEYS or lowered_key.endswith(_SECRET_SUFFIXES)):
                     # Keep explicit environment references so config can point to a secret
                     # without storing the plaintext value on disk.
-                    lowered = key_text.strip().lower()
-                    if lowered in {"api_key", "apikey"} and isinstance(value, str) and value.strip().lower().startswith("env:"):
+                    if lowered_key in {"api_key", "apikey"} and isinstance(value, str) and value.strip().lower().startswith("env:"):
                         cleaned[key_text] = value.strip()
                         continue
                     changed = True
@@ -397,18 +386,6 @@ def _normalize_env_name(value: Any, *, default: str, path: str, warnings: list[s
     return env_name
 
 
-def _base_url_from_endpoint(endpoint: Any) -> str:
-    text = str(endpoint or "").strip()
-    if not text:
-        return ""
-    parsed = urlparse(text)
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
-        return ""
-    if parsed.username or parsed.password:
-        return ""
-    return parsed._replace(path="", params="", query="", fragment="").geturl().rstrip("/")
-
-
 def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     if not isinstance(raw_config, dict):
         raise ValueError("Global config must be a JSON object")
@@ -435,7 +412,18 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
     if base_url_input in (None, ""):
         for endpoint_key in ("model_endpoint", "responses_endpoint", "models_endpoint"):
             if endpoint_key in input_agent_cfg:
-                inferred_base_url = _base_url_from_endpoint(input_agent_cfg.get(endpoint_key))
+                endpoint_text = str(input_agent_cfg.get(endpoint_key) or "").strip()
+                if endpoint_text:
+                    parsed_endpoint = urlparse(endpoint_text)
+                    if (
+                        parsed_endpoint.scheme.lower() in {"http", "https"}
+                        and parsed_endpoint.hostname
+                        and not parsed_endpoint.username
+                        and not parsed_endpoint.password
+                    ):
+                        inferred_base_url = (
+                            parsed_endpoint._replace(path="", params="", query="", fragment="").geturl().rstrip("/")
+                        )
                 if inferred_base_url:
                     break
     base_url_candidate = base_url_input if base_url_input not in (None, "") else (inferred_base_url or str(default_agent["base_url"]))
@@ -1271,7 +1259,7 @@ def validate_endpoint_policy(config: dict[str, Any]) -> None:
         raise ValueError("agent.base_url, agent.model_endpoint, agent.responses_endpoint, and agent.models_endpoint must share host")
 
 
-def _load_existing_global_config(path: Path, *, warnings: list[str] | None = None) -> dict[str, Any]:
+def load_global_config(path: Path, *, warnings: list[str] | None = None) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Global config not found at {path}")
 
@@ -1298,10 +1286,6 @@ def _load_existing_global_config(path: Path, *, warnings: list[str] | None = Non
     if warnings is not None:
         warnings.extend(local_warnings)
     return normalized
-
-
-def load_global_config(path: Path, *, warnings: list[str] | None = None) -> dict[str, Any]:
-    return _load_existing_global_config(path, warnings=warnings)
 
 
 def load_dotenv(path: Path) -> None:
