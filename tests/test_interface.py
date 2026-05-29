@@ -608,6 +608,7 @@ def test_write_skill_exchanges_uses_compact_spacing_for_reloaded_successes() -> 
     tui._show_tool_details = True
     tui._theme_color = lambda _key, default: default
     tui._write_assistant_bar_line = lambda markup="", content_indent=0: lines.append((markup, content_indent))
+    tui._write_bar_renderable = lambda renderable, **kwargs: lines.append((str(renderable), kwargs.get("content_indent", 0)))
     tui._write_code_block = lambda *_args, **_kwargs: None
     tui._live_preview = SimpleNamespace(
         compact_tool_args=lambda _name, _args: "query=user name",
@@ -901,10 +902,70 @@ def test_error_lines_refresh_with_active_theme_color() -> None:
     assert view._entries[0].source == ("error_line", "SearXNG unreachable")
 
 
+def test_refresh_themed_transcript_entries_rebuilds_all_semantic_status_lines() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    view = TranscriptView(id="chat-log")
+    colors = {
+        "accent": "#111111",
+        "text": "#222222",
+        "muted": "#333333",
+        "success": "#444444",
+        "assistant_bar": "#555555",
+    }
+    tui._log = lambda: view
+    tui._maybe_scroll_end = lambda *_args, **_kwargs: None
+    tui._theme_color = lambda key, default: colors.get(key, default)
+
+    for index in range(12):
+        tui._write_info(f"status {index}")
+    tui._write_muted_lines(["older muted", "newer muted"])
+    tui._write_tool_lifecycle_block("recall_memory", True, "query=user name")
+
+    colors.update(
+        {
+            "accent": "#aaaaaa",
+            "text": "#bbbbbb",
+            "muted": "#cccccc",
+            "success": "#dddddd",
+            "assistant_bar": "#eeeeee",
+        }
+    )
+    tui._refresh_themed_transcript_entries()
+
+    info_styles = [str(span.style) for entry in view._entries[:12] for span in entry.renderable.spans]
+    muted_styles = [str(span.style) for entry in view._entries[12:14] for span in entry.renderable.spans]
+    tool_bar = view._entries[14].renderable.renderable
+    tool_text_styles = [str(span.style) for span in tool_bar.renderable.spans]
+    all_styles = info_styles + muted_styles + [str(tool_bar.color), *tool_text_styles]
+
+    assert not any(old in style for old in ("#111111", "#222222", "#333333", "#444444", "#555555") for style in all_styles)
+    assert any("#aaaaaa" in style for style in info_styles)
+    assert any("#bbbbbb" in style for style in info_styles)
+    assert any("#cccccc" in style for style in muted_styles)
+    assert tool_bar.color == "#eeeeee"
+    assert any("#dddddd" in style for style in tool_text_styles)
+
+
+def test_refresh_themed_transcript_entries_retints_markup_without_rewriting_text() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    view = TranscriptView(id="chat-log")
+    tui._log = lambda: view
+    tui._maybe_scroll_end = lambda *_args, **_kwargs: None
+    tui._theme_color = lambda key, default: {"error": "#ff0000"}.get(key, default)
+
+    tui._write("a red car and [red]red alert[/red]")
+    tui._refresh_themed_transcript_entries()
+
+    entry = view._entries[0]
+    assert entry.renderable.plain == "a red car and red alert"
+    assert len(entry.renderable.spans) == 1
+    assert "#ff0000" in str(entry.renderable.spans[0].style)
+
+
 def test_successful_tool_lifecycle_line_has_no_leading_spacer() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     lines: list[tuple[str, int]] = []
-    tui._write_assistant_bar_line = lambda markup="", content_indent=0: lines.append((markup, content_indent))
+    tui._write_bar_renderable = lambda renderable, **kwargs: lines.append((str(renderable), kwargs.get("content_indent", 0)))
     tui._theme_color = lambda _key, default: default
 
     tui._write_tool_lifecycle_block("recall_memory", True, "query=user name")
@@ -993,13 +1054,12 @@ def test_transcript_view_render_tracks_last_render_width() -> None:
     assert view._last_render_width == 37
 
 
-def test_transcript_view_render_virtualizes_visible_window() -> None:
+def test_transcript_view_render_keeps_all_entries_visible_while_scrolling() -> None:
     class Parent:
         pass
 
     view = TranscriptView(id="chat-log")
     view._available_width = lambda: 40
-    view._VIRTUAL_BUFFER_LINES = 1
     view.set_entries([TranscriptEntry("markup_line", Text(f"line-{idx}")) for idx in range(10)])
     parent = Parent()
     parent.scroll_y = 5
@@ -1009,10 +1069,7 @@ def test_transcript_view_render_virtualizes_visible_window() -> None:
 
     rendered = _render_lines(view.render(), width=40)
 
-    assert "line-4" in rendered
-    assert "line-7" in rendered
-    assert "line-0" not in rendered
-    assert "line-9" not in rendered
+    assert rendered == [f"line-{idx}" for idx in range(10)]
 
 
 def test_transcript_view_restores_scroll_anchor_by_entry_and_line() -> None:
@@ -1452,7 +1509,7 @@ def test_flush_reasoning_buffer_aligns_reasoning_with_tool_rows() -> None:
     partial_updates: list[object] = []
     tui._buf_r = "checking memory"
     tui._partial = lambda: SimpleNamespace(update=partial_updates.append)
-    tui._write_assistant_bar_renderable = lambda renderable, content_indent=0: writes.append((renderable, content_indent))
+    tui._write_bar_renderable = lambda renderable, **kwargs: writes.append((renderable, kwargs.get("content_indent", 0)))
     tui._reasoning_panel_renderable = lambda text: text
     tui._is_tool_trace_line = lambda _line: False
 

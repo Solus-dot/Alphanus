@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -154,6 +155,8 @@ def append_transcript_entry(app: Any, entry: TranscriptEntry) -> None:
 
 
 def write_markup(app: Any, markup: str, *, source: tuple[Any, ...] | None = None) -> None:
+    if source is None:
+        source = ("markup", markup)
     entry = (
         TranscriptEntry("blank", Text(""), source=source)
         if markup == ""
@@ -161,6 +164,34 @@ def write_markup(app: Any, markup: str, *, source: tuple[Any, ...] | None = None
     )
     append_transcript_entry(app, entry)
     app._last_log_was_blank = markup == ""
+
+
+def retint_markup(app: Any, markup: str) -> str:
+    hex_replacements = {
+        "#6366f1": _theme_color(app, "accent", DEFAULT_ASSISTANT_BAR_COLOR),
+        "#a1a1aa": _theme_color(app, "muted", DEFAULT_MUTED_COLOR),
+        "#71717a": _theme_color(app, "subtle", DEFAULT_MUTED_COLOR),
+        "#f59e0b": _theme_color(app, "warning", DEFAULT_MUTED_COLOR),
+        "#10b981": _theme_color(app, "success", DEFAULT_SUCCESS_COLOR),
+        "#22c55e": _theme_color(app, "success", DEFAULT_SUCCESS_COLOR),
+        "#f87171": _theme_color(app, "error", DEFAULT_ERROR_COLOR),
+    }
+    named_replacements = {
+        "red": _theme_color(app, "error", DEFAULT_ERROR_COLOR),
+        "green": _theme_color(app, "success", DEFAULT_SUCCESS_COLOR),
+        "yellow": _theme_color(app, "warning", DEFAULT_MUTED_COLOR),
+    }
+
+    def replace_tag(match: re.Match[str]) -> str:
+        tag = match.group(1)
+        retinted = tag
+        for old, new in hex_replacements.items():
+            retinted = retinted.replace(old, new)
+        for name, color in named_replacements.items():
+            retinted = re.sub(rf"(?<![\w#-]){re.escape(name)}(?![\w#-])", color, retinted)
+        return f"[{retinted}]"
+
+    return re.sub(r"\[([^\]]+)\]", replace_tag, markup)
 
 
 def bar_renderable(
@@ -348,9 +379,11 @@ def write_tool_lifecycle_block(app: Any, name: str, ok: bool, detail: str = "") 
         muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
         text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
         suffix = f" [{muted}]{esc(detail)}[/{muted}]" if detail else ""
-        app._write_assistant_bar_line(
-            f"[{success}]✓[/{success}] [{text_color}]{esc(name)}[/{text_color}]{suffix}",
+        app._write_bar_renderable(
+            Text.from_markup(f"[{success}]✓[/{success}] [{text_color}]{esc(name)}[/{text_color}]{suffix}"),
+            bar_color=_theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
             content_indent=2,
+            source=("tool_lifecycle", name, normalized_detail, ok),
         )
         return
     app._write_bar_renderable(
@@ -407,6 +440,13 @@ def refresh_themed_transcript_entries(app: Any) -> None:
         if not source:
             return entry
         kind = str(source[0])
+        if kind == "markup" and len(source) == 2:
+            markup = retint_markup(app, str(source[1]))
+            return (
+                TranscriptEntry("blank", Text(""), source=source)
+                if markup == ""
+                else TranscriptEntry(entry.kind, Text.from_markup(markup), source=source)
+            )
         if kind == "code_block" and len(source) == 4:
             lines = [str(line) for line in source[1]]
             language = source[2] if isinstance(source[2], str) or source[2] is None else str(source[2])
@@ -428,6 +468,23 @@ def refresh_themed_transcript_entries(app: Any) -> None:
             name = str(source[1])
             detail = str(source[2])
             ok = bool(source[3])
+            if ok:
+                success = _theme_color(app, "success", DEFAULT_SUCCESS_COLOR)
+                muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
+                text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
+                suffix = f" [{muted}]{esc(detail)}[/{muted}]" if detail else ""
+                return TranscriptEntry(
+                    entry.kind,
+                    Padding(
+                        app._bar_renderable(
+                            Text.from_markup(f"[{success}]✓[/{success}] [{text_color}]{esc(name)}[/{text_color}]{suffix}"),
+                            _theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
+                            content_indent=2,
+                        ),
+                        pad=(0, 0, 0, 0),
+                    ),
+                    source=source,
+                )
             return TranscriptEntry(
                 entry.kind,
                 Padding(
@@ -445,6 +502,81 @@ def refresh_themed_transcript_entries(app: Any) -> None:
             return TranscriptEntry(
                 entry.kind,
                 Text.from_markup(f"[bold {error}]  ✖ {esc(text)}[/bold {error}]"),
+                source=source,
+            )
+        if kind == "info_line" and len(source) == 2:
+            text = str(source[1])
+            accent = _theme_color(app, "accent", DEFAULT_ASSISTANT_BAR_COLOR)
+            text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
+            return TranscriptEntry(
+                entry.kind,
+                Text.from_markup(f"  [bold {accent}]›[/bold {accent}] [{text_color}]{esc(text)}[/{text_color}]"),
+                source=source,
+            )
+        if kind == "section_heading" and len(source) == 2:
+            title = str(source[1])
+            accent = _theme_color(app, "accent", DEFAULT_ASSISTANT_BAR_COLOR)
+            return TranscriptEntry(entry.kind, Text.from_markup(f"[bold {accent}]  {esc(title)}[/bold {accent}]"), source=source)
+        if kind == "detail_line" and len(source) == 4:
+            label = str(source[1])
+            value = str(source[2])
+            value_markup = bool(source[3])
+            accent = _theme_color(app, "accent", DEFAULT_ASSISTANT_BAR_COLOR)
+            text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
+            rendered = value if value_markup else esc(value)
+            markup = (
+                f"  [bold {accent}]{esc(label)}:[/bold {accent}] [{text_color}]{rendered}[/{text_color}]"
+                if not value_markup
+                else f"  [bold {accent}]{esc(label)}:[/bold {accent}] {rendered}"
+            )
+            return TranscriptEntry(entry.kind, Text.from_markup(markup), source=source)
+        if kind == "indexed_dim_line" and len(source) == 4:
+            index = int(source[1])
+            row = str(source[2])
+            allow_markup = bool(source[3])
+            accent = _theme_color(app, "accent", DEFAULT_ASSISTANT_BAR_COLOR)
+            text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
+            markup = f"  [{accent}]{index}.[/{accent}] {row}" if allow_markup else f"  [{accent}]{index}.[/{accent}] [{text_color}]{esc(row)}[/{text_color}]"
+            return TranscriptEntry(entry.kind, Text.from_markup(markup), source=source)
+        if kind == "command_action" and len(source) == 3:
+            text = str(source[1])
+            icon = str(source[2])
+            accent = _theme_color(app, "accent", DEFAULT_ASSISTANT_BAR_COLOR)
+            text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
+            return TranscriptEntry(
+                entry.kind,
+                Text.from_markup(f"  [bold {accent}]{esc(icon)}[/bold {accent}] [{text_color}]{esc(text)}[/{text_color}]"),
+                source=source,
+            )
+        if kind == "command_row" and len(source) == 4:
+            command = str(source[1])
+            desc = str(source[2])
+            col = max(1, int(source[3]))
+            accent = _theme_color(app, "accent", DEFAULT_ASSISTANT_BAR_COLOR)
+            muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
+            gap = max(1, col - len(command))
+            return TranscriptEntry(
+                entry.kind,
+                Text.from_markup(f"  [bold {accent}]{esc(command)}[/bold {accent}]{' ' * gap}[{muted}]{esc(desc)}[/{muted}]"),
+                source=source,
+            )
+        if kind == "muted_line" and len(source) == 2:
+            row = str(source[1])
+            muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
+            return TranscriptEntry(entry.kind, Text.from_markup(f"  [{muted}]{esc(row)}[/{muted}]"), source=source)
+        if kind == "reasoning" and len(source) == 3:
+            text = str(source[1])
+            content_indent = max(0, int(source[2]))
+            return TranscriptEntry(
+                entry.kind,
+                Padding(
+                    app._bar_renderable(
+                        app._reasoning_panel_renderable(text),
+                        _theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
+                        content_indent=content_indent,
+                    ),
+                    pad=(0, 0, 0, 0),
+                ),
                 source=source,
             )
         if kind == "user_line" and len(source) == 3:
@@ -659,7 +791,11 @@ def maybe_scroll_end(app: Any, force: bool = False) -> None:
 
 def write_info(app: Any, text: str, *, accent_color: str) -> None:
     text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
-    app._write(f"  [bold {accent_color}]›[/bold {accent_color}] [{text_color}]{esc(text)}[/{text_color}]")
+    write_markup(
+        app,
+        f"  [bold {accent_color}]›[/bold {accent_color}] [{text_color}]{esc(text)}[/{text_color}]",
+        source=("info_line", text),
+    )
 
 
 def write_error(app: Any, text: str) -> None:
@@ -669,16 +805,18 @@ def write_error(app: Any, text: str) -> None:
 
 def write_section_heading(app: Any, title: str, *, color: str) -> None:
     app._write("")
-    app._write(f"[bold {color}]  {esc(title)}[/bold {color}]")
+    write_markup(app, f"[bold {color}]  {esc(title)}[/bold {color}]", source=("section_heading", title))
 
 
 def write_detail_line(app: Any, label: str, value: str, *, accent_color: str, value_markup: bool = False) -> None:
     text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
     rendered = value if value_markup else esc(value)
-    app._write(
+    write_markup(
+        app,
         f"  [bold {accent_color}]{esc(label)}:[/bold {accent_color}] [{text_color}]{rendered}[/{text_color}]"
         if not value_markup
-        else f"  [bold {accent_color}]{esc(label)}:[/bold {accent_color}] {rendered}"
+        else f"  [bold {accent_color}]{esc(label)}:[/bold {accent_color}] {rendered}",
+        source=("detail_line", label, value, value_markup),
     )
 
 
@@ -692,26 +830,38 @@ def write_indexed_dim_lines(
     text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
     for index, row in enumerate(rows):
         if allow_markup:
-            app._write(f"  [{color}]{index}.[/{color}] {row}")
+            write_markup(app, f"  [{color}]{index}.[/{color}] {row}", source=("indexed_dim_line", index, row, allow_markup))
         else:
-            app._write(f"  [{color}]{index}.[/{color}] [{text_color}]{esc(row)}[/{text_color}]")
+            write_markup(
+                app,
+                f"  [{color}]{index}.[/{color}] [{text_color}]{esc(row)}[/{text_color}]",
+                source=("indexed_dim_line", index, row, allow_markup),
+            )
 
 
 def write_command_action(app: Any, text: str, *, color: str, icon: str = "•") -> None:
     text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
-    app._write(f"  [bold {color}]{esc(icon)}[/bold {color}] [{text_color}]{esc(text)}[/{text_color}]")
+    write_markup(
+        app,
+        f"  [bold {color}]{esc(icon)}[/bold {color}] [{text_color}]{esc(text)}[/{text_color}]",
+        source=("command_action", text, icon),
+    )
 
 
 def write_command_row(app: Any, command: str, desc: str, *, col: int, accent_color: str) -> None:
     muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
     gap = max(1, col - len(command))
-    app._write(f"  [bold {accent_color}]{esc(command)}[/bold {accent_color}]{' ' * gap}[{muted}]{esc(desc)}[/{muted}]")
+    write_markup(
+        app,
+        f"  [bold {accent_color}]{esc(command)}[/bold {accent_color}]{' ' * gap}[{muted}]{esc(desc)}[/{muted}]",
+        source=("command_row", command, desc, col),
+    )
 
 
 def write_muted_lines(app: Any, rows: list[str]) -> None:
     muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
     for row in rows:
-        app._write(f"  [{muted}]{esc(row)}[/{muted}]")
+        write_markup(app, f"  [{muted}]{esc(row)}[/{muted}]", source=("muted_line", row))
 
 
 def write_usage(app: Any, usage: str) -> bool:
