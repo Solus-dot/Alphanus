@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
+from rich.console import Console, Group, RenderableType
 from rich.text import Text
 from textual.widgets import Static
 
@@ -25,15 +25,6 @@ class ScrollAnchor:
     partial_line_offset: int = -1
 
 
-@dataclass(slots=True)
-class _LineSpacer:
-    line_count: int
-
-    def __rich_console__(self, _console: Console, _options: ConsoleOptions) -> RenderResult:
-        for _ in range(max(0, int(self.line_count))):
-            yield Text("")
-
-
 def count_renderable_lines(renderable: RenderableType, width: int) -> int:
     width = max(1, int(width))
     console = _line_count_console(width)
@@ -42,8 +33,6 @@ def count_renderable_lines(renderable: RenderableType, width: int) -> int:
 
 
 class TranscriptView(Static):
-    _VIRTUAL_BUFFER_LINES = 80
-
     def __init__(self, *args, max_lines: int | None = None, **kwargs) -> None:
         super().__init__("", *args, markup=False, **kwargs)
         self._entries: list[TranscriptEntry] = []
@@ -66,14 +55,7 @@ class TranscriptView(Static):
         self._has_rendered = True
         if not self._entries:
             return Text("")
-        start, end, top_lines, bottom_lines = self._visible_window()
-        renderables: list[RenderableType] = []
-        if top_lines > 0:
-            renderables.append(_LineSpacer(top_lines))
-        renderables.extend(entry.renderable for entry in self._entries[start:end])
-        if bottom_lines > 0:
-            renderables.append(_LineSpacer(bottom_lines))
-        return Group(*renderables)
+        return Group(*(entry.renderable for entry in self._entries))
 
     def set_entries(self, entries: list[TranscriptEntry]) -> None:
         self._entries = list(entries)
@@ -181,41 +163,6 @@ class TranscriptView(Static):
     def _recalculate_line_cache(self, width: int) -> None:
         self._last_line_counts = self._entry_line_counts_for_width(width)
         self._last_line_total = sum(self._last_line_counts)
-
-    def _visible_window(self) -> tuple[int, int, int, int]:
-        counts = self._cached_line_counts()
-        if not counts:
-            return (0, 0, 0, 0)
-        parent = self.parent
-        scroll_y = int(float(getattr(parent, "scroll_y", 0) or 0))
-        viewport_height = int(getattr(getattr(parent, "region", None), "height", 0) or 0)
-        if viewport_height <= 0:
-            viewport_height = int(getattr(getattr(parent, "size", None), "height", 0) or 0)
-        if viewport_height <= 0:
-            return (0, len(self._entries), 0, 0)
-
-        buffer_lines = self._VIRTUAL_BUFFER_LINES
-        window_start_line = max(0, scroll_y - buffer_lines)
-        window_end_line = min(self._last_line_total, scroll_y + viewport_height + buffer_lines)
-
-        total = 0
-        start = 0
-        for idx, count in enumerate(counts):
-            if total + count > window_start_line:
-                start = idx
-                break
-            total += count
-        top_lines = total
-
-        end = len(counts)
-        total_after = top_lines
-        for idx in range(start, len(counts)):
-            total_after += counts[idx]
-            if total_after >= window_end_line:
-                end = idx + 1
-                break
-        bottom_lines = max(0, self._last_line_total - total_after)
-        return (start, end, top_lines, bottom_lines)
 
     def _trim_entries_to_max_lines(self) -> None:
         if not isinstance(self._max_lines, int) or self._max_lines <= 0 or not self._entries:
