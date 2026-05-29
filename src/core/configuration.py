@@ -161,7 +161,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "tui": {
         "theme": DEFAULT_THEME_ID,
-        "chat_log_max_lines": 5000,
+        "chat_log_max_lines": 0,
         "timing": {
             "stream_drain_interval_s": 0.016,
             "scroll_interval_s": 0.05,
@@ -1124,7 +1124,7 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         int(DEFAULT_CONFIG["tui"]["chat_log_max_lines"]),
         path="tui.chat_log_max_lines",
         warnings=warnings,
-        minimum=100,
+        minimum=0,
         maximum=200000,
     )
     timing_cfg = tui_cfg.get("timing", {})

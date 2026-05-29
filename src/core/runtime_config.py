@@ -124,7 +124,7 @@ class UiRuntimeConfig:
         tree_cfg = _section(tui_cfg, "tree_compaction")
         default_tui = _section(DEFAULT_CONFIG, "tui")
         default_tree = _section(default_tui, "tree_compaction")
-        chat_log_max_lines = _coerce_int(tui_cfg.get("chat_log_max_lines"), int(default_tui["chat_log_max_lines"]), minimum=1)
+        chat_log_max_lines = _coerce_int(tui_cfg.get("chat_log_max_lines"), int(default_tui["chat_log_max_lines"]), minimum=0)
         theme_raw = _coerce_string(tui_cfg.get("theme"), str(default_tui["theme"]))
         available_themes = None
         try:
