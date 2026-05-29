@@ -46,3 +46,7 @@ tui = ["theme_specs/*.json"]
 
 [tool.uv]
 package = true
+
+[tool.vulture]
+paths = ["src", "bundled-skills", "tests", "tools/vulture_whitelist.py"]
+min_confidence = 80

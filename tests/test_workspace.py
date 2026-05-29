@@ -11,6 +11,13 @@ import pytest
 from core.workspace import WorkspaceManager
 
 
+def _require_git() -> str:
+    git_path = shutil.which("git")
+    if git_path is None:
+        pytest.skip("git is not available")
+    return git_path
+
+
 def _filesystem_is_case_insensitive(root: Path) -> bool:
     fd, probe_text = tempfile.mkstemp(prefix=".alphanusCaseProbe", dir=str(root))
     os.close(fd)
@@ -266,9 +273,7 @@ def test_shell_command_known_mutator_sets_workspace_changed_true(tmp_path: Path)
 
 
 def test_shell_command_ambiguous_command_uses_git_snapshot_when_repo_present(tmp_path: Path):
-    git_path = shutil.which("git")
-    if not git_path:
-        pytest.skip("git is not available")
+    git_path = _require_git()
 
     home = tmp_path / "home"
     ws = home / "ws"
@@ -285,9 +290,7 @@ def test_shell_command_ambiguous_command_uses_git_snapshot_when_repo_present(tmp
 
 
 def test_shell_command_detects_changes_to_existing_untracked_file_in_git_repo(tmp_path: Path):
-    git_path = shutil.which("git")
-    if not git_path:
-        pytest.skip("git is not available")
+    git_path = _require_git()
 
     home = tmp_path / "home"
     ws = home / "ws"
@@ -306,9 +309,7 @@ def test_shell_command_detects_changes_to_existing_untracked_file_in_git_repo(tm
 
 
 def test_shell_command_detects_git_branch_creation_in_git_repo(tmp_path: Path):
-    git_path = shutil.which("git")
-    if not git_path:
-        pytest.skip("git is not available")
+    git_path = _require_git()
 
     home = tmp_path / "home"
     ws = home / "ws"
@@ -343,9 +344,7 @@ def test_shell_command_detects_git_branch_creation_in_git_repo(tmp_path: Path):
 
 
 def test_shell_command_detects_ignored_output_changes_in_git_repo(tmp_path: Path):
-    git_path = shutil.which("git")
-    if not git_path:
-        pytest.skip("git is not available")
+    git_path = _require_git()
 
     home = tmp_path / "home"
     ws = home / "ws"
@@ -460,9 +459,7 @@ def test_shell_command_blocks_symlink_alias_to_protected_state(tmp_path: Path):
 
 
 def test_shell_command_does_not_treat_git_subcommand_as_path_operand(tmp_path: Path):
-    git_path = shutil.which("git")
-    if not git_path:
-        pytest.skip("git is not available")
+    git_path = _require_git()
 
     home = tmp_path / "home"
     ws = home / "ws"

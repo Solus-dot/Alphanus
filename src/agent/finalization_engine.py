@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 from core.message_types import JsonObject
 from core.types import AgentTurnResult, TurnState
 
@@ -201,13 +203,9 @@ class FinalizationEngine:
 
             error_code = "finalization_failed"
             content = "[agent error] Finalization failed: the model repeatedly returned invalid final-answer output. No assistant answer was accepted."
-            return AgentTurnResult(
-                status="error",
-                content=content,
-                reasoning=current_reasoning,
-                skill_exchanges=state.skill_exchanges,
-                error=error_code,
-                journal={
+            journal = cast(
+                JsonObject,
+                {
                     "finalization": {
                         "status": "failed",
                         "causes": causes,
@@ -218,6 +216,14 @@ class FinalizationEngine:
                         "workspace_mutation_count": self.workspace_mutation_count(state),
                     }
                 },
+            )
+            return AgentTurnResult(
+                status="error",
+                content=content,
+                reasoning=current_reasoning,
+                skill_exchanges=state.skill_exchanges,
+                error=error_code,
+                journal=journal,
             )
 
         state.telemetry.finalization_attempts += 1
