@@ -97,12 +97,20 @@ def write_skill_exchanges(app: Any, turn: Turn) -> None:
                     except json.JSONDecodeError:
                         args = raw_args
                     pending_details.append((name, app._live_preview.compact_tool_args(name, args)))
+                    workspace_root = None
+                    workspace_root_fn = getattr(app, "_workspace_root", None)
+                    if callable(workspace_root_fn):
+                        try:
+                            workspace_root = workspace_root_fn()
+                        except Exception:
+                            workspace_root = None
                     app._live_preview.write_static_preview(
                         name,
                         args,
                         app._write_assistant_bar_line,
                         lambda markup, _indent=0: app._write_assistant_bar_line(markup),
                         app._write_code_block,
+                        workspace_root=workspace_root,
                     )
             elif msg.get("role") == "tool":
                 name = msg.get("name", "tool")

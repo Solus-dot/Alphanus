@@ -103,7 +103,16 @@ def start_turn_stream(app: Any, turn: Any, user_input: str, attachment_paths: li
 
 def enqueue_event(app: Any, event: dict[str, Any]) -> None:
     _state(app).event_queue.put(event)
-    if event.get("type") in {"tool_phase_started", "tool_call", "tool_result", "error", "info", "pass_end", "usage"}:
+    if event.get("type") in {
+        "tool_phase_started",
+        "tool_call_delta",
+        "tool_call",
+        "tool_result",
+        "error",
+        "info",
+        "pass_end",
+        "usage",
+    }:
         app.call_from_thread(app._drain_stream_event_queue)
 
 
@@ -126,7 +135,12 @@ def flush_reasoning_buffer(app: Any) -> None:
     visible = "\n".join(line for line in visible_reasoning_text(text).splitlines() if not app._is_tool_trace_line(line)).strip()
     app._set_partial_renderable(None)
     if visible:
-        app._write_assistant_bar_renderable(app._reasoning_panel_renderable(visible), content_indent=2)
+        app._write_bar_renderable(
+            app._reasoning_panel_renderable(visible),
+            bar_color=_assistant_color(app),
+            content_indent=2,
+            source=("reasoning", visible, 2),
+        )
 
 
 def close_reasoning_section(app: Any) -> bool:
@@ -265,13 +279,15 @@ def on_agent_event(app: Any, event: dict[str, Any]) -> None:
         _refresh_activity_sidebar(app)
         if app._show_tool_details:
             app._pending_tool_details.append((name, detail))
+            apply_final_arguments = getattr(app._live_preview, "apply_final_arguments", None)
+            if stream_id and callable(apply_final_arguments):
+                apply_final_arguments(stream_id, name, args)
             streamed = (
                 app._live_preview.close(
                     stream_id,
                     lambda markup, _indent=0: app._write_assistant_bar_line(markup),
                     app._write_code_block,
                     app._clear_partial_preview,
-                    retain_partial=True,
                 )
                 if stream_id
                 else False
@@ -313,7 +329,9 @@ def on_agent_event(app: Any, event: dict[str, Any]) -> None:
                 lambda markup, _indent=0: app._write_assistant_bar_line(markup),
                 app._write_code_block,
             )
-        if name not in app._live_preview.draft_preview_tools or not result_ok:
+        supports_draft_preview = getattr(app._live_preview, "supports_draft_preview", None)
+        has_draft_preview = supports_draft_preview(name) if callable(supports_draft_preview) else name in app._live_preview.draft_preview_tools
+        if not has_draft_preview or not result_ok:
             app._clear_partial_preview()
         if not app._show_tool_result_line(name, result_ok):
             return

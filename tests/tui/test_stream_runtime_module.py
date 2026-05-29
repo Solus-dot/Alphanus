@@ -129,6 +129,14 @@ def test_enqueue_event_creates_queue_and_schedules_drain_for_notable_events() ->
     assert app._call_from_thread_calls
 
 
+def test_enqueue_event_schedules_drain_for_tool_call_delta() -> None:
+    app = _App()
+
+    enqueue_event(app, {"type": "tool_call_delta", "stream_id": "s1", "name": "create_file", "raw_arguments": "{}"})
+
+    assert app._call_from_thread_calls == [app._drain_stream_event_queue]
+
+
 def test_drain_events_processes_usage_event() -> None:
     app = _App()
     assert app._stream_runtime is not None
@@ -140,6 +148,41 @@ def test_drain_events_processes_usage_event() -> None:
     assert app._usage_updates == 1
     assert app._stream_runtime is not None
     assert app._stream_runtime.drain_active is False
+
+
+def test_tool_call_applies_final_arguments_before_closing_live_preview() -> None:
+    app = _App()
+    calls: list[tuple[Any, ...]] = []
+
+    def apply_final_arguments(stream_id, name, args):
+        calls.append(("apply", stream_id, name, args))
+
+    def close(stream_id, *_args, **kwargs):
+        calls.append(("close", stream_id, kwargs.get("retain_partial", False)))
+        return True
+
+    app._live_preview = SimpleNamespace(
+        compact_tool_args=lambda name, args: f"filepath={args.get('filepath', '')}",
+        apply_final_arguments=apply_final_arguments,
+        close=close,
+        write_static_preview=lambda *_args, **_kwargs: calls.append(("static",)),
+    )
+    assert app._stream_runtime is not None
+    app._stream_runtime.event_queue = queue.SimpleQueue()
+    app._stream_runtime.event_queue.put(
+        {
+            "type": "tool_call",
+            "stream_id": "s1",
+            "name": "create_file",
+            "arguments": {"filepath": "RPS.html", "content": "<main>RPS</main>"},
+        }
+    )
+
+    drain_events(app)
+
+    assert calls[0] == ("apply", "s1", "create_file", {"filepath": "RPS.html", "content": "<main>RPS</main>"})
+    assert calls[1] == ("close", "s1", False)
+    assert ("static",) not in calls
 
 
 def test_drain_events_ignores_content_events_after_stop_requested() -> None:
