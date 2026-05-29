@@ -28,6 +28,26 @@ _DRAFT_DEFER_RE = re.compile(
 _DRAFT_COMPLETION_RE = re.compile(
     r"\b(?:i|we)\s+(?:have\s+)?(?:already\s+)?(?:successfully\s+)?(?:deleted|removed|created|updated|edited|modified|renamed|moved|wrote|saved)\b"
 )
+_DRAFT_NON_MUTATING_ACTION_DONE_RE = re.compile(
+    r"\b(?:opened|ran|executed|launched|read|listed|shown|showed|displayed|inspected|checked|verified)\b"
+)
+_MUTATING_REQUEST_RE = re.compile(
+    r"\b(?:create|make(?!\s+sure)|write|save|edit|update|modify|delete|remove|rename|move|copy|scaffold|generate)\b"
+)
+_NON_MUTATING_ACTION_PATTERNS = {
+    "open": re.compile(r"\b(?:open|opened|launch|launched)\b"),
+    "run": re.compile(r"\b(?:run|ran|execute|executed)\b"),
+    "read": re.compile(r"\b(?:read|show|showed|display|displayed)\b"),
+    "list": re.compile(r"\b(?:list|listed)\b"),
+    "check": re.compile(r"\b(?:inspect|inspected|check|checked|verify|verified)\b"),
+}
+_NON_MUTATING_ACTION_TOOL_NAMES = {
+    "open": {"shell_command", "open_url", "play_youtube"},
+    "run": {"shell_command", "run_checks"},
+    "read": {"read_file", "list_files", "workspace_tree", "shell_command"},
+    "list": {"list_files", "workspace_tree", "shell_command"},
+    "check": {"read_file", "list_files", "run_checks", "shell_command"},
+}
 _DRAFT_WORKSPACE_DONE_RE = re.compile(r"\b(?:workspace is now empty|done with workspace tools)\b")
 _DRAFT_LIMITATION_RE = re.compile(
     r"\b(?:could not|couldn't|cannot|can't|unable|not allowed|blocked|permission|permissions|unsupported|unavailable|disabled)\b"
@@ -263,6 +283,70 @@ class TurnClassifier:
                 return True
         return False
 
+    @staticmethod
+    def _evidence_shows_successful_action_tool(evidence: dict[str, JSONValue]) -> bool:
+        tools = evidence.get("successful_tools")
+        return isinstance(tools, list) and bool(tools)
+
+    @classmethod
+    def _request_requires_workspace_mutation(cls, current_user_input: str, recent_routing_hint: str = "") -> bool:
+        text = cls._normalized_text(current_user_input)
+        if text and _MUTATING_REQUEST_RE.search(text):
+            return True
+        if cls._non_mutating_actions_in_text(text):
+            return False
+        hint = cls._normalized_text(recent_routing_hint)
+        return bool(hint and _MUTATING_REQUEST_RE.search(hint))
+
+    @classmethod
+    def _non_mutating_actions_in_text(cls, text: str) -> set[str]:
+        lowered = cls._normalized_text(text)
+        if not lowered:
+            return set()
+        return {action for action, pattern in _NON_MUTATING_ACTION_PATTERNS.items() if pattern.search(lowered)}
+
+    @staticmethod
+    def _successful_tool_names(evidence: dict[str, JSONValue]) -> set[str]:
+        names: set[str] = set()
+        successful_tools = evidence.get("successful_tools")
+        if isinstance(successful_tools, list):
+            for item in successful_tools:
+                name = str(item or "").strip().lower().split(".")[-1]
+                if name:
+                    names.add(name)
+        recent_tools = evidence.get("recent_tools")
+        if isinstance(recent_tools, list):
+            for item in recent_tools:
+                if not isinstance(item, dict) or not bool(item.get("ok")) or bool(item.get("policy_blocked")):
+                    continue
+                name = str(item.get("name") or "").strip().lower().split(".")[-1]
+                if name:
+                    names.add(name)
+        names.discard("skill_view")
+        return names
+
+    @classmethod
+    def _evidence_supports_non_mutating_completion(
+        cls,
+        *,
+        current_user_input: str,
+        assistant_reply: str,
+        evidence: dict[str, JSONValue],
+    ) -> bool:
+        requested_actions = cls._non_mutating_actions_in_text(current_user_input)
+        claimed_actions = cls._non_mutating_actions_in_text(assistant_reply)
+        required_actions = requested_actions | claimed_actions
+        if not required_actions:
+            return False
+        tool_names = cls._successful_tool_names(evidence)
+        if not tool_names:
+            return False
+        for action in required_actions:
+            allowed_tools = _NON_MUTATING_ACTION_TOOL_NAMES.get(action, set())
+            if allowed_tools and not tool_names.intersection(allowed_tools):
+                return False
+        return True
+
     @classmethod
     def _text_targets_workspace_artifacts(cls, text: str) -> bool:
         raw = str(text or "")
@@ -301,7 +385,12 @@ class TurnClassifier:
         pass_id: str,
         stop_event=None,
     ) -> str:
-        rules_outcome = self._rule_based_workspace_action_outcome(assistant_reply, evidence)
+        rules_outcome = self._rule_based_workspace_action_outcome(
+            assistant_reply,
+            evidence,
+            current_user_input=current_user_input,
+            recent_routing_hint=recent_routing_hint,
+        )
         if not bool(self.llm_client.enable_structured_classification):
             return rules_outcome
         prompt = (
@@ -310,7 +399,9 @@ class TurnClassifier:
             '{"outcome":"not_completed"}\n'
             "Allowed outcome values: completed_with_evidence, declined_or_blocked, needs_clarification, not_completed.\n"
             "Use the provided tool evidence as the source of truth.\n"
-            "- Choose completed_with_evidence only if the evidence shows at least one successful mutating workspace tool.\n"
+            "- Choose completed_with_evidence when the evidence shows a successful tool that satisfies the requested action.\n"
+            "- For create, edit, delete, move, save, or write requests, require successful mutating workspace-tool evidence.\n"
+            "- For open, run, read, list, inspect, check, or verify requests, a successful non-mutating tool can be sufficient evidence.\n"
             "- Choose declined_or_blocked only when the reply transparently reports a real limitation supported by the evidence, such as a policy-blocked tool, unavailable tooling, or an explicit statement that no successful workspace tool actually ran.\n"
             "- Choose needs_clarification when the assistant is explicitly asking the user for information needed before acting.\n"
             "- Choose not_completed for drafts that hand the requested action back to the user, unsupported success claims, or deflections/refusals that are not supported by the evidence.\n"
@@ -340,11 +431,33 @@ class TurnClassifier:
         parsed = self._parse_json_object(result.content)
         outcome = str(parsed.get("outcome", "")).strip().lower()
         if outcome in {"completed_with_evidence", "declined_or_blocked", "needs_clarification", "not_completed"}:
+            if (
+                outcome == "completed_with_evidence"
+                and self._request_requires_workspace_mutation(current_user_input, recent_routing_hint)
+                and not bool(evidence.get("has_successful_mutation"))
+            ):
+                return "not_completed"
+            if (
+                outcome == "completed_with_evidence"
+                and not bool(evidence.get("has_successful_mutation"))
+                and not self._evidence_supports_non_mutating_completion(
+                    current_user_input=current_user_input,
+                    assistant_reply=assistant_reply,
+                    evidence=evidence,
+                )
+            ):
+                return "not_completed"
             return outcome
         return rules_outcome
 
     @staticmethod
-    def _rule_based_workspace_action_outcome(assistant_reply: str, evidence: JsonObject) -> str:
+    def _rule_based_workspace_action_outcome(
+        assistant_reply: str,
+        evidence: JsonObject,
+        *,
+        current_user_input: str = "",
+        recent_routing_hint: str = "",
+    ) -> str:
         if bool(evidence.get("has_successful_mutation")):
             return "completed_with_evidence"
         lowered = TurnClassifier._normalized_text(assistant_reply)
@@ -354,6 +467,17 @@ class TurnClassifier:
             return "needs_clarification"
         if TurnClassifier._draft_defers_workspace_action_to_user(assistant_reply):
             return "not_completed"
+        if (
+            not TurnClassifier._request_requires_workspace_mutation(current_user_input, recent_routing_hint)
+            and TurnClassifier._evidence_shows_successful_action_tool(evidence)
+            and _DRAFT_NON_MUTATING_ACTION_DONE_RE.search(lowered)
+            and TurnClassifier._evidence_supports_non_mutating_completion(
+                current_user_input=current_user_input,
+                assistant_reply=assistant_reply,
+                evidence=evidence,
+            )
+        ):
+            return "completed_with_evidence"
         if TurnClassifier._draft_claims_workspace_completion_without_evidence(assistant_reply):
             return "not_completed"
         if TurnClassifier._evidence_shows_blocked_or_unavailable_tool(evidence) and TurnClassifier._draft_reports_supported_limitation(

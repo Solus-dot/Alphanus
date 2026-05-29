@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 from agent.classifier import TurnClassifier
 from agent.context import ContextWindowManager
@@ -613,9 +614,267 @@ def test_orchestrator_records_workspace_evidence_and_policy_blocks(tmp_path: Pat
     evidence = orchestrator.workspace_action_evidence(state)
 
     assert state.completion.tool_counts["shell_command"] == 2
+    assert evidence["has_successful_tool"] is True
+    assert "shell_command" in evidence["successful_tools"]
     assert evidence["has_successful_mutation"] is True
     assert "shell_command" in evidence["successful_mutating_tools"]
     assert "shell_command" in evidence["policy_blocked_tools"]
+
+
+def test_workspace_action_outcome_accepts_successful_non_mutating_open_action(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": False}}
+    classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
+
+    outcome = classifier.classify_workspace_action_outcome(
+        current_user_input="open it using the open command please",
+        recent_routing_hint="",
+        assistant_reply="The website has been opened in your default browser.",
+        evidence={
+            "has_successful_tool": True,
+            "successful_tools": ["shell_command"],
+            "has_successful_mutation": False,
+            "successful_mutating_tools": [],
+            "policy_blocked_tools": [],
+            "recent_tools": [{"name": "shell_command", "ok": True, "mutating": False, "policy_blocked": False}],
+        },
+        pass_id="pass_1",
+    )
+
+    assert outcome == "completed_with_evidence"
+
+
+def test_workspace_action_outcome_accepts_open_followup_after_mutating_hint(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": False}}
+    classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
+
+    outcome = classifier.classify_workspace_action_outcome(
+        current_user_input="open it",
+        recent_routing_hint="previous user request: create notes.txt",
+        assistant_reply="The website has been opened in your default browser.",
+        evidence={
+            "has_successful_tool": True,
+            "successful_tools": ["shell_command"],
+            "has_successful_mutation": False,
+            "successful_mutating_tools": [],
+            "policy_blocked_tools": [],
+            "recent_tools": [{"name": "shell_command", "ok": True, "mutating": False, "policy_blocked": False}],
+        },
+        pass_id="pass_1",
+    )
+
+    assert outcome == "completed_with_evidence"
+
+
+def test_workspace_action_outcome_accepts_show_request_with_list_evidence(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": False}}
+    classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
+
+    outcome = classifier.classify_workspace_action_outcome(
+        current_user_input="show me the files in the workspace",
+        recent_routing_hint="",
+        assistant_reply="I listed the files in the workspace.",
+        evidence={
+            "has_successful_tool": True,
+            "successful_tools": ["list_files"],
+            "has_successful_mutation": False,
+            "successful_mutating_tools": [],
+            "policy_blocked_tools": [],
+            "recent_tools": [{"name": "list_files", "ok": True, "mutating": False, "policy_blocked": False}],
+        },
+        pass_id="pass_1",
+    )
+
+    assert outcome == "completed_with_evidence"
+
+
+def test_workspace_action_outcome_accepts_display_tree_with_workspace_tree_evidence(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": False}}
+    classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
+
+    outcome = classifier.classify_workspace_action_outcome(
+        current_user_input="display the directory tree",
+        recent_routing_hint="",
+        assistant_reply="I displayed the directory tree.",
+        evidence={
+            "has_successful_tool": True,
+            "successful_tools": ["workspace_tree"],
+            "has_successful_mutation": False,
+            "successful_mutating_tools": [],
+            "policy_blocked_tools": [],
+            "recent_tools": [{"name": "workspace_tree", "ok": True, "mutating": False, "policy_blocked": False}],
+        },
+        pass_id="pass_1",
+    )
+
+    assert outcome == "completed_with_evidence"
+
+
+def test_workspace_action_outcome_rejects_ack_followup_to_mutating_request_without_mutation(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": False}}
+    classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
+
+    outcome = classifier.classify_workspace_action_outcome(
+        current_user_input="yes, do it",
+        recent_routing_hint="previous user request: create notes.txt",
+        assistant_reply="I checked notes.txt.",
+        evidence={
+            "has_successful_tool": True,
+            "successful_tools": ["read_file"],
+            "has_successful_mutation": False,
+            "successful_mutating_tools": [],
+            "policy_blocked_tools": [],
+            "recent_tools": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
+        },
+        pass_id="pass_1",
+    )
+
+    assert outcome == "not_completed"
+
+
+def test_workspace_action_outcome_overrides_structured_ack_followup_without_mutation(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": True}}
+    classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
+    classifier.call_with_retry = lambda *_args, **_kwargs: SimpleNamespace(content='{"outcome":"completed_with_evidence"}')
+
+    outcome = classifier.classify_workspace_action_outcome(
+        current_user_input="do it",
+        recent_routing_hint="previous user request: delete old.txt",
+        assistant_reply="I checked old.txt.",
+        evidence={
+            "has_successful_tool": True,
+            "successful_tools": ["read_file"],
+            "has_successful_mutation": False,
+            "successful_mutating_tools": [],
+            "policy_blocked_tools": [],
+            "recent_tools": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
+        },
+        pass_id="pass_1",
+    )
+
+    assert outcome == "not_completed"
+
+
+def test_workspace_action_outcome_rejects_open_claim_with_only_read_evidence(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": False}}
+    classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
+
+    outcome = classifier.classify_workspace_action_outcome(
+        current_user_input="open the app",
+        recent_routing_hint="",
+        assistant_reply="I opened the app.",
+        evidence={
+            "has_successful_tool": True,
+            "successful_tools": ["read_file"],
+            "has_successful_mutation": False,
+            "successful_mutating_tools": [],
+            "policy_blocked_tools": [],
+            "recent_tools": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
+        },
+        pass_id="pass_1",
+    )
+
+    assert outcome == "not_completed"
+
+
+def test_workspace_action_outcome_overrides_structured_open_claim_with_only_read_evidence(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": True}}
+    classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
+    classifier.call_with_retry = lambda *_args, **_kwargs: SimpleNamespace(content='{"outcome":"completed_with_evidence"}')
+
+    outcome = classifier.classify_workspace_action_outcome(
+        current_user_input="open the app",
+        recent_routing_hint="",
+        assistant_reply="I opened the app.",
+        evidence={
+            "has_successful_tool": True,
+            "successful_tools": ["read_file"],
+            "has_successful_mutation": False,
+            "successful_mutating_tools": [],
+            "policy_blocked_tools": [],
+            "recent_tools": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
+        },
+        pass_id="pass_1",
+    )
+
+    assert outcome == "not_completed"
+
+
+def test_workspace_action_outcome_still_rejects_file_creation_claim_without_mutation(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": False}}
+    classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
+
+    outcome = classifier.classify_workspace_action_outcome(
+        current_user_input="create notes.txt",
+        recent_routing_hint="",
+        assistant_reply="I created notes.txt.",
+        evidence={
+            "has_successful_tool": True,
+            "successful_tools": ["read_file"],
+            "has_successful_mutation": False,
+            "successful_mutating_tools": [],
+            "policy_blocked_tools": [],
+            "recent_tools": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
+        },
+        pass_id="pass_1",
+    )
+
+    assert outcome == "not_completed"
+
+
+def test_workspace_action_outcome_rejects_non_mutating_completion_for_mutating_request(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": False}}
+    classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
+
+    outcome = classifier.classify_workspace_action_outcome(
+        current_user_input="create notes.txt",
+        recent_routing_hint="",
+        assistant_reply="I checked notes.txt.",
+        evidence={
+            "has_successful_tool": True,
+            "successful_tools": ["read_file"],
+            "has_successful_mutation": False,
+            "successful_mutating_tools": [],
+            "policy_blocked_tools": [],
+            "recent_tools": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
+        },
+        pass_id="pass_1",
+    )
+
+    assert outcome == "not_completed"
+
+
+def test_workspace_action_outcome_overrides_structured_completion_without_mutation(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": True}}
+    classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
+    classifier.call_with_retry = lambda *_args, **_kwargs: SimpleNamespace(content='{"outcome":"completed_with_evidence"}')
+
+    outcome = classifier.classify_workspace_action_outcome(
+        current_user_input="create notes.txt",
+        recent_routing_hint="",
+        assistant_reply="I checked notes.txt.",
+        evidence={
+            "has_successful_tool": True,
+            "successful_tools": ["read_file"],
+            "has_successful_mutation": False,
+            "successful_mutating_tools": [],
+            "policy_blocked_tools": [],
+            "recent_tools": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
+        },
+        pass_id="pass_1",
+    )
+
+    assert outcome == "not_completed"
 
 
 def test_orchestrator_search_budget_reason_is_explicit_for_time_sensitive_turns(tmp_path: Path) -> None:

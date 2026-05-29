@@ -36,12 +36,15 @@ class EvidenceGuard:
         return state.search_mode and state.time_sensitive_query and not state.completion.search_has_fetch_content
 
     def workspace_action_evidence(self, state: TurnState) -> JsonObject:
+        successful_tools: list[JSONValue] = []
         successful_mutating_tools: list[JSONValue] = []
         policy_blocked_tools: list[JSONValue] = []
         recent_tools: list[JSONValue] = []
         for record in state.evidence[-12:]:
             ok = bool(record.result.get("ok"))
             mutating = self.tool_counts_as_workspace_mutation(record)
+            if ok and not record.policy_blocked and record.name != "skill_view" and record.name not in successful_tools:
+                successful_tools.append(record.name)
             if mutating and record.name not in successful_mutating_tools:
                 successful_mutating_tools.append(record.name)
             if record.policy_blocked and record.name not in policy_blocked_tools:
@@ -63,6 +66,8 @@ class EvidenceGuard:
             )
         payload: JsonObject = {
             "tool_counts": dict(state.completion.tool_counts),
+            "has_successful_tool": bool(successful_tools),
+            "successful_tools": successful_tools,
             "has_successful_mutation": bool(successful_mutating_tools),
             "successful_mutating_tools": successful_mutating_tools,
             "policy_blocked_tools": policy_blocked_tools,
