@@ -100,6 +100,23 @@ def test_store_memory_respects_disabled_retrieval(tmp_path: Path):
     assert not db_path.exists()
 
 
+def test_store_memory_still_succeeds_when_retrieval_indexing_fails(tmp_path: Path):
+    runtime, ws = _memory_runtime(tmp_path)
+    db_path = tmp_path / "retrieval-dir"
+    db_path.mkdir()
+    runtime.config["retrieval"] = {"enabled": True, "store_path": str(db_path)}
+    skill = runtime.get_skill("memory-rag")
+    assert skill is not None
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
+
+    result = runtime.execute_tool_call("store_memory", {"text": "User prefers durable memory writes"}, selected=[skill], ctx=ctx)
+
+    assert result["ok"] is True
+    assert result["data"]["text"] == "User prefers durable memory writes"
+    assert result["meta"]["retrieval_indexed"] is False
+    assert "retrieval_error" in result["meta"]
+
+
 def test_recall_memory_uses_token_matching_not_substrings(tmp_path: Path):
     runtime, ws = _memory_runtime(tmp_path)
     skill = runtime.get_skill("memory-rag")
