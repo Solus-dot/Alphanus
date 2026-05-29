@@ -168,11 +168,18 @@ class ToolLoopEngine:
                 continue
 
             if state.prefer_local_workspace_tools and self.skill_runtime.tool_is_blocked_for_local_workspace(call.name):
+                if ":" in call.name or "." in call.name:
+                    message = (
+                        f"{call.name} is not exposed in this turn. Load the matching skill with skill_view(name), "
+                        "then call the exact unqualified workspace tool name that appears in the tool list."
+                    )
+                else:
+                    message = f"{call.name} is not allowed for local workspace file tasks; use workspace tools instead."
                 self._policy_block_tool(
                     state=state,
                     call=call,
                     pass_id=pass_id,
-                    message=f"{call.name} is not allowed for local workspace file tasks; use workspace tools instead.",
+                    message=message,
                     on_event=on_event,
                 )
                 if self._is_stop_requested(stop_event):
@@ -359,4 +366,3 @@ class ToolLoopEngine:
                 self.finalize_turn(system_content, state, stop_event, on_event, pass_id, force_finalize_reason),
             )
         return "continue", None
-

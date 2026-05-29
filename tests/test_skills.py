@@ -25,6 +25,26 @@ def test_core_skills_legacy_import_reexports_runtime_types() -> None:
     assert LegacyToolExecutionEnv is ToolExecutionEnv
 
 
+def test_skill_index_warns_against_namespaced_skill_tool_calls(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+
+    runtime = SkillRuntime(
+        skills_dir="bundled-skills",
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={},
+    )
+
+    index = runtime.compose_skill_index()
+
+    assert "load it with skill_view(name)" in index
+    assert "Do not call namespaced skill tools" in index
+    assert "exact unqualified function names" in index
+
+
 def test_runtime_minimal_profile_restricts_optional_tools(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"

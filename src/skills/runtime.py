@@ -691,6 +691,8 @@ class SkillRuntime:
             "## Skills (mandatory)\n"
             "Before replying, scan the skills below. If one clearly matches the task, "
             "load it with skill_view(name) and follow its instructions.\n"
+            "Do not call namespaced skill tools like skill-name:tool_name. Skill tools are only usable after "
+            "skill_view loads the skill and exposes their exact unqualified function names in the current tool list.\n"
             "If none match, proceed normally without loading a skill.\n\n"
             "<available_skills>\n" + "\n".join(lines) + "\n</available_skills>"
         )
