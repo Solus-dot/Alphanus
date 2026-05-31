@@ -43,10 +43,10 @@ _NON_MUTATING_ACTION_PATTERNS = {
 }
 _NON_MUTATING_ACTION_TOOL_NAMES = {
     "open": {"shell_command", "open_url", "play_youtube"},
-    "run": {"shell_command", "run_checks"},
+    "run": {"shell_command"},
     "read": {"read_file", "list_files", "workspace_tree", "shell_command"},
     "list": {"list_files", "workspace_tree", "shell_command"},
-    "check": {"read_file", "list_files", "run_checks", "shell_command"},
+    "check": {"read_file", "list_files", "shell_command"},
 }
 _DRAFT_WORKSPACE_DONE_RE = re.compile(r"\b(?:workspace is now empty|done with workspace tools)\b")
 _DRAFT_LIMITATION_RE = re.compile(
@@ -306,12 +306,16 @@ class TurnClassifier:
         return {action for action, pattern in _NON_MUTATING_ACTION_PATTERNS.items() if pattern.search(lowered)}
 
     @staticmethod
-    def _successful_tool_names(evidence: dict[str, JSONValue]) -> set[str]:
+    def _canonical_evidence_tool_name(name: object) -> str:
+        return str(name or "").strip().lower().split(":")[-1].split(".")[-1]
+
+    @classmethod
+    def _successful_tool_names(cls, evidence: dict[str, JSONValue]) -> set[str]:
         names: set[str] = set()
         successful_tools = evidence.get("successful_tools")
         if isinstance(successful_tools, list):
             for item in successful_tools:
-                name = str(item or "").strip().lower().split(".")[-1]
+                name = cls._canonical_evidence_tool_name(item)
                 if name:
                     names.add(name)
         recent_tools = evidence.get("recent_tools")
@@ -319,7 +323,7 @@ class TurnClassifier:
             for item in recent_tools:
                 if not isinstance(item, dict) or not bool(item.get("ok")) or bool(item.get("policy_blocked")):
                     continue
-                name = str(item.get("name") or "").strip().lower().split(".")[-1]
+                name = cls._canonical_evidence_tool_name(item.get("name"))
                 if name:
                     names.add(name)
         names.discard("skill_view")
