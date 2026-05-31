@@ -378,6 +378,7 @@ class OpenAICompatibleProvider:
             return remaining
 
         context_window = current.context_window
+        loaded_model_name: str | None = None
         slots_endpoint = self._metadata.slots_endpoint_from_models_endpoint(self.models_endpoint)
         try:
             slots_payload = self.fetch_json(slots_endpoint, timeout_s=remaining_timeout())
@@ -385,6 +386,7 @@ class OpenAICompatibleProvider:
             self.telemetry.emit("model_slots_fetch_failed", endpoint=slots_endpoint, error=str(exc))
         else:
             context_window = self._metadata.extract_model_context_window(slots_payload) or context_window
+            loaded_model_name = self._metadata.extract_model_name(slots_payload) or loaded_model_name
 
         try:
             payload = self.list_models(timeout_s=remaining_timeout())
@@ -403,7 +405,7 @@ class OpenAICompatibleProvider:
             )
         self._refresh_backend_profile(payload)
 
-        model_name = self._metadata.extract_model_name(payload) or current.model_name
+        model_name = loaded_model_name or self._metadata.extract_model_name(payload) or current.model_name
         if context_window is None:
             context_window = self._metadata.extract_model_context_window(payload)
         if context_window is None:
@@ -414,6 +416,7 @@ class OpenAICompatibleProvider:
                 self.telemetry.emit("model_props_fetch_failed", endpoint=props_endpoint, error=str(exc))
             else:
                 context_window = self._metadata.extract_model_context_window(props_payload)
+                model_name = self._metadata.extract_model_name(props_payload) or model_name
         return self._store_model_status(
             ModelStatus(
                 state="online",
