@@ -14,6 +14,20 @@ class ProviderStreamParser:
                 usage[str(key)] = int(value)
         return usage
 
+    @staticmethod
+    def _coerce_index(*values: object) -> int:
+        for value in values:
+            if isinstance(value, bool) or value is None:
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            try:
+                return max(0, int(text))
+            except (TypeError, ValueError):
+                continue
+        return 0
+
     def parse_chat_chunk(self, chunk: dict[str, object], _tool_acc: ToolCallAccumulator) -> dict[str, object]:
         out: dict[str, object] = {
             "content": "",
@@ -30,14 +44,20 @@ class ProviderStreamParser:
             message = chunk.get("message")
             if isinstance(message, dict):
                 out["content"] = str(message.get("content") or "")
+                tool_calls = message.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    out["tool_deltas"] = tool_calls
             if bool(chunk.get("done")):
                 out["finish_reason"] = str(chunk.get("done_reason") or "stop")
             return out
         choice = choices[0] if isinstance(choices[0], dict) else {}
         delta = choice.get("delta", {}) if isinstance(choice.get("delta"), dict) else {}
-        out["reasoning"] = str(delta.get("reasoning_content") or "")
-        out["content"] = str(delta.get("content") or "")
+        message = choice.get("message", {}) if isinstance(choice.get("message"), dict) else {}
+        out["reasoning"] = str(delta.get("reasoning_content") or message.get("reasoning_content") or "")
+        out["content"] = str(delta.get("content") or message.get("content") or "")
         tool_deltas = delta.get("tool_calls")
+        if not isinstance(tool_deltas, list):
+            tool_deltas = message.get("tool_calls")
         if isinstance(tool_deltas, list):
             out["tool_deltas"] = tool_deltas
         if choice.get("finish_reason"):
@@ -75,13 +95,7 @@ class ProviderStreamParser:
             if item_type in {"function_call", "tool_call"}:
                 output_index = chunk.get("output_index")
                 item_index = item.get("index")
-                index = (
-                    int(output_index)
-                    if isinstance(output_index, (int, float, str)) and str(output_index).strip()
-                    else int(item_index)
-                    if isinstance(item_index, (int, float, str)) and str(item_index).strip()
-                    else 0
-                )
+                index = self._coerce_index(output_index, item_index)
                 function_name = str(item.get("name") or item.get("function_name") or "").strip()
                 call_id = str(item.get("call_id") or item.get("id") or "").strip()
                 args = str(item.get("arguments") or "")
@@ -97,7 +111,7 @@ class ProviderStreamParser:
 
         if event_type == "response.function_call_arguments.delta":
             output_index = chunk.get("output_index")
-            index = int(output_index) if isinstance(output_index, (int, float, str)) and str(output_index).strip() else 0
+            index = self._coerce_index(output_index)
             call_id = str(chunk.get("call_id") or chunk.get("item_id") or "").strip()
             delta = str(chunk.get("delta") or "")
             out["tool_deltas"] = [
@@ -130,13 +144,7 @@ class ProviderStreamParser:
             if str(item.get("type") or "") in {"function_call", "tool_call"}:
                 output_index = chunk.get("output_index")
                 item_index = item.get("index")
-                index = (
-                    int(output_index)
-                    if isinstance(output_index, (int, float, str)) and str(output_index).strip()
-                    else int(item_index)
-                    if isinstance(item_index, (int, float, str)) and str(item_index).strip()
-                    else 0
-                )
+                index = self._coerce_index(output_index, item_index)
                 call_id = str(item.get("call_id") or item.get("id") or "").strip()
                 args = str(item.get("arguments") or "")
                 if args:

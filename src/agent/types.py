@@ -206,10 +206,34 @@ class ToolCallAccumulator:
         self._pass_id = pass_id
         self._items: dict[int, _ToolCallState] = {}
 
+    @staticmethod
+    def _merge_streamed_text(current: str, incoming: object) -> str:
+        text = str(incoming or "")
+        if not text:
+            return current
+        if not current:
+            return text
+        if text == current:
+            return current
+        if text.startswith(current):
+            return text
+        return current + text
+
+    @staticmethod
+    def _coerce_index(value: object) -> int:
+        if isinstance(value, bool):
+            return 0
+        try:
+            text = str(value).strip() if value is not None else ""
+            index = int(text) if text else 0
+        except (TypeError, ValueError):
+            return 0
+        return max(0, index)
+
     def ingest(self, deltas: list[ToolCallDelta]) -> list[ToolCallUpdate]:
         updates: list[ToolCallUpdate] = []
         for delta in deltas:
-            index = int(delta.get("index", 0))
+            index = self._coerce_index(delta.get("index", 0))
             item = self._items.setdefault(
                 index,
                 _ToolCallState(
@@ -226,10 +250,10 @@ class ToolCallAccumulator:
             if isinstance(fn_delta, dict):
                 fn_name = fn_delta.get("name")
                 if fn_name:
-                    item.name += str(fn_name)
+                    item.name = self._merge_streamed_text(item.name, fn_name)
                 fn_arguments = fn_delta.get("arguments")
                 if fn_arguments:
-                    item.arguments += str(fn_arguments)
+                    item.arguments = self._merge_streamed_text(item.arguments, fn_arguments)
             updates.append(
                 {
                     "index": index,
