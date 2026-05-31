@@ -487,7 +487,7 @@ def test_workspace_ops_accepts_workspace_root_prefixed_absolute_like_paths(tmp_p
     assert not nested.exists()
 
 
-def test_workspace_ops_read_files_search_code_and_run_checks(tmp_path: Path):
+def test_workspace_ops_read_files_and_search_code(tmp_path: Path):
     runtime = _runtime(tmp_path)
     skill = runtime.get_skill("workspace-ops")
     assert skill is not None
@@ -533,17 +533,6 @@ def test_workspace_ops_read_files_search_code_and_run_checks(tmp_path: Path):
     assert read_many["data"]["count"] == 2
     assert read_many["data"]["files"][0]["truncated"] is True
     assert read_many["data"]["files"][0]["returned_chars"] == 20
-
-    checks = runtime.execute_tool_call(
-        "run_checks",
-        {"command": "pytest", "args": ["--version"]},
-        selected=[skill],
-        ctx=ctx,
-    )
-    assert checks["ok"] is True
-    assert checks["data"]["passed"] is True
-    assert "pytest" in checks["data"]["stdout"].lower()
-
 
 def test_workspace_ops_read_file_supports_section_and_numbered_output(tmp_path: Path):
     runtime = _runtime(tmp_path)
@@ -830,7 +819,7 @@ def test_workspace_search_code_reuses_context_lines_for_same_file(tmp_path: Path
     assert len(resolve_calls) == 1
 
 
-def test_workspace_ops_run_checks_rejects_non_verification_commands(tmp_path: Path):
+def test_workspace_ops_does_not_expose_run_checks(tmp_path: Path):
     runtime = _runtime(tmp_path)
     skill = runtime.get_skill("workspace-ops")
     assert skill is not None
@@ -843,5 +832,5 @@ def test_workspace_ops_run_checks_rejects_non_verification_commands(tmp_path: Pa
         ctx=ctx,
     )
     assert out["ok"] is False
-    assert out["error"]["code"] == "E_POLICY"
-    assert out["error"]["message"] == "run_checks only supports approved verification runners"
+    assert out["error"]["code"] == "E_UNSUPPORTED"
+    assert "run_checks" in out["error"]["message"]

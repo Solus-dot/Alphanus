@@ -123,7 +123,7 @@ def test_permission_profile_workspace_allows_workspace_mutation_but_blocks_web_a
     assert "create_file" in names
     assert "edit_file" in names
     assert "delete_path" in names
-    assert "run_checks" in names
+    assert "run_checks" not in names
     assert "web_search" not in names
     assert "fetch_url" not in names
     assert "shell_command" not in names
@@ -1649,7 +1649,7 @@ description: Create report files.
 execution:
   entrypoints:
     - name: create_report
-      tool: run_checks
+      tool: legacy_runner
       command: python3 {skill_root}/scripts/create_report.py {workspace_root}/report.txt
       parameters:
         type: object

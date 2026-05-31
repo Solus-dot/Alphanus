@@ -1,7 +1,7 @@
 ---
 name: workspace-ops
 description: Read, write, edit, inspect, move, and delete workspace files and folders safely.
-allowed-tools: create_directory create_file edit_file read_file read_files list_files search_code move_path delete_path workspace_tree run_checks
+allowed-tools: create_directory create_file edit_file read_file read_files list_files search_code move_path delete_path workspace_tree
 metadata:
   version: "1.2.0"
   tags:
@@ -43,7 +43,6 @@ Rules:
 - Prefer `search_code` over `shell_command` for repo-wide text lookup.
 - Use `move_path` for workspace file or directory renames/moves instead of shell `mv`.
 - Use `delete_path` for file deletion, directory deletion, or recursive cleanup inside the workspace.
-- Use `run_checks` for tests, lint, and validation commands instead of `shell_command` when possible.
 - Do not use `shell_command` to create folders or inspect local workspace files when a workspace tool can do it.
 - Do not use network tools such as `web_search` or `fetch_url` for local workspace file inspection or scaffolding.
 - Keep all write/delete paths inside the workspace root.

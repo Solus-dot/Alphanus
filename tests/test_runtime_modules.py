@@ -1080,12 +1080,12 @@ def test_successful_tool_outcome_is_indexed_for_retrieval(tmp_path: Path) -> Non
     db_path = tmp_path / "retrieval.sqlite"
     _runtime, orchestrator, state = _turn_state(
         tmp_path,
-        user_input="run checks",
+        user_input="read README",
         time_sensitive=False,
         workspace_action=False,
     )
     orchestrator.config["retrieval"] = {"store_path": str(db_path)}
-    call = ToolCall(stream_id="call_1", index=0, id="call_1", name="run_checks", arguments={"command": "pytest"})
+    call = ToolCall(stream_id="call_1", index=0, id="call_1", name="read_file", arguments={"filepath": "README.md"})
 
     orchestrator.record_tool_effects(
         state,
@@ -1102,12 +1102,12 @@ def test_failed_tool_outcome_is_not_indexed(tmp_path: Path) -> None:
     db_path = tmp_path / "retrieval.sqlite"
     _runtime, orchestrator, state = _turn_state(
         tmp_path,
-        user_input="run checks",
+        user_input="read README",
         time_sensitive=False,
         workspace_action=False,
     )
     orchestrator.config["retrieval"] = {"store_path": str(db_path)}
-    call = ToolCall(stream_id="call_1", index=0, id="call_1", name="run_checks", arguments={"command": "pytest"})
+    call = ToolCall(stream_id="call_1", index=0, id="call_1", name="read_file", arguments={"filepath": "README.md"})
 
     orchestrator.record_tool_effects(
         state,

@@ -40,7 +40,6 @@ _CORE_TOOL_NAMES = frozenset(
         "create_file",
         "edit_file",
         "delete_path",
-        "run_checks",
     }
 )
 
