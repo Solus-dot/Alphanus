@@ -146,10 +146,9 @@ class LiveToolPreviewManager:
         if not content:
             return False
 
-        if not state.opened:
+        if not state.opened and state.filepath:
             state.opened = True
-            path_label = state.filepath or "(pending filepath)"
-            write(self._label_markup("file draft", path_label))
+            write(self._label_markup("file draft", state.filepath))
 
         lines = content.split("\n")
         if content.endswith("\n"):
@@ -265,7 +264,7 @@ class LiveToolPreviewManager:
         retain_partial: bool = False,
     ) -> bool:
         state = self._streams.get(stream_id)
-        if not state or not state.opened:
+        if not state or (not state.opened and not state.preview_lines and not state.line_buf):
             return False
         if not state.closed:
             self._flush_state_preview(state, write_indented, write_code, clear_preview, retain_partial=retain_partial)
@@ -403,6 +402,10 @@ class LiveToolPreviewManager:
             state.preview_lines.append(tail)
             state.line_buf = ""
         if state.preview_lines:
+            if not state.opened:
+                path_label = state.filepath or "(pending filepath)"
+                write_indented(self._label_markup("file draft", path_label), 0)
+                state.opened = True
             preview_text = "\n".join(state.preview_lines)
             lines, clipped_for_display = self._clipped_preview_lines(preview_text)
             write_code(lines, self._guess_language(state.filepath), 2)

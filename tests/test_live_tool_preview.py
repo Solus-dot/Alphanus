@@ -226,6 +226,7 @@ def test_live_preview_streams_edit_file_content_mode():
 def test_live_preview_applies_final_filepath_before_flushing_pending_draft():
     manager = LiveToolPreviewManager()
     writes = []
+    indented = []
     previews = []
     code_blocks = []
 
@@ -244,11 +245,12 @@ def test_live_preview_applies_final_filepath_before_flushing_pending_draft():
 
     streamed = manager.close(
         "s8",
-        lambda _text, _indent: None,
+        lambda text, indent: indented.append((text, indent)),
         lambda lines, language, indent: code_blocks.append((list(lines), language, indent)),
         lambda: previews.append((["<cleared>"], None)),
     )
 
     assert streamed is True
-    assert writes == ["[dim]  · file draft: (pending filepath)[/dim]"]
+    assert writes == []
+    assert indented == [("[dim]  · file draft: RPS.html[/dim]", 0)]
     assert code_blocks == [(["<main>RPS</main>"], "html", 2)]
