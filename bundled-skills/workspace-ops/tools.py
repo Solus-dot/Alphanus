@@ -148,23 +148,6 @@ TOOL_SPECS = {
             "required": [],
         },
     },
-    "run_checks": {
-        "capability": "workspace_execute",
-        "description": "Run tests, lint, or other verification commands with explicit argv.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "command": {"type": "string"},
-                "args": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                },
-                "path": {"type": "string"},
-                "timeout_s": {"type": "integer"},
-            },
-            "required": ["command"],
-        },
-    },
 }
 
 
@@ -475,18 +458,8 @@ def _search_code(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, ob
 def _delete_path(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     path = str(args["path"])
     recursive = bool(args.get("recursive", False))
-    target = env.workspace._resolve_read_path(path)
-    is_dir = target.is_dir()
-    size_bytes = 0
-    file_count = 0
-    if is_dir:
-        for child in target.rglob("*"):
-            if child.is_file():
-                size_bytes += child.stat().st_size
-                file_count += 1
-    else:
-        size_bytes = target.stat().st_size
-        file_count = 1
+    metadata = env.workspace.delete_path_metadata(path)
+    is_dir = bool(metadata["is_dir"])
     path_str = env.workspace.delete_path(path, recursive=recursive)
     data = _path_info(path_str)
     data.update(
@@ -494,8 +467,8 @@ def _delete_path(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, ob
             "deleted": True,
             "recursive": recursive,
             "kind": "directory" if is_dir else "file",
-            "size_bytes": size_bytes,
-            "file_count": file_count,
+            "size_bytes": int(metadata["size_bytes"]),
+            "file_count": int(metadata["file_count"]),
         }
     )
     return data
@@ -528,15 +501,6 @@ def _workspace_tree(args: dict[str, object], env: ToolExecutionEnv) -> dict[str,
     return {"tree": tree, "max_depth": max_depth}
 
 
-def _run_checks(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
-    return env.workspace.run_checks(
-        str(args["command"]),
-        args=[str(item) for item in args.get("args") or []],
-        path=str(args.get("path", ".")),
-        timeout_s=int(args.get("timeout_s", 120)),
-    )
-
-
 def execute(tool_name: str, args: dict[str, object], env: ToolExecutionEnv):
     if tool_name == "create_directory":
         return _create_directory(args, env)
@@ -558,6 +522,4 @@ def execute(tool_name: str, args: dict[str, object], env: ToolExecutionEnv):
         return _delete_path(args, env)
     if tool_name == "workspace_tree":
         return _workspace_tree(args, env)
-    if tool_name == "run_checks":
-        return _run_checks(args, env)
     raise ValueError(f"Unsupported tool: {tool_name}")

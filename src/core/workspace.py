@@ -8,7 +8,6 @@ import re
 import shlex
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 from collections.abc import Iterable
@@ -43,19 +42,6 @@ METACHAR_BLOCKLIST = ["&&", "||", "\n", "\r"]
 SHELL_WRAPPER_BINARIES = {"bash", "sh", "zsh", "fish"}
 MAX_TOOL_TEXT_BYTES = 20000
 PROTECTED_STATE_TOKEN_RE = re.compile(r"(^|[^A-Za-z0-9._-])\.alphanus(?=$|[/\\\\]|[^A-Za-z0-9._-])", re.IGNORECASE)
-SAFE_CHECK_RUNNERS = {
-    "pytest",
-    "ruff",
-    "mypy",
-    "pyright",
-    "eslint",
-    "tsc",
-    "vitest",
-    "jest",
-    "tox",
-    "nox",
-}
-PYTHON_MODULE_CHECK_RUNNERS = {"pytest", "ruff", "mypy", "pyright", "tox", "nox"}
 HEAVY_WALK_DIRS = {
     ".alphanus",
     ".git",
@@ -527,6 +513,41 @@ class WorkspaceManager:
             raise OSError("Directory is not empty; set recursive=true to delete it") from exc
         return str(target)
 
+    def delete_path_metadata(self, path: str) -> dict[str, Any]:
+        raw = self._normalize_workspace_relative(path)
+        candidate = (self.workspace_root / raw) if not raw.is_absolute() else raw
+        candidate = Path(os.path.abspath(str(candidate)))
+        if not self._is_relative_to(candidate, self.workspace_root):
+            raise PermissionError("Write path escapes workspace root")
+        if candidate == self.workspace_root:
+            raise PermissionError("Deleting the workspace root is not allowed")
+        if self._is_protected_state_path(candidate):
+            raise PermissionError("Deleting protected internal state is not allowed")
+
+        if candidate.is_symlink():
+            stat = candidate.lstat()
+            return {"is_dir": False, "size_bytes": stat.st_size, "file_count": 1}
+
+        target = self._resolve_write_path(path)
+        if not target.exists():
+            raise FileNotFoundError(str(target))
+        if not target.is_dir():
+            return {"is_dir": False, "size_bytes": target.stat().st_size, "file_count": 1}
+
+        size_bytes = 0
+        file_count = 0
+        for child in target.rglob("*"):
+            try:
+                if child.is_symlink():
+                    size_bytes += child.lstat().st_size
+                    file_count += 1
+                elif child.is_file():
+                    size_bytes += child.stat().st_size
+                    file_count += 1
+            except OSError:
+                continue
+        return {"is_dir": True, "size_bytes": size_bytes, "file_count": file_count}
+
     def list_files(self, path: str = ".") -> list[str]:
         target = self._resolve_read_path(path)
         if not target.exists() or not target.is_dir():
@@ -535,7 +556,7 @@ class WorkspaceManager:
         for child in sorted(target.iterdir(), key=lambda p: p.name.lower()):
             if self._is_protected_state_path(child):
                 continue
-            suffix = "/" if child.is_dir() else ""
+            suffix = "/" if child.is_dir() and not child.is_symlink() else ""
             results.append(child.name + suffix)
         return results
 
@@ -549,16 +570,18 @@ class WorkspaceManager:
                 (
                     entry
                     for entry in path.iterdir()
-                    if not self._is_protected_state_path(entry) and (not entry.is_dir() or entry.name not in HEAVY_WALK_DIRS)
+                    if not self._is_protected_state_path(entry)
+                    and (not entry.is_dir() or entry.is_symlink() or entry.name not in HEAVY_WALK_DIRS)
                 ),
                 key=lambda p: (p.is_file(), p.name.lower()),
             )
             for idx, entry in enumerate(entries):
                 last = idx == len(entries) - 1
                 conn = "└── " if last else "├── "
-                label = entry.name + ("/" if entry.is_dir() else "")
+                is_walkable_dir = entry.is_dir() and not entry.is_symlink()
+                label = entry.name + ("/" if is_walkable_dir else "")
                 lines.append(prefix + conn + label)
-                if entry.is_dir():
+                if is_walkable_dir:
                     walk(entry, prefix + ("    " if last else "│   "), depth + 1)
 
         walk(self.workspace_root, "", 1)
@@ -877,7 +900,15 @@ class WorkspaceManager:
         if rg_result is not None:
             return rg_result
 
-        pattern = needle if case_sensitive else needle.lower()
+        if fixed_strings:
+            pattern = needle if case_sensitive else needle.lower()
+            regex = None
+        else:
+            try:
+                regex = re.compile(needle, 0 if case_sensitive else re.IGNORECASE)
+            except re.error as exc:
+                raise ValueError(f"Invalid search_code regex: {exc}") from exc
+            pattern = ""
         results = []
         for file_path in self._iter_searchable_files(target, glob):
             try:
@@ -886,39 +917,50 @@ class WorkspaceManager:
                 continue
             content_lines = content.splitlines()
             for line_number, line in enumerate(content_lines, start=1):
-                haystack = line if case_sensitive else line.lower()
-                if pattern in haystack:
+                if regex is None:
+                    haystack = line if case_sensitive else line.lower()
                     start = haystack.find(pattern)
-                    results.append(
-                        {
-                            "filepath": str(file_path),
-                            "line_number": line_number,
-                            "line": line,
-                            "submatches": [{"match": needle, "start": start, "end": start + len(needle)}],
-                        }
-                    )
-                    if before_context > 0 or after_context > 0:
-                        idx = line_number - 1
-                        before_start = max(0, idx - max(0, int(before_context)))
-                        after_end = min(len(content_lines), idx + 1 + max(0, int(after_context)))
-                        results[-1]["before_context"] = [
-                            {"line_number": row_idx + 1, "line": content_lines[row_idx]} for row_idx in range(before_start, idx)
-                        ]
-                        results[-1]["after_context"] = [
-                            {"line_number": row_idx + 1, "line": content_lines[row_idx]} for row_idx in range(idx + 1, after_end)
-                        ]
-                    if len(results) >= limit:
-                        return {
-                            "query": needle,
-                            "path": str(target),
-                            "glob": glob,
-                            "count": len(results),
-                            "results": results,
-                            "truncated": True,
-                            "backend": "python",
-                            "before_context": max(0, int(before_context)),
-                            "after_context": max(0, int(after_context)),
-                        }
+                    if start < 0:
+                        continue
+                    end = start + len(needle)
+                    match_text = line[start:end]
+                else:
+                    match = regex.search(line)
+                    if match is None:
+                        continue
+                    start = match.start()
+                    end = match.end()
+                    match_text = match.group(0)
+                results.append(
+                    {
+                        "filepath": str(file_path),
+                        "line_number": line_number,
+                        "line": line,
+                        "submatches": [{"match": match_text, "start": start, "end": end}],
+                    }
+                )
+                if before_context > 0 or after_context > 0:
+                    idx = line_number - 1
+                    before_start = max(0, idx - max(0, int(before_context)))
+                    after_end = min(len(content_lines), idx + 1 + max(0, int(after_context)))
+                    results[-1]["before_context"] = [
+                        {"line_number": row_idx + 1, "line": content_lines[row_idx]} for row_idx in range(before_start, idx)
+                    ]
+                    results[-1]["after_context"] = [
+                        {"line_number": row_idx + 1, "line": content_lines[row_idx]} for row_idx in range(idx + 1, after_end)
+                    ]
+                if len(results) >= limit:
+                    return {
+                        "query": needle,
+                        "path": str(target),
+                        "glob": glob,
+                        "count": len(results),
+                        "results": results,
+                        "truncated": True,
+                        "backend": "python",
+                        "before_context": max(0, int(before_context)),
+                        "after_context": max(0, int(after_context)),
+                    }
         return {
             "query": needle,
             "path": str(target),
@@ -930,50 +972,6 @@ class WorkspaceManager:
             "before_context": max(0, int(before_context)),
             "after_context": max(0, int(after_context)),
         }
-
-    def run_checks(
-        self,
-        command: str,
-        *,
-        args: Iterable[str] | None = None,
-        path: str = ".",
-        timeout_s: int = 120,
-    ) -> dict[str, Any]:
-        executable = str(command).strip()
-        if not executable:
-            raise ValueError("run_checks command must be non-empty")
-        if re.search(r"[\\/\s]", executable):
-            raise ValueError("run_checks command must be a single executable name")
-
-        argv = [executable]
-        for item in args or []:
-            value = str(item)
-            if "\n" in value or "\r" in value:
-                raise ValueError("run_checks args must not contain newlines")
-            argv.append(value)
-        if any(self._text_mentions_protected_state(part) for part in argv):
-            raise PermissionError("Commands touching protected internal state are not allowed")
-
-        if executable == "uv":
-            if len(argv) < 3 or argv[1] != "run" or argv[2] not in SAFE_CHECK_RUNNERS:
-                raise PermissionError("run_checks only allows 'uv run' with approved verification runners")
-        elif executable not in SAFE_CHECK_RUNNERS:
-            raise PermissionError("run_checks only supports approved verification runners")
-
-        # Prefer explicit executable paths, and fall back to `python -m` for
-        # Python-native runners when the entrypoint is not on PATH.
-        resolved = shutil.which(executable)
-        if resolved:
-            argv[0] = resolved
-        elif executable in PYTHON_MODULE_CHECK_RUNNERS:
-            argv = [sys.executable, "-m", executable, *argv[1:]]
-
-        cwd = self._resolve_workspace_subpath(path)
-        if cwd.is_file():
-            cwd = cwd.parent
-        run = self._run_argv(argv, timeout_s=max(1, int(timeout_s)), cwd=cwd)
-        run["passed"] = run["returncode"] == 0
-        return run
 
     def _validate_shell_command(self, command: str) -> list[str]:
         trimmed = command.strip()
