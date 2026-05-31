@@ -82,13 +82,18 @@ def _get_weather(args: dict[str, object]) -> dict[str, object]:
     except json.JSONDecodeError:
         return _err("E_IO", "Weather service returned invalid JSON", {"city": city})
 
-    current = payload.get("current_condition", [{}])[0]
+    current_conditions = payload.get("current_condition")
+    current = current_conditions[0] if isinstance(current_conditions, list) and current_conditions else {}
+    current = current if isinstance(current, dict) else {}
+    desc_items = current.get("weatherDesc")
+    desc_item = desc_items[0] if isinstance(desc_items, list) and desc_items else {}
+    desc = str(desc_item.get("value", "")) if isinstance(desc_item, dict) else ""
     return _ok(
         {
             "city": city,
             "temp_c": current.get("temp_C"),
             "feels_like_c": current.get("FeelsLikeC"),
-            "desc": (current.get("weatherDesc") or [{"value": ""}])[0].get("value", ""),
+            "desc": desc,
             "humidity": current.get("humidity"),
         }
     )
