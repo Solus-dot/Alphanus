@@ -191,7 +191,7 @@ def retint_markup(app: Any, markup: str) -> str:
             retinted = re.sub(rf"(?<![\w#-]){re.escape(name)}(?![\w#-])", color, retinted)
         return f"[{retinted}]"
 
-    return re.sub(r"\[([^\]]+)\]", replace_tag, markup)
+    return re.sub(r"(?<!\\)\[([^\]]+)\]", replace_tag, markup)
 
 
 def bar_renderable(
@@ -580,14 +580,14 @@ def refresh_themed_transcript_entries(app: Any) -> None:
                 source=source,
             )
         if kind == "user_line" and len(source) == 3:
-            markup = str(source[1])
+            markup = retint_markup(app, str(source[1]))
             content_indent = max(0, int(source[2]))
             color_key = "user_bar"
             color_default = DEFAULT_USER_BAR_COLOR
             renderable = Text.from_markup(markup)
             continuation_indent = None
         elif kind == "assistant_line" and len(source) == 3:
-            markup = str(source[1])
+            markup = retint_markup(app, str(source[1]))
             content_indent = max(0, int(source[2]))
             color_key = "assistant_bar"
             color_default = DEFAULT_ASSISTANT_BAR_COLOR
@@ -601,7 +601,7 @@ def refresh_themed_transcript_entries(app: Any) -> None:
             renderable = Text.from_markup(esc(line.lstrip(" ")))
         elif kind == "assistant_wrapped" and len(source) == 3:
             line = str(source[1])
-            markup = str(source[2])
+            markup = retint_markup(app, str(source[2]))
             content_indent, continuation_indent = app._line_indents(line)
             color_key = "assistant_bar"
             color_default = DEFAULT_ASSISTANT_BAR_COLOR
