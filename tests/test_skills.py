@@ -19,6 +19,29 @@ def _always_available_tool_names() -> set[str]:
     return {"request_user_input", "skill_view", "skills_list"}
 
 
+def test_bundled_skill_allowed_tools_match_registered_tool_specs(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+
+    runtime = SkillRuntime(
+        skills_dir=str(repo_root / "bundled-skills"),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={},
+    )
+
+    for skill_dir in sorted((repo_root / "bundled-skills").iterdir()):
+        if not (skill_dir / "tools.py").exists():
+            continue
+        skill = runtime.get_skill(skill_dir.name)
+        assert skill is not None
+        assert skill.validation_errors == []
+        assert set(skill.allowed_tools) == set(runtime._reported_skill_tools(skill))
+
+
 def test_core_skills_legacy_import_reexports_runtime_types() -> None:
     from skills.runtime import ToolExecutionEnv
 

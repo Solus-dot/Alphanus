@@ -372,23 +372,23 @@ def tool_lifecycle_panel(app: Any, name: str, detail: str, *, ok: bool) -> Panel
     )
 
 
+def tool_lifecycle_line(app: Any, name: str, detail: str, *, ok: bool) -> Text:
+    success = _theme_color(app, "success", DEFAULT_SUCCESS_COLOR)
+    error = _theme_color(app, "error", DEFAULT_ERROR_COLOR)
+    muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
+    text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
+    icon = "✓" if ok else "✖"
+    icon_color = success if ok else error
+    suffix = f" [{muted}]{esc(detail)}[/{muted}]" if detail else ""
+    return Text.from_markup(f"[{icon_color}]{icon}[/{icon_color}] [{text_color}]{esc(name)}[/{text_color}]{suffix}")
+
+
 def write_tool_lifecycle_block(app: Any, name: str, ok: bool, detail: str = "") -> None:
     normalized_detail = detail or ("completed" if ok else "failed")
-    if ok:
-        success = _theme_color(app, "success", DEFAULT_SUCCESS_COLOR)
-        muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
-        text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
-        suffix = f" [{muted}]{esc(detail)}[/{muted}]" if detail else ""
-        app._write_bar_renderable(
-            Text.from_markup(f"[{success}]✓[/{success}] [{text_color}]{esc(name)}[/{text_color}]{suffix}"),
-            bar_color=_theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
-            content_indent=2,
-            source=("tool_lifecycle", name, normalized_detail, ok),
-        )
-        return
     app._write_bar_renderable(
-        app._tool_lifecycle_panel(name, normalized_detail, ok=ok),
+        app._tool_lifecycle_line(name, normalized_detail, ok=ok),
         bar_color=_theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
+        content_indent=2,
         source=("tool_lifecycle", name, normalized_detail, ok),
     )
 
@@ -468,29 +468,13 @@ def refresh_themed_transcript_entries(app: Any) -> None:
             name = str(source[1])
             detail = str(source[2])
             ok = bool(source[3])
-            if ok:
-                success = _theme_color(app, "success", DEFAULT_SUCCESS_COLOR)
-                muted = _theme_color(app, "muted", DEFAULT_MUTED_COLOR)
-                text_color = _theme_color(app, "text", DEFAULT_TEXT_COLOR)
-                suffix = f" [{muted}]{esc(detail)}[/{muted}]" if detail else ""
-                return TranscriptEntry(
-                    entry.kind,
-                    Padding(
-                        app._bar_renderable(
-                            Text.from_markup(f"[{success}]✓[/{success}] [{text_color}]{esc(name)}[/{text_color}]{suffix}"),
-                            _theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
-                            content_indent=2,
-                        ),
-                        pad=(0, 0, 0, 0),
-                    ),
-                    source=source,
-                )
             return TranscriptEntry(
                 entry.kind,
                 Padding(
                     app._bar_renderable(
-                        app._tool_lifecycle_panel(name, detail, ok=ok),
+                        app._tool_lifecycle_line(name, detail, ok=ok),
                         _theme_color(app, "assistant_bar", DEFAULT_ASSISTANT_BAR_COLOR),
+                        content_indent=2,
                     ),
                     pad=(0, 0, 0, 0),
                 ),

@@ -243,9 +243,6 @@ from tui.status_runtime import (
     apply_model_status as apply_tui_model_status,
 )
 from tui.status_runtime import (
-    current_model_refresh_interval as tui_model_refresh_interval,
-)
-from tui.status_runtime import (
     finish_startup_readiness_poll as finish_tui_startup_readiness_poll,
 )
 from tui.status_runtime import (
@@ -382,6 +379,9 @@ from tui.transcript_runtime import (
 )
 from tui.transcript_runtime import (
     tool_event_panel as tui_tool_event_panel,
+)
+from tui.transcript_runtime import (
+    tool_lifecycle_line as tui_tool_lifecycle_line,
 )
 from tui.transcript_runtime import (
     tool_lifecycle_panel as tui_tool_lifecycle_panel,
@@ -829,9 +829,15 @@ class AlphanusTUI(App):
         self._show_tool_details = not self._show_tool_details
         self._write_info(f"Live tool details {'shown' if self._show_tool_details else 'hidden'}")
 
+    def _toggle_tool_details(self) -> None:
+        self.action_toggle_details()
+
     def action_toggle_thinking(self) -> None:
         self.thinking = not self.thinking
         self._write_info(f"Thinking {'enabled' if self.thinking else 'disabled'}")
+
+    def _toggle_thinking_mode(self) -> None:
+        self.action_toggle_thinking()
 
     def action_open_command_palette(self) -> None:
         if self.streaming or self._await_shell_confirm:
@@ -897,7 +903,6 @@ class AlphanusTUI(App):
         on_tui_key(self, event, chat_input_cls=ChatInput)
 
     def _tick(self) -> None:
-        self._maybe_refresh_model_status()
         if self._esc_pending and time.monotonic() - self._esc_ts > 3.0:
             self._esc_pending = False
             self._update_status2()
@@ -1018,6 +1023,9 @@ class AlphanusTUI(App):
 
     def _tool_lifecycle_panel(self, name: str, detail: str, *, ok: bool):
         return tui_tool_lifecycle_panel(self, name, detail, ok=ok)
+
+    def _tool_lifecycle_line(self, name: str, detail: str, *, ok: bool):
+        return tui_tool_lifecycle_line(self, name, detail, ok=ok)
 
     def _write_tool_lifecycle_block(self, name: str, ok: bool, detail: str = "") -> None:
         tui_write_tool_lifecycle_block(self, name, ok, detail)
@@ -1214,9 +1222,6 @@ class AlphanusTUI(App):
         self._last_status_right = text
         self.query_one("#status-left", Static).update(text)
         self._update_metadata()
-
-    def _current_model_refresh_interval(self) -> float:
-        return tui_model_refresh_interval(self)
 
     def _should_startup_readiness_poll(self) -> bool:
         return should_tui_startup_readiness_poll(self)

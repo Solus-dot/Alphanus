@@ -76,7 +76,10 @@ def begin_shell_confirm(app: Any, command: str, event: threading.Event, holder: 
     app._shell_confirm_command = command
     app._shell_confirm_event = event
     app._shell_confirm_result = holder
-    app._write(f"[yellow]  ? Run shell command: {esc(command)}[/yellow]")
+    app._write_assistant_bar_line(
+        f"[#6366f1]›[/#6366f1] shell command  [#a1a1aa]{esc(command)}[/#a1a1aa]",
+        content_indent=2,
+    )
     app._update_status2()
 
 
@@ -88,7 +91,6 @@ def expire_shell_confirm(app: Any, event: threading.Event) -> None:
     if app._shell_confirm_result is not None:
         app._shell_confirm_result["value"] = False
     app._shell_confirm_event.set()
-    app._write("[dim red]  · shell command approval timed out[/dim red]")
     app._await_shell_confirm = False
     app._shell_confirm_command = ""
     app._shell_confirm_event = None
@@ -103,9 +105,6 @@ def finish_shell_confirm(app: Any, approved: bool) -> None:
         app._shell_confirm_result["value"] = approved
     if app._shell_confirm_event is not None:
         app._shell_confirm_event.set()
-    msg = "approved" if approved else "rejected"
-    color = "green" if approved else "red"
-    app._write(f"[dim {color}]  · shell command {msg}[/dim {color}]")
     app._await_shell_confirm = False
     app._shell_confirm_command = ""
     app._shell_confirm_event = None

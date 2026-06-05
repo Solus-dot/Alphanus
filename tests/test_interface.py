@@ -265,6 +265,34 @@ def test_chat_input_binds_new_shortcuts_locally() -> None:
     assert bindings["f3"] == "toggle_thinking"
 
 
+def test_think_command_toggles_thinking(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    messages: list[str] = []
+    tui._write_info = messages.append
+    tui._update_status1 = lambda: None
+    tui._update_status2 = lambda: None
+
+    assert tui.thinking is True
+
+    assert tui._handle_command("/think") is True
+
+    assert tui.thinking is False
+    assert messages == ["Thinking disabled"]
+
+
+def test_details_command_toggles_tool_details(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    messages: list[str] = []
+    tui._write_info = messages.append
+
+    assert tui._show_tool_details is True
+
+    assert tui._handle_command("/details") is True
+
+    assert tui._show_tool_details is False
+    assert messages == ["Live tool details hidden"]
+
+
 @pytest.mark.anyio
 async def test_chat_input_long_insert_without_paste_is_not_compacted(tmp_path: Path) -> None:
     tui = AlphanusTUI(_tui_agent_stub(tmp_path))
@@ -819,7 +847,7 @@ def test_refresh_themed_transcript_entries_rebuilds_historical_tool_panel() -> N
     )
     tui._log = lambda: view
     tui._theme_color = lambda key, default: {"assistant_bar": "#bd93f9", "error": "#ff5555"}.get(key, default)
-    tui._tool_lifecycle_panel = lambda name, detail, ok: calls.append((name, detail, ok)) or Text(
+    tui._tool_lifecycle_line = lambda name, detail, ok: calls.append((name, detail, ok)) or Text(
         f"new:{name}:{detail}:{ok}"
     )
     tui._bar_renderable = lambda renderable, color, **_kwargs: bar_colors.append(color) or renderable
@@ -835,7 +863,7 @@ def test_failed_tool_lifecycle_block_records_theme_refresh_source() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     writes: list[tuple[object, str, tuple[object, ...] | None]] = []
     tui._theme_color = lambda _key, default: default
-    tui._tool_lifecycle_panel = lambda name, detail, ok: Text(f"{name}:{detail}:{ok}")
+    tui._tool_lifecycle_line = lambda name, detail, ok: Text(f"{name}:{detail}:{ok}")
     tui._write_bar_renderable = lambda renderable, *, bar_color, source=None, **_kwargs: writes.append(
         (renderable, bar_color, source)
     )
@@ -849,7 +877,7 @@ def test_failed_tool_lifecycle_block_records_theme_refresh_source() -> None:
 def test_web_search_failure_refreshes_with_active_theme_colors() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     view = TranscriptView(id="chat-log")
-    panel_calls: list[tuple[str, str, bool]] = []
+    line_calls: list[tuple[str, str, bool]] = []
     bar_colors: list[str] = []
     view.set_entries(
         [
@@ -862,14 +890,14 @@ def test_web_search_failure_refreshes_with_active_theme_colors() -> None:
     )
     tui._log = lambda: view
     tui._theme_color = lambda key, default: {"assistant_bar": "#88c0d0", "error": "#bf616a"}.get(key, default)
-    tui._tool_lifecycle_panel = lambda name, detail, ok: panel_calls.append((name, detail, ok)) or Text(
+    tui._tool_lifecycle_line = lambda name, detail, ok: line_calls.append((name, detail, ok)) or Text(
         f"{name}:{detail}:{ok}"
     )
     tui._bar_renderable = lambda renderable, color, **_kwargs: bar_colors.append(color) or renderable
 
     tui._refresh_themed_transcript_entries()
 
-    assert panel_calls == [("web_search", "limit=5, query=python   connection refused", False)]
+    assert line_calls == [("web_search", "limit=5, query=python   connection refused", False)]
     assert bar_colors == ["#88c0d0"]
     assert view._entries[0].source == (
         "tool_lifecycle",
@@ -1721,7 +1749,6 @@ def test_apply_model_status_refresh_updates_visible_status_and_hot_swap_state() 
         model_name="qwen-3",
         model_context_window=8192,
         refresh_inflight=True,
-        refresh_fast_until=0.0,
     )
     updates: list[str] = []
     tui._update_status1 = lambda: updates.append("status")
@@ -1743,23 +1770,7 @@ def test_apply_model_status_refresh_updates_visible_status_and_hot_swap_state() 
     assert state.model_status.model_name == "qwen-4"
     assert state.model_name == "qwen-4"
     assert state.model_context_window == 16384
-    assert state.refresh_fast_until > 0.0
     assert updates == ["status", "metadata"]
-
-
-def test_current_model_refresh_interval_is_adaptive() -> None:
-    tui = AlphanusTUI.__new__(AlphanusTUI)
-    tui._ui_timing = SimpleNamespace(model_refresh_interval_s=5.0, model_refresh_fast_interval_s=2.0, model_refresh_fast_window_s=6.0)
-    tui._status_runtime = StatusRuntimeState(model_status=ModelStatus(state="online"), refresh_fast_until=0.0)
-
-    assert tui._current_model_refresh_interval() == 5.0
-
-    tui._status_runtime.model_status = ModelStatus(state="offline")
-    assert tui._current_model_refresh_interval() == 2.0
-
-    tui._status_runtime.model_status = ModelStatus(state="online")
-    tui._status_runtime.refresh_fast_until = time.monotonic() + 5.0
-    assert tui._current_model_refresh_interval() == 2.0
 
 
 def test_apply_model_status_refresh_keeps_model_name_when_offline() -> None:
@@ -1774,7 +1785,6 @@ def test_apply_model_status_refresh_keeps_model_name_when_offline() -> None:
         model_name="qwen-3",
         model_context_window=8192,
         refresh_inflight=True,
-        refresh_fast_until=0.0,
     )
     updates: list[str] = []
     tui._update_status1 = lambda: updates.append("status")
@@ -1794,7 +1804,6 @@ def test_apply_model_status_refresh_keeps_model_name_when_offline() -> None:
     assert state.model_status.state == "offline"
     assert state.model_name == "qwen-stale"
     assert state.model_context_window == 8192
-    assert state.refresh_fast_until > 0.0
     assert updates == ["status", "metadata"]
 
 
