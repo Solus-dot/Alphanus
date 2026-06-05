@@ -37,8 +37,9 @@ Use search and retrieval tools when the user needs current public internet infor
 Rules:
 - Prefer direct answers from existing context when the information is already available.
 - Use `web_search` first to gather SearXNG candidate sources, or Tavily candidates when the fallback is active, then `fetch_url` only for the results you actually need.
-- Use `retrieve_knowledge` before searching when previously fetched sources, memories, or explicitly indexed workspace files may answer the task.
+- Use `retrieve_knowledge` before searching when previously fetched sources, memories, explicitly indexed workspace files, or successful tool outcomes may answer the task.
 - Use `index_workspace` only for files the user asked you to index or files directly needed for the current task.
+- Do not use internet search tools to inspect local workspace files; use `workspace-ops` for local files.
 - Use internet search for time-sensitive or factual lookup tasks.
 - Prefer official, primary, or clearly attributable sources when they are available.
 - Keep citations compact: mention the source title or domain when summarizing fetched pages, and include dates if the fetched metadata exposes them.
@@ -52,6 +53,7 @@ Rules:
 - Do not keep reformulating the same search endlessly.
 - If search results already contain enough evidence, answer without fetching more pages.
 - If one fetch fails, try at most one alternative source, then answer.
+- `fetch_url` stores fetched pages in the local retrieval index when indexing is enabled; search snippets alone are not durable source evidence.
 - After retrieving data, prefer this response shape when the user asked for current information:
   - first give the direct answer in 1-3 sentences
   - then briefly note the strongest sources checked

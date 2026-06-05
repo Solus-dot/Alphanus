@@ -66,6 +66,7 @@ The system is designed to be inspectable and controllable at runtime rather than
 - [`uv`](https://docs.astral.sh/uv/)
 - An OpenAI-compatible endpoint exposing:
   - `GET /v1/models`
+  - optional `GET /slots` or `GET /props` for loaded-model/context metadata on local backends
   - `POST /v1/chat/completions` and/or `POST /v1/responses`
 
 ### Install
@@ -128,6 +129,8 @@ Notes:
 - `init` writes API key secrets to `~/.alphanus/.env`
 - config stores API key references (for example `env:ALPHANUS_API_KEY`) instead of plaintext keys
 - local backends that do not require auth can run with no API key set
+- model status prefers loaded-model metadata from local `/slots` or `/props` endpoints when available; `/v1/models` is used as the general fallback
+- the TUI does not keep the inference server warm with continuous idle pings; status is refreshed on startup, explicit checks, config/model changes, and transport failures
 
 ---
 
@@ -219,7 +222,9 @@ Current capabilities include:
 - regex-based edits
 - ripgrep-backed code search with optional context lines
 - workspace tree rendering
-- verification command runner (`run_checks`) with approved commands
+- path-safe move/delete operations inside the workspace
+- symlink-aware listing/tree rendering; directory symlinks are shown but not traversed by the tree
+- no command runner; use `shell-ops` only when shell output itself is required
 
 ### Memory
 
@@ -283,6 +288,8 @@ Runtime safety knobs:
 - `runtime.profile`: `standard` or `minimal`
 - `capabilities.permission_profile`: `safe`, `workspace`, `full`
 - shell commands require confirmation by default
+- shell commands run as argv, not through a persistent shell session
+- shell command metacharacters such as `&&`, `||`, `;`, `|`, newlines, and carriage returns are blocked
 - dangerous shell patterns are blocked
 
 ### Turn Trace and Diagnostics
@@ -454,11 +461,9 @@ Run the required local quality gate:
 
 ```bash
 uv run pytest
-uv run ruff check src tests skills
+uv run ruff check src tests bundled-skills tools
 uv run pyright
 ```
-
-CI runs the same checks for pushes and pull requests.
 
 Performance benchmarks are part of the test suite and can be run directly:
 

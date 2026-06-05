@@ -43,6 +43,8 @@ Rules:
 - Prefer `search_code` over `shell_command` for repo-wide text lookup.
 - Use `move_path` for workspace file or directory renames/moves instead of shell `mv`.
 - Use `delete_path` for file deletion, directory deletion, or recursive cleanup inside the workspace.
+- Use `workspace_tree` for directory summaries; directory symlinks are displayed but are not traversed.
+- There is no workspace verification runner. If the user asks to run tests or commands, load `shell-ops` and use separate `shell_command` calls.
 - Do not use `shell_command` to create folders or inspect local workspace files when a workspace tool can do it.
 - Do not use network tools such as `web_search` or `fetch_url` for local workspace file inspection or scaffolding.
 - Keep all write/delete paths inside the workspace root.

@@ -28,7 +28,8 @@ Rules:
 - Use `git_add` only for paths the user intends to stage.
 - Use `git_commit` only with a non-empty message. It commits staged changes only and rejects no-op commits.
 - Use `git_branch_switch` only when the working tree is clean; the tool enforces this.
+- Use `git_fetch` for remote inspection before changing local branches when fresh upstream state matters.
 - Use `git_pull` without an explicit mode unless the user requests otherwise; it defaults to `--rebase`.
-- Use `git_push` only when the user has explicitly confirmed the push via the tool's confirmation parameter.
+- Use `git_push` only when the user explicitly asks to push, and set `confirm_push=true` only for that explicit request.
 - Never attempt force-push modes; the tool rejects them.
 - Use `git_init` only for an explicit target path inside the workspace. It is forbidden at the workspace root, and nested repository initialization is blocked when the target is already under another Git repository.

@@ -24,6 +24,7 @@ Rules:
 - Store concise factual memories.
 - Recall before asking repetitive personal-context questions.
 - Keep memory text private and relevant.
+- Do not store secrets, credentials, API keys, access tokens or one-off transient task details.
 - Use at most one `recall_memory` call per turn unless the first recall fails.
 - Memory retrieval is semantic only. Do not rely on regex or lexical fallback behavior.
 - When the user corrects/replaces older information, call `store_memory` with `replace_query` or `replace_ids` to target stale memories explicitly.

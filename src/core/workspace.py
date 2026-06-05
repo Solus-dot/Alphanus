@@ -1067,7 +1067,7 @@ class WorkspaceManager:
             return {
                 "ok": False,
                 "data": None,
-                "error": {"code": "E_TIMEOUT", "message": f"Command timed out after {timeout_s}s"},
+                "error": {"code": "E_TIMEOUT", "message": f"Command did not finish within {timeout_s}s"},
                 "meta": {"duration_ms": int((time.perf_counter() - start) * 1000)},
             }
         except PermissionError as exc:
