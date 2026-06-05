@@ -1491,6 +1491,28 @@ def test_llm_client_rewrites_mlx_vlm_multimodal_payload(mocker) -> None:
     assert sent["messages"][0]["content"][1]["image_url"] == "data:image/png;base64,ZmFrZQ=="
 
 
+def test_llm_client_preserves_disabled_thinking_for_template_backends(mocker) -> None:
+    llm_client = LLMClient({"agent": {"backend_profile": "mlx_vlm"}})
+    payload = llm_client.build_payload(
+        model_messages=[{"role": "user", "content": "hello"}],
+        thinking=False,
+    )
+    expected = StreamPassResult(finish_reason="stop", content="ok")
+    mocker.patch.object(
+        llm_client.provider,
+        "_status_allows_immediate_send",
+        return_value=ModelStatus(state="online", model_name="mlx-community/Qwen2.5-VL-7B-Instruct-4bit"),
+    )
+    stream = mocker.patch.object(llm_client.provider, "stream_completion", return_value=expected)
+
+    result = llm_client.call_with_retry(payload, stop_event=None, on_event=None, pass_id="pass_1")
+
+    assert result == expected
+    sent = stream.call_args.args[0]
+    assert sent["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "stream_options" not in sent
+
+
 def test_llm_client_fails_fast_on_local_backend_model_mismatch(mocker) -> None:
     llm_client = LLMClient({"agent": {"backend_profile": "llamacpp"}})
     mocker.patch.object(

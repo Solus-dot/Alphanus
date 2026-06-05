@@ -214,8 +214,15 @@ def rewrite_payload_for_profile(
         out.pop("stream_options", None)
         changes.append("drop_stream_options")
     if capabilities.strip_chat_template_kwargs and "chat_template_kwargs" in out:
-        out.pop("chat_template_kwargs", None)
-        changes.append("drop_chat_template_kwargs")
+        template_kwargs = out.get("chat_template_kwargs")
+        keep_disabled_thinking = (
+            isinstance(template_kwargs, dict)
+            and template_kwargs.get("enable_thinking") is False
+            and len(template_kwargs) == 1
+        )
+        if not keep_disabled_thinking:
+            out.pop("chat_template_kwargs", None)
+            changes.append("drop_chat_template_kwargs")
 
     def to_image_url(value: object) -> str:
         if isinstance(value, dict):
