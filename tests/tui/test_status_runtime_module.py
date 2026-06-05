@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from types import SimpleNamespace
 
 from core.runtime_config import UiTimingConfig
@@ -54,12 +53,20 @@ def test_start_startup_readiness_poll_sets_flag_and_starts_worker() -> None:
 
 def test_maybe_refresh_model_status_triggers_worker_when_due() -> None:
     host = _Host()
-    host._status_runtime.last_model_refresh = time.monotonic() - 99
 
-    maybe_refresh_model_status(host)
+    maybe_refresh_model_status(host, force=True)
 
     assert host.refresh_calls == 1
     assert host._status_runtime.refresh_inflight is True
+
+
+def test_maybe_refresh_model_status_ignores_idle_non_forced_calls() -> None:
+    host = _Host()
+
+    maybe_refresh_model_status(host)
+
+    assert host.refresh_calls == 0
+    assert host._status_runtime.refresh_inflight is False
 
 
 def test_apply_model_status_updates_host_views() -> None:

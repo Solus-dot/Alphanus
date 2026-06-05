@@ -165,9 +165,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "timing": {
             "stream_drain_interval_s": 0.016,
             "scroll_interval_s": 0.05,
-            "model_refresh_interval_s": 5.0,
-            "model_refresh_fast_interval_s": 2.0,
-            "model_refresh_fast_window_s": 6.0,
             "shell_confirm_timeout_s": 60.0,
         },
         "tree_compaction": {
@@ -1147,30 +1144,6 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         warnings=warnings,
         minimum=0.001,
         maximum=1.0,
-    )
-    timing_cfg["model_refresh_interval_s"] = _coerce_float(
-        timing_cfg.get("model_refresh_interval_s"),
-        float(default_timing["model_refresh_interval_s"]),
-        path="tui.timing.model_refresh_interval_s",
-        warnings=warnings,
-        minimum=0.1,
-        maximum=60.0,
-    )
-    timing_cfg["model_refresh_fast_interval_s"] = _coerce_float(
-        timing_cfg.get("model_refresh_fast_interval_s"),
-        float(default_timing["model_refresh_fast_interval_s"]),
-        path="tui.timing.model_refresh_fast_interval_s",
-        warnings=warnings,
-        minimum=0.1,
-        maximum=60.0,
-    )
-    timing_cfg["model_refresh_fast_window_s"] = _coerce_float(
-        timing_cfg.get("model_refresh_fast_window_s"),
-        float(default_timing["model_refresh_fast_window_s"]),
-        path="tui.timing.model_refresh_fast_window_s",
-        warnings=warnings,
-        minimum=0.0,
-        maximum=300.0,
     )
     timing_cfg["shell_confirm_timeout_s"] = _coerce_float(
         timing_cfg.get("shell_confirm_timeout_s"),

@@ -325,7 +325,7 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
         {
             "agent": {"connect_timeout_s": 3, "per_turn_retries": 2},
             "skills": {"python_executable": "/usr/bin/python3", "paths": ["~/agent-skills"]},
-            "tui": {"theme": "gruvbox-dark-soft", "chat_log_max_lines": 1234, "timing": {"model_refresh_interval_s": 9}},
+            "tui": {"theme": "gruvbox-dark-soft", "chat_log_max_lines": 1234, "timing": {"shell_confirm_timeout_s": 90}},
         }
     )
 
@@ -341,7 +341,7 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
     assert skills.paths == ["~/agent-skills"]
     assert ui.theme == "gruvbox-dark-soft"
     assert ui.chat_log_max_lines == 1234
-    assert ui.timing.model_refresh_interval_s == 9.0
+    assert ui.timing.shell_confirm_timeout_s == 90.0
 
 
 def test_tui_chat_log_max_lines_zero_disables_pruning() -> None:

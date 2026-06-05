@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -15,48 +14,23 @@ class StatusRuntimeState:
     model_name: str | None = None
     model_context_window: int | None = None
     refresh_inflight: bool = False
-    last_model_refresh: float = 0.0
-    refresh_fast_until: float = 0.0
     startup_readiness_inflight: bool = False
-
-    def current_model_refresh_interval(self, timing: Any, *, now: float | None = None) -> float:
-        current_time = time.monotonic() if now is None else now
-        return (
-            timing.model_refresh_fast_interval_s
-            if self.model_status.state == "offline" or current_time < self.refresh_fast_until
-            else timing.model_refresh_interval_s
-        )
 
     def should_startup_readiness_poll(self, *, is_local_endpoint: bool) -> bool:
         return is_local_endpoint and not self.startup_readiness_inflight and self.model_status.last_success_at <= 0
 
-    def should_refresh(self, timing: Any, *, force: bool = False, now: float | None = None) -> bool:
-        if self.refresh_inflight:
-            return False
-        current_time = time.monotonic() if now is None else now
-        return force or (current_time - self.last_model_refresh) >= self.current_model_refresh_interval(timing, now=current_time)
-
-    def mark_refresh_started(self, *, now: float | None = None) -> None:
+    def mark_refresh_started(self) -> None:
         self.refresh_inflight = True
-        self.last_model_refresh = time.monotonic() if now is None else now
 
-    def apply_model_status(self, status: ModelStatus, timing: Any, *, now: float | None = None) -> bool:
+    def apply_model_status(self, status: ModelStatus) -> bool:
         self.refresh_inflight = False
-        current_time = time.monotonic() if now is None else now
         previous_state = (self.model_name, self.model_context_window)
         self.model_status = status
         self.model_name = str(status.model_name or "").strip() or self.model_name
         self.model_context_window = (
             status.context_window if isinstance(status.context_window, int) and status.context_window > 0 else self.model_context_window
         )
-        changed = previous_state != (self.model_name, self.model_context_window)
-        if changed:
-            self.refresh_fast_until = current_time + timing.model_refresh_fast_window_s
-        return changed
-
-
-def current_model_refresh_interval(host: Any) -> float:
-    return host._status_runtime.current_model_refresh_interval(host._timing_config())
+        return previous_state != (self.model_name, self.model_context_window)
 
 
 def should_startup_readiness_poll(host: Any) -> bool:
@@ -76,15 +50,14 @@ def finish_startup_readiness_poll(host: Any, status: ModelStatus) -> None:
 
 
 def maybe_refresh_model_status(host: Any, *, force: bool = False) -> None:
-    now = time.monotonic()
-    if not host._status_runtime.should_refresh(host._timing_config(), force=force, now=now):
+    if not force or host._status_runtime.refresh_inflight:
         return
-    host._status_runtime.mark_refresh_started(now=now)
+    host._status_runtime.mark_refresh_started()
     host._refresh_model_status_worker()
 
 
 def apply_model_status(host: Any, status: ModelStatus) -> None:
-    host._status_runtime.apply_model_status(status, host._timing_config())
+    host._status_runtime.apply_model_status(status)
     host._update_status1()
     host._update_metadata()
 

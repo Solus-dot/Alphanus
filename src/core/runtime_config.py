@@ -64,9 +64,6 @@ def _coerce_string_list(value: Any) -> list[str]:
 class UiTimingConfig:
     stream_drain_interval_s: float = 0.016
     scroll_interval_s: float = 0.05
-    model_refresh_interval_s: float = 5.0
-    model_refresh_fast_interval_s: float = 2.0
-    model_refresh_fast_window_s: float = 6.0
     shell_confirm_timeout_s: float = 60.0
 
     @classmethod
@@ -84,21 +81,6 @@ class UiTimingConfig:
                 timing_cfg.get("scroll_interval_s"),
                 float(default_timing["scroll_interval_s"]),
                 minimum=0.001,
-            ),
-            model_refresh_interval_s=_coerce_float(
-                timing_cfg.get("model_refresh_interval_s"),
-                float(default_timing["model_refresh_interval_s"]),
-                minimum=0.1,
-            ),
-            model_refresh_fast_interval_s=_coerce_float(
-                timing_cfg.get("model_refresh_fast_interval_s"),
-                float(default_timing["model_refresh_fast_interval_s"]),
-                minimum=0.1,
-            ),
-            model_refresh_fast_window_s=_coerce_float(
-                timing_cfg.get("model_refresh_fast_window_s"),
-                float(default_timing["model_refresh_fast_window_s"]),
-                minimum=0.0,
             ),
             shell_confirm_timeout_s=_coerce_float(
                 timing_cfg.get("shell_confirm_timeout_s"),
