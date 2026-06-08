@@ -1,0 +1,37 @@
+{
+  "name": "file_create",
+  "user_input": "Create notes.txt with hello from replay.",
+  "skills": ["workspace-ops"],
+  "classification": {
+    "requires_workspace_action": true,
+    "prefer_local_workspace_tools": true
+  },
+  "model_passes": [
+    {
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_create_notes",
+          "name": "create_file",
+          "arguments": {
+            "filepath": "notes.txt",
+            "content": "hello from replay\n"
+          }
+        }
+      ]
+    },
+    {
+      "finish_reason": "stop",
+      "content": "Created notes.txt."
+    }
+  ],
+  "expect": {
+    "status": "done",
+    "content_contains": "Created notes.txt",
+    "tool_sequence": ["create_file"],
+    "workspace_files": {
+      "notes.txt": "hello from replay\n"
+    },
+    "event_types": ["tool_call", "tool_result", "pass_end"]
+  }
+}
