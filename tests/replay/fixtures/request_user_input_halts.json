@@ -1,0 +1,38 @@
+{
+  "name": "request_user_input_halts",
+  "user_input": "Ask me which format to use.",
+  "model_passes": [
+    {
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_ask",
+          "name": "request_user_input",
+          "arguments": {
+            "question": "Pick a format",
+            "options": ["pdf", "docx"]
+          }
+        },
+        {
+          "id": "call_later",
+          "name": "skill_view",
+          "arguments": {
+            "name": "workspace-ops",
+            "file_path": "SKILL.md"
+          }
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "status": "done",
+    "content_contains": "Pick a format",
+    "tool_sequence": ["request_user_input"],
+    "event_types": ["tool_call", "tool_result"],
+    "tool_results": {
+      "request_user_input": {
+        "ok": true
+      }
+    }
+  }
+}

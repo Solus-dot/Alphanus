@@ -1,0 +1,42 @@
+{
+  "name": "dangerous_shell_rejected",
+  "user_input": "Run a shell wrapper command.",
+  "skills": ["shell-ops"],
+  "confirm_shell": true,
+  "initial_files": {
+    "keep.txt": "do not remove\n"
+  },
+  "model_passes": [
+    {
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_shell_wrapper",
+          "name": "shell_command",
+          "arguments": {
+            "command": "bash -lc pwd"
+          }
+        }
+      ]
+    },
+    {
+      "finish_reason": "stop",
+      "content": "The unsafe shell wrapper was blocked."
+    }
+  ],
+  "expect": {
+    "status": "done",
+    "content_contains": "blocked",
+    "tool_sequence": ["shell_command"],
+    "workspace_files": {
+      "keep.txt": "do not remove\n"
+    },
+    "event_types": ["tool_call", "tool_result", "pass_end"],
+    "tool_results": {
+      "shell_command": {
+        "ok": false,
+        "error_code": "E_POLICY"
+      }
+    }
+  }
+}

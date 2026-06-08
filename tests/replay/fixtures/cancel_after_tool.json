@@ -1,0 +1,39 @@
+{
+  "name": "cancel_after_tool",
+  "user_input": "Create partial.txt, then stop.",
+  "skills": ["workspace-ops"],
+  "classification": {
+    "requires_workspace_action": true,
+    "prefer_local_workspace_tools": true
+  },
+  "cancel_on_event_type": "tool_result",
+  "model_passes": [
+    {
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_create_partial",
+          "name": "create_file",
+          "arguments": {
+            "filepath": "partial.txt",
+            "content": "partial\n"
+          }
+        }
+      ]
+    },
+    {
+      "finish_reason": "stop",
+      "content": "This pass should not run."
+    }
+  ],
+  "expect": {
+    "status": "cancelled",
+    "tool_sequence": ["create_file"],
+    "workspace_files": {
+      "partial.txt": "partial\n"
+    },
+    "event_types": ["tool_call", "tool_result"],
+    "skill_exchange_tools": ["create_file"],
+    "unconsumed_model_passes": 1
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "name": "shell_approval",
+  "user_input": "Run pwd.",
+  "skills": ["shell-ops"],
+  "confirm_shell": true,
+  "model_passes": [
+    {
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_pwd",
+          "name": "shell_command",
+          "arguments": {
+            "command": "pwd"
+          }
+        }
+      ]
+    },
+    {
+      "finish_reason": "stop",
+      "content": "pwd completed."
+    }
+  ],
+  "expect": {
+    "status": "done",
+    "content_contains": "pwd completed",
+    "tool_sequence": ["shell_command"],
+    "event_types": ["tool_call", "tool_result", "pass_end"],
+    "tool_results": {
+      "shell_command": {
+        "ok": true
+      }
+    }
+  }
+}
