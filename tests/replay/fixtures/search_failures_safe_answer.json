@@ -1,0 +1,56 @@
+{
+  "name": "search_failures_safe_answer",
+  "user_input": "Tell me the latest acquisitions.",
+  "skills": ["search-ops"],
+  "classification": {
+    "time_sensitive": true
+  },
+  "fixture_skills": {
+    "search-ops": {
+      "SKILL.md": "---\nname: search-ops\ndescription: web research\nversion: 1.1.0\nallowed-tools: web_search\nmetadata:\n  tags: [web, latest]\n  triggers:\n    keywords: [latest, web]\n---\nsearch\n",
+      "tools.py": "TOOL_SPECS = {\n  \"web_search\": {\n    \"capability\": \"web_search\",\n    \"description\": \"Search web\",\n    \"parameters\": {\n      \"type\": \"object\",\n      \"properties\": {\"query\": {\"type\": \"string\"}},\n      \"required\": [\"query\"]\n    }\n  }\n}\n\ndef execute(tool_name, args, env):\n    return {\"ok\": False, \"data\": None, \"error\": {\"code\": \"E_IO\", \"message\": \"Search returned no parsable results\"}, \"meta\": {}}\n"
+    }
+  },
+  "model_passes": [
+    {
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_search_1",
+          "name": "web_search",
+          "arguments": {
+            "query": "meta latest acquisitions"
+          }
+        }
+      ]
+    },
+    {
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_search_2",
+          "name": "web_search",
+          "arguments": {
+            "query": "meta latest acquisitions"
+          }
+        }
+      ]
+    },
+    {
+      "finish_reason": "stop",
+      "content": "I could not verify the latest acquisitions from reliable web results in this turn."
+    }
+  ],
+  "expect": {
+    "status": "done",
+    "content_contains": "could not verify",
+    "tool_sequence": ["web_search", "web_search"],
+    "event_types": ["tool_call", "tool_result", "pass_end"],
+    "tool_results": {
+      "web_search": {
+        "ok": false,
+        "error_code": "E_IO"
+      }
+    }
+  }
+}
