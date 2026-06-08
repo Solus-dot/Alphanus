@@ -1,0 +1,68 @@
+{
+  "name": "scaffold_directory_then_files",
+  "user_input": "Make a bakery landing page in a folder called arjun.",
+  "skills": ["workspace-ops"],
+  "classification": {
+    "requires_workspace_action": true,
+    "prefer_local_workspace_tools": true
+  },
+  "model_passes": [
+    {
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_dir",
+          "name": "create_directory",
+          "arguments": {
+            "path": "arjun"
+          }
+        }
+      ]
+    },
+    {
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_html",
+          "name": "create_file",
+          "arguments": {
+            "filepath": "arjun/index.html",
+            "content": "<html></html>"
+          }
+        },
+        {
+          "id": "call_css",
+          "name": "create_file",
+          "arguments": {
+            "filepath": "arjun/styles.css",
+            "content": "body{}"
+          }
+        },
+        {
+          "id": "call_js",
+          "name": "create_file",
+          "arguments": {
+            "filepath": "arjun/script.js",
+            "content": "console.log(1)\n"
+          }
+        }
+      ]
+    },
+    {
+      "finish_reason": "stop",
+      "content": "Done."
+    }
+  ],
+  "expect": {
+    "status": "done",
+    "content_contains": "Done",
+    "tool_sequence": ["create_directory", "create_file", "create_file", "create_file"],
+    "workspace_files": {
+      "arjun/index.html": "<html></html>",
+      "arjun/styles.css": "body{}",
+      "arjun/script.js": "console.log(1)\n"
+    },
+    "workspace_paths": ["arjun"],
+    "event_types": ["tool_call", "tool_result", "pass_end"]
+  }
+}

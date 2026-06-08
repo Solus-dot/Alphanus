@@ -1,0 +1,50 @@
+{
+  "name": "directory_then_single_file",
+  "user_input": "Make a folder called hvb and add an insertion sort Python file.",
+  "skills": ["workspace-ops"],
+  "classification": {
+    "requires_workspace_action": true,
+    "prefer_local_workspace_tools": true
+  },
+  "model_passes": [
+    {
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_dir",
+          "name": "create_directory",
+          "arguments": {
+            "path": "hvb"
+          }
+        }
+      ]
+    },
+    {
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_file",
+          "name": "create_file",
+          "arguments": {
+            "filepath": "hvb/insertion_sort.py",
+            "content": "def insertion_sort(arr):\n    return arr\n"
+          }
+        }
+      ]
+    },
+    {
+      "finish_reason": "stop",
+      "content": "Done."
+    }
+  ],
+  "expect": {
+    "status": "done",
+    "content_contains": "Done",
+    "tool_sequence": ["create_directory", "create_file"],
+    "workspace_files": {
+      "hvb/insertion_sort.py": "def insertion_sort(arr):\n    return arr\n"
+    },
+    "workspace_paths": ["hvb"],
+    "event_types": ["tool_call", "tool_result", "pass_end"]
+  }
+}

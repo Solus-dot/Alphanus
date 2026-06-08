@@ -1,0 +1,67 @@
+{
+  "name": "multi_file_single_pass",
+  "user_input": "Create eleven scaffold files.",
+  "skills": ["workspace-ops"],
+  "classification": {
+    "requires_workspace_action": true,
+    "prefer_local_workspace_tools": true
+  },
+  "config": {
+    "agent": {
+      "max_action_depth": 10
+    }
+  },
+  "model_passes": [
+    {
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {"id": "call_0", "name": "create_file", "arguments": {"filepath": "scaffold/file_0.txt", "content": "file 0\n"}},
+        {"id": "call_1", "name": "create_file", "arguments": {"filepath": "scaffold/file_1.txt", "content": "file 1\n"}},
+        {"id": "call_2", "name": "create_file", "arguments": {"filepath": "scaffold/file_2.txt", "content": "file 2\n"}},
+        {"id": "call_3", "name": "create_file", "arguments": {"filepath": "scaffold/file_3.txt", "content": "file 3\n"}},
+        {"id": "call_4", "name": "create_file", "arguments": {"filepath": "scaffold/file_4.txt", "content": "file 4\n"}},
+        {"id": "call_5", "name": "create_file", "arguments": {"filepath": "scaffold/file_5.txt", "content": "file 5\n"}},
+        {"id": "call_6", "name": "create_file", "arguments": {"filepath": "scaffold/file_6.txt", "content": "file 6\n"}},
+        {"id": "call_7", "name": "create_file", "arguments": {"filepath": "scaffold/file_7.txt", "content": "file 7\n"}},
+        {"id": "call_8", "name": "create_file", "arguments": {"filepath": "scaffold/file_8.txt", "content": "file 8\n"}},
+        {"id": "call_9", "name": "create_file", "arguments": {"filepath": "scaffold/file_9.txt", "content": "file 9\n"}},
+        {"id": "call_10", "name": "create_file", "arguments": {"filepath": "scaffold/file_10.txt", "content": "file 10\n"}}
+      ]
+    },
+    {
+      "finish_reason": "stop",
+      "content": "Created all scaffold files."
+    }
+  ],
+  "expect": {
+    "status": "done",
+    "content_contains": "Created all scaffold files",
+    "tool_sequence": [
+      "create_file",
+      "create_file",
+      "create_file",
+      "create_file",
+      "create_file",
+      "create_file",
+      "create_file",
+      "create_file",
+      "create_file",
+      "create_file",
+      "create_file"
+    ],
+    "workspace_paths": [
+      "scaffold/file_0.txt",
+      "scaffold/file_1.txt",
+      "scaffold/file_2.txt",
+      "scaffold/file_3.txt",
+      "scaffold/file_4.txt",
+      "scaffold/file_5.txt",
+      "scaffold/file_6.txt",
+      "scaffold/file_7.txt",
+      "scaffold/file_8.txt",
+      "scaffold/file_9.txt",
+      "scaffold/file_10.txt"
+    ],
+    "event_types": ["tool_call", "tool_result", "pass_end"]
+  }
+}
