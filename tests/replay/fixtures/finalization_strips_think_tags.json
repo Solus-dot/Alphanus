@@ -1,0 +1,16 @@
+{
+  "name": "finalization_strips_think_tags",
+  "user_input": "Say visible answer.",
+  "model_passes": [
+    {
+      "finish_reason": "stop",
+      "content": "<think>internal</think>\n\nVisible answer"
+    }
+  ],
+  "expect": {
+    "status": "done",
+    "content_contains": "Visible answer",
+    "content_not_contains": ["<think>", "</think>"],
+    "event_types": ["pass_end"]
+  }
+}

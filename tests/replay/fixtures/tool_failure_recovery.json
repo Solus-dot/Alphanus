@@ -1,0 +1,59 @@
+{
+  "name": "tool_failure_recovery",
+  "user_input": "Make missing.txt say recovered.",
+  "skills": ["workspace-ops"],
+  "classification": {
+    "requires_workspace_action": true,
+    "prefer_local_workspace_tools": true
+  },
+  "model_passes": [
+    {
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_bad_edit",
+          "name": "edit_file",
+          "arguments": {
+            "filepath": "missing.txt",
+            "old_string": "old",
+            "new_string": "recovered"
+          }
+        }
+      ]
+    },
+    {
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_create_missing",
+          "name": "create_file",
+          "arguments": {
+            "filepath": "missing.txt",
+            "content": "recovered\n"
+          }
+        }
+      ]
+    },
+    {
+      "finish_reason": "stop",
+      "content": "Recovered by creating missing.txt."
+    }
+  ],
+  "expect": {
+    "status": "done",
+    "content_contains": "Recovered",
+    "tool_sequence": ["edit_file", "create_file"],
+    "workspace_files": {
+      "missing.txt": "recovered\n"
+    },
+    "event_types": ["tool_call", "tool_result", "pass_end"],
+    "tool_results": {
+      "edit_file": {
+        "ok": false
+      },
+      "create_file": {
+        "ok": true
+      }
+    }
+  }
+}
