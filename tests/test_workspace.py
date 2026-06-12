@@ -87,16 +87,29 @@ def test_symlink_escape_denied(tmp_path: Path):
         mgr.create_file("link/evil.txt", "boom")
 
 
-def test_shell_metachar_policy(tmp_path: Path):
+def test_shell_command_allows_chaining(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     home.mkdir()
     ws.mkdir()
 
     mgr = WorkspaceManager(str(ws), home_root=str(home))
-    res = mgr.run_shell_command("echo ok; rm -rf /")
+    res = mgr.run_shell_command("echo ok; echo done")
+    assert res["ok"] is True
+    assert res["data"]["stdout"].splitlines() == ["ok", "done"]
+
+
+def test_shell_command_allows_and_chaining_stop_on_failure(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("false && echo skipped")
     assert res["ok"] is False
-    assert res["error"]["code"] == "E_POLICY"
+    assert res["error"]["code"] == "E_SHELL"
+    assert "skipped" not in res["data"]["stdout"]
 
 
 def test_workspace_reads_allowed_outside_home_root(tmp_path: Path):
@@ -192,7 +205,7 @@ def test_case_insensitive_protected_state_paths_are_denied(tmp_path: Path):
         mgr.delete_path(".ALPHANUS/secret.txt")
 
 
-def test_shell_command_runs_with_argv_not_shell(tmp_path: Path):
+def test_shell_command_runs_with_user_shell(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     home.mkdir()
@@ -202,7 +215,7 @@ def test_shell_command_runs_with_argv_not_shell(tmp_path: Path):
     res = mgr.run_shell_command("python3 -c \"print('ok')\"")
     assert res["ok"] is True
     assert res["data"]["stdout"].strip() == "ok"
-    assert res["data"]["argv"][0] == "python3"
+    assert res["data"]["argv"][1:] == ["-c", "python3 -c \"print('ok')\""]
     assert res["meta"]["workspace_changed"] is False
 
 
@@ -232,7 +245,7 @@ def test_shell_command_allows_semicolon_inside_quoted_python_arg(tmp_path: Path)
     assert res["data"]["stdout"].strip() == "ok"
 
 
-def test_shell_wrapper_with_dash_c_is_rejected(tmp_path: Path):
+def test_shell_wrapper_with_dash_c_is_allowed(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     home.mkdir()
@@ -240,8 +253,37 @@ def test_shell_wrapper_with_dash_c_is_rejected(tmp_path: Path):
 
     mgr = WorkspaceManager(str(ws), home_root=str(home))
     res = mgr.run_shell_command("bash -lc 'echo ok'")
+    assert res["ok"] is True
+    assert res["data"]["stdout"].strip() == "ok"
+
+
+def test_shell_command_allows_pipes_and_redirection(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("printf 'beta\\nalpha\\n' | sort > sorted.txt; cat sorted.txt")
+
+    assert res["ok"] is True
+    assert res["data"]["stdout"].splitlines() == ["alpha", "beta"]
+    assert (ws / "sorted.txt").read_text(encoding="utf-8") == "alpha\nbeta\n"
+    assert res["meta"]["workspace_changed"] is True
+
+
+def test_shell_command_detects_failed_chain_workspace_change(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("touch changed.txt; false")
+
     assert res["ok"] is False
-    assert res["error"]["code"] == "E_POLICY"
+    assert (ws / "changed.txt").exists()
+    assert res["meta"]["workspace_changed"] is True
 
 
 def test_shell_command_runs_in_requested_cwd(tmp_path: Path):
@@ -442,6 +484,22 @@ def test_shell_command_blocks_unknown_command_with_standalone_protected_dir_oper
     assert res["error"]["code"] == "E_POLICY"
 
 
+def test_shell_command_blocks_glob_expanded_protected_state_path(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+    (ws / ".alphanus").mkdir()
+    (ws / ".alphanus" / "sessions.json").write_text("secret\n", encoding="utf-8")
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("cat .alpha*/sessions.json")
+
+    assert res["ok"] is False
+    assert res["error"]["code"] == "E_POLICY"
+    assert "protected internal state" in res["error"]["message"]
+
+
 def test_shell_command_blocks_symlink_alias_to_protected_state(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
@@ -452,6 +510,22 @@ def test_shell_command_blocks_symlink_alias_to_protected_state(tmp_path: Path):
 
     mgr = WorkspaceManager(str(ws), home_root=str(home))
     res = mgr.run_shell_command("ls alias")
+
+    assert res["ok"] is False
+    assert res["error"]["code"] == "E_POLICY"
+    assert "protected internal state" in res["error"]["message"]
+
+
+def test_shell_command_blocks_glob_expanded_symlink_to_protected_state(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    home.mkdir()
+    ws.mkdir()
+    (ws / ".alphanus" / "sessions").mkdir(parents=True)
+    (ws / "alias").symlink_to(ws / ".alphanus", target_is_directory=True)
+
+    mgr = WorkspaceManager(str(ws), home_root=str(home))
+    res = mgr.run_shell_command("ls al*")
 
     assert res["ok"] is False
     assert res["error"]["code"] == "E_POLICY"
