@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import glob as globlib
 import hashlib
 import json
 import os
@@ -28,18 +29,6 @@ DEFAULT_BLOCKED_PATTERNS = [
     ".DS_Store",
 ]
 
-DANGEROUS_SHELL_PATTERNS = [
-    r"\bsudo\b",
-    r"\brm\s+-rf\s+/",
-    r"\bshutdown\b",
-    r"\breboot\b",
-    r"\bmkfs\b",
-    r"\bdd\s+if=",
-    r"\bchown\s+-R\s+/",
-]
-
-METACHAR_BLOCKLIST = ["&&", "||", "\n", "\r"]
-SHELL_WRAPPER_BINARIES = {"bash", "sh", "zsh", "fish"}
 MAX_TOOL_TEXT_BYTES = 20000
 PROTECTED_STATE_TOKEN_RE = re.compile(r"(^|[^A-Za-z0-9._-])\.alphanus(?=$|[/\\\\]|[^A-Za-z0-9._-])", re.IGNORECASE)
 HEAVY_WALK_DIRS = {
@@ -144,6 +133,21 @@ class WorkspaceManager:
         except OSError:
             return Path(os.path.abspath(str(candidate)))
 
+    def _resolve_globbed_command_token_paths(self, token: str, cwd: Path) -> list[Path]:
+        value = str(token or "").strip()
+        if not value or not globlib.has_magic(value):
+            return []
+        raw = Path(os.path.expanduser(value))
+        pattern = raw if raw.is_absolute() else cwd / raw
+        matches = globlib.glob(str(pattern), recursive=True)
+        resolved: list[Path] = []
+        for match in matches:
+            try:
+                resolved.append(Path(match).resolve(strict=False))
+            except OSError:
+                resolved.append(Path(os.path.abspath(match)))
+        return resolved
+
     @staticmethod
     def _text_mentions_protected_state(text: str) -> bool:
         return bool(PROTECTED_STATE_TOKEN_RE.search(str(text)))
@@ -155,10 +159,22 @@ class WorkspaceManager:
                 return True
             if idx == git_subcommand_index:
                 continue
+            for expanded in self._resolve_globbed_command_token_paths(part, cwd):
+                if self._is_protected_state_path(expanded):
+                    return True
             resolved = self._resolve_command_token_path(part, cwd)
             if resolved is not None and self._is_protected_state_path(resolved):
                 return True
         return False
+
+    def _shell_command_touches_protected_state(self, command: str, cwd: Path) -> bool:
+        if self._text_mentions_protected_state(command):
+            return True
+        try:
+            argv = shlex.split(command, posix=True)
+        except ValueError:
+            return False
+        return self._command_touches_protected_state(argv, cwd)
 
     def workspace_state_fingerprint(self) -> str:
         digest = hashlib.sha256()
@@ -626,6 +642,40 @@ class WorkspaceManager:
             "duration_ms": int((time.perf_counter() - start) * 1000),
         }
 
+    def _run_shell_string(
+        self,
+        command: str,
+        *,
+        timeout_s: int = 30,
+        cwd: Path | None = None,
+        max_output_bytes: int = MAX_TOOL_TEXT_BYTES,
+    ) -> dict[str, Any]:
+        configured_shell = os.environ.get("SHELL") or ""
+        shell = configured_shell if configured_shell and (Path(configured_shell).exists() or shutil.which(configured_shell)) else "/bin/sh"
+        start = time.perf_counter()
+        proc = subprocess.run(
+            command,
+            shell=True,
+            executable=shell,
+            cwd=str(cwd or self.workspace_root),
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+        stdout, stdout_truncated = self._clip_text(proc.stdout, max_output_bytes)
+        stderr, stderr_truncated = self._clip_text(proc.stderr, max_output_bytes)
+        return {
+            "command": command,
+            "argv": [shell, "-c", command],
+            "stdout": stdout,
+            "stderr": stderr,
+            "stdout_truncated": stdout_truncated,
+            "stderr_truncated": stderr_truncated,
+            "returncode": proc.returncode,
+            "cwd": str(cwd or self.workspace_root),
+            "duration_ms": int((time.perf_counter() - start) * 1000),
+        }
+
     def _resolve_workspace_subpath(self, path: str) -> Path:
         return self._resolve_read_path(path or ".")
 
@@ -973,27 +1023,11 @@ class WorkspaceManager:
             "after_context": max(0, int(after_context)),
         }
 
-    def _validate_shell_command(self, command: str) -> list[str]:
+    def _validate_shell_command(self, command: str) -> str:
         trimmed = command.strip()
         if not trimmed:
             raise PermissionError("Empty command is not allowed")
-        for token in METACHAR_BLOCKLIST:
-            if token in trimmed:
-                raise PermissionError(f"Command rejected by shell metacharacter policy: {token}")
-        try:
-            argv = shlex.split(trimmed, posix=True)
-        except ValueError as exc:
-            raise PermissionError(f"Command could not be parsed safely: {exc}") from exc
-        if not argv:
-            raise PermissionError("Empty command is not allowed")
-        if any(part in {"&&", "||", ";", "|"} for part in argv):
-            raise PermissionError("Command rejected by shell metacharacter policy")
-        if argv[0] in SHELL_WRAPPER_BINARIES and len(argv) >= 3 and argv[1] in {"-c", "-lc"}:
-            raise PermissionError("Command rejected by shell metacharacter policy")
-        for pattern in DANGEROUS_SHELL_PATTERNS:
-            if re.search(pattern, trimmed, flags=re.IGNORECASE):
-                raise PermissionError("Command matches blocked dangerous pattern")
-        return argv
+        return trimmed
 
     def run_shell_command(
         self,
@@ -1004,22 +1038,21 @@ class WorkspaceManager:
     ) -> dict:
         start = time.perf_counter()
         try:
-            argv = self._validate_shell_command(command)
-            command_kind = WorkspaceCommandPolicy.classify_shell_command(argv)
+            command_text = self._validate_shell_command(command)
             target_cwd = self._resolve_read_path(cwd, extra_allowed_roots=allowed_cwd_roots) if cwd else self.workspace_root
             if target_cwd.is_file():
                 target_cwd = target_cwd.parent
             if self._is_protected_state_path(target_cwd):
                 raise PermissionError("Commands touching protected internal state are not allowed")
-            if self._command_touches_protected_state(argv, target_cwd):
+            if self._shell_command_touches_protected_state(command_text, target_cwd):
                 raise PermissionError("Commands touching protected internal state are not allowed")
-            snapshot_before: tuple[str, Any] | None = None
-            fingerprint_before: str | None = None
-            if command_kind == "ambiguous":
-                snapshot_before = self._workspace_change_snapshot()
-                if snapshot_before[0] == "git":
-                    fingerprint_before = self.workspace_state_fingerprint()
-            run = self._run_argv(argv, timeout_s=timeout_s, cwd=target_cwd)
+            snapshot_before = self._workspace_change_snapshot()
+            fingerprint_before = self.workspace_state_fingerprint() if snapshot_before[0] == "git" else None
+            run = self._run_shell_string(command_text, timeout_s=timeout_s, cwd=target_cwd)
+            snapshot_after = self._workspace_change_snapshot()
+            workspace_changed = snapshot_before != snapshot_after
+            if not workspace_changed and snapshot_before[0] == "git" and fingerprint_before is not None:
+                workspace_changed = fingerprint_before != self.workspace_state_fingerprint()
             if run["returncode"] != 0:
                 detail = (run["stderr"] or run["stdout"] or "").strip()
                 message = f"Command exited with code {run['returncode']}"
@@ -1038,16 +1071,8 @@ class WorkspaceManager:
                         "stderr_truncated": run["stderr_truncated"],
                     },
                     "error": {"code": "E_SHELL", "message": message},
-                    "meta": {"duration_ms": run["duration_ms"], "workspace_changed": False},
+                    "meta": {"duration_ms": run["duration_ms"], "workspace_changed": workspace_changed},
                 }
-            workspace_changed = False
-            if command_kind == "mutating":
-                workspace_changed = True
-            elif command_kind == "ambiguous" and snapshot_before is not None:
-                snapshot_after = self._workspace_change_snapshot()
-                workspace_changed = snapshot_before != snapshot_after
-                if not workspace_changed and snapshot_before[0] == "git" and fingerprint_before is not None:
-                    workspace_changed = fingerprint_before != self.workspace_state_fingerprint()
             return {
                 "ok": True,
                 "data": {
