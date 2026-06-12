@@ -108,7 +108,7 @@ def write_skill_exchanges(app: Any, turn: Turn) -> None:
                         name,
                         args,
                         app._write_assistant_bar_line,
-                        lambda markup, _indent=0: app._write_assistant_bar_line(markup),
+                        lambda markup, _indent=0: app._write_assistant_bar_line(markup, content_indent=_indent),
                         app._write_code_block,
                         workspace_root=workspace_root,
                     )
@@ -122,12 +122,22 @@ def write_skill_exchanges(app: Any, turn: Turn) -> None:
                 if not isinstance(payload, dict):
                     payload = {"ok": False, "error": {"message": "invalid tool response"}}
                 payload_obj = dict(payload)
-                if payload_obj.get("ok") and app._show_tool_details:
+                supports_result_preview = getattr(app._live_preview, "supports_result_preview", None)
+                has_result_preview = supports_result_preview(name, payload_obj) if callable(supports_result_preview) else False
+                if payload_obj.get("ok") and (app._show_tool_details or has_result_preview):
                     app._live_preview.write_result_preview(
                         name,
                         payload_obj,
                         app._write_assistant_bar_line,
-                        lambda markup, _indent=0: app._write_assistant_bar_line(markup),
+                        lambda markup, _indent=0: app._write_assistant_bar_line(markup, content_indent=_indent),
+                        app._write_code_block,
+                    )
+                elif has_result_preview and not payload_obj.get("ok"):
+                    app._live_preview.write_result_preview(
+                        name,
+                        payload_obj,
+                        app._write_assistant_bar_line,
+                        lambda markup, _indent=0: app._write_assistant_bar_line(markup, content_indent=_indent),
                         app._write_code_block,
                     )
                 if not app._show_tool_result_line(name, bool(payload_obj.get("ok"))):

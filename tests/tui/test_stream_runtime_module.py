@@ -204,7 +204,7 @@ def test_drain_events_keeps_tool_result_events_after_stop_requested() -> None:
     app._stop_event = SimpleNamespace(is_set=lambda: True)
     app._reasoning_open = False
     app._show_tool_details = True
-    events: list[str] = []
+    events: list[str | tuple[str, int]] = []
     app._live_preview = SimpleNamespace(
         write_result_preview=lambda *_args, **_kwargs: events.append("preview"),
         draft_preview_tools=set(),
@@ -225,6 +225,56 @@ def test_drain_events_keeps_tool_result_events_after_stop_requested() -> None:
 
     assert "line:create_file:True" in events
     assert "lifecycle:create_file:True" in events
+
+
+def test_drain_events_previews_failed_shell_output() -> None:
+    app = _App()
+    app._show_tool_details = False
+    events: list[str | tuple[str, int]] = []
+    code_blocks: list[tuple[list[str], str | None, int]] = []
+
+    def supports_result_preview(name, result):
+        return name == "shell_command" and isinstance(result.get("data"), dict)
+
+    def write_result_preview(name, result, write, write_indented, write_code):
+        data = result["data"]
+        write(f"shell: {data['command']}")
+        write_indented("stderr:", 2)
+        write_code([data["stderr"]], "text", 2)
+
+    app._live_preview = SimpleNamespace(
+        draft_preview_tools=set(),
+        supports_result_preview=supports_result_preview,
+        write_result_preview=write_result_preview,
+    )
+    app._write_assistant_bar_line = lambda markup="", content_indent=0: events.append((markup, content_indent))
+    app._write_code_block = lambda lines, language, indent=2: code_blocks.append((list(lines), language, indent))
+    app._clear_partial_preview = lambda: events.append("clear")
+    app._show_tool_result_line = lambda name, ok: events.append(f"line:{name}:{ok}") or True
+    app._take_pending_tool_detail = lambda _name: ""
+    app._write_tool_lifecycle_block = lambda name, ok, detail="": events.append(f"lifecycle:{name}:{ok}:{detail}")
+    assert app._stream_runtime is not None
+    app._stream_runtime.event_queue = queue.SimpleQueue()
+    app._stream_runtime.event_queue.put(
+        {
+            "type": "tool_result",
+            "name": "shell_command",
+            "result": {
+                "ok": False,
+                "data": {"command": "pytest -q", "stderr": "failed", "returncode": 1},
+                "error": {"message": "Command exited with code 1"},
+                "meta": {"duration_ms": 7},
+            },
+        }
+    )
+
+    drain_events(app)
+
+    assert ("shell: pytest -q", 0) in events
+    assert ("stderr:", 2) in events
+    assert ("line:shell_command:False") in events
+    assert code_blocks == [(["failed"], "text", 2)]
+    assert app._activity_state.rows[0].message == "Command exited with code 1"
 
 
 def test_drain_events_updates_activity_for_tool_lifecycle() -> None:

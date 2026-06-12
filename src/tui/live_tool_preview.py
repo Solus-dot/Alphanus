@@ -82,6 +82,14 @@ class LiveToolPreviewManager:
     def supports_draft_preview(self, tool_name: str) -> bool:
         return self.canonical_preview_tool_name(tool_name) in self.draft_preview_tools
 
+    def supports_result_preview(self, tool_name: str, result: Any) -> bool:
+        if self.canonical_preview_tool_name(tool_name) != "shell_command":
+            return False
+        if not isinstance(result, dict):
+            return False
+        data = result.get("data")
+        return isinstance(data, dict) and any(key in data for key in ("command", "stdout", "stderr", "returncode"))
+
     def set_theme_colors(self, *, label_color: str = "", muted_color: str = "") -> None:
         self._label_color = str(label_color or "dim")
         self._muted_color = str(muted_color or self._label_color or "dim")
@@ -334,7 +342,11 @@ class LiveToolPreviewManager:
         write_indented: WriteIndentedFn,
         write_code: WriteCodeFn,
     ) -> None:
-        if self.canonical_preview_tool_name(tool_name) != "edit_file":
+        canonical_name = self.canonical_preview_tool_name(tool_name)
+        if canonical_name == "shell_command":
+            self._write_shell_result_preview(result, write, write_indented, write_code)
+            return
+        if canonical_name != "edit_file":
             return
         if not isinstance(result, dict):
             return
@@ -352,6 +364,62 @@ class LiveToolPreviewManager:
         write_code(lines, "diff", 2)
         if truncated:
             write_indented(self._muted_markup("... (diff truncated) ..."), 2)
+
+    def _write_shell_result_preview(
+        self,
+        result: Any,
+        write: WriteFn,
+        write_indented: WriteIndentedFn,
+        write_code: WriteCodeFn,
+    ) -> None:
+        if not isinstance(result, dict):
+            return
+        data = result.get("data")
+        if not isinstance(data, dict):
+            return
+        if not any(key in data for key in ("command", "stdout", "stderr", "returncode")):
+            return
+
+        command = str(data.get("command") or "").strip()
+        cwd = str(data.get("cwd") or "").strip()
+        returncode = data.get("returncode")
+        duration = ""
+        meta = result.get("meta")
+        if isinstance(meta, dict) and isinstance(meta.get("duration_ms"), int):
+            duration = f", {int(meta['duration_ms'])}ms"
+        status = f"exit {returncode}" if returncode is not None else "completed"
+        label = command or "shell command"
+        write(self._label_markup("shell", f"{label} ({status}{duration})"))
+        if cwd:
+            write_indented(self._muted_markup(f"cwd: {cwd}"), 2)
+
+        stdout = str(data.get("stdout") or "")
+        stderr = str(data.get("stderr") or "")
+        stdout_truncated = bool(data.get("stdout_truncated"))
+        stderr_truncated = bool(data.get("stderr_truncated"))
+        wrote_output = False
+        if stdout:
+            self._write_shell_output_block("stdout", stdout, stdout_truncated, write_indented, write_code)
+            wrote_output = True
+        if stderr:
+            self._write_shell_output_block("stderr", stderr, stderr_truncated, write_indented, write_code)
+            wrote_output = True
+        if not wrote_output:
+            write_indented(self._muted_markup("no stdout or stderr"), 2)
+
+    def _write_shell_output_block(
+        self,
+        stream_name: str,
+        output: str,
+        command_truncated: bool,
+        write_indented: WriteIndentedFn,
+        write_code: WriteCodeFn,
+    ) -> None:
+        lines, display_truncated = self._clipped_preview_lines(output.rstrip("\n"))
+        write_indented(self._muted_markup(f"{stream_name}:"), 2)
+        write_code(lines or [""], "text", 2)
+        if command_truncated or display_truncated:
+            write_indented(self._muted_markup(f"... ({stream_name} truncated) ..."), 2)
 
     def rendered_filepaths(self, stream_id: str) -> set[str]:
         state = self._streams.get(stream_id)

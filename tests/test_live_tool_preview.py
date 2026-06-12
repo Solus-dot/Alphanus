@@ -88,6 +88,41 @@ def test_static_file_preview_reports_display_clipping_not_write_truncation():
     assert indented == [("[dim]... (preview clipped; file write still uses full content) ...[/dim]", 2)]
 
 
+def test_shell_result_preview_shows_status_and_output():
+    manager = LiveToolPreviewManager()
+    writes = []
+    indented = []
+    code_blocks = []
+
+    result = {
+        "ok": True,
+        "data": {
+            "command": "pytest -q",
+            "stdout": "12 passed\n",
+            "stderr": "",
+            "returncode": 0,
+            "cwd": "/repo",
+        },
+        "error": None,
+        "meta": {"duration_ms": 42},
+    }
+
+    assert manager.supports_result_preview("shell_command", result) is True
+
+    manager.write_result_preview(
+        "shell_command",
+        result,
+        writes.append,
+        lambda text, indent: indented.append((text, indent)),
+        lambda lines, language, indent: code_blocks.append((list(lines), language, indent)),
+    )
+
+    assert writes == ["[dim]  · shell: pytest -q (exit 0, 42ms)[/dim]"]
+    assert ("[dim]cwd: /repo[/dim]", 2) in indented
+    assert ("[dim]stdout:[/dim]", 2) in indented
+    assert code_blocks == [(["12 passed"], "text", 2)]
+
+
 def test_static_file_preview_skips_compacted_history_content_when_file_is_unavailable():
     manager = LiveToolPreviewManager()
     writes = []

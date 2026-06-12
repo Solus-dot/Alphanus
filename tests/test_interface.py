@@ -570,6 +570,7 @@ def test_tool_result_lines_hidden_when_details_off() -> None:
 
     assert tui._show_tool_result_line("create_file", True) is False
     assert tui._show_tool_result_line("web_search", True) is False
+    assert tui._show_tool_result_line("shell_command", True) is True
 
 
 def test_write_skill_exchanges_skips_historical_previews_when_details_off() -> None:
@@ -628,6 +629,40 @@ def test_write_skill_exchanges_keeps_failed_results_visible_when_details_off() -
 
     assert tui._write_skill_exchanges(turn) is None
     assert writes == [("create_file", False, "blocked")]
+
+
+def test_write_skill_exchanges_shows_shell_output_when_details_off() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    lines: list[tuple[str, int]] = []
+    code_blocks: list[tuple[list[str], str | None, int]] = []
+    lifecycle: list[tuple[str, bool, str]] = []
+    tui._show_tool_details = False
+    tui._live_preview = LiveToolPreviewManager()
+    tui._write_assistant_bar_line = lambda markup="", content_indent=0: lines.append((markup, content_indent))
+    tui._write_code_block = lambda code, language, indent=0: code_blocks.append((list(code), language, indent))
+    tui._write_tool_lifecycle_block = lambda name, ok, detail="": lifecycle.append((name, ok, detail))
+
+    turn = SimpleNamespace(
+        skill_exchanges=[
+            {
+                "role": "tool",
+                "name": "shell_command",
+                "content": {
+                    "ok": True,
+                    "data": {"command": "pytest -q", "stdout": "ok\n", "stderr": "", "returncode": 0, "cwd": "/repo"},
+                    "error": None,
+                    "meta": {"duration_ms": 5},
+                },
+            }
+        ]
+    )
+
+    assert tui._write_skill_exchanges(turn) is None
+    assert any("shell: pytest -q (exit 0, 5ms)" in line for line, _indent in lines)
+    assert ("[dim]cwd: /repo[/dim]", 2) in lines
+    assert ("[dim]stdout:[/dim]", 2) in lines
+    assert code_blocks == [(["ok"], "text", 2)]
+    assert lifecycle == [("shell_command", True, "completed")]
 
 
 def test_write_skill_exchanges_uses_compact_spacing_for_reloaded_successes() -> None:

@@ -264,7 +264,7 @@ def on_agent_event(app: Any, event: dict[str, Any]) -> None:
                 raw_arguments,
                 app._write_assistant_bar_line,
                 app._defer_live_preview_partial if stream_drain_active else app._update_live_preview_partial,
-                lambda markup, _indent=0: app._write_assistant_bar_line(markup),
+                lambda markup, _indent=0: app._write_assistant_bar_line(markup, content_indent=_indent),
                 app._write_code_block,
                 app._clear_partial_preview,
             )
@@ -285,7 +285,7 @@ def on_agent_event(app: Any, event: dict[str, Any]) -> None:
             streamed = (
                 app._live_preview.close(
                     stream_id,
-                    lambda markup, _indent=0: app._write_assistant_bar_line(markup),
+                    lambda markup, _indent=0: app._write_assistant_bar_line(markup, content_indent=_indent),
                     app._write_code_block,
                     app._clear_partial_preview,
                 )
@@ -297,13 +297,13 @@ def on_agent_event(app: Any, event: dict[str, Any]) -> None:
                     name,
                     args,
                     app._write_assistant_bar_line,
-                    lambda markup, _indent=0: app._write_assistant_bar_line(markup),
+                    lambda markup, _indent=0: app._write_assistant_bar_line(markup, content_indent=_indent),
                     app._write_code_block,
                 )
         elif stream_id:
             app._live_preview.close(
                 stream_id,
-                lambda markup, _indent=0: app._write_assistant_bar_line(markup),
+                lambda markup, _indent=0: app._write_assistant_bar_line(markup, content_indent=_indent),
                 app._write_code_block,
                 app._clear_partial_preview,
             )
@@ -321,12 +321,14 @@ def on_agent_event(app: Any, event: dict[str, Any]) -> None:
             duration_ms=tool_result_duration_ms(result),
         )
         _refresh_activity_sidebar(app)
-        if result_ok:
+        supports_result_preview = getattr(app._live_preview, "supports_result_preview", None)
+        has_result_preview = supports_result_preview(name, result) if callable(supports_result_preview) else False
+        if result_ok or has_result_preview:
             app._live_preview.write_result_preview(
                 name,
                 result,
                 app._write_assistant_bar_line,
-                lambda markup, _indent=0: app._write_assistant_bar_line(markup),
+                lambda markup, _indent=0: app._write_assistant_bar_line(markup, content_indent=_indent),
                 app._write_code_block,
             )
         supports_draft_preview = getattr(app._live_preview, "supports_draft_preview", None)
@@ -418,7 +420,7 @@ def finish_turn_stream(app: Any, turn_id: str, result: AgentTurnResult) -> None:
         app._set_partial_renderable(None, visible=False)
 
         app._live_preview.close_all(
-            lambda markup, _indent=0: app._write_assistant_bar_line(markup),
+            lambda markup, _indent=0: app._write_assistant_bar_line(markup, content_indent=_indent),
             app._write_code_block,
             app._clear_partial_preview,
         )

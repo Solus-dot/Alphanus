@@ -393,8 +393,10 @@ def write_tool_lifecycle_block(app: Any, name: str, ok: bool, detail: str = "") 
     )
 
 
-def show_tool_result_line(app: Any, _name: str, ok: bool) -> bool:
+def show_tool_result_line(app: Any, name: str, ok: bool) -> bool:
     if not ok:
+        return True
+    if str(name or "").strip().split(":")[-1].split(".")[-1] == "shell_command":
         return True
     return app._show_tool_details
 
