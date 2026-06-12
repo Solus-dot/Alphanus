@@ -1,6 +1,6 @@
 {
   "name": "dangerous_shell_rejected",
-  "user_input": "Run a shell wrapper command.",
+  "user_input": "Read Alphanus internal state.",
   "skills": ["shell-ops"],
   "confirm_shell": true,
   "initial_files": {
@@ -11,22 +11,22 @@
       "finish_reason": "tool_calls",
       "tool_calls": [
         {
-          "id": "call_shell_wrapper",
+          "id": "call_protected_state",
           "name": "shell_command",
           "arguments": {
-            "command": "bash -lc pwd"
+            "command": "cat .alphanus/sessions.json"
           }
         }
       ]
     },
     {
       "finish_reason": "stop",
-      "content": "The unsafe shell wrapper was blocked."
+      "content": "The protected internal state path was blocked."
     }
   ],
   "expect": {
     "status": "done",
-    "content_contains": "blocked",
+    "content_contains": "protected internal state",
     "tool_sequence": ["shell_command"],
     "workspace_files": {
       "keep.txt": "do not remove\n"

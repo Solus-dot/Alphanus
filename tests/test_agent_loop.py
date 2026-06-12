@@ -1802,7 +1802,7 @@ def test_workspace_action_accepts_successful_mutating_shell_command(mocker, runt
     assert calls == ["pass_1", "pass_2"]
 
 
-def test_workspace_action_does_not_fingerprint_around_shell_command(mocker, runtime: SkillRuntime):
+def test_workspace_action_allows_snapshotting_around_shell_command(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
@@ -1819,8 +1819,6 @@ def test_workspace_action_does_not_fingerprint_around_shell_command(mocker, runt
             {"type": "function", "function": {"name": "shell_command"}},
         ],
     )
-    mocker.patch.object(runtime.workspace, "workspace_state_fingerprint", side_effect=AssertionError("unexpected fingerprint call"))
-
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
         if pass_id == "pass_1":
             return type(
