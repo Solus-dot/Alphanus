@@ -5,7 +5,11 @@ from skills.runtime import ToolExecutionEnv
 TOOL_SPECS = {
     "shell_command": {
         "capability": "run_shell_command",
-        "description": "Run a shell command in workspace. The tool itself asks for confirmation when required, so do not ask separately in assistant text.",
+        "description": (
+            "Run a shell command in the workspace using the user's shell. Shell syntax such as &&, ;, pipes, redirects, "
+            "environment assignments, and globbing is allowed. The tool itself asks for confirmation when required, "
+            "so do not ask separately in assistant text. Do not run malicious or unrelated destructive commands."
+        ),
         "parameters": {
             "type": "object",
             "properties": {"command": {"type": "string"}},

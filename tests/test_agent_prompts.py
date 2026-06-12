@@ -21,3 +21,11 @@ def test_system_prompt_requires_structured_tool_calls(tmp_path):
     assert "<|tool_call>" in prompt
     assert "call:name{...}" in prompt
     assert "current tool interface" in prompt
+
+
+def test_system_prompt_guides_shell_safety_without_forbidding_shell_syntax(tmp_path):
+    prompt = build_system_prompt(str(tmp_path))
+
+    assert "Do not run malicious" in prompt
+    assert "system-destructive" in prompt
+    assert "normal shell syntax is allowed" in prompt

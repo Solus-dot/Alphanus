@@ -233,7 +233,11 @@ def test_shell_command_tool_description_and_skill_block_delegate_confirmation_to
     shell_tool = next(tool["function"] for tool in tools if tool["function"]["name"] == "shell_command")
     assert "tool itself asks for confirmation" in shell_tool["description"]
     assert "do not ask separately" in shell_tool["description"]
+    assert "Shell syntax" in shell_tool["description"]
+    assert "&&" in shell_tool["description"]
 
     block = runtime.compose_skill_block([shell_skill], ctx, context_limit=2048)
     assert "tool itself asks the user for confirmation" in block
     assert "Do not ask for duplicate confirmation" in block
+    assert "Shell syntax is available" in block
+    assert "malicious" in block
