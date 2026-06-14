@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import cast
 
+from agent.file_audit import build_file_audit_from_evidence
 from core.message_types import JsonObject, JSONValue
 from core.types import AgentTurnResult, TurnState
 
@@ -68,6 +69,13 @@ class TurnJournalBuilder:
                 "first_token_latency_ms": first_token_latency_ms,
             },
             "tool_loop_depth": tool_loop_depth,
+            "file_audit": cast(
+                JSONValue,
+                build_file_audit_from_evidence(
+                    state.evidence,
+                    workspace_root=getattr(state.ctx, "workspace_root", ""),
+                ),
+            ),
             "turn_trace": {
                 "passes": cast(JSONValue, self.trace_list(state, "passes")),
                 "tool_calls": cast(JSONValue, self.trace_list(state, "tool_calls")),
