@@ -6,6 +6,7 @@ from typing import Any
 
 from rich.markup import escape as esc
 
+from tui.file_audit_runtime import audit_rows_for_turn, write_file_audit
 from tui.status import context_usage_percent
 from tui.tree_render import render_tree_rows
 
@@ -213,6 +214,17 @@ def cmd_context(app: Any, arg: str) -> bool:
     )
     app._write_detail_line("tokens", token_line)
     app._write("")
+    return True
+
+
+def cmd_audit(app: Any, arg: str) -> bool:
+    if arg.strip():
+        return app._write_usage("/audit")
+    write_file_audit(
+        app,
+        audit_rows_for_turn(app, app.conv_tree.current),
+        empty_message="No file changes recorded for this turn.",
+    )
     return True
 
 

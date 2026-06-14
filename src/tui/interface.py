@@ -50,6 +50,9 @@ from tui.attachment_runtime import (
 )
 from tui.chat_input import ChatInput
 from tui.command_output_runtime import (
+    cmd_audit as cmd_tui_audit,
+)
+from tui.command_output_runtime import (
     cmd_code as cmd_tui_code,
 )
 from tui.command_output_runtime import (
@@ -1586,6 +1589,9 @@ class AlphanusTUI(App):
 
     def _cmd_context(self, arg: str) -> bool:
         return cmd_tui_context(self, arg)
+
+    def _cmd_audit(self, arg: str) -> bool:
+        return cmd_tui_audit(self, arg)
 
     def _cmd_doctor(self) -> None:
         cmd_tui_doctor(self, accent_color=self._theme_color("accent", DEFAULT_ACCENT_COLOR))

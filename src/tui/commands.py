@@ -88,6 +88,7 @@ _COMMAND_SECTIONS: tuple[_CommandSection, ...] = (
         (
             CommandEntry("/memory-stats", "/memory-stats", "Show memory stats"),
             CommandEntry("/context", "/context", "Show inference engine context usage"),
+            CommandEntry("/audit", "/audit", "Show current turn file changes"),
             CommandEntry("/workspace-tree", "/workspace-tree", "Render workspace tree"),
             CommandEntry("/theme", "/theme", "Open theme picker"),
             CommandEntry("/config", "/config", "Edit the global config in a popup"),

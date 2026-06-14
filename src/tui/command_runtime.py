@@ -215,6 +215,9 @@ def handle_command(app, text: str) -> bool:
     if cmd == "/context":
         return app._cmd_context(arg)
 
+    if cmd == "/audit":
+        return app._cmd_audit(arg)
+
     if cmd == "/workspace-tree":
         return app._cmd_workspace("tree")
 

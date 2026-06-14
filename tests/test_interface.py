@@ -1984,6 +1984,49 @@ def test_handle_context_command_renders_context_summary() -> None:
     assert rendered == [""]
 
 
+def test_handle_audit_command_renders_current_turn_file_changes(tmp_path: Path) -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = False
+    headings: list[str] = []
+    lines: list[str] = []
+    tree = ConvTree()
+    turn = tree.add_turn("change a file")
+    turn.skill_exchanges = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "create_file", "arguments": '{"filepath":"notes.txt"}'},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": "create_file",
+            "tool_call_id": "call_1",
+            "content": '{"ok":true,"data":{"filepath":"notes.txt","bytes_written":5,"line_count":1}}',
+        },
+    ]
+    tui.conv_tree = tree
+    tui._workspace_root = lambda: tmp_path
+    tui._write_section_heading = headings.append
+    tui._theme_color = lambda _name, fallback=None: fallback or "#ffffff"
+    tui._write_assistant_bar_line = lambda markup, **_kwargs: lines.append(markup)
+    tui._write = lambda _markup="": None
+    tui._write_info = lines.append
+
+    assert tui._handle_command("/audit") is True
+
+    assert headings == ["File Changes"]
+    assert len(lines) == 1
+    assert "created" in lines[0]
+    assert "notes.txt" in lines[0]
+
+
 def test_show_keymap_writes_expected_sections() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     lines: list[str] = []
