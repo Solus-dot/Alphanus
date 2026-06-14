@@ -381,7 +381,6 @@ class LiveToolPreviewManager:
             return
 
         command = str(data.get("command") or "").strip()
-        cwd = str(data.get("cwd") or "").strip()
         returncode = data.get("returncode")
         duration = ""
         meta = result.get("meta")
@@ -390,8 +389,6 @@ class LiveToolPreviewManager:
         status = f"exit {returncode}" if returncode is not None else "completed"
         label = command or "shell command"
         write(self._label_markup("shell", f"{label} ({status}{duration})"))
-        if cwd:
-            write_indented(self._muted_markup(f"cwd: {cwd}"), 2)
 
         stdout = str(data.get("stdout") or "")
         stderr = str(data.get("stderr") or "")
@@ -399,7 +396,13 @@ class LiveToolPreviewManager:
         stderr_truncated = bool(data.get("stderr_truncated"))
         wrote_output = False
         if stdout:
-            self._write_shell_output_block("stdout", stdout, stdout_truncated, write_indented, write_code)
+            self._write_shell_output_block(
+                "stdout" if stderr else "",
+                stdout,
+                stdout_truncated,
+                write_indented,
+                write_code,
+            )
             wrote_output = True
         if stderr:
             self._write_shell_output_block("stderr", stderr, stderr_truncated, write_indented, write_code)
@@ -416,7 +419,8 @@ class LiveToolPreviewManager:
         write_code: WriteCodeFn,
     ) -> None:
         lines, display_truncated = self._clipped_preview_lines(output.rstrip("\n"))
-        write_indented(self._muted_markup(f"{stream_name}:"), 2)
+        if stream_name:
+            write_indented(self._muted_markup(f"{stream_name}:"), 2)
         write_code(lines or [""], "text", 2)
         if command_truncated or display_truncated:
             write_indented(self._muted_markup(f"... ({stream_name} truncated) ..."), 2)

@@ -118,8 +118,8 @@ def test_shell_result_preview_shows_status_and_output():
     )
 
     assert writes == ["[dim]  · shell: pytest -q (exit 0, 42ms)[/dim]"]
-    assert ("[dim]cwd: /repo[/dim]", 2) in indented
-    assert ("[dim]stdout:[/dim]", 2) in indented
+    assert ("[dim]cwd: /repo[/dim]", 2) not in indented
+    assert ("[dim]stdout:[/dim]", 2) not in indented
     assert code_blocks == [(["12 passed"], "text", 2)]
 
 

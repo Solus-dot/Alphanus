@@ -659,8 +659,8 @@ def test_write_skill_exchanges_shows_shell_output_when_details_off() -> None:
 
     assert tui._write_skill_exchanges(turn) is None
     assert any("shell: pytest -q (exit 0, 5ms)" in line for line, _indent in lines)
-    assert ("[dim]cwd: /repo[/dim]", 2) in lines
-    assert ("[dim]stdout:[/dim]", 2) in lines
+    assert ("[dim]cwd: /repo[/dim]", 2) not in lines
+    assert ("[dim]stdout:[/dim]", 2) not in lines
     assert code_blocks == [(["ok"], "text", 2)]
     assert lifecycle == [("shell_command", True, "completed")]
 
