@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from types import SimpleNamespace
 
-from tui.interaction_runtime import action_handle_esc, on_input_submitted
+from tui.interaction_runtime import action_handle_esc, begin_shell_confirm, on_input_submitted
 
 
 class _ChatInput:
@@ -72,6 +72,37 @@ def test_on_input_submitted_expands_compacted_paste_before_send() -> None:
     assert app.hidden_popup_calls == 1
     assert chat_input.clear_calls == 1
     assert chat_input.sync_calls == ["[Pasted 130 chars] tail"]
+
+
+def test_begin_shell_confirm_writes_prominent_transcript_prompt() -> None:
+    writes: list[str] = []
+    lines: list[str] = []
+    event = threading.Event()
+    holder = {"value": False}
+    app = SimpleNamespace(
+        _await_shell_confirm=False,
+        _shell_confirm_command="",
+        _shell_confirm_event=None,
+        _shell_confirm_result=None,
+        _write=lambda markup="": writes.append(markup),
+        _write_assistant_bar_line=lambda markup, **_kwargs: lines.append(markup),
+        _theme_color=lambda _name, fallback=None: fallback or "#ffffff",
+        _update_status2=lambda: None,
+    )
+
+    begin_shell_confirm(app, "go version", event, holder, esc=lambda value: value)
+
+    assert app._await_shell_confirm is True
+    assert app._shell_confirm_command == "go version"
+    assert app._shell_confirm_event is event
+    assert app._shell_confirm_result is holder
+    assert lines == [
+        "[bold #f59e0b]Shell Approval Required[/bold #f59e0b]",
+        "[bold #f59e0b]![/bold #f59e0b] command waiting for approval",
+        "[#a1a1aa]command:[/#a1a1aa] go version",
+        "[#a1a1aa]press[/#a1a1aa] [bold #22c55e]Y[/bold #22c55e] [#a1a1aa]to run, or[/#a1a1aa] [bold #ef4444]N[/bold #ef4444] [#a1a1aa]to reject[/#a1a1aa]",
+    ]
+    assert writes == ["", ""]
 
 
 def test_action_handle_esc_clears_chat_input_via_clear_draft() -> None:

@@ -76,10 +76,26 @@ def begin_shell_confirm(app: Any, command: str, event: threading.Event, holder: 
     app._shell_confirm_command = command
     app._shell_confirm_event = event
     app._shell_confirm_result = holder
+    warning = app._theme_color("warning", "#f59e0b")
+    muted = app._theme_color("muted", "#a1a1aa")
+    app._write("")
     app._write_assistant_bar_line(
-        f"[#6366f1]›[/#6366f1] shell command  [#a1a1aa]{esc(command)}[/#a1a1aa]",
+        f"[bold {warning}]Shell Approval Required[/bold {warning}]",
         content_indent=2,
     )
+    app._write_assistant_bar_line(
+        f"[bold {warning}]![/bold {warning}] command waiting for approval",
+        content_indent=2,
+    )
+    app._write_assistant_bar_line(
+        f"[{muted}]command:[/{muted}] {esc(command)}",
+        content_indent=2,
+    )
+    app._write_assistant_bar_line(
+        f"[{muted}]press[/{muted}] [bold #22c55e]Y[/bold #22c55e] [{muted}]to run, or[/{muted}] [bold #ef4444]N[/bold #ef4444] [{muted}]to reject[/{muted}]",
+        content_indent=2,
+    )
+    app._write("")
     app._update_status2()
 
 
