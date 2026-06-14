@@ -747,6 +747,53 @@ def test_write_completed_turn_asst_omits_role_label() -> None:
     _assert_barred(renderables[0][0], width=20)
 
 
+def test_write_completed_turn_asst_renders_file_audit_before_reply(tmp_path: Path) -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    events: list[str] = []
+    tui._write = lambda markup="": events.append(f"write:{markup}")
+    tui._write_skill_exchanges = lambda _turn: events.append("skills")
+    tui._write_section_heading = lambda heading: events.append(f"heading:{heading}")
+    tui._theme_color = lambda _name, fallback=None: fallback or "#ffffff"
+    tui._write_assistant_bar_line = lambda markup, **_kwargs: events.append(f"audit:{markup}")
+    tui._render_static_markdown = lambda text: events.append(f"reply:{text}")
+    tui._workspace_root = lambda: tmp_path
+
+    turn = SimpleNamespace(
+        assistant_content="Done",
+        assistant_state="done",
+        skill_exchanges=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "create_file", "arguments": '{"filepath":"notes.txt"}'},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "name": "create_file",
+                "tool_call_id": "call_1",
+                "content": '{"ok":true,"data":{"filepath":"notes.txt","bytes_written":5,"line_count":1}}',
+            },
+        ],
+    )
+
+    tui._write_completed_turn_asst(turn)
+
+    assert events[:5] == [
+        "write:",
+        "skills",
+        "heading:File Changes",
+        "audit:[#22c55e]+[/#22c55e] created  notes.txt  file  1 lines, 5 B",
+        "write:",
+    ]
+    assert events[5] == "reply:Done"
+
+
 def test_write_completed_turn_asst_suppresses_failed_content() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     writes: list[str] = []

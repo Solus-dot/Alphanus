@@ -6,10 +6,13 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
+from agent.file_audit import build_file_audit_from_skill_exchanges
 from agent.types import AgentTurnResult
 from tui.activity_runtime import ActivityState, compact_tool_result_message, tool_result_duration_ms
+from tui.file_audit_runtime import write_file_audit
 from tui.markdown_utils import render_md
 from tui.themes import fallback_color
 
@@ -433,6 +436,19 @@ def finish_turn_stream(app: Any, turn_id: str, result: AgentTurnResult) -> None:
         flush_content_buffer(app, include_partial=True)
 
         reply = result.content if result.content else app._reply_acc
+        workspace_root = None
+        workspace_root_fn = getattr(app, "_workspace_root", None)
+        if callable(workspace_root_fn):
+            try:
+                value = workspace_root_fn()
+                if isinstance(value, str | Path):
+                    workspace_root = value
+            except Exception:
+                workspace_root = None
+        write_file_audit(
+            app,
+            build_file_audit_from_skill_exchanges(result.skill_exchanges, workspace_root=workspace_root),
+        )
         if result.status == "done" and not app._content_open and reply.strip():
             app._render_static_markdown(reply)
 

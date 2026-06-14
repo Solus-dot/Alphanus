@@ -8,6 +8,7 @@ from textual.widgets import Static
 
 from core.conv_tree import Turn
 from tui.activity_runtime import ActivityState, render_activity_markup
+from tui.file_audit_runtime import audit_rows_for_turn, write_file_audit
 from tui.sidebar import render_sidebar_inspector_markup, render_sidebar_tree_markup
 from tui.themes import fallback_color
 
@@ -162,6 +163,7 @@ def write_skill_exchanges(app: Any, turn: Turn) -> None:
 def write_completed_turn_assistant(app: Any, turn: Turn) -> None:
     app._write("")
     app._write_skill_exchanges(turn)
+    write_file_audit(app, audit_rows_for_turn(app, turn))
 
     content = turn.assistant_content or ""
     state = str(getattr(turn, "assistant_state", "") or ("cancelled" if "[interrupted]" in content else "done"))
