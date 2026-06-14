@@ -372,6 +372,72 @@ def test_workspace_action_outcome_falls_back_to_blocked_when_classifier_call_fai
     assert outcome == "declined_or_blocked"
 
 
+def test_workspace_action_outcome_accepts_shell_rejected_by_user(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": False}}
+    llm_client = LLMClient(cfg)
+    classifier = TurnClassifier(cfg, runtime, llm_client)
+
+    outcome = classifier.classify_workspace_action_outcome(
+        current_user_input="what go version am i using?",
+        recent_routing_hint="",
+        assistant_reply="I attempted to run `go version`, but the command was rejected.",
+        evidence={
+            "has_successful_tool": False,
+            "successful_tools": [],
+            "has_successful_mutation": False,
+            "successful_mutating_tools": [],
+            "policy_blocked_tools": ["shell_command"],
+            "recent_tools": [
+                {
+                    "name": "shell_command",
+                    "ok": False,
+                    "mutating": False,
+                    "policy_blocked": True,
+                    "error_code": "E_POLICY",
+                    "error_message": "Shell command rejected by user",
+                }
+            ],
+        },
+        pass_id="pass_1",
+    )
+
+    assert outcome == "declined_or_blocked"
+
+
+def test_workspace_action_outcome_accepts_shell_timeout_limitation(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": False}}
+    llm_client = LLMClient(cfg)
+    classifier = TurnClassifier(cfg, runtime, llm_client)
+
+    outcome = classifier.classify_workspace_action_outcome(
+        current_user_input="what go version am i using?",
+        recent_routing_hint="",
+        assistant_reply="I attempted to run `go version`, but the command timed out.",
+        evidence={
+            "has_successful_tool": False,
+            "successful_tools": [],
+            "has_successful_mutation": False,
+            "successful_mutating_tools": [],
+            "policy_blocked_tools": [],
+            "recent_tools": [
+                {
+                    "name": "shell_command",
+                    "ok": False,
+                    "mutating": False,
+                    "policy_blocked": False,
+                    "error_code": "E_TIMEOUT",
+                    "error_message": "Shell command timed out",
+                }
+            ],
+        },
+        pass_id="pass_1",
+    )
+
+    assert outcome == "declined_or_blocked"
+
+
 def test_workspace_action_outcome_rules_rejects_user_delegation_even_with_blocked_evidence(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
@@ -637,6 +703,52 @@ def test_workspace_action_outcome_accepts_successful_non_mutating_open_action(tm
             "successful_mutating_tools": [],
             "policy_blocked_tools": [],
             "recent_tools": [{"name": "shell_command", "ok": True, "mutating": False, "policy_blocked": False}],
+        },
+        pass_id="pass_1",
+    )
+
+    assert outcome == "completed_with_evidence"
+
+
+def test_workspace_action_outcome_accepts_shell_version_query(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": False}}
+    classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
+
+    outcome = classifier.classify_workspace_action_outcome(
+        current_user_input="what go version am i running?",
+        recent_routing_hint="",
+        assistant_reply="You are running Go version `go1.26.4` on `darwin/arm64`.",
+        evidence={
+            "has_successful_tool": True,
+            "successful_tools": ["shell_command"],
+            "has_successful_mutation": False,
+            "successful_mutating_tools": [],
+            "policy_blocked_tools": [],
+            "recent_tools": [{"name": "shell_command", "ok": True, "mutating": False, "policy_blocked": False}],
+        },
+        pass_id="pass_1",
+    )
+
+    assert outcome == "completed_with_evidence"
+
+
+def test_workspace_action_outcome_accepts_read_file_version_query(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": False}}
+    classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
+
+    outcome = classifier.classify_workspace_action_outcome(
+        current_user_input="read package.json and tell me the version",
+        recent_routing_hint="",
+        assistant_reply="I read package.json. The version is `1.2.3`.",
+        evidence={
+            "has_successful_tool": True,
+            "successful_tools": ["read_file"],
+            "has_successful_mutation": False,
+            "successful_mutating_tools": [],
+            "policy_blocked_tools": [],
+            "recent_tools": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -1294,6 +1406,97 @@ def test_finalize_response_skips_workspace_action_enforcement_in_plan_mode(tmp_p
     assert result is not None
     assert result.status == "done"
     assert "implementation plan" in result.content.lower()
+    assert state.forced_action_retry is False
+
+
+def test_finalize_response_accepts_read_only_shell_version_evidence(tmp_path: Path) -> None:
+    _runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="what go version am i running?",
+        time_sensitive=False,
+        workspace_action=True,
+    )
+    orchestrator.classifier.llm_client.enable_structured_classification = False
+    call = ToolCall(stream_id="call_1", index=0, id="call_1", name="shell_command", arguments={"command": "go version"})
+    orchestrator.record_tool_effects(
+        state,
+        call,
+        {
+            "ok": True,
+            "data": {
+                "command": "go version",
+                "stdout": "go version go1.26.4 darwin/arm64\n",
+                "stderr": "",
+                "returncode": 0,
+            },
+            "error": None,
+            "meta": {"workspace_changed": False},
+        },
+    )
+    stream_result = type(
+        "R",
+        (),
+        {
+            "content": "You are running Go version `go1.26.4` on `darwin/arm64`.",
+            "finish_reason": "stop",
+        },
+    )()
+
+    action, result = orchestrator.finalize_response(
+        system_content="system",
+        state=state,
+        pass_id="pass_1",
+        stream_result=stream_result,
+    )
+
+    assert action == "result"
+    assert result is not None
+    assert result.status == "done"
+    assert result.content == "You are running Go version `go1.26.4` on `darwin/arm64`."
+    assert state.forced_action_retry is False
+
+
+def test_finalize_response_preserves_shell_rejection_explanation(tmp_path: Path) -> None:
+    _runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="what go version am i using?",
+        time_sensitive=False,
+        workspace_action=True,
+    )
+    orchestrator.classifier.llm_client.enable_structured_classification = False
+    call = ToolCall(stream_id="call_1", index=0, id="call_1", name="shell_command", arguments={"command": "go version"})
+    orchestrator.record_tool_effects(
+        state,
+        call,
+        {
+            "ok": False,
+            "data": None,
+            "error": {"code": "E_POLICY", "message": "Shell command rejected by user"},
+            "meta": {"duration_ms": 60008},
+        },
+        policy_blocked=True,
+    )
+    stream_result = type(
+        "R",
+        (),
+        {
+            "content": "I attempted to run `go version` to check your Go version, but the command was rejected.",
+            "finish_reason": "stop",
+        },
+    )()
+
+    action, result = orchestrator.finalize_response(
+        system_content="system",
+        state=state,
+        pass_id="pass_1",
+        stream_result=stream_result,
+    )
+
+    assert action == "result"
+    assert result is not None
+    assert result.status == "done"
+    assert "command was rejected" in result.content
+    assert result.error is None
     assert state.forced_action_retry is False
 
 

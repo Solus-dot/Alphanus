@@ -29,18 +29,19 @@ _DRAFT_COMPLETION_RE = re.compile(
     r"\b(?:i|we)\s+(?:have\s+)?(?:already\s+)?(?:successfully\s+)?(?:deleted|removed|created|updated|edited|modified|renamed|moved|wrote|saved)\b"
 )
 _DRAFT_NON_MUTATING_ACTION_DONE_RE = re.compile(
-    r"\b(?:opened|ran|executed|launched|read|listed|shown|showed|displayed|inspected|checked|verified)\b"
+    r"\b(?:opened|ran|running|executed|launched|read|listed|shown|showed|displayed|inspected|checked|verified)\b"
 )
 _MUTATING_REQUEST_RE = re.compile(
     r"\b(?:create|make(?!\s+sure)|write|save|edit|update|modify|delete|remove|rename|move|copy|scaffold|generate)\b"
 )
 _NON_MUTATING_ACTION_PATTERNS = {
     "open": re.compile(r"\b(?:open|opened|launch|launched)\b"),
-    "run": re.compile(r"\b(?:run|ran|execute|executed)\b"),
+    "run": re.compile(r"\b(?:run|ran|running|execute|executed)\b"),
     "read": re.compile(r"\b(?:read|show|showed|display|displayed)\b"),
     "list": re.compile(r"\b(?:list|listed)\b"),
     "check": re.compile(r"\b(?:inspect|inspected|check|checked|verify|verified)\b"),
 }
+_SHELL_INSPECTION_RE = re.compile(r"\b(?:version|status)\b")
 _NON_MUTATING_ACTION_TOOL_NAMES = {
     "open": {"shell_command", "open_url", "play_youtube"},
     "run": {"shell_command"},
@@ -50,7 +51,7 @@ _NON_MUTATING_ACTION_TOOL_NAMES = {
 }
 _DRAFT_WORKSPACE_DONE_RE = re.compile(r"\b(?:workspace is now empty|done with workspace tools)\b")
 _DRAFT_LIMITATION_RE = re.compile(
-    r"\b(?:could not|couldn't|cannot|can't|unable|not allowed|blocked|permission|permissions|unsupported|unavailable|disabled)\b"
+    r"\b(?:could not|couldn't|cannot|can't|unable|not allowed|blocked|rejected|declined|denied|timed out|timeout|permission|permissions|unsupported|unavailable|disabled)\b"
 )
 _WORKSPACE_FILE_TOKEN_RE = re.compile(r"(?<![\w/.-])(?:[\w.-]+/)*[\w.-]+\.[a-z0-9]{1,16}\b", re.IGNORECASE)
 _WORKSPACE_ABS_PATH_RE = re.compile(r"(?<![:/\w])(?:~/|/)[^\s\"'`]+")
@@ -279,7 +280,15 @@ class TurnClassifier:
             if bool(item.get("policy_blocked")):
                 return True
             error_code = str(item.get("error_code", "")).strip().upper()
-            if error_code in {"E_POLICY", "E_PERMISSION", "E_PERMISSIONS", "E_UNSUPPORTED", "E_DISABLED", "E_UNAVAILABLE"}:
+            if error_code in {
+                "E_POLICY",
+                "E_PERMISSION",
+                "E_PERMISSIONS",
+                "E_TIMEOUT",
+                "E_UNSUPPORTED",
+                "E_DISABLED",
+                "E_UNAVAILABLE",
+            }:
                 return True
         return False
 
@@ -330,6 +339,19 @@ class TurnClassifier:
         return names
 
     @classmethod
+    def _evidence_supports_shell_inspection(
+        cls,
+        *,
+        current_user_input: str,
+        assistant_reply: str,
+        evidence: dict[str, JSONValue],
+    ) -> bool:
+        text = cls._normalized_text(f"{current_user_input}\n{assistant_reply}")
+        if not _SHELL_INSPECTION_RE.search(text):
+            return False
+        return "shell_command" in cls._successful_tool_names(evidence)
+
+    @classmethod
     def _evidence_supports_non_mutating_completion(
         cls,
         *,
@@ -340,11 +362,15 @@ class TurnClassifier:
         requested_actions = cls._non_mutating_actions_in_text(current_user_input)
         claimed_actions = cls._non_mutating_actions_in_text(assistant_reply)
         required_actions = requested_actions | claimed_actions
-        if not required_actions:
-            return False
         tool_names = cls._successful_tool_names(evidence)
         if not tool_names:
             return False
+        if not required_actions:
+            return cls._evidence_supports_shell_inspection(
+                current_user_input=current_user_input,
+                assistant_reply=assistant_reply,
+                evidence=evidence,
+            )
         for action in required_actions:
             allowed_tools = _NON_MUTATING_ACTION_TOOL_NAMES.get(action, set())
             if allowed_tools and not tool_names.intersection(allowed_tools):
