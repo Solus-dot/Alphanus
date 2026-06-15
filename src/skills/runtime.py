@@ -884,6 +884,8 @@ class SkillRuntime:
         capability = str(reg.capability or "").strip().lower()
         if capability.startswith("workspace_") and capability != "workspace_read":
             return True
+        if capability in {"desktop_control", "browser_open", "screen_capture"}:
+            return True
         if reg.tool_scope == "skill" and (capability.endswith("_runner") or capability == "skill_executor"):
             return True
         return False
