@@ -142,6 +142,9 @@ class LLMClient:
     def should_fail_fast_on_offline_status(self, status: ModelStatus) -> bool:
         return self.provider.should_fail_fast_on_offline_status(status)
 
+    def friendly_endpoint_error(self, exc_or_message: Exception | str) -> str:
+        return self.provider._friendly_endpoint_error(exc_or_message)  # noqa: SLF001
+
     def build_payload(
         self,
         model_messages: list[ChatMessage],

@@ -124,6 +124,9 @@ class Agent:
     def mark_model_transport_failure(self, exc: Exception) -> None:
         self.llm_client.mark_model_transport_failure(exc)
 
+    def _offline_status_detail(self, status: ModelStatus) -> str:
+        return f": {self.llm_client.friendly_endpoint_error(status.last_error)}" if status.last_error else ""
+
     def fetch_model_name(self, timeout_s: float | None = None) -> str | None:
         model_name, _context_window = self.fetch_model_metadata(timeout_s=timeout_s)
         return model_name
@@ -275,7 +278,7 @@ class Agent:
         status = self.get_model_status()
         if status.state == "offline" and self.llm_client.is_model_status_fresh(status):
             if self.llm_client.should_fail_fast_on_offline_status(status):
-                detail = f": {status.last_error}" if status.last_error else ""
+                detail = self._offline_status_detail(status)
                 return self._record_and_return(
                     AgentTurnResult(
                         status="error",
@@ -290,7 +293,7 @@ class Agent:
                 return self._record_and_return(AgentTurnResult(status="cancelled", content="", reasoning="", skill_exchanges=[]))
             if not ready:
                 refreshed = self.get_model_status()
-                detail = f": {refreshed.last_error}" if refreshed.last_error else ""
+                detail = self._offline_status_detail(refreshed)
                 return self._record_and_return(
                     AgentTurnResult(
                         status="error",
@@ -328,7 +331,7 @@ class Agent:
                 return self._record_and_return(AgentTurnResult(status="cancelled", content="", reasoning="", skill_exchanges=[]))
             if not ready:
                 status = self.get_model_status()
-                detail = f": {status.last_error}" if status.last_error else ""
+                detail = self._offline_status_detail(status)
                 return self._record_and_return(
                     AgentTurnResult(
                         status="error",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -352,6 +353,23 @@ class OpenAICompatibleProvider:
         self._ready_checked = self._model_status.state == "online"
         return self.get_model_status()
 
+    def _friendly_endpoint_error(self, exc_or_message: Exception | str) -> str:
+        raw = str(exc_or_message or "").strip()
+        reason = getattr(exc_or_message, "reason", None)
+        reason_text = str(reason or "").strip()
+        errno_value = getattr(reason, "errno", None)
+        text = f"{raw} {reason_text}".lower()
+        endpoint = self.models_endpoint
+        if isinstance(reason, ConnectionRefusedError) or errno_value in {61, 111} or "connection refused" in text:
+            return f"Connection refused by model endpoint {endpoint}. Is the local model server running and listening on that port?"
+        if isinstance(reason, TimeoutError) or isinstance(exc_or_message, TimeoutError) or "timed out" in text or "timeout" in text:
+            return f"Timed out while contacting model endpoint {endpoint}. The server may be starting, overloaded, or unreachable."
+        if isinstance(reason, socket.gaierror) or "name or service not known" in text or "nodename nor servname" in text:
+            return f"Could not resolve the model endpoint host for {endpoint}. Check the configured base URL."
+        if raw:
+            return raw
+        return f"Model endpoint is unreachable: {endpoint}"
+
     def _model_status_error_state(self, exc: Exception) -> Literal["offline", "unknown"]:
         if isinstance(exc, urllib.error.HTTPError):
             return "offline"
@@ -391,7 +409,8 @@ class OpenAICompatibleProvider:
         try:
             payload = self.list_models(timeout_s=remaining_timeout())
         except Exception as exc:
-            self.telemetry.emit("model_fetch_failed", endpoint=self.models_endpoint, error=str(exc))
+            friendly_error = self._friendly_endpoint_error(exc)
+            self.telemetry.emit("model_fetch_failed", endpoint=self.models_endpoint, error=str(exc), user_error=friendly_error)
             return self._store_model_status(
                 ModelStatus(
                     state=self._model_status_error_state(exc),
@@ -399,7 +418,7 @@ class OpenAICompatibleProvider:
                     context_window=context_window,
                     last_checked_at=now,
                     last_success_at=current.last_success_at,
-                    last_error=str(exc),
+                    last_error=friendly_error,
                     endpoint=self.models_endpoint,
                 )
             )
@@ -432,7 +451,8 @@ class OpenAICompatibleProvider:
     def mark_model_transport_failure(self, exc: Exception) -> None:
         current = self.get_model_status()
         now = time.monotonic()
-        self.telemetry.emit("model_transport_failure", endpoint=self.models_endpoint, error=str(exc))
+        friendly_error = self._friendly_endpoint_error(exc)
+        self.telemetry.emit("model_transport_failure", endpoint=self.models_endpoint, error=str(exc), user_error=friendly_error)
         self._store_model_status(
             ModelStatus(
                 state="offline",
@@ -440,7 +460,7 @@ class OpenAICompatibleProvider:
                 context_window=current.context_window,
                 last_checked_at=now,
                 last_success_at=current.last_success_at,
-                last_error=str(exc),
+                last_error=friendly_error,
                 endpoint=self.models_endpoint,
             )
         )
@@ -654,7 +674,7 @@ class OpenAICompatibleProvider:
             try:
                 status = self._status_allows_immediate_send()
                 if status.state == "offline":
-                    message = status.last_error or f"Model endpoint offline: {self.models_endpoint}"
+                    message = self._friendly_endpoint_error(status.last_error) if status.last_error else f"Model endpoint offline: {self.models_endpoint}"
                     raise RuntimeError(f"Model endpoint offline: {message}")
                 normalized_payload = self._normalize_payload_for_backend(payload, mode=mode, pass_id=pass_id)
                 if not str(normalized_payload.get("model", "")).strip():

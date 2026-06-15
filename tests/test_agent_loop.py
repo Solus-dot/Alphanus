@@ -3515,6 +3515,8 @@ def test_run_turn_fails_fast_when_cached_status_is_freshly_offline(mocker, runti
 
     assert result.status == "error"
     assert "offline" in (result.error or "").lower()
+    assert "Is the local model server running" in (result.error or "")
+    assert "Errno 61" not in (result.error or "")
     run.assert_not_called()
     refresh.assert_not_called()
 
@@ -3632,6 +3634,24 @@ def test_local_connection_refused_is_not_retried(mocker, runtime: SkillRuntime):
     assert not any("Retrying request" in event.get("text", "") for event in events if isinstance(event, dict))
     assert agent.get_model_status().state == "offline"
     assert agent.get_model_status().model_name == "qwen-3"
+    assert "Is the local model server running" in agent.get_model_status().last_error
+    assert "Errno 61" not in agent.get_model_status().last_error
+
+
+def test_refresh_model_status_formats_connection_refused_for_users(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    mocker.patch.object(
+        urllib.request,
+        "urlopen",
+        side_effect=urllib.error.URLError(ConnectionRefusedError(61, "Connection refused")),
+    )
+
+    status = agent.refresh_model_status(force=True)
+
+    assert status.state == "offline"
+    assert "Connection refused by model endpoint" in status.last_error
+    assert "Is the local model server running" in status.last_error
+    assert "Errno 61" not in status.last_error
 
 
 def test_retryable_transport_error_still_runs_readiness_poll_after_offline_probe(mocker, runtime: SkillRuntime):
