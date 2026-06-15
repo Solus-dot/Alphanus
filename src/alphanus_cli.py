@@ -11,7 +11,7 @@ from typing import Any
 from agent.core import Agent
 from agent.telemetry import configure_logging
 from alphanus_paths import get_app_paths
-from core.backend_profiles import VALID_BACKEND_PROFILES
+from core.backend_profiles import BACKEND_PROFILE_LABELS, VALID_BACKEND_PROFILES
 from core.configuration import (
     DEFAULT_CONFIG,
     config_for_editor_view,
@@ -507,14 +507,7 @@ def _run_init(args: Any) -> int:
                 backend_profile = _prompt_choice(
                     theme,
                     "Backend profile:",
-                    [
-                        ("auto", "detect backend and apply compatibility rewrites"),
-                        ("mlx_vlm", "MLX-VLM tuned multimodal compatibility"),
-                        ("llamacpp", "llama.cpp-style local backend"),
-                        ("ollama", "Ollama OpenAI-compatible backend"),
-                        ("vllm", "vLLM OpenAI-compatible backend"),
-                        ("lmstudio", "LM Studio OpenAI-compatible backend"),
-                    ],
+                    [(profile, BACKEND_PROFILE_LABELS.get(profile, profile)) for profile in sorted(VALID_BACKEND_PROFILES)],
                     default=(
                         backend_profile_default
                         if backend_profile_default in VALID_BACKEND_PROFILES

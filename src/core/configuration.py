@@ -11,7 +11,14 @@ from urllib.parse import urlparse
 
 from core.backend_profiles import AUTO_BACKEND_PROFILE, VALID_BACKEND_PROFILES
 from core.coercion import parse_bool
-from core.endpoint_modes import ENDPOINT_MODE_AUTO, ENDPOINT_MODE_CHAT, ENDPOINT_MODES
+from core.endpoint_modes import (
+    ENDPOINT_MODE_AUTO,
+    ENDPOINT_MODE_CHAT,
+    ENDPOINT_MODES,
+    OPENAI_CHAT_COMPLETIONS_PATH,
+    OPENAI_MODELS_PATH,
+    OPENAI_RESPONSES_PATH,
+)
 from core.search_providers import (
     DEFAULT_TAVILY_API_KEY_ENV,
     SEARCH_FALLBACK_NONE,
@@ -430,9 +437,9 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         path="agent.base_url",
         warnings=warnings,
     )
-    model_endpoint_default = _endpoint_from_base_url(str(agent_cfg["base_url"]), "/v1/chat/completions")
-    responses_endpoint_default = _endpoint_from_base_url(str(agent_cfg["base_url"]), "/v1/responses")
-    models_endpoint_default = _endpoint_from_base_url(str(agent_cfg["base_url"]), "/v1/models")
+    model_endpoint_default = _endpoint_from_base_url(str(agent_cfg["base_url"]), OPENAI_CHAT_COMPLETIONS_PATH)
+    responses_endpoint_default = _endpoint_from_base_url(str(agent_cfg["base_url"]), OPENAI_RESPONSES_PATH)
+    models_endpoint_default = _endpoint_from_base_url(str(agent_cfg["base_url"]), OPENAI_MODELS_PATH)
 
     model_input = input_agent_cfg.get("model_endpoint") if "model_endpoint" in input_agent_cfg else model_endpoint_default
     responses_input = input_agent_cfg.get("responses_endpoint") if "responses_endpoint" in input_agent_cfg else responses_endpoint_default
@@ -1206,7 +1213,7 @@ def validate_endpoint_policy(config: dict[str, Any]) -> None:
     base_url = str(agent_cfg.get("base_url", "")).strip() or inferred_base
     responses_endpoint = str(agent_cfg.get("responses_endpoint", "")).strip() or _endpoint_from_base_url(
         base_url or str(DEFAULT_CONFIG["agent"]["base_url"]),
-        "/v1/responses",
+        OPENAI_RESPONSES_PATH,
     )
     allow_cross = bool(agent_cfg.get("allow_cross_host_endpoints", False))
 
