@@ -236,6 +236,79 @@ def test_classifier_seed_does_not_infer_workspace_flags_without_model(tmp_path: 
     assert classification.followup_kind == "new_request"
 
 
+def test_classifier_clears_workspace_action_for_desktop_app_requests(mocker, tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": True}}
+    llm_client = LLMClient(cfg)
+    classifier = TurnClassifier(cfg, runtime, llm_client)
+    ctx = classifier.build_skill_context("open WhatsApp for me please", [], [])
+
+    mocker.patch.object(TurnClassifier, "_should_model_classify", return_value=True)
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        assert pass_id == "turn_classify"
+        return type(
+            "R",
+            (),
+            {
+                "finish_reason": "stop",
+                "content": json.dumps(
+                    {
+                        "time_sensitive": False,
+                        "requires_workspace_action": True,
+                        "prefer_local_workspace_tools": True,
+                        "followup_kind": "new_request",
+                    }
+                ),
+            },
+        )()
+
+    llm_client.call_with_retry = fake_call_with_retry
+    classifier.call_with_retry = fake_call_with_retry
+
+    classification = classifier.classify(ctx)
+
+    assert classification.used_model is True
+    assert classification.requires_workspace_action is False
+    assert classification.prefer_local_workspace_tools is False
+
+
+def test_classifier_keeps_workspace_action_for_file_requests(mocker, tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": True}}
+    llm_client = LLMClient(cfg)
+    classifier = TurnClassifier(cfg, runtime, llm_client)
+    ctx = classifier.build_skill_context("create notes.txt in the workspace", [], [])
+
+    mocker.patch.object(TurnClassifier, "_should_model_classify", return_value=True)
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        assert pass_id == "turn_classify"
+        return type(
+            "R",
+            (),
+            {
+                "finish_reason": "stop",
+                "content": json.dumps(
+                    {
+                        "time_sensitive": False,
+                        "requires_workspace_action": True,
+                        "prefer_local_workspace_tools": True,
+                        "followup_kind": "new_request",
+                    }
+                ),
+            },
+        )()
+
+    llm_client.call_with_retry = fake_call_with_retry
+    classifier.call_with_retry = fake_call_with_retry
+
+    classification = classifier.classify(ctx)
+
+    assert classification.requires_workspace_action is True
+    assert classification.prefer_local_workspace_tools is True
+
+
 def test_classifier_seed_does_not_infer_contextual_followup_without_model(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}

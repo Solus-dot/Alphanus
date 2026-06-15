@@ -55,6 +55,10 @@ _DRAFT_LIMITATION_RE = re.compile(
 )
 _WORKSPACE_FILE_TOKEN_RE = re.compile(r"(?<![\w/.-])(?:[\w.-]+/)*[\w.-]+\.[a-z0-9]{1,16}\b", re.IGNORECASE)
 _WORKSPACE_ABS_PATH_RE = re.compile(r"(?<![:/\w])(?:~/|/)[^\s\"'`]+")
+_NON_WORKSPACE_LOCAL_ACTION_RE = re.compile(
+    r"\b(?:app|apps|application|applications|browser|browsers|window|windows|tab|tabs|screenshot|screen|ocr|"
+    r"whatsapp|chrome|safari|brave|edge|firefox|finder|terminal|brew|homebrew|go version|node version|python version)\b"
+)
 
 
 class TurnClassifier:
@@ -405,6 +409,21 @@ class TurnClassifier:
             return True
         return False
 
+    def _supports_workspace_action_requirement(self, ctx: SkillContext, classification: TurnClassification) -> bool:
+        if self._supports_local_workspace_preference(ctx, classification):
+            return True
+        hint = self._normalized_text(getattr(ctx, "recent_routing_hint", ""))
+        if (
+            classification.followup_kind in {"confirmation", "contextual_followup"}
+            and "workspace" in hint
+            and self._non_mutating_actions_in_text(hint)
+        ):
+            return True
+        text = self._normalized_text(f"{ctx.user_input}\n{getattr(ctx, 'recent_routing_hint', '')}")
+        if _NON_WORKSPACE_LOCAL_ACTION_RE.search(text):
+            return False
+        return bool(_MUTATING_REQUEST_RE.search(text))
+
     def classify_workspace_action_outcome(
         self,
         *,
@@ -529,6 +548,8 @@ class TurnClassifier:
             '{"time_sensitive":false,"requires_workspace_action":false,'
             '"prefer_local_workspace_tools":false,"followup_kind":"new_request"}\n'
             "Allowed followup_kind values: new_request, confirmation, contextual_followup.\n"
+            "Set requires_workspace_action only for actions on workspace files, folders, projects, or repository state. "
+            "Do not set it for desktop apps, browser actions, screenshots, OCR, package managers, or general system checks.\n"
             "Do not explain."
         )
         user_lines = [f"User request:\n{ctx.user_input}"]
@@ -565,6 +586,8 @@ class TurnClassifier:
         )
         if merged.prefer_local_workspace_tools and not self._supports_local_workspace_preference(ctx, merged):
             merged.prefer_local_workspace_tools = False
+        if merged.requires_workspace_action and not self._supports_workspace_action_requirement(ctx, merged):
+            merged.requires_workspace_action = False
         self.telemetry.emit(
             "turn_classified",
             source=merged.source,
