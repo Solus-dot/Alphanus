@@ -148,6 +148,72 @@ def test_shell_command_executes_with_selected_shell_skill(tmp_path: Path):
     assert out["data"]["stdout"].strip() == "hi"
 
 
+def test_shell_command_uses_longer_default_timeout(mocker, tmp_path: Path):
+    runtime = _runtime(
+        tmp_path,
+        {
+            "capabilities": {
+                "shell_require_confirmation": False,
+                "dangerously_skip_permissions": True,
+            }
+        },
+    )
+    shell_skill = runtime.get_skill("shell-ops")
+    assert shell_skill is not None
+    run = mocker.patch.object(
+        runtime.workspace,
+        "run_shell_command",
+        return_value={"ok": True, "data": {"returncode": 0}, "error": None, "meta": {}},
+    )
+
+    out = runtime.execute_tool_call(
+        "shell_command",
+        {"command": "llama-update"},
+        selected=[shell_skill],
+        ctx=_ctx(str(runtime.workspace.workspace_root)),
+    )
+
+    assert out["ok"] is True
+    run.assert_called_once_with("llama-update", timeout_s=600)
+
+
+def test_shell_command_allows_explicit_timeout_and_caps_it(mocker, tmp_path: Path):
+    runtime = _runtime(
+        tmp_path,
+        {
+            "capabilities": {
+                "shell_require_confirmation": False,
+                "dangerously_skip_permissions": True,
+            }
+        },
+    )
+    shell_skill = runtime.get_skill("shell-ops")
+    assert shell_skill is not None
+    run = mocker.patch.object(
+        runtime.workspace,
+        "run_shell_command",
+        return_value={"ok": True, "data": {"returncode": 0}, "error": None, "meta": {}},
+    )
+
+    runtime.execute_tool_call(
+        "shell_command",
+        {"command": "make", "timeout_s": 1200},
+        selected=[shell_skill],
+        ctx=_ctx(str(runtime.workspace.workspace_root)),
+    )
+    runtime.execute_tool_call(
+        "shell_command",
+        {"command": "make world", "timeout_s": 99999},
+        selected=[shell_skill],
+        ctx=_ctx(str(runtime.workspace.workspace_root)),
+    )
+
+    assert run.call_args_list[0].args == ("make",)
+    assert run.call_args_list[0].kwargs == {"timeout_s": 1200}
+    assert run.call_args_list[1].args == ("make world",)
+    assert run.call_args_list[1].kwargs == {"timeout_s": 7200}
+
+
 def test_shell_command_nonzero_exit_bubbles_up_as_tool_failure(tmp_path: Path):
     runtime = _runtime(
         tmp_path,

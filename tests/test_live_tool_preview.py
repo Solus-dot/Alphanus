@@ -123,6 +123,19 @@ def test_shell_result_preview_shows_status_and_output():
     assert code_blocks == [(["12 passed"], "text", 2)]
 
 
+def test_shell_running_preview_shows_timeout():
+    manager = LiveToolPreviewManager()
+    writes = []
+
+    manager.write_shell_running_preview(
+        "shell_command",
+        {"command": "llama-update", "timeout_s": 1200},
+        writes.append,
+    )
+
+    assert writes == ["[dim]  · shell running: llama-update (waiting for completion, timeout 1200s)[/dim]"]
+
+
 def test_static_file_preview_skips_compacted_history_content_when_file_is_unavailable():
     manager = LiveToolPreviewManager()
     writes = []

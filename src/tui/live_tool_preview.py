@@ -320,6 +320,20 @@ class LiveToolPreviewManager:
         if clipped_for_display:
             write_indented(self._muted_markup("... (preview clipped; file write still uses full content) ..."), 2)
 
+    def write_shell_running_preview(self, tool_name: str, args: Any, write: WriteFn) -> None:
+        if self.canonical_preview_tool_name(tool_name) != "shell_command" or not isinstance(args, dict):
+            return
+        command = str(args.get("command") or "").strip() or "shell command"
+        timeout = args.get("timeout_s")
+        timeout_text = ""
+        try:
+            timeout_int = int(timeout) if timeout is not None else 600
+        except (TypeError, ValueError):
+            timeout_int = 600
+        if timeout_int > 0:
+            timeout_text = f", timeout {timeout_int}s"
+        write(self._label_markup("shell running", f"{command} (waiting for completion{timeout_text})"))
+
     def _write_file_preview(
         self,
         filepath: str,

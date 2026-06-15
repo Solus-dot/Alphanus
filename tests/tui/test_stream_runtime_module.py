@@ -304,6 +304,31 @@ def test_drain_events_updates_activity_for_tool_lifecycle() -> None:
     assert app._sidebar_updates >= 2
 
 
+def test_drain_events_writes_shell_running_preview_on_tool_call() -> None:
+    app = _App()
+    events: list[tuple[str, int]] = []
+    app._write_assistant_bar_line = lambda markup="", content_indent=0: events.append((markup, content_indent))
+    app._live_preview = SimpleNamespace(
+        compact_tool_args=lambda _name, args: f"command={args['command']}, timeout_s={args['timeout_s']}",
+        write_shell_running_preview=lambda name, args, write: write(f"running:{name}:{args['command']}:{args['timeout_s']}"),
+        apply_final_arguments=lambda *_args, **_kwargs: None,
+        close=lambda *_args, **_kwargs: False,
+        write_static_preview=lambda *_args, **_kwargs: None,
+    )
+    assert app._stream_runtime is not None
+    app._stream_runtime.event_queue = queue.SimpleQueue()
+    app._stream_runtime.event_queue.put(
+        {"type": "tool_call", "name": "shell_command", "arguments": {"command": "llama-update", "timeout_s": 1200}}
+    )
+
+    drain_events(app)
+
+    assert ("running:shell_command:llama-update:1200", 0) in events
+    assert app._activity_state.rows[0].name == "shell_command"
+    assert app._activity_state.rows[0].status == "running"
+    assert "timeout_s=1200" in app._activity_state.rows[0].detail
+
+
 def test_finish_turn_stream_restores_ui_even_when_finalization_raises() -> None:
     events: list[str] = []
 

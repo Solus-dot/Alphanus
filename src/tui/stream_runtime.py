@@ -280,6 +280,13 @@ def on_agent_event(app: Any, event: dict[str, Any]) -> None:
         detail = app._live_preview.compact_tool_args(name, args)
         _activity(app).start_tool(str(name), detail)
         _refresh_activity_sidebar(app)
+        write_shell_running_preview = getattr(app._live_preview, "write_shell_running_preview", None)
+        if callable(write_shell_running_preview):
+            write_shell_running_preview(
+                name,
+                args,
+                lambda markup, _indent=0: app._write_assistant_bar_line(markup, content_indent=_indent),
+            )
         if app._show_tool_details:
             app._pending_tool_details.append((name, detail))
             apply_final_arguments = getattr(app._live_preview, "apply_final_arguments", None)
