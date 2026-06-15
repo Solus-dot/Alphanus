@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import urllib.parse
 
+from core.endpoint_modes import LOCAL_PROPS_PATH, LOCAL_SLOTS_PATH, OPENAI_MODELS_PATH
+
 
 class ProviderMetadataExtractor:
     @staticmethod
@@ -136,22 +138,22 @@ class ProviderMetadataExtractor:
     def props_endpoint_from_models_endpoint(models_endpoint: str) -> str:
         parsed = urllib.parse.urlparse(models_endpoint)
         path = parsed.path or ""
-        if path.endswith("/v1/models"):
-            path = path[: -len("/v1/models")] + "/props"
+        if path.endswith(OPENAI_MODELS_PATH):
+            path = path[: -len(OPENAI_MODELS_PATH)] + LOCAL_PROPS_PATH
         elif path.endswith("/models"):
-            path = path[: -len("/models")] + "/props"
+            path = path[: -len("/models")] + LOCAL_PROPS_PATH
         else:
-            path = "/props"
+            path = LOCAL_PROPS_PATH
         return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
 
     @staticmethod
     def slots_endpoint_from_models_endpoint(models_endpoint: str) -> str:
         parsed = urllib.parse.urlparse(models_endpoint)
         path = parsed.path or ""
-        if path.endswith("/v1/models"):
-            path = path[: -len("/v1/models")] + "/slots"
+        if path.endswith(OPENAI_MODELS_PATH):
+            path = path[: -len(OPENAI_MODELS_PATH)] + LOCAL_SLOTS_PATH
         elif path.endswith("/models"):
-            path = path[: -len("/models")] + "/slots"
+            path = path[: -len("/models")] + LOCAL_SLOTS_PATH
         else:
-            path = "/slots"
+            path = LOCAL_SLOTS_PATH
         return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))

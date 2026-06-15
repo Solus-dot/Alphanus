@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Final
 
 from core.backend_profiles import (
     AUTO_BACKEND_PROFILE,
@@ -37,67 +38,80 @@ class BackendCapabilities:
         }
 
 
-def profile_capabilities(profile: str) -> BackendCapabilities:
-    normalized = str(profile or "").strip().lower()
-    if normalized == "mlx_vlm":
-        return BackendCapabilities(
-            supports_chat=True,
-            supports_responses=True,
-            supports_tools=True,
-            supports_multimodal_input=True,
-            strip_stream_options=True,
-            strip_chat_template_kwargs=True,
-            flatten_chat_image_url=True,
-            responses_input_blocks=True,
-            strict_model_integrity=True,
-        )
-    if normalized == "llamacpp":
-        return BackendCapabilities(
-            supports_chat=True,
-            supports_responses=False,
-            supports_tools=True,
-            supports_multimodal_input=True,
-            strip_stream_options=False,
-            strip_chat_template_kwargs=True,
-            strict_model_integrity=True,
-        )
-    if normalized == "ollama":
-        return BackendCapabilities(
-            supports_chat=True,
-            supports_responses=False,
-            supports_tools=True,
-            supports_multimodal_input=True,
-            strip_stream_options=True,
-            strip_chat_template_kwargs=True,
-            strict_model_integrity=False,
-        )
-    if normalized == "vllm":
-        return BackendCapabilities(
-            supports_chat=True,
-            supports_responses=False,
-            supports_tools=True,
-            supports_multimodal_input=True,
-            strip_stream_options=False,
-            strip_chat_template_kwargs=True,
-            strict_model_integrity=False,
-        )
-    if normalized == "lmstudio":
-        return BackendCapabilities(
-            supports_chat=True,
-            supports_responses=False,
-            supports_tools=True,
-            supports_multimodal_input=True,
-            strip_stream_options=True,
-            strip_chat_template_kwargs=True,
-            flatten_chat_image_url=True,
-            strict_model_integrity=False,
-        )
-    return BackendCapabilities(
+_DEFAULT_CAPABILITIES: Final[BackendCapabilities] = BackendCapabilities()
+_PROFILE_CAPABILITIES: Final[dict[str, BackendCapabilities]] = {
+    "mlx_vlm": BackendCapabilities(
         supports_chat=True,
         supports_responses=True,
         supports_tools=True,
         supports_multimodal_input=True,
-    )
+        strip_stream_options=True,
+        strip_chat_template_kwargs=True,
+        flatten_chat_image_url=True,
+        responses_input_blocks=True,
+        strict_model_integrity=True,
+    ),
+    "llamacpp": BackendCapabilities(
+        supports_chat=True,
+        supports_responses=False,
+        supports_tools=True,
+        supports_multimodal_input=True,
+        strip_stream_options=False,
+        strip_chat_template_kwargs=True,
+        strict_model_integrity=True,
+    ),
+    "ollama": BackendCapabilities(
+        supports_chat=True,
+        supports_responses=False,
+        supports_tools=True,
+        supports_multimodal_input=True,
+        strip_stream_options=True,
+        strip_chat_template_kwargs=True,
+        strict_model_integrity=False,
+    ),
+    "vllm": BackendCapabilities(
+        supports_chat=True,
+        supports_responses=False,
+        supports_tools=True,
+        supports_multimodal_input=True,
+        strip_stream_options=False,
+        strip_chat_template_kwargs=True,
+        strict_model_integrity=False,
+    ),
+    "lmstudio": BackendCapabilities(
+        supports_chat=True,
+        supports_responses=False,
+        supports_tools=True,
+        supports_multimodal_input=True,
+        strip_stream_options=True,
+        strip_chat_template_kwargs=True,
+        flatten_chat_image_url=True,
+        strict_model_integrity=False,
+    ),
+}
+_ENDPOINT_FINGERPRINTS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
+    ("ollama", ("ollama", ":11434")),
+    ("lmstudio", ("lmstudio", ":1234")),
+    ("vllm", ("vllm",)),
+    ("llamacpp", ("llama.cpp", "llamacpp")),
+    ("mlx_vlm", ("mlx",)),
+)
+_OWNER_FINGERPRINTS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
+    ("ollama", ("ollama",)),
+    ("vllm", ("vllm",)),
+    ("lmstudio", ("lmstudio",)),
+)
+_MODEL_PAYLOAD_FINGERPRINTS: Final[tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]] = (
+    ("mlx_vlm", ("mlx",), ("vl", "vision")),
+    ("ollama", ("ollama",), ()),
+    ("vllm", ("vllm",), ()),
+    ("llamacpp", ("llama.cpp", "llamacpp"), ()),
+)
+
+
+def profile_capabilities(profile: str) -> BackendCapabilities:
+    normalized = str(profile or "").strip().lower()
+    return replace(_PROFILE_CAPABILITIES.get(normalized, _DEFAULT_CAPABILITIES))
 
 
 def _collect_strings(value: object) -> list[str]:
@@ -161,36 +175,23 @@ def detect_backend_profile(
     endpoints_blob = " ".join(
         part.lower() for part in (base_url, model_endpoint, responses_endpoint, models_endpoint) if str(part or "").strip()
     )
-    if "ollama" in endpoints_blob or ":11434" in endpoints_blob:
-        return "ollama", "endpoint fingerprint"
-    if "lmstudio" in endpoints_blob or ":1234" in endpoints_blob:
-        return "lmstudio", "endpoint fingerprint"
-    if "vllm" in endpoints_blob:
-        return "vllm", "endpoint fingerprint"
-    if "llama.cpp" in endpoints_blob or "llamacpp" in endpoints_blob:
-        return "llamacpp", "endpoint fingerprint"
-    if "mlx" in endpoints_blob:
-        return "mlx_vlm", "endpoint fingerprint"
+    for profile, markers in _ENDPOINT_FINGERPRINTS:
+        if any(marker in endpoints_blob for marker in markers):
+            return profile, "endpoint fingerprint"
 
     owner = _payload_owned_by(models_payload)
     if owner:
-        if "ollama" in owner:
-            return "ollama", "models payload owner"
-        if "vllm" in owner:
-            return "vllm", "models payload owner"
-        if "lmstudio" in owner:
-            return "lmstudio", "models payload owner"
+        for profile, markers in _OWNER_FINGERPRINTS:
+            if any(marker in owner for marker in markers):
+                return profile, "models payload owner"
 
     joined_models = " ".join(value.lower() for value in _collect_strings(models_payload))
     if joined_models:
-        if "mlx" in joined_models and ("vl" in joined_models or "vision" in joined_models):
-            return "mlx_vlm", "models payload signature"
-        if "ollama" in joined_models:
-            return "ollama", "models payload signature"
-        if "vllm" in joined_models:
-            return "vllm", "models payload signature"
-        if "llama.cpp" in joined_models or "llamacpp" in joined_models:
-            return "llamacpp", "models payload signature"
+        for profile, required_markers, secondary_markers in _MODEL_PAYLOAD_FINGERPRINTS:
+            if any(marker in joined_models for marker in required_markers) and (
+                not secondary_markers or any(marker in joined_models for marker in secondary_markers)
+            ):
+                return profile, "models payload signature"
 
     return UNKNOWN_BACKEND_PROFILE, "insufficient signals"
 
