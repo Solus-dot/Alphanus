@@ -13,6 +13,7 @@ from html import unescape
 from typing import Any
 
 from core.coercion import coerce_bool
+from core.endpoint_modes import OPENAI_EMBEDDINGS_PATH
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
 from core.search_providers import DEFAULT_TAVILY_API_KEY_ENV, SEARCH_PROVIDER_SEARXNG, SEARCH_PROVIDER_TAVILY
 from core.streaming import should_retry
@@ -494,7 +495,7 @@ def _embedding_cfg(env: ToolExecutionEnv) -> dict[str, Any]:
 
 def _embedding_endpoint(base_url: str) -> str:
     trimmed = base_url.rstrip("/")
-    return trimmed if trimmed.endswith("/embeddings") else f"{trimmed}/v1/embeddings"
+    return trimmed if trimmed.endswith("/embeddings") else f"{trimmed}{OPENAI_EMBEDDINGS_PATH}"
 
 
 def _embedding_vectors(texts: list[str], env: ToolExecutionEnv) -> tuple[str, list[list[float]]]:

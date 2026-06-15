@@ -28,6 +28,7 @@
   - [Terminal UI](#terminal-ui)
   - [Collaboration Modes](#collaboration-modes)
   - [Skills and Tool Loading](#skills-and-tool-loading)
+  - [Built-In Skills](#built-in-skills)
   - [Workspace Operations](#workspace-operations)
   - [Memory](#memory)
   - [Search](#search)
@@ -205,6 +206,29 @@ Useful commands:
 - `/skill-reload`
 - `/skill-info <id>`
 
+### Built-In Skills
+
+Bundled skills cover workspace work, shell execution, search, memory, and a small set of desktop/local utilities.
+
+Core workspace/runtime skills:
+
+- `workspace-ops`: read, create, edit, move, delete, tree, and code-search files inside the configured workspace
+- `shell-ops`: run confirmed shell commands from the workspace with visible stdout/stderr previews
+- `search-ops`: web search and page fetch through configured providers
+- `memory-rag`: recall and save stable local facts
+- `utilities`: weather, URL/Youtube helpers, and simple local utility lookups
+- `git`: inspect and operate on Git repositories with path policy checks
+
+Desktop and local-inspection skills:
+
+- `app-control`: list, open, focus, and quit desktop applications; open/focus/quit require explicit confirmation
+- `browser-control`: open URLs/searches with confirmation and inspect the current browser page where supported
+- `local-search`: search filenames and text under the configured home/workspace policy, skipping sensitive/protected paths
+- `document-tools`: extract text/tables from TXT, CSV, PDF, and DOCX; PDF/DOCX require optional dependencies
+- `screenshot-ocr`: capture screenshots with confirmation and OCR explicit image paths when OCR tooling is installed
+
+Skill discovery is intentionally explicit. `/skills` shows the installed catalog, `/skill-info <id>` shows detailed metadata, and `skill_view` loads a skill's full instructions/tools into a session.
+
 ### Themes
 
 - Built-in themes are JSON files under `src/tui/theme_specs/`
@@ -288,9 +312,10 @@ Runtime safety knobs:
 - `runtime.profile`: `standard` or `minimal`
 - `capabilities.permission_profile`: `safe`, `workspace`, `full`
 - shell commands require confirmation by default
-- shell commands run as argv, not through a persistent shell session
-- shell command metacharacters such as `&&`, `||`, `;`, `|`, newlines, and carriage returns are blocked
-- dangerous shell patterns are blocked
+- shell commands run through the user's shell when approved, so normal shell syntax such as `&&`, `;`, pipes, redirects, environment assignments, and globbing is available
+- protected internal state such as `.alphanus` is blocked before execution, including common shell expansion paths
+- dangerous shell patterns are blocked by policy
+- desktop actions such as app launch, browser open, and screenshot capture require explicit tool-level confirmation when they can affect the local machine
 
 ### Turn Trace and Diagnostics
 

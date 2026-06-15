@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import urllib.error
+import urllib.parse
 from pathlib import Path
 
 from core.attachments import build_content, classify_attachment, image_mime_type
@@ -187,7 +188,10 @@ def test_open_url_accepts_file_urls_in_runtime(mocker, tmp_path: Path):
         return True
 
     mocker.patch.object(module.webbrowser, "open", side_effect=_capture_open)
-    file_url = "file:///Users/sohom/Desktop/Alphanus-Workspace/pomodoro-app/index.html"
+    target = tmp_path / "pomodoro-app" / "index.html"
+    target.parent.mkdir()
+    target.write_text("<!doctype html>\n", encoding="utf-8")
+    file_url = urllib.parse.urljoin("file:", urllib.parse.quote(str(target)))
 
     out = runtime.execute_tool_call(
         "open_url",
