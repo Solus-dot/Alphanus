@@ -104,10 +104,8 @@ def test_cmd_skills_renders_shared_skill_capability_summary() -> None:
 
     cmd_skills(app, accent_color="#6366f1")
 
-    assert any("heading:Skills" == line for line in app.lines)
-    assert any(
-        "execution=yes · adapter=agentskills · user=yes · model=yes · tools=1 · scripts=1 · entrypoints=1" in line for line in app.lines
-    )
+    assert any("heading:Skills (1 installed, 1 loaded)" == line for line in app.lines)
+    assert any("exec:on · adapter:agentskills · invoke:user,model · tools:1 · scripts:1 · entry:1" in line for line in app.lines)
     assert any("validation:" in line and "missing field" in line for line in app.lines)
 
 
@@ -117,7 +115,5 @@ def test_cmd_doctor_renders_shared_skill_capability_summary() -> None:
     cmd_doctor(app, accent_color="#6366f1")
 
     assert any("heading:Skills" == line for line in app.lines)
-    assert any(
-        "execution=yes · adapter=agentskills · user=yes · model=yes · tools=1 · scripts=1 · entrypoints=1" in line for line in app.lines
-    )
+    assert any("exec:on · adapter:agentskills · invoke:user,model · tools:1 · scripts:1 · entry:1" in line for line in app.lines)
     assert any("validation:" in line and "missing field" in line for line in app.lines)

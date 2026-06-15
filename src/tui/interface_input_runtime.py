@@ -92,11 +92,14 @@ def handle_key(app: Any, event: Any, *, chat_input_cls: Any) -> None:
         return
     if not app._await_shell_confirm:
         return
-    key = event.key.lower()
-    if key == "y":
+    key_values = {
+        str(getattr(event, "key", "") or "").strip().lower(),
+        str(getattr(event, "character", "") or "").strip().lower(),
+    }
+    if "y" in key_values:
         app._finish_shell_confirm(True)
         event.stop()
-    elif key in {"n", "escape"}:
+    elif key_values.intersection({"n", "escape"}):
         app._finish_shell_confirm(False)
         event.stop()
 

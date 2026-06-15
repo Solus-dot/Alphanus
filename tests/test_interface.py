@@ -2491,6 +2491,36 @@ def test_on_key_empty_backspace_removes_last_attachment() -> None:
     assert stopped == ["stop"]
 
 
+@pytest.mark.parametrize(
+    ("key", "character", "approved"),
+    [
+        ("y", None, True),
+        ("shift+y", "Y", True),
+        ("n", None, False),
+        ("shift+n", "N", False),
+        ("escape", None, False),
+    ],
+)
+def test_on_key_shell_confirmation_accepts_key_or_character(key: str, character: str | None, approved: bool) -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui._id = "app"
+    tui._reactive_streaming = True
+    tui._await_shell_confirm = True
+    finished: list[bool] = []
+    tui._finish_shell_confirm = finished.append
+
+    chat_input = SimpleNamespace(has_focus=False, value="")
+    tui.query_one = lambda selector, _type=None: chat_input if selector is ChatInput else None
+
+    stopped: list[str] = []
+    event = SimpleNamespace(key=key, character=character, stop=lambda: stopped.append("stop"))
+
+    tui.on_key(event)
+
+    assert finished == [approved]
+    assert stopped == ["stop"]
+
+
 def test_action_remove_last_attachment_keeps_typed_draft_text() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._id = "app"
@@ -3231,9 +3261,9 @@ def test_cmd_skills_shows_validation_summary() -> None:
     tui._cmd_skills()
 
     joined = "\n".join(lines)
-    assert "SECTION:Skills" in joined
-    assert "execution=no" in joined
-    assert "adapter=claude" in joined
+    assert "SECTION:Skills (1 installed, 0 loaded)" in joined
+    assert "exec:off" in joined
+    assert "adapter:claude" in joined
     assert "validation:" in joined
 
 
@@ -3283,6 +3313,6 @@ def test_cmd_doctor_shows_skill_policy_details() -> None:
     joined = "\n".join(lines)
     assert "SECTION:Doctor" in joined
     assert "SECTION:Skills" in joined
-    assert "execution=no" in joined
-    assert "adapter=agentskills" in joined
+    assert "exec:off" in joined
+    assert "adapter:agentskills" in joined
     assert "validation:" in joined

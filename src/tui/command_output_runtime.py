@@ -14,18 +14,25 @@ from tui.tree_render import render_tree_rows
 def _skill_capability_summary(
     *, execution_allowed: bool, adapter: Any, tools: Any, scripts: Any, entrypoints: Any, user_invocable: bool, model_invocable: bool
 ) -> str:
+    invokers = ",".join(
+        label
+        for label, enabled in (
+            ("user", user_invocable),
+            ("model", model_invocable),
+        )
+        if enabled
+    )
     parts = [
-        f"execution={'yes' if execution_allowed else 'no'}",
-        f"adapter={adapter}",
-        f"user={'yes' if user_invocable else 'no'}",
-        f"model={'yes' if model_invocable else 'no'}",
+        f"exec:{'on' if execution_allowed else 'off'}",
+        f"adapter:{adapter}",
+        f"invoke:{invokers or 'none'}",
     ]
     if tools:
-        parts.append(f"tools={len(tools)}")
+        parts.append(f"tools:{len(tools)}")
     if scripts:
-        parts.append(f"scripts={len(scripts)}")
+        parts.append(f"scripts:{len(scripts)}")
     if entrypoints:
-        parts.append(f"entrypoints={len(entrypoints)}")
+        parts.append(f"entry:{len(entrypoints)}")
     return " · ".join(parts)
 
 
@@ -33,6 +40,18 @@ def _write_validation_error(app: Any, validation_errors: Any) -> None:
     errors = [item for item in (str(value).strip() for value in (validation_errors or [])) if item]
     if errors:
         app._write(f"    [#f59e0b]validation:[/#f59e0b] [#a1a1aa]{esc(errors[0])}[/#a1a1aa]")
+
+
+def _skill_source_summary(provenance: Any, source: Any) -> str:
+    provenance_text = str(provenance or "").strip()
+    source_text = str(source or "").strip()
+    if not source_text or source_text == provenance_text:
+        return provenance_text
+    if provenance_text == "bundled" and source_text.startswith("bundled-skills/"):
+        return provenance_text
+    if not provenance_text:
+        return source_text
+    return f"{provenance_text} · {source_text}"
 
 
 def cmd_help(app: Any, *, help_sections, accent_color: str) -> None:
@@ -60,17 +79,18 @@ def cmd_tree(app: Any, *, accent_color: str) -> None:
 def cmd_skills(app: Any, *, accent_color: str) -> None:
     skills = app.agent.skill_runtime.list_skills()
     loaded_skill_ids = set(getattr(app, "_loaded_skill_ids", []))
-    app._write_section_heading("Skills")
+    loaded_count = sum(1 for skill in skills if skill.id in loaded_skill_ids)
+    app._write_section_heading(f"Skills ({len(skills)} installed, {loaded_count} loaded)")
     for skill in skills:
         state, color = app.agent.skill_runtime.skill_status_label(skill)
         source = app.agent.skill_runtime.skill_source_label(skill)
         provenance = app.agent.skill_runtime.skill_provenance_label(skill)
+        source_bits = _skill_source_summary(provenance, source)
+        loaded_badge = " [bold #22c55e]loaded[/bold #22c55e]" if skill.id in loaded_skill_ids else ""
         app._write(
-            f"  [bold {accent_color}]{esc(skill.id)}[/bold {accent_color}] [#a1a1aa]({esc(skill.version)})[/#a1a1aa] [{color}]{state}[/{color}]{' [bold #22c55e]loaded[/bold #22c55e]' if skill.id in loaded_skill_ids else ''}"
+            f"  [bold {accent_color}]{esc(skill.id)}[/bold {accent_color}] [#71717a]v{esc(skill.version)}[/#71717a] "
+            f"[{color}]{state}[/{color}]{loaded_badge} [#71717a]· {esc(source_bits)}[/#71717a]"
         )
-        app._write(f"    [#a1a1aa]{esc(skill.description)}[/#a1a1aa]")
-        source_bits = provenance if not source else f"{provenance} · {source}"
-        app._write(f"    [#71717a]{esc(source_bits)}[/#71717a]")
         capabilities = _skill_capability_summary(
             execution_allowed=getattr(skill, "execution_allowed", True),
             adapter=getattr(skill, "adapter", "agentskills"),
@@ -80,7 +100,7 @@ def cmd_skills(app: Any, *, accent_color: str) -> None:
             user_invocable=skill.user_invocable,
             model_invocable=not skill.disable_model_invocation,
         )
-        app._write(f"    [#71717a]{esc(capabilities)}[/#71717a]")
+        app._write(f"    [#a1a1aa]{esc(skill.description)}[/#a1a1aa] [#71717a]· {esc(capabilities)}[/#71717a]")
         if not skill.available and skill.availability_reason:
             code = esc(skill.availability_code or "blocked")
             app._write(
