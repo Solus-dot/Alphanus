@@ -931,7 +931,7 @@ class AlphanusTUI(App):
             self._hide_command_popup()
         self._update_status2()
 
-    def watch_thinking(self, value: bool) -> None:
+    def watch_thinking(self, _value: bool) -> None:
         self._update_status1()
         self._update_status2()
 
@@ -1548,12 +1548,12 @@ class AlphanusTUI(App):
             self._auto_follow_stream = True
             self._update_status2()
 
-    def on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+    def on_mouse_scroll_up(self, _event: events.MouseScrollUp) -> None:
         if self.streaming:
             self._auto_follow_stream = False
             self._update_status2()
 
-    def on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+    def on_mouse_scroll_down(self, _event: events.MouseScrollDown) -> None:
         if not self.streaming:
             return
         self.call_after_refresh(self._resume_auto_follow_if_near_bottom)

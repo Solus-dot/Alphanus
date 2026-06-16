@@ -296,7 +296,7 @@ def write_assistant_bar_wrapped_line(app: Any, line: str, markup: str) -> None:
 
 
 def syntax_renderable(
-    app: Any,
+    _app: Any,
     code: str,
     language: str | None,
     *,

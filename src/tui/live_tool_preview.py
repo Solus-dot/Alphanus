@@ -229,6 +229,7 @@ class LiveToolPreviewManager:
         write_code: WriteCodeFn | None = None,
         clear_preview: ClearPreviewFn | None = None,
     ) -> bool:
+        _ = (write_indented, write_code, clear_preview)
         canonical_name = self.canonical_preview_tool_name(name)
         if canonical_name not in self.draft_preview_tools:
             return False

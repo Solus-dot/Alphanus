@@ -55,6 +55,7 @@ def _skill_source_summary(provenance: Any, source: Any) -> str:
 
 
 def cmd_help(app: Any, *, help_sections, accent_color: str) -> None:
+    _ = accent_color
     app._write("")
     col = max((len(command) for _, rows in help_sections for command, _ in rows), default=22) + 2
     for section, rows in help_sections:
