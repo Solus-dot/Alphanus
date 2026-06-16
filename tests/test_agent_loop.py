@@ -546,7 +546,7 @@ def test_agent_run_turn_exercises_structured_classification_path(mocker, runtime
     agent = Agent(cfg, runtime)
     requests = []
 
-    monkeypatch.setattr(agent.classifier, "_should_model_classify", lambda ctx, seed: True)
+    monkeypatch.setattr(agent.classifier, "_should_model_classify", lambda: True)
 
     def fake_urlopen(req, timeout=None, context=None):
         if req.full_url.endswith("/v1/models"):
@@ -2676,7 +2676,7 @@ def test_prompt_policy_renderer_uses_configured_context_limit_for_skill_budget(m
     rendered = renderer.compose_system_content(selected, ctx)
 
     assert "loaded guidance" in rendered
-    skill_runtime.compose_skill_block.assert_called_once_with(selected, ctx, context_limit=4096)
+    skill_runtime.compose_skill_block.assert_called_once_with(selected, context_limit=4096)
 
 
 def test_large_tool_call_args_are_compacted_in_history(runtime: SkillRuntime):

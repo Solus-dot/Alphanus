@@ -116,7 +116,6 @@ class PromptPolicyRenderer:
         if selected:
             skill_block = self.skill_runtime.compose_skill_block(
                 selected,
-                ctx,
                 context_limit=self.context_limit,
             )
             if skill_block:
