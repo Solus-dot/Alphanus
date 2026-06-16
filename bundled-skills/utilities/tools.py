@@ -14,6 +14,8 @@ from skills.runtime import ToolExecutionEnv
 TOOL_SPECS = {
     "get_weather": {
         "capability": "utility_weather",
+        "mutates": False,
+        "actions": ["read", "check"],
         "description": "Fetch weather for a city.",
         "parameters": {
             "type": "object",
@@ -23,6 +25,8 @@ TOOL_SPECS = {
     },
     "search_home_files": {
         "capability": "utility_file_search",
+        "mutates": False,
+        "actions": ["read", "list", "check"],
         "description": "Search filenames under home directory.",
         "parameters": {
             "type": "object",
@@ -35,6 +39,8 @@ TOOL_SPECS = {
     },
     "open_url": {
         "capability": "utility_open_url",
+        "mutates": True,
+        "actions": ["open"],
         "description": "Open URL in default browser.",
         "parameters": {
             "type": "object",
@@ -44,6 +50,8 @@ TOOL_SPECS = {
     },
     "play_youtube": {
         "capability": "utility_play_youtube",
+        "mutates": True,
+        "actions": ["open"],
         "description": "Open the first YouTube video result for a topic and autoplay when resolvable.",
         "parameters": {
             "type": "object",

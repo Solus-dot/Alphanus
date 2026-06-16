@@ -19,6 +19,8 @@ _DEFAULT_SCREENSHOT_FILENAME = "screenshot.png"
 TOOL_SPECS = {
     "capture_screenshot": {
         "capability": "screen_capture",
+        "mutates": True,
+        "actions": ["read", "check"],
         "description": "Capture a full-screen screenshot. Requires confirm_capture=true.",
         "parameters": {
             "type": "object",
@@ -28,6 +30,8 @@ TOOL_SPECS = {
     },
     "ocr_image": {
         "capability": "ocr_read",
+        "mutates": False,
+        "actions": ["read", "check"],
         "description": "Run OCR on an explicit image file path. Requires optional OCR tooling.",
         "parameters": {
             "type": "object",
@@ -37,6 +41,8 @@ TOOL_SPECS = {
     },
     "capture_and_ocr": {
         "capability": "screen_capture",
+        "mutates": True,
+        "actions": ["read", "check"],
         "description": "Capture a full-screen screenshot and OCR it. Requires confirm_capture=true and OCR tooling.",
         "parameters": {
             "type": "object",

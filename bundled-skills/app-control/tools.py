@@ -11,6 +11,8 @@ from skills.runtime import ToolExecutionEnv
 TOOL_SPECS = {
     "list_apps": {
         "capability": "desktop_read",
+        "mutates": False,
+        "actions": ["list", "read"],
         "description": "List running desktop applications where the platform supports it.",
         "parameters": {
             "type": "object",
@@ -20,6 +22,8 @@ TOOL_SPECS = {
     },
     "open_app": {
         "capability": "desktop_control",
+        "mutates": True,
+        "actions": ["open"],
         "description": "Open a desktop application. Requires confirm_open=true.",
         "parameters": {
             "type": "object",
@@ -29,6 +33,8 @@ TOOL_SPECS = {
     },
     "focus_app": {
         "capability": "desktop_control",
+        "mutates": True,
+        "actions": ["open"],
         "description": "Focus a running desktop application. Requires confirm_focus=true.",
         "parameters": {
             "type": "object",
@@ -38,6 +44,8 @@ TOOL_SPECS = {
     },
     "quit_app": {
         "capability": "desktop_control",
+        "mutates": True,
+        "actions": ["delete"],
         "description": "Quit a desktop application. Requires confirm_quit=true.",
         "parameters": {
             "type": "object",
@@ -186,7 +194,7 @@ def _quit_app(args: dict[str, object]) -> dict[str, object]:
     return _ok({"platform": system, "name": name, "force": force})
 
 
-def execute(tool_name: str, args: dict[str, object], env: ToolExecutionEnv) -> dict[str, Any]:
+def execute(tool_name: str, args: dict[str, object], _env: ToolExecutionEnv) -> dict[str, Any]:
     if tool_name == "list_apps":
         return _list_apps(args)
     if tool_name == "open_app":

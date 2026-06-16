@@ -14,6 +14,8 @@ _MAX_ROWS_LIMIT = 5000
 TOOL_SPECS = {
     "extract_document_text": {
         "capability": "document_read",
+        "mutates": False,
+        "actions": ["read"],
         "description": "Extract text from TXT, CSV, PDF, or DOCX. PDF/DOCX require optional dependencies.",
         "parameters": {
             "type": "object",
@@ -23,6 +25,8 @@ TOOL_SPECS = {
     },
     "extract_document_tables": {
         "capability": "document_read",
+        "mutates": False,
+        "actions": ["read", "list"],
         "description": "Extract table-like rows from CSV or DOCX tables when optional dependencies are available.",
         "parameters": {
             "type": "object",

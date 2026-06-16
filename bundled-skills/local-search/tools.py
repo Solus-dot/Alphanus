@@ -9,6 +9,8 @@ from skills.runtime import ToolExecutionEnv
 TOOL_SPECS = {
     "search_local_files": {
         "capability": "local_search",
+        "mutates": False,
+        "actions": ["read", "list", "check"],
         "description": "Search local filenames and text content under home/workspace policy.",
         "parameters": {
             "type": "object",

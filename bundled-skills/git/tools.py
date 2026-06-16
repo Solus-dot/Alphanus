@@ -11,6 +11,8 @@ from skills.runtime import ToolExecutionEnv
 TOOL_SPECS = {
     "git_status": {
         "capability": "workspace_read",
+        "mutates": False,
+        "actions": ["check", "read"],
         "description": "Return structured Git status for a repository inside the workspace.",
         "parameters": {
             "type": "object",
@@ -20,6 +22,8 @@ TOOL_SPECS = {
     },
     "git_log": {
         "capability": "workspace_read",
+        "mutates": False,
+        "actions": ["read", "list"],
         "description": "Return recent Git commits for a repository inside the workspace.",
         "parameters": {
             "type": "object",
@@ -33,6 +37,8 @@ TOOL_SPECS = {
     },
     "git_diff": {
         "capability": "workspace_read",
+        "mutates": False,
+        "actions": ["read", "check"],
         "description": "Return Git diff output for a repository inside the workspace.",
         "parameters": {
             "type": "object",
@@ -47,6 +53,8 @@ TOOL_SPECS = {
     },
     "git_show": {
         "capability": "workspace_read",
+        "mutates": False,
+        "actions": ["read"],
         "description": "Show a Git object or revision inside a workspace repository.",
         "parameters": {
             "type": "object",
@@ -60,6 +68,8 @@ TOOL_SPECS = {
     },
     "git_branch_list": {
         "capability": "workspace_read",
+        "mutates": False,
+        "actions": ["list", "read"],
         "description": "List local and optional remote Git branches.",
         "parameters": {
             "type": "object",
@@ -72,6 +82,8 @@ TOOL_SPECS = {
     },
     "git_branch_create": {
         "capability": "workspace_write",
+        "mutates": True,
+        "actions": ["create"],
         "description": "Create a Git branch in a workspace repository.",
         "parameters": {
             "type": "object",
@@ -86,6 +98,8 @@ TOOL_SPECS = {
     },
     "git_branch_switch": {
         "capability": "workspace_write",
+        "mutates": True,
+        "actions": ["update"],
         "description": "Switch Git branches when the working tree is clean.",
         "parameters": {
             "type": "object",
@@ -99,6 +113,8 @@ TOOL_SPECS = {
     },
     "git_add": {
         "capability": "workspace_write",
+        "mutates": True,
+        "actions": ["update"],
         "description": "Stage explicit paths in a workspace Git repository.",
         "parameters": {
             "type": "object",
@@ -112,6 +128,8 @@ TOOL_SPECS = {
     },
     "git_commit": {
         "capability": "workspace_write",
+        "mutates": True,
+        "actions": ["save", "write"],
         "description": "Commit currently staged changes with a non-empty message.",
         "parameters": {
             "type": "object",
@@ -125,6 +143,8 @@ TOOL_SPECS = {
     },
     "git_fetch": {
         "capability": "workspace_write",
+        "mutates": True,
+        "actions": ["update"],
         "description": "Fetch from a Git remote in a workspace repository.",
         "parameters": {
             "type": "object",
@@ -137,6 +157,8 @@ TOOL_SPECS = {
     },
     "git_pull": {
         "capability": "workspace_write",
+        "mutates": True,
+        "actions": ["update"],
         "description": "Pull from a Git remote, defaulting to rebase.",
         "parameters": {
             "type": "object",
@@ -151,6 +173,8 @@ TOOL_SPECS = {
     },
     "git_push": {
         "capability": "workspace_write",
+        "mutates": True,
+        "actions": ["update"],
         "description": "Push to a Git remote after explicit confirmation. Force push modes are rejected.",
         "parameters": {
             "type": "object",
@@ -167,6 +191,8 @@ TOOL_SPECS = {
     },
     "git_init": {
         "capability": "workspace_write",
+        "mutates": True,
+        "actions": ["create"],
         "description": "Initialize a Git repository in an explicit descendant folder inside the workspace, never at workspace root.",
         "parameters": {
             "type": "object",

@@ -23,6 +23,8 @@ _DEFAULT_MAC_BROWSER_APPS = ["Safari", "Google Chrome", "Chromium", "Brave Brows
 TOOL_SPECS = {
     "open_browser_url": {
         "capability": "browser_open",
+        "mutates": True,
+        "actions": ["open"],
         "description": "Open a URL in the default browser. Requires confirm_open=true.",
         "parameters": {
             "type": "object",
@@ -32,6 +34,8 @@ TOOL_SPECS = {
     },
     "browser_search": {
         "capability": "browser_open",
+        "mutates": True,
+        "actions": ["open", "read"],
         "description": "Open a browser search. Requires confirm_open=true.",
         "parameters": {
             "type": "object",
@@ -41,6 +45,8 @@ TOOL_SPECS = {
     },
     "get_current_browser_page": {
         "capability": "browser_read",
+        "mutates": False,
+        "actions": ["read", "check"],
         "description": "Return best-effort current browser URL/title/text where platform support exists.",
         "parameters": {
             "type": "object",
@@ -144,7 +150,7 @@ def _current_page(args: dict[str, object]) -> dict[str, object]:
     return _err("E_UNSUPPORTED", "Current browser page inspection is not supported on this platform/browser", {"platform": system, "browser": browser})
 
 
-def execute(tool_name: str, args: dict[str, object], env: ToolExecutionEnv) -> dict[str, Any]:
+def execute(tool_name: str, args: dict[str, object], _env: ToolExecutionEnv) -> dict[str, Any]:
     if tool_name == "open_browser_url":
         return _open_url(args)
     if tool_name == "browser_search":

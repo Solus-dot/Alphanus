@@ -9,6 +9,8 @@ from skills.runtime import ToolExecutionEnv
 TOOL_SPECS = {
     "create_directory": {
         "capability": "workspace_write",
+        "mutates": True,
+        "actions": ["create"],
         "description": "Create a directory in the workspace.",
         "parameters": {
             "type": "object",
@@ -18,6 +20,8 @@ TOOL_SPECS = {
     },
     "create_file": {
         "capability": "workspace_write",
+        "mutates": True,
+        "actions": ["create", "write", "save"],
         "description": "Create or overwrite a file in the workspace.",
         "parameters": {
             "type": "object",
@@ -30,6 +34,8 @@ TOOL_SPECS = {
     },
     "edit_file": {
         "capability": "workspace_edit",
+        "mutates": True,
+        "actions": ["edit", "update", "write"],
         "description": (
             "Edit an existing workspace file. Supports exactly one mode per call: full content replace, "
             "localized old_string/new_string, or regex replacement. Optional line-range and anchor selectors "
@@ -58,6 +64,8 @@ TOOL_SPECS = {
     },
     "read_file": {
         "capability": "workspace_read",
+        "mutates": False,
+        "actions": ["read"],
         "description": "Read a file under home/workspace policy. Optional line-range and anchor selectors can return a specific section.",
         "parameters": {
             "type": "object",
@@ -74,6 +82,8 @@ TOOL_SPECS = {
     },
     "read_files": {
         "capability": "workspace_read",
+        "mutates": False,
+        "actions": ["read"],
         "description": "Read multiple files under home/workspace policy with per-file truncation metadata.",
         "parameters": {
             "type": "object",
@@ -89,6 +99,8 @@ TOOL_SPECS = {
     },
     "list_files": {
         "capability": "workspace_read",
+        "mutates": False,
+        "actions": ["list", "read"],
         "description": "List files in a directory.",
         "parameters": {
             "type": "object",
@@ -98,6 +110,8 @@ TOOL_SPECS = {
     },
     "search_code": {
         "capability": "workspace_read",
+        "mutates": False,
+        "actions": ["read", "check"],
         "description": "Search the workspace codebase with ripgrep when available. Optional context lines can be returned per match.",
         "parameters": {
             "type": "object",
@@ -116,6 +130,8 @@ TOOL_SPECS = {
     },
     "move_path": {
         "capability": "workspace_write",
+        "mutates": True,
+        "actions": ["move", "rename"],
         "description": "Move or rename a workspace file or directory.",
         "parameters": {
             "type": "object",
@@ -129,6 +145,8 @@ TOOL_SPECS = {
     },
     "delete_path": {
         "capability": "workspace_delete",
+        "mutates": True,
+        "actions": ["delete", "remove"],
         "description": "Delete a workspace file or directory inside the workspace.",
         "parameters": {
             "type": "object",
@@ -141,6 +159,8 @@ TOOL_SPECS = {
     },
     "workspace_tree": {
         "capability": "workspace_tree",
+        "mutates": False,
+        "actions": ["list", "read"],
         "description": "Render the workspace tree.",
         "parameters": {
             "type": "object",

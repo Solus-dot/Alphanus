@@ -10,6 +10,8 @@ from skills.runtime import ToolExecutionEnv
 TOOL_SPECS = {
     "store_memory": {
         "capability": "memory_store",
+        "mutates": True,
+        "actions": ["save", "write", "update"],
         "description": "Persist a memory item.",
         "parameters": {
             "type": "object",
@@ -29,6 +31,8 @@ TOOL_SPECS = {
     },
     "recall_memory": {
         "capability": "memory_recall",
+        "mutates": False,
+        "actions": ["read", "check"],
         "description": "Semantic search over memories.",
         "parameters": {
             "type": "object",
@@ -43,6 +47,8 @@ TOOL_SPECS = {
     },
     "list_memories": {
         "capability": "memory_list",
+        "mutates": False,
+        "actions": ["list", "read"],
         "description": "List recent memories.",
         "parameters": {
             "type": "object",
@@ -52,6 +58,8 @@ TOOL_SPECS = {
     },
     "forget_memory": {
         "capability": "memory_forget",
+        "mutates": True,
+        "actions": ["delete", "remove"],
         "description": "Delete memory by id.",
         "parameters": {
             "type": "object",
@@ -61,6 +69,8 @@ TOOL_SPECS = {
     },
     "get_memory_stats": {
         "capability": "memory_stats",
+        "mutates": False,
+        "actions": ["check", "read"],
         "description": "Get memory statistics.",
         "parameters": {
             "type": "object",
@@ -70,6 +80,8 @@ TOOL_SPECS = {
     },
     "export_memories": {
         "capability": "memory_export",
+        "mutates": True,
+        "actions": ["save", "write"],
         "description": "Export memories to a text file.",
         "parameters": {
             "type": "object",

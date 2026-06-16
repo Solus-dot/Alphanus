@@ -8,6 +8,8 @@ _MAX_TIMEOUT_S = 7200
 TOOL_SPECS = {
     "shell_command": {
         "capability": "run_shell_command",
+        "mutates": True,
+        "actions": ["run", "check", "read", "list"],
         "description": (
             "Run a shell command in the workspace using the user's shell. Shell syntax such as &&, ;, pipes, redirects, "
             "environment assignments, and globbing is allowed. The tool itself asks for confirmation when required, "

@@ -22,6 +22,8 @@ from skills.runtime import ToolExecutionEnv
 TOOL_SPECS = {
     "web_search": {
         "capability": "web_search",
+        "mutates": False,
+        "actions": ["read", "check"],
         "description": "Search the public web and return structured results with titles, URLs, snippets, and source metadata.",
         "parameters": {
             "type": "object",
@@ -34,6 +36,8 @@ TOOL_SPECS = {
     },
     "fetch_url": {
         "capability": "web_fetch",
+        "mutates": False,
+        "actions": ["read"],
         "description": "Fetch a URL and extract readable text content plus source metadata.",
         "parameters": {
             "type": "object",
@@ -46,6 +50,8 @@ TOOL_SPECS = {
     },
     "retrieve_knowledge": {
         "capability": "knowledge_retrieve",
+        "mutates": False,
+        "actions": ["read", "check"],
         "description": "Search the local SQLite retrieval index for web, memory, workspace, and tool outcome records.",
         "parameters": {
             "type": "object",
@@ -59,6 +65,8 @@ TOOL_SPECS = {
     },
     "index_workspace": {
         "capability": "workspace_index",
+        "mutates": True,
+        "actions": ["update"],
         "description": "Index explicitly selected workspace files into the local retrieval store.",
         "parameters": {
             "type": "object",
@@ -71,11 +79,15 @@ TOOL_SPECS = {
     },
     "retrieval_stats": {
         "capability": "retrieval_stats",
+        "mutates": False,
+        "actions": ["check", "read"],
         "description": "Return local retrieval database statistics and embedding availability.",
         "parameters": {"type": "object", "properties": {}, "required": []},
     },
     "forget_retrieval_record": {
         "capability": "retrieval_forget",
+        "mutates": True,
+        "actions": ["delete", "remove"],
         "description": "Delete a retrieval record by id.",
         "parameters": {
             "type": "object",
@@ -182,7 +194,7 @@ class SearchResponse:
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, _newurl):
+    def redirect_request(self, _req, _fp, _code, _msg, _headers, _newurl):
         return None
 
 
