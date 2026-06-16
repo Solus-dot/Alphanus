@@ -12,27 +12,25 @@ class SkillRunValidator:
         self,
         args: dict[str, Any],
         selected: list[Any],
-        ctx: Any,
     ) -> dict[str, Any]:
         requested_entrypoint = str(args.get("entrypoint", "")).strip()
         requested_script = str(args.get("script", "")).strip()
         if bool(requested_entrypoint) == bool(requested_script):
             raise ValueError("run_skill requires exactly one of 'entrypoint' or 'script'")
         if requested_entrypoint:
-            return self.validate_skill_entrypoint_args(args, selected, ctx)
-        return self.validate_skill_script_args(args, selected, ctx)
+            return self.validate_skill_entrypoint_args(args, selected)
+        return self.validate_skill_script_args(args, selected)
 
     def validate_skill_script_args(
         self,
         args: dict[str, Any],
         selected: list[Any],
-        ctx: Any,
     ) -> dict[str, Any]:
         runtime = self.runtime
         selected_with_scripts = [
             skill
             for skill in selected
-            if runtime._exposed_relevant_skill_scripts(skill, ctx) and not skill.disable_model_invocation and skill.execution_allowed
+            if runtime._exposed_relevant_skill_scripts(skill) and not skill.disable_model_invocation and skill.execution_allowed
         ]
         if not selected_with_scripts:
             raise PermissionError("No selected skills expose runnable bundled scripts")
@@ -51,7 +49,7 @@ class SkillRunValidator:
         requested_script = str(args.get("script", "")).strip()
         if not requested_script:
             raise ValueError("Missing required argument: script")
-        runnable = runtime._exposed_relevant_skill_scripts(skill, ctx)
+        runnable = runtime._exposed_relevant_skill_scripts(skill)
         chosen = ""
         if requested_script in runnable:
             chosen = requested_script
@@ -81,13 +79,12 @@ class SkillRunValidator:
         self,
         args: dict[str, Any],
         selected: list[Any],
-        ctx: Any,
     ) -> dict[str, Any]:
         runtime = self.runtime
         selected_with_entrypoints = [
             skill
             for skill in selected
-            if runtime._exposed_relevant_skill_entrypoints(skill, ctx) and not skill.disable_model_invocation and skill.execution_allowed
+            if runtime._exposed_relevant_skill_entrypoints(skill) and not skill.disable_model_invocation and skill.execution_allowed
         ]
         if not selected_with_entrypoints:
             raise PermissionError("No selected skills expose runnable entrypoints")
@@ -106,7 +103,7 @@ class SkillRunValidator:
         requested_entrypoint = str(args.get("entrypoint", "")).strip()
         if not requested_entrypoint:
             raise ValueError("Missing required argument: entrypoint")
-        candidates = runtime._exposed_relevant_skill_entrypoints(skill, ctx)
+        candidates = runtime._exposed_relevant_skill_entrypoints(skill)
         entrypoint = next((item for item in candidates if item.name == requested_entrypoint), None)
         if entrypoint is None:
             raise PermissionError(f"Entrypoint '{requested_entrypoint}' is not available for skill '{skill.id}'")

@@ -302,7 +302,7 @@ def test_shell_command_tool_description_and_skill_block_delegate_confirmation_to
     assert "Shell syntax" in shell_tool["description"]
     assert "&&" in shell_tool["description"]
 
-    block = runtime.compose_skill_block([shell_skill], ctx, context_limit=2048)
+    block = runtime.compose_skill_block([shell_skill], context_limit=2048)
     assert "tool itself asks the user for confirmation" in block
     assert "Do not ask for duplicate confirmation" in block
     assert "Shell syntax is available" in block

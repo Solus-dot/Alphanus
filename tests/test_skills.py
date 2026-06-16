@@ -6,7 +6,6 @@ import pytest
 
 import skills.skill_process_env as skill_process_env_module
 from core.memory import LexicalMemory
-from core.skills import ToolExecutionEnv as LegacyToolExecutionEnv
 from core.workspace import WorkspaceManager
 from skills.runtime import SkillContext, SkillRuntime
 
@@ -40,12 +39,6 @@ def test_bundled_skill_allowed_tools_match_registered_tool_specs(tmp_path: Path)
         assert skill is not None
         assert skill.validation_errors == []
         assert set(skill.allowed_tools) == set(runtime._reported_skill_tools(skill))
-
-
-def test_core_skills_legacy_import_reexports_runtime_types() -> None:
-    from skills.runtime import ToolExecutionEnv
-
-    assert LegacyToolExecutionEnv is ToolExecutionEnv
 
 
 def test_skill_index_warns_against_namespaced_skill_tool_calls(tmp_path: Path):
@@ -1443,13 +1436,6 @@ Closing note.
 
     block = runtime.compose_skill_block(
         [skill],
-        SkillContext(
-            user_input="use docs",
-            branch_labels=[],
-            attachments=[],
-            workspace_root=str(ws),
-            memory_hits=[],
-        ),
         context_limit=40,
         ratio=1.0,
         hard_cap=1,
@@ -1656,58 +1642,6 @@ if __name__ == "__main__":
     assert out["data"]["text"] == "hello"
 
 
-def test_entrypoint_non_shell_tool_is_normalized_and_runs(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "report-pdf" / "scripts").mkdir(parents=True)
-
-    (skills / "report-pdf" / "SKILL.md").write_text(
-        """
----
-name: report-pdf
-description: Create report files.
-execution:
-  entrypoints:
-    - name: create_report
-      tool: legacy_runner
-      command: python3 {skill_root}/scripts/create_report.py {workspace_root}/report.txt
-      parameters:
-        type: object
-        properties: {}
----
-Create reports.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "report-pdf" / "scripts" / "create_report.py").write_text(
-        "from pathlib import Path\nimport sys\nPath(sys.argv[1]).write_text('ok', encoding='utf-8')\n",
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"capabilities": {"shell_require_confirmation": False, "dangerously_skip_permissions": True}},
-    )
-    skill = runtime.get_skill("report-pdf")
-    assert skill is not None
-    assert any("normalized to shell_command" in msg for msg in skill.validation_warnings)
-    ctx = SkillContext(
-        user_input="create report",
-        branch_labels=[],
-        attachments=[],
-        workspace_root=str(ws),
-        memory_hits=[],
-    )
-    out = runtime.execute_tool_call("run_skill", {"entrypoint": "create_report"}, selected=[skill], ctx=ctx)
-    assert out["ok"] is True
-    assert (ws / "report.txt").read_text(encoding="utf-8") == "ok"
-
-
 def test_skill_prompt_is_loaded_lazily(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
@@ -1740,14 +1674,7 @@ Loaded on demand
     assert skill is not None
     assert skill.prompt is None
 
-    ctx = SkillContext(
-        user_input="lazy",
-        branch_labels=[],
-        attachments=[],
-        workspace_root=str(ws),
-        memory_hits=[],
-    )
-    block = runtime.compose_skill_block([skill], ctx=ctx, context_limit=1024)
+    block = runtime.compose_skill_block([skill], context_limit=1024)
     assert "Loaded on demand" in block
     assert skill.prompt == "Loaded on demand"
 
@@ -2867,52 +2794,6 @@ Read the bundled README when needed.
     assert out["data"]["file_path"] == "README.md"
 
 
-def test_obsolete_runtime_tools_are_not_exposed(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "alpha").mkdir(parents=True)
-    (skills / "alpha" / "scripts").mkdir(parents=True)
-    (skills / "alpha" / "SKILL.md").write_text(
-        """
----
-name: alpha
-description: alpha helper
-version: 1.0.0
----
-Use the helper script.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "alpha" / "scripts" / "helper.py").write_text("print('ok')\n", encoding="utf-8")
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-    alpha = runtime.get_skill("alpha")
-    assert alpha is not None
-    ctx = SkillContext(
-        user_input="use alpha",
-        branch_labels=[],
-        attachments=[],
-        workspace_root=str(ws),
-        memory_hits=[],
-    )
-
-    tool_names = {item["function"]["name"] for item in runtime.tools_for_turn([alpha], ctx=ctx)}
-    assert "run_skill" in tool_names
-    assert "read_skill_resource" not in tool_names
-    assert "run_skill_command" not in tool_names
-    assert "spawn_skill_agent" not in tool_names
-    assert runtime.tool_registration("read_skill_resource") is None
-    assert runtime.tool_registration("run_skill_command") is None
-    assert runtime.tool_registration("spawn_skill_agent") is None
-
-
 def test_runtime_tool_schema_requires_skill_id_only_when_multiple_active_skills_are_available(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
@@ -3061,6 +2942,82 @@ Use timeout tool.
 
     assert skill is not None
     assert any("invalid timeout 'nope'" in warning for warning in skill.validation_warnings)
+
+
+def test_skill_tool_definition_unsupported_runtime_is_ignored(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "strict-tool").mkdir(parents=True)
+    (skills / "strict-tool" / "SKILL.md").write_text(
+        """
+---
+name: strict-tool
+description: unsupported command runtime
+version: 1.0.0
+tools:
+  definitions:
+    - name: unsupported_tool
+      tool: legacy_runner
+      command: "echo ok"
+      parameters:
+        type: object
+        properties: {}
+---
+Use strict tool.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+    skill = runtime.get_skill("strict-tool")
+
+    assert skill is not None
+    assert runtime.tool_registration("unsupported_tool") is None
+    assert any("uses unsupported runtime tool 'legacy_runner'; ignored" in warning for warning in skill.validation_warnings)
+
+
+def test_skill_entrypoint_unsupported_runtime_is_rejected(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    skills = tmp_path / "skills"
+    home.mkdir()
+    ws.mkdir()
+    (skills / "strict-entrypoint").mkdir(parents=True)
+    (skills / "strict-entrypoint" / "SKILL.md").write_text(
+        """
+---
+name: strict-entrypoint
+description: unsupported entrypoint runtime
+version: 1.0.0
+execution:
+  entrypoints:
+    - name: unsupported_entrypoint
+      tool: legacy_runner
+      command: "echo ok"
+      parameters:
+        type: object
+        properties: {}
+---
+Use strict entrypoint.
+""".strip(),
+        encoding="utf-8",
+    )
+
+    runtime = SkillRuntime(
+        skills_dir=str(skills),
+        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+    )
+
+    assert runtime.get_skill("strict-entrypoint") is None
+    assert runtime.tool_registration("unsupported_entrypoint") is None
 
 
 def test_python_script_parse_failure_is_reported_as_validation_warning(tmp_path: Path):

@@ -105,7 +105,7 @@ class SkillExecutor:
         start = time.perf_counter()
         try:
             reg, _owner = runtime._resolve_tool_call(tool_name, selected, ctx=ctx)
-            normalized_args = runtime._prepare_tool_args(reg, args, selected, ctx)
+            normalized_args = runtime._prepare_tool_args(reg, args, selected)
             env = runtime.ToolExecutionEnv(
                 workspace=runtime.workspace,
                 memory=runtime.memory,
@@ -146,7 +146,7 @@ class SkillExecutor:
             return self.execute_skill_script_tool(args, env)
         raise ValueError("run_skill requires an entrypoint or script")
 
-    def execute_skill_script_tool(self, args: dict[str, Any], env) -> dict[str, Any]:
+    def execute_skill_script_tool(self, args: dict[str, Any], _env) -> dict[str, Any]:
         runtime = self.runtime
         skill = runtime.get_skill(str(args.get("skill_id", "")).strip())
         if skill is None or not skill.path:

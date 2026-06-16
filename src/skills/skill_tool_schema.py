@@ -23,15 +23,12 @@ class SkillToolSchemaBuilder:
             active_skill_ids,
         )
 
-    def dynamic_run_skill_schema(self, selected: list[SkillManifest], ctx: Any | None) -> dict[str, Any]:
+    def dynamic_run_skill_schema(self, selected: list[SkillManifest]) -> dict[str, Any]:
         executable_skills = [
             skill
             for skill in selected
             if not skill.disable_model_invocation
-            and (
-                self.runtime._exposed_relevant_skill_entrypoints(skill, ctx)
-                or self.runtime._exposed_relevant_skill_scripts(skill, ctx)
-            )
+            and (self.runtime._exposed_relevant_skill_entrypoints(skill) or self.runtime._exposed_relevant_skill_scripts(skill))
         ]
         properties: dict[str, Any] = {
             "skill_id": {"type": "string"},
@@ -49,7 +46,7 @@ class SkillToolSchemaBuilder:
             dict.fromkeys(
                 entrypoint.name
                 for skill in executable_skills
-                for entrypoint in self.runtime._exposed_relevant_skill_entrypoints(skill, ctx)
+                for entrypoint in self.runtime._exposed_relevant_skill_entrypoints(skill)
             )
         )
         if entrypoint_names:
@@ -57,7 +54,7 @@ class SkillToolSchemaBuilder:
 
         script_names = sorted(
             dict.fromkeys(
-                rel_script for skill in executable_skills for rel_script in self.runtime._exposed_relevant_skill_scripts(skill, ctx)
+                rel_script for skill in executable_skills for rel_script in self.runtime._exposed_relevant_skill_scripts(skill)
             )
         )
         if script_names:
@@ -72,20 +69,21 @@ class SkillToolSchemaBuilder:
         }
 
     def build(self, names: list[str], selected: list[SkillManifest] | None = None, ctx: Any | None = None) -> list[dict[str, Any]]:
+        _ = ctx
         tools = []
         for name in names:
             reg = self.runtime._tool_registry[name]
             parameters = reg.parameters
             description = reg.description
             if reg.name == self.run_skill_tool_name and selected is not None:
-                parameters = self.dynamic_run_skill_schema(selected, ctx)
+                parameters = self.dynamic_run_skill_schema(selected)
                 available_paths: list[str] = []
                 for skill in selected:
                     if skill.disable_model_invocation:
                         continue
-                    for entrypoint in self.runtime._exposed_relevant_skill_entrypoints(skill, ctx):
+                    for entrypoint in self.runtime._exposed_relevant_skill_entrypoints(skill):
                         available_paths.append(f"{skill.id}:{entrypoint.name}")
-                    for rel_script in self.runtime._exposed_relevant_skill_scripts(skill, ctx):
+                    for rel_script in self.runtime._exposed_relevant_skill_scripts(skill):
                         available_paths.append(f"{skill.id}:{rel_script}")
                 if available_paths:
                     description = (
