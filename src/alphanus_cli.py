@@ -3,7 +3,10 @@ import copy
 import getpass
 import json
 import os
+import platform
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -38,7 +41,7 @@ from skills.runtime import SkillRuntime
 from tui.interface import AlphanusTUI
 from tui.themes import available_theme_ids, theme_spec
 
-INIT_SECTIONS = ("all", "workspace", "model", "search", "theme")
+INIT_SECTIONS = ("all", "workspace", "model", "search", "theme", "permissions")
 _VALID_CLI_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -47,6 +50,8 @@ class _CliTheme:
         term = os.environ.get("TERM", "").lower()
         self.enabled = bool(getattr(sys.stdout, "isatty", lambda: False)()) and os.environ.get("NO_COLOR") is None and term != "dumb"
         self.indigo = (99, 102, 241)  # #6366f1
+        self.cyan = (34, 211, 238)  # #22d3ee
+        self.violet = (167, 139, 250)  # #a78bfa
         self.muted_gray = (161, 161, 170)  # #a1a1aa
         self.foreground = (228, 228, 231)  # #e4e4e7
         self.ok_green = (16, 185, 129)  # #10b981
@@ -70,10 +75,16 @@ class _CliTheme:
     def brand(self, text: str) -> str:
         if not self.enabled:
             return text
-        return self._fmt(text, "1;38;2;99;102;241;48;2;26;23;48")
+        return self._fmt(text, "1;38;2;199;210;254;48;2;49;46;129")
 
     def accent(self, text: str) -> str:
         return self._fg(text, self.indigo, bold=True)
+
+    def cyan_text(self, text: str) -> str:
+        return self._fg(text, self.cyan, bold=True)
+
+    def value(self, text: str) -> str:
+        return self._fg(text, self.violet, bold=True)
 
     def muted(self, text: str) -> str:
         return self._fg(text, self.muted_gray, dim=True)
@@ -95,6 +106,13 @@ class _CliTheme:
 
     def path(self, text: str) -> str:
         return self._fg(text, (199, 210, 254))
+
+    def rule(self, title: str = "") -> str:
+        line = "-" * 52
+        if not title:
+            return self.muted(line)
+        tail = "-" * max(10, 48 - len(title))
+        return f"{self.muted('--')} {self.accent(title)} {self.muted(tail)}"
 
 
 def _as_object(value: Any) -> dict[str, Any]:
@@ -230,17 +248,18 @@ def _build_agent_runtime(
     return workspace, memory, runtime, agent
 
 
-def _prompt_with_default(label: str, default: str, *, hint: str = "") -> str:
-    prompt = f"{label} [{default}]"
+def _prompt_with_default(label: str, default: str, *, hint: str = "", theme: _CliTheme | None = None) -> str:
+    default_text = theme.value(default) if theme is not None else default
+    prompt = f"{label} [{default_text}]"
     if hint:
-        prompt = f"{prompt}  {hint}"
+        prompt = f"{prompt}\n  {hint}"
     value = input(f"{prompt}: ").strip()
     return value or default
 
 
 def _prompt_env_name(theme: _CliTheme, label: str, default: str, *, hint: str = "") -> str:
     while True:
-        value = _prompt_with_default(label, default, hint=hint).strip()
+        value = _prompt_with_default(label, default, hint=hint, theme=theme).strip()
         if not value:
             return ""
         lowered = value.lower()
@@ -259,8 +278,10 @@ def _prompt_env_name(theme: _CliTheme, label: str, default: str, *, hint: str = 
         return value
 
 
-def _prompt_yes_no(label: str, *, default: bool = True) -> bool:
+def _prompt_yes_no(label: str, *, default: bool = True, theme: _CliTheme | None = None) -> bool:
     suffix = "[Y/n]" if default else "[y/N]"
+    if theme is not None:
+        suffix = theme.value(suffix)
     raw = input(f"{label} {suffix}: ").strip().lower()
     if not raw:
         return default
@@ -275,10 +296,11 @@ def _prompt_choice(theme: _CliTheme, label: str, options: list[tuple[str, str]],
     print(theme.label(label))
     value_width = max((len(value) for value, _desc in options), default=7)
     for idx, (value, description) in enumerate(options, start=1):
-        print(f"  {theme.accent(str(idx) + '.')} {value:<{value_width}} {theme.muted(description)}")
+        marker = theme.ok("*") if value == default else " "
+        print(f"  {marker} {theme.accent(str(idx).rjust(2) + '.')} {theme.value(f'{value:<{value_width}}')}  {theme.muted(description)}")
     default_index = next((idx for idx, (value, _desc) in enumerate(options, start=1) if value == default), 1)
     while True:
-        raw = input(f"Choose option [{default_index}]: ").strip().lower()
+        raw = input(f"{theme.cyan_text('Choose option')} {theme.value('[' + str(default_index) + ']')}: ").strip().lower()
         if not raw:
             return default
         if raw.isdigit():
@@ -318,6 +340,62 @@ def _upsert_env_var(dotenv_path: Path, key: str, value: str) -> None:
             updated.append("")
         updated.append(f"{key}={value}")
     dotenv_path.write_text("\n".join(updated).rstrip() + "\n", encoding="utf-8")
+
+
+def _screen_capture_setup_lines(*, open_settings: bool = False) -> list[tuple[str, str]]:
+    system = platform.system().lower()
+    if system == "darwin":
+        if open_settings:
+            subprocess.run(
+                ["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        return [
+            ("macOS Screen Recording", "required for screenshot capture"),
+            ("Setup", "System Settings > Privacy & Security > Screen Recording"),
+            ("Allow", "the terminal app or launcher used to run Alphanus, then restart it"),
+        ]
+    if system == "linux":
+        binary = shutil.which("gnome-screenshot") or shutil.which("scrot")
+        session = os.environ.get("XDG_SESSION_TYPE", "").strip().lower() or "unknown"
+        if binary:
+            detail = f"found {Path(binary).name}; session={session}"
+        else:
+            detail = "install gnome-screenshot or scrot"
+        if session == "wayland":
+            detail += "; compositor/portal permission prompts may still be required"
+        return [("Linux screenshot helper", detail)]
+    if system == "windows":
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        detail = f"found {Path(powershell).name}" if powershell else "PowerShell is required for screenshot capture"
+        return [("Windows screenshot helper", detail)]
+    return [(f"{platform.system() or 'Unknown'} screenshot helper", "unsupported by screenshot-ocr")]
+
+
+def _print_screen_capture_setup(theme: _CliTheme, *, interactive: bool) -> None:
+    open_settings = False
+    if interactive and platform.system().lower() == "darwin":
+        open_settings = _prompt_yes_no("Open macOS Screen Recording settings now?", default=True, theme=theme)
+    print("")
+    print(theme.accent("Screen Capture Permissions"))
+    for label, detail in _screen_capture_setup_lines(open_settings=open_settings):
+        print(f"  {theme.label(label + ':')} {detail}")
+
+
+def _print_init_step(theme: _CliTheme, index: int, total: int, title: str) -> None:
+    print(theme.rule(f"Step {index}/{total}"))
+    print(theme.cyan_text(title))
+    print("")
+
+
+def _print_review_group(theme: _CliTheme, title: str, rows: list[tuple[str, str]]) -> None:
+    print(f"  {theme.accent(title)}")
+    label_width = max((len(label) for label, _value in rows), default=8)
+    for label, value in rows:
+        print(f"    {theme.label((label + ':').ljust(label_width + 1))} {theme.value(value)}")
+    print("")
 
 
 def _run_init(args: Any) -> int:
@@ -442,28 +520,31 @@ def _run_init(args: Any) -> int:
             requested_theme = str(getattr(args, "theme", "") or "").strip() or theme_default
             ui_theme, _ = normalize_theme_id(requested_theme, default=theme_default, available=theme_ids)
     else:
-        steps = [name for name in ("workspace", "model", "search", "theme") if _section_selected(section, name)]
+        steps = [name for name in ("workspace", "model", "search", "theme", "permissions") if _section_selected(section, name)]
         total_steps = max(len(steps), 1)
         step_index = 1
         print(theme.brand(" ALPHANUS SETUP "))
+        print(theme.rule())
         print(theme.muted(f"Wizard scope: {section}. Press Enter to keep defaults."))
         print(theme.muted("We'll configure runtime state, model connectivity, search, and display theme defaults."))
-        print(f"{theme.label('State root:')} {state_root}")
+        print(f"{theme.label('State root:')} {theme.path(str(state_root))}")
         print("")
         if _section_selected(section, "workspace"):
-            print(theme.accent(f"Step {step_index}/{total_steps}: Workspace"))
+            _print_init_step(theme, step_index, total_steps, "Workspace")
             workspace_path = _prompt_with_default(
                 "Workspace path",
                 workspace_default,
                 hint=theme.muted("where project files live"),
+                theme=theme,
             )
             step_index += 1
             print("")
         if _section_selected(section, "model"):
-            print(theme.accent(f"Step {step_index}/{total_steps}: Model endpoint"))
+            _print_init_step(theme, step_index, total_steps, "Model endpoint")
             use_local = _prompt_yes_no(
                 "Use the local OpenAI-compatible endpoint preset (127.0.0.1:8080)?",
                 default=base_url_default == str(DEFAULT_CONFIG["agent"]["base_url"]),
+                theme=theme,
             )
             if use_local:
                 base_url = str(DEFAULT_CONFIG["agent"]["base_url"])
@@ -478,21 +559,25 @@ def _run_init(args: Any) -> int:
                     "Base URL",
                     base_url_default,
                     hint=theme.muted("provider root, e.g. https://api.openai.com"),
+                    theme=theme,
                 )
                 model_endpoint = _prompt_with_default(
                     "Chat endpoint",
                     model_endpoint_default,
                     hint=theme.muted("chat completions endpoint"),
+                    theme=theme,
                 )
                 responses_endpoint = _prompt_with_default(
                     "Responses endpoint",
                     responses_endpoint_default,
                     hint=theme.muted("responses endpoint"),
+                    theme=theme,
                 )
                 models_endpoint = _prompt_with_default(
                     "Models endpoint",
                     models_endpoint_default,
                     hint=theme.muted("model catalog endpoint"),
+                    theme=theme,
                 )
                 endpoint_mode = _prompt_choice(
                     theme,
@@ -532,7 +617,7 @@ def _run_init(args: Any) -> int:
             step_index += 1
             print("")
         if _section_selected(section, "search"):
-            print(theme.accent(f"Step {step_index}/{total_steps}: Search"))
+            _print_init_step(theme, step_index, total_steps, "Search")
             search_provider = _prompt_choice(
                 theme,
                 "Primary provider:",
@@ -547,6 +632,7 @@ def _run_init(args: Any) -> int:
                     "SearXNG base URL",
                     searxng_base_url_default,
                     hint=theme.muted("used by SearXNG, e.g. http://127.0.0.1:8888"),
+                    theme=theme,
                 )
                 search_fallback_provider = _prompt_choice(
                     theme,
@@ -573,7 +659,7 @@ def _run_init(args: Any) -> int:
             step_index += 1
             print("")
         if _section_selected(section, "theme"):
-            print(theme.accent(f"Step {step_index}/{total_steps}: Theme"))
+            _print_init_step(theme, step_index, total_steps, "Theme")
             theme_options = [(name, theme_spec(name).description) for name in theme_ids]
             selected_theme = _prompt_choice(
                 theme,
@@ -582,6 +668,11 @@ def _run_init(args: Any) -> int:
                 default=theme_default,
             )
             ui_theme, _ = normalize_theme_id(selected_theme, default=theme_default, available=theme_ids)
+            step_index += 1
+            print("")
+        if _section_selected(section, "permissions"):
+            _print_init_step(theme, step_index, total_steps, "Permissions")
+            _print_screen_capture_setup(theme, interactive=True)
             print("")
 
     updates: dict[str, Any] = {}
@@ -616,22 +707,40 @@ def _run_init(args: Any) -> int:
         return 2
 
     if not args.non_interactive:
-        print(theme.accent("Review"))
-        print(f"  {theme.label('Workspace:')} {normalized['workspace']['path']}")
-        print(f"  {theme.label('Base URL:')} {normalized['agent']['base_url']}")
-        print(f"  {theme.label('Responses endpoint:')} {normalized['agent']['responses_endpoint']}")
-        print(f"  {theme.label('Model endpoint:')} {normalized['agent']['model_endpoint']}")
-        print(f"  {theme.label('Models endpoint:')} {normalized['agent']['models_endpoint']}")
-        print(f"  {theme.label('Endpoint mode:')} {normalized['agent']['endpoint_mode']}")
-        print(f"  {theme.label('Backend profile:')} {normalized['agent']['backend_profile']}")
-        print(f"  {theme.label('API key ref:')} {normalized['agent']['api_key']}")
-        print(f"  {theme.label('Search provider:')} {normalized['search']['provider']}")
-        print(f"  {theme.label('Search fallback:')} {normalized['search']['fallback_provider'] or 'none'}")
-        print(f"  {theme.label('SearXNG URL:')} {normalized['search']['searxng_base_url'] or '(not set)'}")
-        print(f"  {theme.label('Tavily key env:')} {normalized['search']['tavily_api_key_env']}")
-        print(f"  {theme.label('Theme:')} {normalized['tui']['theme']}")
-        print(f"  {theme.label('Secrets file:')} {app_paths.dotenv_path}")
-        if not _prompt_yes_no("Write these settings now?", default=True):
+        print(theme.rule("Review"))
+        _print_review_group(theme, "Workspace", [("Path", str(normalized["workspace"]["path"]))])
+        _print_review_group(
+            theme,
+            "Model",
+            [
+                ("Base URL", str(normalized["agent"]["base_url"])),
+                ("Responses", str(normalized["agent"]["responses_endpoint"])),
+                ("Chat", str(normalized["agent"]["model_endpoint"])),
+                ("Models", str(normalized["agent"]["models_endpoint"])),
+                ("Mode", str(normalized["agent"]["endpoint_mode"])),
+                ("Backend", str(normalized["agent"]["backend_profile"])),
+                ("API key", str(normalized["agent"]["api_key"])),
+            ],
+        )
+        _print_review_group(
+            theme,
+            "Search",
+            [
+                ("Provider", str(normalized["search"]["provider"])),
+                ("Fallback", str(normalized["search"]["fallback_provider"] or "none")),
+                ("SearXNG", str(normalized["search"]["searxng_base_url"] or "(not set)")),
+                ("Tavily env", str(normalized["search"]["tavily_api_key_env"])),
+            ],
+        )
+        _print_review_group(
+            theme,
+            "Interface",
+            [
+                ("Theme", str(normalized["tui"]["theme"])),
+                ("Secrets", str(app_paths.dotenv_path)),
+            ],
+        )
+        if not _prompt_yes_no("Write these settings now?", default=True, theme=theme):
             print(theme.warn("Setup cancelled. No files were written."))
             return 1
 
@@ -664,6 +773,8 @@ def _run_init(args: Any) -> int:
 
     for warning in existing_warnings + warnings:
         print(f"{theme.warn('config warning:')} {warning}")
+    if args.non_interactive and _section_selected(section, "permissions"):
+        _print_screen_capture_setup(theme, interactive=False)
     print("")
     print(theme.ok("Initialization complete."))
     print(f"  {theme.label('Config:')} {theme.path(str(app_paths.config_path))}")

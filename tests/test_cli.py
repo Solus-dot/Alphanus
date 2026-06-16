@@ -383,6 +383,52 @@ def test_parser_accepts_init_theme_section_and_alias() -> None:
     assert args.theme == "catppuccin"
 
 
+def test_parser_accepts_init_permissions_section() -> None:
+    parser = alphanus_cli._build_parser()
+
+    args = parser.parse_args(["init", "permissions", "--non-interactive"])
+
+    assert args.command == "init"
+    assert args.section == "permissions"
+    assert args.non_interactive is True
+
+
+def test_screen_capture_setup_reports_macos_privacy_pane(monkeypatch) -> None:
+    opened: list[list[str]] = []
+    monkeypatch.setattr(alphanus_cli.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(alphanus_cli.subprocess, "run", lambda cmd, **_kwargs: opened.append(cmd))
+
+    lines = alphanus_cli._screen_capture_setup_lines(open_settings=True)
+
+    assert opened == [["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"]]
+    assert ("macOS Screen Recording", "required for screenshot capture") in lines
+    assert any("Privacy & Security" in detail for _label, detail in lines)
+
+
+def test_screen_capture_setup_reports_linux_dependency(monkeypatch) -> None:
+    monkeypatch.setattr(alphanus_cli.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(alphanus_cli.shutil, "which", lambda _name: None)
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+
+    lines = alphanus_cli._screen_capture_setup_lines()
+
+    assert lines == [
+        (
+            "Linux screenshot helper",
+            "install gnome-screenshot or scrot; compositor/portal permission prompts may still be required",
+        )
+    ]
+
+
+def test_screen_capture_setup_reports_windows_powershell(monkeypatch) -> None:
+    monkeypatch.setattr(alphanus_cli.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(alphanus_cli.shutil, "which", lambda name: "C:/Windows/System32/powershell.exe" if name == "powershell" else None)
+
+    lines = alphanus_cli._screen_capture_setup_lines()
+
+    assert lines == [("Windows screenshot helper", "found powershell.exe")]
+
+
 def test_parser_accepts_custom_theme_id() -> None:
     parser = alphanus_cli._build_parser()
 
