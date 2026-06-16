@@ -84,6 +84,12 @@ uv run alphanus doctor
 uv run alphanus
 ```
 
+Desktop permission checks can be run separately:
+
+```bash
+uv run alphanus init permissions
+```
+
 ### Required env vars (as needed)
 
 - `ALPHANUS_API_KEY` for authenticated model endpoints
@@ -132,6 +138,7 @@ Notes:
 - local backends that do not require auth can run with no API key set
 - model status prefers loaded-model metadata from local `/slots` or `/props` endpoints when available; `/v1/models` is used as the general fallback
 - the TUI does not keep the inference server warm with continuous idle pings; status is refreshed on startup, explicit checks, config/model changes, and transport failures
+- screenshot capture depends on OS permissions outside Alphanus; `alphanus init permissions` reports the platform-specific setup and opens the macOS Screen Recording settings pane during interactive setup
 
 ---
 
@@ -316,6 +323,7 @@ Runtime safety knobs:
 - protected internal state such as `.alphanus` is blocked before execution, including common shell expansion paths
 - dangerous shell patterns are blocked by policy
 - desktop actions such as app launch, browser open, and screenshot capture require explicit tool-level confirmation when they can affect the local machine
+- macOS requires Screen Recording permission for the terminal app or launcher that runs Alphanus; Linux requires `gnome-screenshot` or `scrot`; Windows uses PowerShell screen APIs when available
 
 ### Turn Trace and Diagnostics
 
