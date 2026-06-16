@@ -309,6 +309,41 @@ def test_classifier_keeps_workspace_action_for_file_requests(mocker, tmp_path: P
     assert classification.prefer_local_workspace_tools is True
 
 
+def test_classifier_keeps_workspace_action_for_extensionless_file_requests(mocker, tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    cfg = {"agent": {"enable_structured_classification": True}}
+    llm_client = LLMClient(cfg)
+    classifier = TurnClassifier(cfg, runtime, llm_client)
+    ctx = classifier.build_skill_context("create a Dockerfile", [], [])
+
+    mocker.patch.object(TurnClassifier, "_should_model_classify", return_value=True)
+
+    def fake_call_with_retry(payload, stop_event, on_event, pass_id):
+        assert pass_id == "turn_classify"
+        return type(
+            "R",
+            (),
+            {
+                "finish_reason": "stop",
+                "content": json.dumps(
+                    {
+                        "time_sensitive": False,
+                        "requires_workspace_action": True,
+                        "prefer_local_workspace_tools": True,
+                        "followup_kind": "new_request",
+                    }
+                ),
+            },
+        )()
+
+    llm_client.call_with_retry = fake_call_with_retry
+    classifier.call_with_retry = fake_call_with_retry
+
+    classification = classifier.classify(ctx)
+
+    assert classification.requires_workspace_action is True
+
+
 def test_classifier_seed_does_not_infer_contextual_followup_without_model(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
@@ -760,6 +795,39 @@ def test_orchestrator_records_workspace_evidence_and_policy_blocks(tmp_path: Pat
     assert "shell_command" in evidence["policy_blocked_tools"]
 
 
+def test_orchestrator_counts_run_skill_workspace_changes_as_mutations(tmp_path: Path) -> None:
+    _runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="create a report through the selected skill",
+        time_sensitive=False,
+        workspace_action=True,
+    )
+    call = ToolCall(
+        stream_id="call_1",
+        index=0,
+        id="call_1",
+        name="run_skill",
+        arguments={"skill_id": "reporter", "entrypoint": "create_report"},
+    )
+
+    orchestrator.record_tool_effects(
+        state,
+        call,
+        {
+            "ok": True,
+            "data": {"stdout": "", "stderr": "", "returncode": 0},
+            "error": None,
+            "meta": {"workspace_changed": True},
+        },
+    )
+
+    evidence = orchestrator.workspace_action_evidence(state)
+
+    assert orchestrator.workspace_mutation_count(state) == 1
+    assert evidence["has_successful_mutation"] is True
+    assert "run_skill" in evidence["successful_mutating_tools"]
+
+
 def test_workspace_action_outcome_accepts_successful_non_mutating_open_action(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
@@ -774,8 +842,9 @@ def test_workspace_action_outcome_accepts_successful_non_mutating_open_action(tm
             "successful_tools": ["shell_command"],
             "has_successful_mutation": False,
             "successful_mutating_tools": [],
+            "successful_action_labels": ["open", "run"],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "shell_command", "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tools": [{"name": "shell_command", "actions": ["open", "run"], "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -797,8 +866,9 @@ def test_workspace_action_outcome_accepts_shell_version_query(tmp_path: Path) ->
             "successful_tools": ["shell_command"],
             "has_successful_mutation": False,
             "successful_mutating_tools": [],
+            "successful_action_labels": ["run"],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "shell_command", "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tools": [{"name": "shell_command", "actions": ["run"], "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -820,8 +890,9 @@ def test_workspace_action_outcome_accepts_read_file_version_query(tmp_path: Path
             "successful_tools": ["read_file"],
             "has_successful_mutation": False,
             "successful_mutating_tools": [],
+            "successful_action_labels": ["read"],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tools": [{"name": "read_file", "actions": ["read"], "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -843,8 +914,9 @@ def test_workspace_action_outcome_accepts_open_followup_after_mutating_hint(tmp_
             "successful_tools": ["shell_command"],
             "has_successful_mutation": False,
             "successful_mutating_tools": [],
+            "successful_action_labels": ["open", "run"],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "shell_command", "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tools": [{"name": "shell_command", "actions": ["open", "run"], "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -866,8 +938,9 @@ def test_workspace_action_outcome_accepts_show_request_with_list_evidence(tmp_pa
             "successful_tools": ["list_files"],
             "has_successful_mutation": False,
             "successful_mutating_tools": [],
+            "successful_action_labels": ["list", "read"],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "list_files", "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tools": [{"name": "list_files", "actions": ["list", "read"], "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -889,8 +962,9 @@ def test_workspace_action_outcome_accepts_display_tree_with_workspace_tree_evide
             "successful_tools": ["workspace_tree"],
             "has_successful_mutation": False,
             "successful_mutating_tools": [],
+            "successful_action_labels": ["read"],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "workspace_tree", "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tools": [{"name": "workspace_tree", "actions": ["read"], "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -1483,12 +1557,15 @@ def test_finalize_response_skips_workspace_action_enforcement_in_plan_mode(tmp_p
 
 
 def test_finalize_response_accepts_read_only_shell_version_evidence(tmp_path: Path) -> None:
-    _runtime, orchestrator, state = _turn_state(
+    runtime, orchestrator, state = _turn_state(
         tmp_path,
         user_input="what go version am i running?",
         time_sensitive=False,
         workspace_action=True,
     )
+    original_tool_registration = runtime.tool_registration
+    shell_registration = SimpleNamespace(capability="run_shell_command", actions=("run",), mutates=True)
+    runtime.tool_registration = lambda name: shell_registration if name == "shell_command" else original_tool_registration(name)
     orchestrator.classifier.llm_client.enable_structured_classification = False
     call = ToolCall(stream_id="call_1", index=0, id="call_1", name="shell_command", arguments={"command": "go version"})
     orchestrator.record_tool_effects(

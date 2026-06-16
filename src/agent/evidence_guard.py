@@ -17,12 +17,15 @@ class EvidenceGuard:
     def tool_counts_as_workspace_mutation(self, record: ToolExecutionRecord) -> bool:
         if record.policy_blocked or not bool(record.result.get("ok")):
             return False
-        if self.skill_runtime.tool_is_mutating(record.name):
-            return True
-        if record.name != "shell_command":
-            return False
-        meta = record.result.get("meta")
-        return bool(isinstance(meta, dict) and meta.get("workspace_changed"))
+        if record.name == "shell_command":
+            meta = record.result.get("meta")
+            return bool(isinstance(meta, dict) and meta.get("workspace_changed"))
+        if record.name == "run_skill":
+            meta = record.result.get("meta")
+            return bool(isinstance(meta, dict) and meta.get("workspace_changed"))
+        reg = self.skill_runtime.tool_registration(record.name)
+        capability = str(getattr(reg, "capability", "") or "").strip().lower()
+        return capability.startswith("workspace_") and self.skill_runtime.tool_is_mutating(record.name)
 
     def workspace_mutation_count(self, state: TurnState) -> int:
         return sum(1 for record in state.evidence if self.tool_counts_as_workspace_mutation(record))
@@ -38,15 +41,25 @@ class EvidenceGuard:
     def workspace_action_evidence(self, state: TurnState) -> JsonObject:
         successful_tools: list[JSONValue] = []
         successful_mutating_tools: list[JSONValue] = []
+        successful_non_mutating_tools: list[JSONValue] = []
+        successful_action_labels: list[str] = []
         policy_blocked_tools: list[JSONValue] = []
         recent_tools: list[JSONValue] = []
         for record in state.evidence[-12:]:
             ok = bool(record.result.get("ok"))
             mutating = self.tool_counts_as_workspace_mutation(record)
+            reg = self.skill_runtime.tool_registration(record.name)
+            capability = str(getattr(reg, "capability", "") or "").strip()
+            actions = [str(item).strip().lower() for item in (getattr(reg, "actions", ()) or ()) if str(item).strip()]
             if ok and not record.policy_blocked and record.name != "skill_view" and record.name not in successful_tools:
                 successful_tools.append(record.name)
             if mutating and record.name not in successful_mutating_tools:
                 successful_mutating_tools.append(record.name)
+            if ok and not mutating and not record.policy_blocked and record.name != "skill_view" and record.name not in successful_non_mutating_tools:
+                successful_non_mutating_tools.append(record.name)
+                for action in actions:
+                    if action not in successful_action_labels:
+                        successful_action_labels.append(action)
             if record.policy_blocked and record.name not in policy_blocked_tools:
                 policy_blocked_tools.append(record.name)
             error_obj = record.result.get("error")
@@ -56,6 +69,8 @@ class EvidenceGuard:
                     JSONValue,
                     {
                         "name": record.name,
+                        "capability": capability,
+                        "actions": actions,
                         "ok": ok,
                         "mutating": mutating,
                         "policy_blocked": record.policy_blocked,
@@ -70,6 +85,9 @@ class EvidenceGuard:
             "successful_tools": successful_tools,
             "has_successful_mutation": bool(successful_mutating_tools),
             "successful_mutating_tools": successful_mutating_tools,
+            "has_successful_non_mutating_tool": bool(successful_non_mutating_tools),
+            "successful_non_mutating_tools": successful_non_mutating_tools,
+            "successful_action_labels": cast(JSONValue, successful_action_labels),
             "policy_blocked_tools": policy_blocked_tools,
             "recent_tools": recent_tools,
         }

@@ -41,25 +41,12 @@ _NON_MUTATING_ACTION_PATTERNS = {
     "list": re.compile(r"\b(?:list|listed)\b"),
     "check": re.compile(r"\b(?:inspect|inspected|check|checked|verify|verified)\b"),
 }
-_SHELL_INSPECTION_RE = re.compile(r"\b(?:version|status)\b")
-_NON_MUTATING_ACTION_TOOL_NAMES = {
-    "open": {"shell_command", "open_url", "play_youtube"},
-    "run": {"shell_command"},
-    "read": {"read_file", "list_files", "workspace_tree", "shell_command"},
-    "list": {"list_files", "workspace_tree", "shell_command"},
-    "check": {"read_file", "list_files", "shell_command"},
-}
 _DRAFT_WORKSPACE_DONE_RE = re.compile(r"\b(?:workspace is now empty|done with workspace tools)\b")
 _DRAFT_LIMITATION_RE = re.compile(
     r"\b(?:could not|couldn't|cannot|can't|unable|not allowed|blocked|rejected|declined|denied|timed out|timeout|permission|permissions|unsupported|unavailable|disabled)\b"
 )
 _WORKSPACE_FILE_TOKEN_RE = re.compile(r"(?<![\w/.-])(?:[\w.-]+/)*[\w.-]+\.[a-z0-9]{1,16}\b", re.IGNORECASE)
 _WORKSPACE_ABS_PATH_RE = re.compile(r"(?<![:/\w])(?:~/|/)[^\s\"'`]+")
-_NON_WORKSPACE_LOCAL_ACTION_RE = re.compile(
-    r"\b(?:app|apps|application|applications|browser|browsers|window|windows|tab|tabs|screenshot|screen|ocr|"
-    r"whatsapp|chrome|safari|brave|edge|firefox|finder|terminal|brew|homebrew|go version|node version|python version)\b"
-)
-
 
 class TurnClassifier:
     def __init__(
@@ -207,7 +194,7 @@ class TurnClassifier:
                 return resolved_str
         return ""
 
-    def _should_model_classify(self, ctx: SkillContext, seed: TurnClassification) -> bool:
+    def _should_model_classify(self) -> bool:
         """Model classification is the default path.
 
         Only skipped when structured classification is explicitly disabled
@@ -342,18 +329,37 @@ class TurnClassifier:
         names.discard("skill_view")
         return names
 
-    @classmethod
-    def _evidence_supports_shell_inspection(
-        cls,
-        *,
-        current_user_input: str,
-        assistant_reply: str,
-        evidence: dict[str, JSONValue],
-    ) -> bool:
-        text = cls._normalized_text(f"{current_user_input}\n{assistant_reply}")
-        if not _SHELL_INSPECTION_RE.search(text):
+    @staticmethod
+    def _evidence_has_successful_non_mutating_tool(evidence: dict[str, JSONValue]) -> bool:
+        if bool(evidence.get("has_successful_non_mutating_tool")):
+            return True
+        recent_tools = evidence.get("recent_tools")
+        if not isinstance(recent_tools, list):
             return False
-        return "shell_command" in cls._successful_tool_names(evidence)
+        for item in recent_tools:
+            if not isinstance(item, dict):
+                continue
+            if bool(item.get("ok")) and not bool(item.get("policy_blocked")) and not bool(item.get("mutating")):
+                return True
+        return False
+
+    @staticmethod
+    def _successful_action_labels(evidence: dict[str, JSONValue]) -> set[str]:
+        labels: set[str] = set()
+        raw_labels = evidence.get("successful_action_labels")
+        if isinstance(raw_labels, list):
+            labels.update(str(item).strip().lower() for item in raw_labels if str(item).strip())
+        recent_tools = evidence.get("recent_tools")
+        if isinstance(recent_tools, list):
+            for item in recent_tools:
+                if not isinstance(item, dict):
+                    continue
+                if not bool(item.get("ok")) or bool(item.get("policy_blocked")):
+                    continue
+                actions = item.get("actions")
+                if isinstance(actions, list):
+                    labels.update(str(action).strip().lower() for action in actions if str(action).strip())
+        return labels
 
     @classmethod
     def _evidence_supports_non_mutating_completion(
@@ -370,16 +376,9 @@ class TurnClassifier:
         if not tool_names:
             return False
         if not required_actions:
-            return cls._evidence_supports_shell_inspection(
-                current_user_input=current_user_input,
-                assistant_reply=assistant_reply,
-                evidence=evidence,
-            )
-        for action in required_actions:
-            allowed_tools = _NON_MUTATING_ACTION_TOOL_NAMES.get(action, set())
-            if allowed_tools and not tool_names.intersection(allowed_tools):
-                return False
-        return True
+            return cls._evidence_has_successful_non_mutating_tool(evidence)
+        successful_actions = cls._successful_action_labels(evidence)
+        return bool(successful_actions and required_actions.issubset(successful_actions))
 
     @classmethod
     def _text_targets_workspace_artifacts(cls, text: str) -> bool:
@@ -412,6 +411,8 @@ class TurnClassifier:
     def _supports_workspace_action_requirement(self, ctx: SkillContext, classification: TurnClassification) -> bool:
         if self._supports_local_workspace_preference(ctx, classification):
             return True
+        if self._request_requires_workspace_mutation(ctx.user_input, getattr(ctx, "recent_routing_hint", "")):
+            return True
         hint = self._normalized_text(getattr(ctx, "recent_routing_hint", ""))
         if (
             classification.followup_kind in {"confirmation", "contextual_followup"}
@@ -419,10 +420,7 @@ class TurnClassifier:
             and self._non_mutating_actions_in_text(hint)
         ):
             return True
-        text = self._normalized_text(f"{ctx.user_input}\n{getattr(ctx, 'recent_routing_hint', '')}")
-        if _NON_WORKSPACE_LOCAL_ACTION_RE.search(text):
-            return False
-        return bool(_MUTATING_REQUEST_RE.search(text))
+        return False
 
     def classify_workspace_action_outcome(
         self,
@@ -540,7 +538,7 @@ class TurnClassifier:
             explicit_external_path=self._explicit_path_outside_workspace(ctx.user_input),
             source="rules",
         )
-        if not self._should_model_classify(ctx, seed):
+        if not self._should_model_classify():
             return seed
         prompt = (
             "Classify the next local assistant turn.\n"
