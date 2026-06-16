@@ -237,8 +237,7 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
             raise ValueError(f"SKILL.md execution.entrypoints[{idx}] missing command")
         tool = str(raw.get("tool", "shell_command")).strip() or "shell_command"
         if tool != "shell_command":
-            warnings.append(f"entrypoint '{name}' uses unsupported tool '{tool}'; normalized to shell_command")
-            tool = "shell_command"
+            raise ValueError(f"SKILL.md execution.entrypoints[{idx}] tool must be 'shell_command'")
         description = str(raw.get("description", "")).strip() or name
         parameters = raw.get("parameters")
         if parameters is None:
@@ -308,7 +307,8 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
             continue
         tool_runtime = str(raw.get("tool", "shell_command")).strip() or "shell_command"
         if tool_runtime != "shell_command":
-            warnings.append(f"tool '{tool_name}' uses unsupported runtime tool '{tool_runtime}'; normalized to shell_command")
+            warnings.append(f"tool '{tool_name}' uses unsupported runtime tool '{tool_runtime}'; ignored")
+            continue
         command = str(raw.get("command", "") or raw.get("run", "")).strip()
         if not command:
             warnings.append(f"tool '{tool_name}' missing command; ignored")
@@ -321,6 +321,8 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
             continue
         capability = str(raw.get("capability", "")).strip() or "skill_command"
         description = str(raw.get("description", "")).strip() or tool_name
+        mutates = coerce_bool(raw.get("mutates"), True)
+        actions = _as_str_list(raw.get("actions", ["run"]))
         timeout_raw = raw.get("timeout-s", raw.get("timeout_s", 30))
         try:
             timeout_s = int(timeout_raw)
@@ -341,6 +343,8 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
                     "capability": capability,
                     "description": description,
                     "parameters": parameters,
+                    "mutates": mutates,
+                    "actions": actions,
                 },
                 "command": command,
                 "timeout_s": timeout_s,

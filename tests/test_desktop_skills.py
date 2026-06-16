@@ -92,6 +92,22 @@ def test_side_effecting_desktop_tools_count_as_mutating_for_plan_mode(tmp_path: 
     assert runtime.tool_is_mutating("ocr_image") is False
 
 
+def test_bundled_tools_declare_mutability_and_actions(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+
+    bundled_tools = [
+        reg
+        for reg in runtime._tool_registry.values()  # noqa: SLF001
+        if reg.skill_id != "__runtime__" and runtime.get_skill(reg.skill_id) is not None
+    ]
+
+    assert bundled_tools
+    missing_mutates = sorted(reg.name for reg in bundled_tools if reg.mutates is None)
+    missing_actions = sorted(reg.name for reg in bundled_tools if not reg.actions)
+    assert missing_mutates == []
+    assert missing_actions == []
+
+
 def test_app_control_mutating_actions_require_explicit_confirmation(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
 

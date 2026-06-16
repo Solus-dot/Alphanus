@@ -38,6 +38,16 @@ class SkillRegistry:
         capability = str(spec.get("capability", "")).strip()
         description = str(spec.get("description", "")).strip()
         parameters = spec.get("parameters")
+        mutates_raw = spec.get("mutates")
+        mutates = mutates_raw if isinstance(mutates_raw, bool) else None
+        actions_raw = spec.get("actions", [])
+        actions = tuple(
+            dict.fromkeys(
+                str(item).strip().lower()
+                for item in (actions_raw if isinstance(actions_raw, list) else [])
+                if str(item).strip()
+            )
+        )
         if not capability or not description or not isinstance(parameters, dict):
             append_unique(warning_sink, f"invalid tool spec '{tool_name}'")
             return False
@@ -49,6 +59,8 @@ class SkillRegistry:
             capability=capability,
             description=description,
             parameters=parameters,
+            mutates=mutates,
+            actions=actions,
             **extra,
         )
         return True

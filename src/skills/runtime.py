@@ -134,6 +134,8 @@ class RegisteredTool:
     capability: str
     description: str
     parameters: dict[str, object]
+    mutates: bool | None = None
+    actions: tuple[str, ...] = ()
     module: object | None = None
     module_path: Path | None = None
     module_name: str = ""
@@ -407,6 +409,8 @@ class SkillRuntime:
             tool_scope="core",
             capability="skill_catalog_reader",
             description="List available skills with minimal metadata. Use this to discover a relevant skill before loading it.",
+            mutates=False,
+            actions=("list", "read"),
             parameters={
                 "type": "object",
                 "properties": {},
@@ -418,6 +422,8 @@ class SkillRuntime:
             tool_scope="core",
             capability="skill_loader",
             description="Load a skill's full SKILL.md content or read one linked file inside the skill.",
+            mutates=False,
+            actions=("read",),
             parameters={
                 "type": "object",
                 "properties": {
@@ -433,6 +439,8 @@ class SkillRuntime:
             tool_scope="skill",
             capability="user_input_requester",
             description="Ask the user a structured follow-up question and pause the current workflow.",
+            mutates=False,
+            actions=(),
             parameters={
                 "type": "object",
                 "properties": {
@@ -449,6 +457,8 @@ class SkillRuntime:
             tool_scope="skill",
             capability="skill_executor",
             description="Run the selected skill's single declared executable path. Use either an entrypoint or a bundled script, not both.",
+            mutates=True,
+            actions=("run",),
             parameters={
                 "type": "object",
                 "properties": {
@@ -840,12 +850,12 @@ class SkillRuntime:
             return []
         return self._skill_entrypoints(skill)
 
-    def _exposed_relevant_skill_scripts(self, skill: SkillManifest, ctx: SkillContext | None) -> list[str]:
+    def _exposed_relevant_skill_scripts(self, skill: SkillManifest) -> list[str]:
         if skill.allowed_tools and _RUN_SKILL_TOOL_NAME not in skill.allowed_tools:
             return []
         return self._reported_skill_scripts(skill)
 
-    def _exposed_relevant_skill_entrypoints(self, skill: SkillManifest, ctx: SkillContext | None) -> list[SkillEntrypointDef]:
+    def _exposed_relevant_skill_entrypoints(self, skill: SkillManifest) -> list[SkillEntrypointDef]:
         if skill.allowed_tools and _RUN_SKILL_TOOL_NAME not in skill.allowed_tools:
             return []
         return self._reported_skill_entrypoints(skill)
@@ -881,10 +891,10 @@ class SkillRuntime:
         reg = self.tool_registration(tool_name)
         if reg is None:
             return False
+        if reg.mutates is not None:
+            return bool(reg.mutates)
         capability = str(reg.capability or "").strip().lower()
         if capability.startswith("workspace_") and capability != "workspace_read":
-            return True
-        if capability in {"desktop_control", "browser_open", "screen_capture"}:
             return True
         if reg.tool_scope == "skill" and (capability.endswith("_runner") or capability == "skill_executor"):
             return True
@@ -905,7 +915,6 @@ class SkillRuntime:
     def compose_skill_block(
         self,
         selected: list[SkillManifest],
-        ctx: SkillContext,
         context_limit: int,
         ratio: float = 0.15,
         hard_cap: int = 0,
@@ -1082,7 +1091,6 @@ class SkillRuntime:
     def _optional_tool_names_for_turn(
         self,
         selected: list[SkillManifest],
-        ctx: SkillContext | None = None,
     ) -> list[str]:
         selected_map = {skill.id: skill for skill in selected}
         allowed: list[str] = []
@@ -1091,7 +1099,7 @@ class SkillRuntime:
                 if not self._tool_allowed_for_permission_profile(reg):
                     continue
                 if any(
-                    (self._exposed_relevant_skill_entrypoints(skill, ctx) or self._exposed_relevant_skill_scripts(skill, ctx))
+                    (self._exposed_relevant_skill_entrypoints(skill) or self._exposed_relevant_skill_scripts(skill))
                     for skill in selected
                     if not skill.disable_model_invocation
                 ):
@@ -1112,9 +1120,10 @@ class SkillRuntime:
         return sorted(allowed)
 
     def optional_tool_names(self, selected: list[SkillManifest], ctx: SkillContext | None = None) -> list[str]:
+        _ = ctx
         if self.is_minimal_profile():
             return []
-        return self._optional_tool_names_for_turn(selected, ctx=ctx)
+        return self._optional_tool_names_for_turn(selected)
 
     def _tool_names_for_turn(
         self,
@@ -1124,7 +1133,7 @@ class SkillRuntime:
         if self.is_minimal_profile():
             turn_core_names = {
                 name
-                for name in (set(self.model_exposed_tool_names()) | set(self._optional_tool_names_for_turn(selected, ctx=ctx)))
+                for name in (set(self.model_exposed_tool_names()) | set(self._optional_tool_names_for_turn(selected)))
                 if name in _CORE_TOOL_NAMES
             }
             safe_names = set(turn_core_names)
@@ -1273,12 +1282,11 @@ class SkillRuntime:
         reg: RegisteredTool,
         args: dict[str, Any],
         selected: list[SkillManifest],
-        ctx: SkillContext,
     ) -> dict[str, Any]:
         recovered = _recover_tool_args(args)
         validated = self._validate_tool_args(reg, recovered)
         if reg.name == _RUN_SKILL_TOOL_NAME:
-            validated = self._run_validator.validate_run_skill_args(validated, selected, ctx)
+            validated = self._run_validator.validate_run_skill_args(validated, selected)
         return validated
 
     def execute_tool_call(
