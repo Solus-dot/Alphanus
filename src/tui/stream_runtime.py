@@ -108,7 +108,6 @@ def enqueue_event(app: Any, event: dict[str, Any]) -> None:
     _state(app).event_queue.put(event)
     if event.get("type") in {
         "tool_phase_started",
-        "tool_call_delta",
         "tool_call",
         "tool_result",
         "error",

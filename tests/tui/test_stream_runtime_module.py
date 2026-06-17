@@ -129,12 +129,15 @@ def test_enqueue_event_creates_queue_and_schedules_drain_for_notable_events() ->
     assert app._call_from_thread_calls
 
 
-def test_enqueue_event_schedules_drain_for_tool_call_delta() -> None:
+def test_enqueue_event_coalesces_tool_call_delta_until_timer_tick() -> None:
     app = _App()
 
     enqueue_event(app, {"type": "tool_call_delta", "stream_id": "s1", "name": "create_file", "raw_arguments": "{}"})
 
-    assert app._call_from_thread_calls == [app._drain_stream_event_queue]
+    assert app._call_from_thread_calls == []
+    assert app._stream_runtime is not None
+    queued = app._stream_runtime.event_queue.get_nowait()
+    assert queued["type"] == "tool_call_delta"
 
 
 def test_drain_events_processes_usage_event() -> None:
