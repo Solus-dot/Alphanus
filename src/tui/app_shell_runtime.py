@@ -72,6 +72,9 @@ def initialize_shell_state(app: Any, *, agent: Any, debug: bool) -> None:
     app._last_status_left = ""
     app._last_status_right = ""
     app._auto_follow_stream = True
+    app._chat_log_widget = None
+    app._chat_scroll_widget = None
+    app._partial_widget = None
     initial_status = app.agent.get_model_status()
     app._status_runtime = StatusRuntimeState(
         model_status=initial_status,

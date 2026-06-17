@@ -353,6 +353,15 @@ def test_tui_chat_log_max_lines_zero_disables_pruning() -> None:
     assert ui.chat_log_max_lines is None
 
 
+def test_tui_stream_drain_default_is_terminal_friendly() -> None:
+    normalized, _warnings = normalize_config({})
+
+    ui = UiRuntimeConfig.from_config(normalized)
+
+    assert normalized["tui"]["timing"]["stream_drain_interval_s"] == 0.033
+    assert ui.timing.stream_drain_interval_s == 0.033
+
+
 def test_typed_config_v2_groups_runtime_sections() -> None:
     normalized, _warnings = normalize_config(
         {

@@ -170,7 +170,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "theme": DEFAULT_THEME_ID,
         "chat_log_max_lines": 0,
         "timing": {
-            "stream_drain_interval_s": 0.016,
+            "stream_drain_interval_s": 0.033,
             "scroll_interval_s": 0.05,
             "shell_confirm_timeout_s": 60.0,
         },

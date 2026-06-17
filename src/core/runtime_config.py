@@ -62,7 +62,7 @@ def _coerce_string_list(value: Any) -> list[str]:
 
 @dataclass(slots=True)
 class UiTimingConfig:
-    stream_drain_interval_s: float = 0.016
+    stream_drain_interval_s: float = 0.033
     scroll_interval_s: float = 0.05
     shell_confirm_timeout_s: float = 60.0
 

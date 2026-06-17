@@ -563,6 +563,9 @@ class AlphanusTUI(App):
     _esc_pending: bool
     _esc_ts: float
     _auto_follow_stream: bool
+    _chat_log_widget: TranscriptView | None
+    _chat_scroll_widget: ScrollableContainer | None
+    _partial_widget: Static | None
     _stop_event: threading.Event
     _stream_runtime: StreamRuntimeState
     _stream_drain_interval_s: float | None
@@ -623,6 +626,9 @@ class AlphanusTUI(App):
         agent_cfg = self.agent.config.get("agent")
         agent_cfg_obj = agent_cfg if isinstance(agent_cfg, dict) else {}
         self.thinking = bool(agent_cfg_obj.get("enable_thinking", True))
+        self._chat_log_widget = self.query_one("#chat-log", TranscriptView)
+        self._chat_scroll_widget = self.query_one("#chat-scroll", ScrollableContainer)
+        self._partial_widget = self.query_one("#partial", Static)
         self._register_themes()
         self._apply_theme_from_config()
         self.set_interval(0.1, self._tick)
@@ -936,12 +942,21 @@ class AlphanusTUI(App):
         self._update_status2()
 
     def _log(self) -> TranscriptView:  # pyright: ignore[reportIncompatibleMethodOverride]
+        cached = getattr(self, "_chat_log_widget", None)
+        if cached is not None:
+            return cached
         return self.query_one("#chat-log", TranscriptView)
 
     def _scroll(self) -> ScrollableContainer:
+        cached = getattr(self, "_chat_scroll_widget", None)
+        if cached is not None:
+            return cached
         return self.query_one("#chat-scroll", ScrollableContainer)
 
     def _partial(self) -> Static:
+        cached = getattr(self, "_partial_widget", None)
+        if cached is not None:
+            return cached
         return self.query_one("#partial", Static)
 
     def _set_partial_renderable(self, renderable: RenderableType | None, *, visible: bool | None = None) -> None:
