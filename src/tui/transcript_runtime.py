@@ -768,9 +768,6 @@ def maybe_scroll_end(app: Any, force: bool = False) -> None:
     if force:
         app._scroll().scroll_end(animate=False)
         return
-    if app.streaming and app._auto_follow_stream and not app._is_near_bottom():
-        app._auto_follow_stream = False
-        app._update_status2()
     if not app.streaming or app._auto_follow_stream:
         app._scroll().scroll_end(animate=False)
 

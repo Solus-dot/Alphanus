@@ -917,10 +917,7 @@ class AlphanusTUI(App):
             self._update_status2()
             return
         if self.streaming:
-            if self._auto_follow_stream and not self._is_near_bottom():
-                self._auto_follow_stream = False
-                self._update_status2()
-            elif not self._auto_follow_stream and self._is_near_bottom():
+            if not self._auto_follow_stream and self._is_near_bottom():
                 self._auto_follow_stream = True
                 self._update_status2()
         if self.streaming and not self._esc_pending:

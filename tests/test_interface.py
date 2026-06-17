@@ -23,6 +23,7 @@ from tui.sidebar import render_sidebar_inspector_markup
 from tui.status_runtime import StatusRuntimeState
 from tui.stream_runtime import StreamRuntimeState
 from tui.transcript import ScrollAnchor, TranscriptEntry, TranscriptView
+from tui.transcript_runtime import maybe_scroll_end
 
 TEST_BASE_URL = "http://127.0.0.1:8080"
 TEST_MODEL_ENDPOINT = f"{TEST_BASE_URL}/v1/chat/completions"
@@ -1667,6 +1668,42 @@ def test_drain_stream_event_queue_renders_reasoning_once_per_tick() -> None:
     assert tui._buf_r == "hello"
     assert len(partial_updates) == 1
     assert scrolls == ["scroll"]
+
+
+def test_stream_auto_follow_survives_render_backlog() -> None:
+    scroll_calls: list[str] = []
+    status_updates: list[str] = []
+    scroll = SimpleNamespace(scroll_y=5, max_scroll_y=20, scroll_end=lambda animate=False: scroll_calls.append(str(animate)))
+    tui = SimpleNamespace(
+        streaming=True,
+        _auto_follow_stream=True,
+        _scroll=lambda: scroll,
+        _is_near_bottom=lambda: False,
+        _update_status2=lambda: status_updates.append("status"),
+    )
+
+    maybe_scroll_end(tui)
+
+    assert tui._auto_follow_stream is True
+    assert scroll_calls == ["False"]
+    assert status_updates == []
+
+
+def test_stream_tick_does_not_enter_free_scroll_from_render_backlog(tmp_path: Path) -> None:
+    tui = AlphanusTUI(_tui_agent_stub(tmp_path))
+    tui._esc_pending = False
+    tui._reactive_streaming = True
+    tui._auto_follow_stream = True
+    tui._spin_i = 0
+    tui._is_near_bottom = lambda: False
+    status_updates: list[str] = []
+    tui._update_status2 = lambda: status_updates.append("status")
+
+    tui._tick()
+
+    assert tui._auto_follow_stream is True
+    assert tui._spin_i == 1
+    assert status_updates == ["status"]
 
 
 def test_file_tool_success_lines_use_standard_tool_blocks() -> None:
