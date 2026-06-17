@@ -144,3 +144,55 @@ def test_action_handle_esc_streaming_second_press_sets_stop_event_and_emits_info
     assert stop_event.is_set()
     assert app._esc_pending is False
     assert infos == ["Interrupt requested. Stopping current turn..."]
+
+
+def test_action_handle_esc_streaming_shell_confirm_first_press_only_arms_stop() -> None:
+    chat_input = _ChatInput(expanded_text="")
+    stop_event = threading.Event()
+    finishes: list[bool] = []
+    app = SimpleNamespace(
+        _await_shell_confirm=True,
+        _finish_shell_confirm=finishes.append,
+        _command_popup_active=lambda: False,
+        _hide_command_popup=lambda: None,
+        streaming=True,
+        _esc_pending=False,
+        _esc_ts=0.0,
+        _stop_event=stop_event,
+        _write_info=lambda _text: None,
+        _update_status2=lambda: None,
+        query_one=lambda _chat_input_cls: chat_input,
+    )
+
+    action_handle_esc(app, chat_input_cls=object)
+
+    assert app._esc_pending is True
+    assert not stop_event.is_set()
+    assert finishes == []
+
+
+def test_action_handle_esc_streaming_shell_confirm_second_press_stops_and_rejects() -> None:
+    chat_input = _ChatInput(expanded_text="")
+    infos: list[str] = []
+    finishes: list[bool] = []
+    stop_event = threading.Event()
+    app = SimpleNamespace(
+        _await_shell_confirm=True,
+        _finish_shell_confirm=finishes.append,
+        _command_popup_active=lambda: False,
+        _hide_command_popup=lambda: None,
+        streaming=True,
+        _esc_pending=True,
+        _esc_ts=0.0,
+        _stop_event=stop_event,
+        _write_info=infos.append,
+        _update_status2=lambda: None,
+        query_one=lambda _chat_input_cls: chat_input,
+    )
+
+    action_handle_esc(app, chat_input_cls=object)
+
+    assert stop_event.is_set()
+    assert app._esc_pending is False
+    assert finishes == [False]
+    assert infos == ["Interrupt requested. Stopping current turn..."]

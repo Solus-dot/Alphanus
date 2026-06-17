@@ -154,25 +154,27 @@ def on_input_submitted(app: Any, event: Any, *, chat_input_cls: Any) -> None:
 
 
 def action_handle_esc(app: Any, *, chat_input_cls: Any) -> None:
+    if app.streaming:
+        now_value = time.monotonic()
+        if not app._esc_pending:
+            app._esc_pending = True
+            app._esc_ts = now_value
+            app._update_status2()
+            return
+        if app._stop_event is not None and not app._stop_event.is_set():
+            app._stop_event.set()
+            write_info = getattr(app, "_write_info", None)
+            if callable(write_info):
+                write_info("Interrupt requested. Stopping current turn...")
+        if app._await_shell_confirm:
+            app._finish_shell_confirm(False)
+        app._esc_pending = False
+        app._update_status2()
+        return
     if app._await_shell_confirm:
         app._finish_shell_confirm(False)
         return
     if app._command_popup_active():
         app._hide_command_popup()
         return
-    if not app.streaming:
-        _clear_chat_input_draft(app.query_one(chat_input_cls))
-        return
-    now_value = time.monotonic()
-    if not app._esc_pending:
-        app._esc_pending = True
-        app._esc_ts = now_value
-        app._update_status2()
-    else:
-        if app._stop_event is not None and not app._stop_event.is_set():
-            app._stop_event.set()
-            write_info = getattr(app, "_write_info", None)
-            if callable(write_info):
-                write_info("Interrupt requested. Stopping current turn...")
-        app._esc_pending = False
-        app._update_status2()
+    _clear_chat_input_draft(app.query_one(chat_input_cls))
