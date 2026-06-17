@@ -40,6 +40,7 @@ class ChatSession:
     tree: ConvTree
     loaded_skill_ids: list[str] = field(default_factory=list)
     collaboration_mode: str = "execute"
+    context_summary: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -50,6 +51,7 @@ class ChatSession:
             "tree": self.tree.to_dict(),
             "loaded_skill_ids": list(self.loaded_skill_ids),
             "collaboration_mode": str(self.collaboration_mode or "execute").strip().lower() or "execute",
+            "context_summary": str(self.context_summary or ""),
         }
 
     @staticmethod
@@ -64,6 +66,7 @@ class ChatSession:
             collaboration_mode=(
                 "plan" if str(data.get("collaboration_mode", "execute") or "execute").strip().lower() == "plan" else "execute"
             ),
+            context_summary=str(data.get("context_summary") or ""),
         )
 
 
@@ -232,6 +235,7 @@ class SessionStore:
             tree=tree or ConvTree(),
             loaded_skill_ids=[],
             collaboration_mode="execute",
+            context_summary="",
         )
         self._write_session(session)
         self._update_manifest_for_session(manifest, session, activate=activate)
@@ -244,6 +248,7 @@ class SessionStore:
         tree: ConvTree,
         loaded_skill_ids: list[str] | None = None,
         collaboration_mode: str | None = None,
+        context_summary: str | None = None,
         *,
         created_at: str | None = None,
         activate: bool = True,
@@ -264,6 +269,7 @@ class SessionStore:
                 if str(collaboration_mode or raw_meta.get("collaboration_mode") or "execute").strip().lower() == "plan"
                 else "execute"
             ),
+            context_summary=str(context_summary if context_summary is not None else raw_meta.get("context_summary") or ""),
         )
         self._write_session(session)
         self._update_manifest_for_session(manifest, session, activate=activate)
@@ -369,6 +375,7 @@ class SessionStore:
             "branch_count": sum(1 for node in session.tree.nodes.values() if node.branch_root),
             "loaded_skill_ids": list(session.loaded_skill_ids),
             "collaboration_mode": str(session.collaboration_mode or "execute").strip().lower() or "execute",
+            "context_summary": str(session.context_summary or ""),
         }
         if activate:
             manifest["active_session_id"] = session.id

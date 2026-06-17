@@ -146,6 +146,22 @@ def test_save_tree_roundtrip_preserves_collaboration_mode(tmp_path: Path) -> Non
     assert loaded.collaboration_mode == "plan"
 
 
+def test_save_tree_roundtrip_preserves_context_summary(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path, tmp_path / "sessions")
+    session = store.bootstrap()
+
+    saved = store.save_tree(
+        session.id,
+        session.title,
+        session.tree,
+        context_summary="Earlier turns edited src/app.py and left tests pending.",
+        created_at=session.created_at,
+    )
+    loaded = store.load_session(saved.id, activate=False)
+
+    assert loaded.context_summary == "Earlier turns edited src/app.py and left tests pending."
+
+
 def test_session_store_loads_existing_session_without_version_gate(tmp_path: Path) -> None:
     store = SessionStore(tmp_path, tmp_path / "sessions")
     session = store.bootstrap()

@@ -228,12 +228,28 @@ def cmd_context(app: Any, arg: str) -> bool:
     used = app._context_tokens()
     total = app._context_window_tokens()
     percent = context_usage_percent(used, total)
+    report = getattr(app, "_last_context_report", None)
+    report_obj = report if isinstance(report, dict) else {}
     app._write_section_heading("Context")
     app._write_detail_line("usage", "—" if percent is None else f"{percent}%")
     token_line = (
         f"{'—' if used is None else used} / {'—' if total is None else total}" if used is None or total is None else f"{used} / {total}"
     )
     app._write_detail_line("tokens", token_line)
+    if report_obj:
+        app._write_detail_line("estimated prompt", str(report_obj.get("final_prompt_tokens_estimate", "—")))
+        app._write_detail_line("budget", str(report_obj.get("budget_tokens", "—")))
+        app._write_detail_line("output reserve", str(report_obj.get("output_reserve_tokens", "—")))
+        app._write_detail_line("tool schemas", str(report_obj.get("tool_schema_tokens", "—")))
+        app._write_detail_line("system", str(report_obj.get("system_tokens", "—")))
+        app._write_detail_line("history", f"{report_obj.get('history_after_tokens', '—')} / {report_obj.get('history_before_tokens', '—')}")
+        app._write_detail_line("messages", f"{report_obj.get('messages_after', '—')} / {report_obj.get('messages_before', '—')}")
+        app._write_detail_line("tools", str(report_obj.get("tool_count", "—")))
+        app._write_detail_line("retrieval", str(report_obj.get("retrieval_records", "—")))
+        app._write_detail_line("skills", str(report_obj.get("skill_count", "—")))
+        app._write_detail_line("summary", str(report_obj.get("summary_status", "—")))
+        app._write_detail_line("pruned", "yes" if bool(report_obj.get("pruned")) else "no")
+        app._write_detail_line("over budget", "yes" if bool(report_obj.get("over_budget")) else "no")
     app._write("")
     return True
 

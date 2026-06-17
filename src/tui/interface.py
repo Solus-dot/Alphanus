@@ -538,6 +538,8 @@ class AlphanusTUI(App):
     _session_id: str
     _session_title: str
     _session_created_at: str
+    _context_summary: str
+    _last_context_report: dict[str, Any] | None
     _collaboration_mode: str
     _loaded_skill_ids: list[str]
     _status_runtime: StatusRuntimeState
@@ -771,6 +773,7 @@ class AlphanusTUI(App):
 
     def _reset_context_usage(self) -> None:
         self._last_model_context_tokens = None
+        self._last_context_report = None
 
     def _update_context_usage_from_payload(self, usage: dict[str, Any]) -> None:
         for key in ("prompt_tokens", "input_tokens", "prompt_eval_count"):
@@ -1437,6 +1440,7 @@ class AlphanusTUI(App):
         branch_labels: list[str],
         attachment_paths: list[str],
         loaded_skill_ids: list[str],
+        context_summary: str,
         thinking: bool,
         stop_event: threading.Event,
     ) -> None:
@@ -1450,6 +1454,7 @@ class AlphanusTUI(App):
             branch_labels=branch_labels,
             attachments=attachment_paths,
             loaded_skill_ids=loaded_skill_ids,
+            context_summary=context_summary,
             collaboration_mode=str(getattr(self, "_collaboration_mode", "execute")),
             stop_event=stop_event,
             on_event=on_event,

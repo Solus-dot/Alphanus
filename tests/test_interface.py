@@ -2010,6 +2010,39 @@ def test_cmd_context_writes_percent_and_tokens() -> None:
     assert "DETAIL:tokens:1612 / 40960:False" in lines
 
 
+def test_cmd_context_writes_context_report_breakdown() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    lines: list[str] = []
+    tui._write = lines.append
+    tui._write_section_heading = lambda text: lines.append(f"SECTION:{text}")
+    tui._write_detail_line = lambda label, value, value_markup=False: lines.append(f"DETAIL:{label}:{value}:{value_markup}")
+    tui._context_tokens = lambda: 2000
+    tui._context_window_tokens = lambda: 8192
+    tui._last_context_report = {
+        "final_prompt_tokens_estimate": 2400,
+        "budget_tokens": 7692,
+        "output_reserve_tokens": 2048,
+        "tool_schema_tokens": 320,
+        "system_tokens": 900,
+        "history_before_tokens": 1800,
+        "history_after_tokens": 900,
+        "messages_before": 12,
+        "messages_after": 6,
+        "tool_count": 8,
+        "retrieval_records": 1,
+        "skill_count": 2,
+        "summary_status": "model",
+        "pruned": True,
+        "over_budget": False,
+    }
+
+    assert tui._cmd_context("") is True
+    assert "DETAIL:tool schemas:320:False" in lines
+    assert "DETAIL:history:900 / 1800:False" in lines
+    assert "DETAIL:summary:model:False" in lines
+    assert "DETAIL:pruned:yes:False" in lines
+
+
 def test_handle_context_command_renders_context_summary() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._id = "app"
@@ -2220,12 +2253,14 @@ def test_handle_save_renames_and_persists_active_session() -> None:
         saved_tree: ConvTree,
         loaded_skill_ids=None,
         collaboration_mode: str = "execute",
+        context_summary: str = "",
         *,
         created_at: str,
         activate: bool = True,
     ) -> ChatSession:
         saved_calls.append((session_id, title, created_at, list(loaded_skill_ids or [])))
         assert collaboration_mode == "execute"
+        assert context_summary == ""
         assert saved_tree is tree
         assert activate is True
         return ChatSession(
@@ -2738,6 +2773,7 @@ def test_load_session_from_manager_switches_sessions() -> None:
         tree: ConvTree,
         loaded_skill_ids=None,
         collaboration_mode: str = "execute",
+        context_summary: str = "",
         *,
         created_at: str,
         activate: bool = True,
@@ -2745,6 +2781,7 @@ def test_load_session_from_manager_switches_sessions() -> None:
         assert tree is current_tree
         assert list(loaded_skill_ids or []) == []
         assert collaboration_mode == "execute"
+        assert context_summary == ""
         return ChatSession(
             id=session_id,
             title=title,
@@ -2976,6 +3013,28 @@ def test_activate_session_state_restores_collaboration_mode_from_session() -> No
     assert tui._collaboration_mode == "plan"
 
 
+def test_activate_session_state_migrates_legacy_summary_to_active_branch() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tui.agent = SimpleNamespace(skill_runtime=SimpleNamespace(skills_by_ids=lambda ids: [SimpleNamespace(id=item) for item in ids]))
+    tui._apply_tree_compaction_policy = lambda current_tree: current_tree
+    tree = ConvTree()
+    turn = tree.add_turn("long branch")
+    tree.complete_turn(turn.id, "done")
+    session = ChatSession(
+        id="sess-legacy",
+        title="Legacy Summary",
+        created_at="2026-03-20T10:00:00+00:00",
+        updated_at="2026-03-20T10:05:00+00:00",
+        tree=tree,
+        context_summary="legacy branch summary",
+    )
+
+    tui._activate_session_state(session)
+
+    assert tui.conv_tree.context_summary(turn.id) == "legacy branch summary"
+    assert tui._context_summary == "legacy branch summary"
+
+
 def test_activate_session_state_preserves_root_when_pending_branch_is_armed() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui.agent = SimpleNamespace(skill_runtime=SimpleNamespace(skills_by_ids=lambda ids: [SimpleNamespace(id=item) for item in ids]))
@@ -3064,6 +3123,57 @@ def test_switch_to_session_resets_context_usage_and_refreshes_metadata() -> None
     assert tui._last_model_context_tokens is None
     assert tui.pending == []
     assert events == ["activate:Next Session", "rebuild", "sidebar", "attachments", "status1", "status2", "placeholder", "metadata"]
+
+
+def test_save_active_session_persists_current_branch_summary() -> None:
+    tui = AlphanusTUI.__new__(AlphanusTUI)
+    tree = ConvTree()
+    base = tree.add_turn("base")
+    tree.complete_turn(base.id, "ok")
+    tree.set_context_summary("base summary", base.id)
+    tree.arm_branch("left")
+    left = tree.add_turn("left")
+    tree.complete_turn(left.id, "left done")
+    tree.set_context_summary("left summary", left.id)
+    saved_summaries: list[str] = []
+
+    def save_tree(
+        _session_id: str,
+        _title: str,
+        saved_tree: ConvTree,
+        loaded_skill_ids=None,
+        collaboration_mode: str = "execute",
+        context_summary: str = "",
+        *,
+        created_at: str,
+        activate: bool = True,
+    ) -> ChatSession:
+        assert saved_tree is tree
+        assert collaboration_mode == "execute"
+        assert activate is True
+        saved_summaries.append(context_summary)
+        return ChatSession(
+            id="sess-branch",
+            title="Branch Session",
+            created_at=created_at,
+            updated_at="2026-03-20T10:05:00+00:00",
+            tree=saved_tree,
+            context_summary=context_summary,
+        )
+
+    tui._session_store = SimpleNamespace(save_tree=save_tree)
+    tui._session_id = "sess-branch"
+    tui._session_title = "Branch Session"
+    tui._session_created_at = "2026-03-20T10:00:00+00:00"
+    tui._loaded_skill_ids = []
+    tui._collaboration_mode = "execute"
+    tui.conv_tree = tree
+
+    tui._save_active_session()
+    tree.unbranch()
+    tui._save_active_session()
+
+    assert saved_summaries == ["left summary", "base summary"]
 
 
 def test_handle_clear_resets_context_usage_and_refreshes_metadata() -> None:
