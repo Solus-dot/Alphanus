@@ -99,6 +99,7 @@ def start_turn_stream(app: Any, turn: Any, user_input: str, attachment_paths: li
         branch_labels,
         attachment_paths,
         list(app._loaded_skill_ids),
+        app.conv_tree.context_summary(),
         app.thinking,
         app._stop_event,
     )
@@ -471,6 +472,15 @@ def finish_turn_stream(app: Any, turn_id: str, result: AgentTurnResult) -> None:
         usage = result.journal.get("model_usage", {}) if isinstance(result.journal, dict) else {}
         if isinstance(usage, dict):
             app._update_context_usage_from_payload(usage)
+        context_report = result.journal.get("context_report", {}) if isinstance(result.journal, dict) else {}
+        if isinstance(context_report, dict):
+            app._last_context_report = context_report
+        context_summary = result.journal.get("context_summary", "") if isinstance(result.journal, dict) else ""
+        set_context_summary = getattr(app.conv_tree, "set_context_summary", None)
+        get_context_summary = getattr(app.conv_tree, "context_summary", None)
+        if result.status == "done" and isinstance(context_summary, str) and callable(set_context_summary) and callable(get_context_summary):
+            set_context_summary(context_summary, turn_id)
+            app._context_summary = get_context_summary(turn_id)
         loaded_skill_ids = result.journal.get("loaded_skill_ids", []) if isinstance(result.journal, dict) else []
         if isinstance(loaded_skill_ids, list):
             app._loaded_skill_ids = [

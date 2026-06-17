@@ -120,6 +120,32 @@ def test_branch_unbranch_and_switch():
     assert tree.current_id in {b.id, c.id}
 
 
+def test_context_summaries_are_scoped_to_tree_nodes():
+    tree = ConvTree()
+    base = tree.add_turn("base")
+    tree.complete_turn(base.id, "ok")
+    tree.set_context_summary("base summary", base.id)
+
+    tree.current_id = base.id
+    tree.arm_branch("left")
+    left = tree.add_turn("left")
+    tree.complete_turn(left.id, "left done")
+    tree.set_context_summary("left summary", left.id)
+
+    assert tree.context_summary() == "left summary"
+    tree.unbranch()
+    assert tree.current_id == base.id
+    assert tree.context_summary() == "base summary"
+
+    tree.arm_branch("right")
+    right = tree.add_turn("right")
+    tree.complete_turn(right.id, "right done")
+
+    assert tree.current_id == right.id
+    assert tree.context_summary() == ""
+    assert tree.context_summary(left.id) == "left summary"
+
+
 def test_history_messages_include_skill_exchanges():
     tree = ConvTree()
     turn = tree.add_turn("user")
@@ -196,6 +222,17 @@ def test_dict_roundtrip_preserves_pending_branch_state():
 
     assert loaded._pending_branch is True
     assert loaded._pending_branch_label == "alt-path"
+
+
+def test_dict_roundtrip_preserves_context_summaries():
+    tree = ConvTree()
+    turn = tree.add_turn("hello")
+    tree.complete_turn(turn.id, "world")
+    tree.set_context_summary("summarized branch", turn.id)
+
+    loaded = ConvTree.from_dict(tree.to_dict())
+
+    assert loaded.context_summary(turn.id) == "summarized branch"
 
 
 def test_loads_tree_payload_without_version_gate():

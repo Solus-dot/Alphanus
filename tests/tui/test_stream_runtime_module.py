@@ -48,7 +48,7 @@ class _App:
         self._stop_event = None
         self._loaded_skill_ids = ["a", "b"]
         self.thinking = True
-        self.conv_tree = SimpleNamespace(active_path=[], history_messages=lambda: [])
+        self.conv_tree = SimpleNamespace(active_path=[], history_messages=lambda: [], context_summary=lambda *_args: "branch summary")
         self._stream_worker_calls = []
         self._call_from_thread_calls = []
         self._usage_updates = 0
@@ -115,6 +115,7 @@ def test_start_turn_stream_resets_runtime_and_invokes_worker() -> None:
     assert call[0] == "t1"
     assert call[2] == "hi"
     assert call[4] == ["a.txt"]
+    assert call[6] == "branch summary"
 
 
 def test_enqueue_event_creates_queue_and_schedules_drain_for_notable_events() -> None:

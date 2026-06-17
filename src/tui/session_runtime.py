@@ -16,6 +16,10 @@ def activate_session_state(app, session: ChatSession) -> None:
             tree.current_id = newest_leaf
     app.conv_tree = tree
     app._tree_cursor_id = app.conv_tree.current_id
+    legacy_summary = str(getattr(session, "context_summary", "") or "").strip()
+    if legacy_summary and not app.conv_tree.context_summary():
+        app.conv_tree.set_context_summary(legacy_summary)
+    app._context_summary = app.conv_tree.context_summary()
 
 
 def save_active_session(app, rename_to: str | None = None) -> ChatSession:
@@ -26,11 +30,13 @@ def save_active_session(app, rename_to: str | None = None) -> ChatSession:
         app.conv_tree,
         loaded_skill_ids=list(getattr(app, "_loaded_skill_ids", [])),
         collaboration_mode=str(getattr(app, "_collaboration_mode", "execute")),
+        context_summary=app.conv_tree.context_summary(),
         created_at=app._session_created_at,
         activate=True,
     )
     app._session_title = session.title
     app._session_created_at = session.created_at
+    app._context_summary = app.conv_tree.context_summary()
     app._collaboration_mode = "plan" if str(getattr(session, "collaboration_mode", "execute")).strip().lower() == "plan" else "execute"
     return session
 

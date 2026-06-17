@@ -181,6 +181,7 @@ class ConvTree:
         self._active_path_cache: list[Turn] = []
         self._history_messages_cache_key: tuple[str, int] | None = None
         self._history_messages_cache: list[ChatMessage] = []
+        self._context_summaries: dict[str, str] = {}
 
     def _invalidate_active_path_cache(self) -> None:
         self._active_path_cache_id = ""
@@ -313,6 +314,20 @@ class ConvTree:
         self._history_messages_cache = list(messages)
         return messages
 
+    def context_summary(self, node_id: str | None = None) -> str:
+        key = node_id or self.current_id
+        return str(self._context_summaries.get(key, "") or "")
+
+    def set_context_summary(self, summary: str, node_id: str | None = None) -> None:
+        key = node_id or self.current_id
+        if key not in self.nodes:
+            return
+        text = str(summary or "").strip()
+        if text:
+            self._context_summaries[key] = text
+        else:
+            self._context_summaries.pop(key, None)
+
     def unbranch(self) -> str | None:
         node = self.current
         while node.parent is not None:
@@ -338,6 +353,7 @@ class ConvTree:
             "current_id": self.current_id,
             "pending_branch": self._pending_branch,
             "pending_branch_label": self._pending_branch_label,
+            "context_summaries": dict(self._context_summaries),
             "nodes": {key: node.to_dict() for key, node in self.nodes.items()},
         }
 
@@ -366,6 +382,14 @@ class ConvTree:
         tree._active_path_cache = []
         tree._history_messages_cache_key = None
         tree._history_messages_cache = []
+        raw_summaries = data.get("context_summaries", {})
+        tree._context_summaries = {}
+        if isinstance(raw_summaries, dict):
+            tree._context_summaries = {
+                str(key): str(value).strip()
+                for key, value in raw_summaries.items()
+                if str(key) in tree.nodes and str(value).strip()
+            }
         tree.compact_inactive_branches()
         return tree
 
