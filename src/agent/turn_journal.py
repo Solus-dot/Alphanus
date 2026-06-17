@@ -61,6 +61,8 @@ class TurnJournalBuilder:
             "search_failures": state.completion.search_failure_count,
             "has_fetch_evidence": state.completion.search_has_fetch_content,
             "model_usage": dict(state.telemetry.model_usage),
+            "context_summary": str(getattr(state, "context_summary", "") or ""),
+            "context_report": cast(JSONValue, dict(getattr(state, "context_report", {}) or {})),
             "timing": {
                 "started_at": started_at,
                 "finished_at": finished_at,

@@ -113,7 +113,7 @@ class TurnOrchestrator:
         self.max_action_depth = coerce_int(agent_cfg.get("max_action_depth", 10), 10, minimum=1)
         self.max_tool_result_chars = coerce_int(agent_cfg.get("max_tool_result_chars", 12000), 12000, minimum=0)
         self.max_reasoning_chars = coerce_int(agent_cfg.get("max_reasoning_chars", 20000), 20000, minimum=0)
-        self.compact_tool_results_in_history = bool(agent_cfg.get("compact_tool_results_in_history", False))
+        self.compact_tool_results_in_history = bool(agent_cfg.get("compact_tool_results_in_history", True))
         compact_tools = agent_cfg.get("compact_tool_result_tools", [])
         if isinstance(compact_tools, list):
             self.compact_tool_result_tools = {str(name).strip() for name in compact_tools if str(name).strip()}
@@ -385,6 +385,7 @@ class TurnOrchestrator:
         classification,
         *,
         collaboration_mode: str = "execute",
+        context_summary: str = "",
     ) -> TurnState:
         return self.policy_engine.build_turn_state(
             ctx,
@@ -392,6 +393,7 @@ class TurnOrchestrator:
             history_messages,
             classification,
             collaboration_mode=self._normalize_collaboration_mode(collaboration_mode),
+            context_summary=context_summary,
         )
 
     def refresh_search_tools_enabled(self, state: TurnState) -> None:
@@ -589,6 +591,7 @@ class TurnOrchestrator:
         branch_labels: list[str] | None = None,
         attachments: list[str] | None = None,
         loaded_skill_ids: list[str] | None = None,
+        context_summary: str = "",
         collaboration_mode: str = "execute",
         stop_event=None,
     ) -> TurnState:
@@ -613,13 +616,114 @@ class TurnOrchestrator:
             selected = self.skill_runtime.select_skills(ctx)
         else:
             classification, selected = selection
+        ctx.context_summary = str(context_summary or "").strip()
+        ctx.relevant_skill_ids = [getattr(skill, "id", "") for skill in selected if getattr(skill, "id", "")]
         return self.build_turn_state(
             ctx,
             selected,
             history_messages,
             classification,
             collaboration_mode=collaboration_mode,
+            context_summary=ctx.context_summary,
         )
+
+    def _context_budget_report(
+        self,
+        *,
+        system_content: str,
+        policy_rules: str,
+        retrieval_hits: int,
+        skill_count: int,
+        messages_before: list[ChatMessage],
+        messages_after: list[ChatMessage],
+        tools: list[dict[str, Any]],
+        summary_status: str,
+        output_reserve_tokens: int,
+    ) -> JsonObject:
+        tool_schema_tokens = self.context_mgr.estimate_json_tokens(tools)
+        system_tokens = self.context_mgr.estimate_text_tokens(system_content)
+        history_before_tokens = self.context_mgr.estimate_tokens(messages_before[1:]) if len(messages_before) > 1 else 0
+        history_after_tokens = self.context_mgr.estimate_tokens(messages_after[1:]) if len(messages_after) > 1 else 0
+        final_prompt_tokens = self.context_mgr.estimate_tokens(messages_after) + tool_schema_tokens
+        budget = max(1, self.context_mgr.context_limit - self.context_mgr.safety_margin)
+        return {
+            "context_limit": self.context_mgr.context_limit,
+            "safety_margin": self.context_mgr.safety_margin,
+            "budget_tokens": budget,
+            "output_reserve_tokens": output_reserve_tokens,
+            "tool_schema_tokens": tool_schema_tokens,
+            "system_tokens": system_tokens,
+            "policy_tokens": self.context_mgr.estimate_text_tokens(policy_rules),
+            "history_before_tokens": history_before_tokens,
+            "history_after_tokens": history_after_tokens,
+            "final_prompt_tokens_estimate": final_prompt_tokens,
+            "messages_before": len(messages_before),
+            "messages_after": len(messages_after),
+            "tool_count": len(tools),
+            "retrieval_records": retrieval_hits,
+            "skill_count": skill_count,
+            "summary_status": summary_status,
+            "pruned": len(messages_after) < len(messages_before) or history_after_tokens < history_before_tokens,
+            "over_budget": final_prompt_tokens + output_reserve_tokens > budget,
+        }
+
+    def _summary_needed(self, system_messages: list[ChatMessage], tools: list[dict[str, Any]]) -> bool:
+        budget = max(1, self.context_mgr.context_limit - self.context_mgr.safety_margin)
+        tool_schema_tokens = self.context_mgr.estimate_json_tokens(tools)
+        return self.context_mgr.estimate_tokens(system_messages) + tool_schema_tokens + self.context_budget_max_tokens > budget
+
+    def _summarize_history_with_model(self, prior_summary: str, messages: list[ChatMessage], stop_event) -> str:
+        if not messages or self._is_stop_requested(stop_event):
+            return ""
+        system = (
+            "Summarize earlier conversation context for a coding/desktop agent. "
+            "Preserve user goals, decisions, files touched, tool outcomes, loaded skills, unresolved errors, and next steps. "
+            "Be concise and factual. Do not invent details."
+        )
+        lines = []
+        prior = str(prior_summary or "").strip()
+        if prior:
+            lines.append("Existing summary:\n" + prior)
+        lines.append("Messages to summarize:")
+        for message in messages:
+            lines.append(self.context_mgr._message_label(message))
+        payload = self.llm_client.build_payload(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": "\n".join(lines)},
+            ],
+            thinking=False,
+            tools=None,
+        )
+        result = self.call_with_retry(payload, stop_event, None, pass_id="context_summary")
+        if result is None:
+            return ""
+        if result.finish_reason == "cancelled":
+            return ""
+        text = (result.content or "").strip()
+        return self.truncate_text(text, 2400)
+
+    def _maybe_summarize_history(self, state: TurnState, system_messages: list[ChatMessage], tools: list[dict[str, Any]], stop_event) -> str:
+        if not self._summary_needed(system_messages + state.dynamic_history, tools):
+            return "not_needed"
+        summarize, retained = self.context_mgr.split_for_summary(state.dynamic_history)
+        if not summarize:
+            return "not_possible"
+        previous_summary = str(state.context_summary or "").strip()
+        try:
+            summary = self._summarize_history_with_model(previous_summary, summarize, stop_event)
+            status = "model"
+        except Exception as exc:
+            logging.debug("Context model summary failed: %s", exc)
+            summary = ""
+            status = "fallback"
+        if not summary:
+            summary = self.context_mgr.deterministic_summary(previous_summary, summarize)
+            status = "fallback"
+        state.context_summary = summary
+        state.ctx.context_summary = summary
+        state.dynamic_history = retained
+        return status
 
     def run_model_pass(
         self,
@@ -642,13 +746,6 @@ class TurnOrchestrator:
                 skill_exchanges=state.skill_exchanges,
             )
 
-        policy_snapshot = self.build_policy_snapshot(state)
-        system_content = self.prompt_renderer.compose_system_content(state.selected, state.ctx)
-        policy_rules = self.prompt_renderer.render_policy_rules(policy_snapshot)
-        if policy_rules:
-            system_content += "\n\n" + policy_rules
-        system_messages = [{"role": "system", "content": system_content}]
-        model_messages = self.context_mgr.prune(system_messages + state.dynamic_history, self.context_budget_max_tokens)
         tools = self.skill_runtime.tools_for_turn(state.selected, ctx=state.ctx)
         if self._normalize_collaboration_mode(getattr(state, "collaboration_mode", "execute")) == "plan":
             tools = [
@@ -658,6 +755,23 @@ class TurnOrchestrator:
                 and isinstance(item.get("function"), dict)
                 and self._tool_allowed_in_plan_mode(str(item["function"].get("name", "")).strip())
             ]
+        policy_snapshot = self.build_policy_snapshot(state)
+        system_content = self.prompt_renderer.compose_system_content(state.selected, state.ctx)
+        policy_rules = self.prompt_renderer.render_policy_rules(policy_snapshot)
+        if policy_rules:
+            system_content += "\n\n" + policy_rules
+        system_messages: list[ChatMessage] = [cast(ChatMessage, {"role": "system", "content": system_content})]
+        summary_status = self._maybe_summarize_history(state, system_messages, tools, stop_event)
+        if summary_status in {"model", "fallback"}:
+            policy_snapshot = self.build_policy_snapshot(state)
+            system_content = self.prompt_renderer.compose_system_content(state.selected, state.ctx)
+            policy_rules = self.prompt_renderer.render_policy_rules(policy_snapshot)
+            if policy_rules:
+                system_content += "\n\n" + policy_rules
+            system_messages = [cast(ChatMessage, {"role": "system", "content": system_content})]
+        messages_before = system_messages + state.dynamic_history
+        tool_schema_tokens = self.context_mgr.estimate_json_tokens(tools)
+        model_messages = self.context_mgr.prune(messages_before, self.context_budget_max_tokens + tool_schema_tokens)
         if (
             tools
             and self._latest_user_message_contains_vision_content(model_messages)
@@ -665,6 +779,18 @@ class TurnOrchestrator:
             and not self.skill_runtime.optional_tool_names(state.selected, ctx=state.ctx)
         ):
             tools = None
+        report_tools = tools or []
+        state.context_report = self._context_budget_report(
+            system_content=system_content,
+            policy_rules=policy_rules,
+            retrieval_hits=len(getattr(state.ctx, "retrieval_hits", []) or []),
+            skill_count=len(state.selected),
+            messages_before=messages_before,
+            messages_after=model_messages,
+            tools=report_tools,
+            summary_status=summary_status,
+            output_reserve_tokens=self.context_budget_max_tokens,
+        )
         payload = self.llm_client.build_payload(model_messages, thinking=thinking, tools=tools or None)
         pass_trace: dict[str, object] = {
             "pass_id": pass_id,
@@ -821,6 +947,7 @@ class TurnOrchestrator:
         branch_labels: list[str] | None = None,
         attachments: list[str] | None = None,
         loaded_skill_ids: list[str] | None = None,
+        context_summary: str = "",
         collaboration_mode: str = "execute",
         stop_event=None,
         on_event: Callable[[JsonObject], None] | None = None,
@@ -833,6 +960,7 @@ class TurnOrchestrator:
             branch_labels=branch_labels,
             attachments=attachments,
             loaded_skill_ids=loaded_skill_ids,
+            context_summary=context_summary,
             collaboration_mode=collaboration_mode,
             stop_event=stop_event,
         )

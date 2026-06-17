@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import cast
 
 from core.configuration import DEFAULT_CONFIG
@@ -58,6 +59,18 @@ class ContextWindowManager:
     @classmethod
     def estimate_tokens(cls, messages: list[ChatMessage]) -> int:
         return cls._chars_to_tokens(sum(cls._estimate_message_chars(message) for message in messages))
+
+    @classmethod
+    def estimate_text_tokens(cls, text: str) -> int:
+        return cls._chars_to_tokens(len(text or ""))
+
+    @classmethod
+    def estimate_json_tokens(cls, value: object) -> int:
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            text = str(value)
+        return cls.estimate_text_tokens(text)
 
     @staticmethod
     def _last_role_index(messages: list[ChatMessage], role: str) -> int | None:
@@ -425,3 +438,43 @@ class ContextWindowManager:
         if self._chars_to_tokens(candidate_total) <= max_prompt_tokens and self.estimate_tokens(candidate) <= max_prompt_tokens:
             return candidate
         return self._compress_messages_to_budget(candidate, max_prompt_tokens)
+
+    @classmethod
+    def _message_label(cls, message: ChatMessage) -> str:
+        role = str(message.get("role", "") or "message")
+        if role == "tool":
+            name = str(message.get("name") or "tool")
+            content = str(message.get("content") or "")
+            return f"tool {name}: {cls._truncate_text(' '.join(content.split()), 240)}"
+        if role == "assistant" and message.get("tool_calls"):
+            return f"assistant tool request: {cls._truncate_text(str(message.get('tool_calls')), 240)}"
+        content = message.get("content", "")
+        if isinstance(content, str):
+            text = " ".join(content.split())
+        else:
+            text = cls._content_to_user_text(content)
+        return f"{role}: {cls._truncate_text(text, 240)}"
+
+    @classmethod
+    def deterministic_summary(cls, prior_summary: str, messages: list[ChatMessage], *, max_chars: int = 2400) -> str:
+        lines: list[str] = []
+        prior = " ".join(str(prior_summary or "").split())
+        if prior:
+            lines.append("Prior summary: " + cls._truncate_text(prior, 700))
+        for message in messages[-18:]:
+            lines.append("- " + cls._message_label(message))
+        summary = "\n".join(lines).strip()
+        return cls._truncate_text(summary, max_chars)
+
+    def split_for_summary(self, messages: list[ChatMessage]) -> tuple[list[ChatMessage], list[ChatMessage]]:
+        if len(messages) <= self.keep_last_n + 1:
+            return [], messages
+        start_idx = max(0, len(messages) - self.keep_last_n)
+        kept = set(range(start_idx, len(messages)))
+        kept = self._expand_tool_dependencies(messages, kept)
+        last_user_idx = self._last_role_index(messages, "user")
+        if last_user_idx is not None:
+            kept.add(last_user_idx)
+        summarize = [message for idx, message in enumerate(messages) if idx not in kept]
+        retained = [message for idx, message in enumerate(messages) if idx in kept]
+        return summarize, retained

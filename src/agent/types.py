@@ -140,6 +140,8 @@ class TurnState:
     search_tools_enabled: bool = False
     evidence: list[ToolExecutionRecord] = field(default_factory=list)
     full_reasoning: str = ""
+    context_summary: str = ""
+    context_report: dict[str, JSONValue] = field(default_factory=dict)
     pass_index: int = 0
     action_depth: int = 0
     collaboration_mode: str = "execute"

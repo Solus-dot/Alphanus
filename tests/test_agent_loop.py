@@ -2852,7 +2852,7 @@ def test_agent_emits_unique_tool_stream_ids_per_pass(mocker, runtime: SkillRunti
     assert len(set(stream_ids)) == 2
 
 
-def test_tool_result_history_not_compacted_by_default(mocker, runtime: SkillRuntime):
+def test_tool_result_history_compacted_by_default(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
             "model_endpoint": TEST_MODEL_ENDPOINT,
@@ -2863,6 +2863,69 @@ def test_tool_result_history_not_compacted_by_default(mocker, runtime: SkillRunt
             "enable_thinking": True,
             "tls_verify": True,
             "max_tokens": 256,
+        }
+    }
+    agent = Agent(cfg, runtime)
+    huge_text = "x" * 24000
+
+    chat_reqs = []
+
+    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
+        return {"ok": True, "data": {"blob": huge_text}, "error": None, "meta": {}}
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\"a.txt\\", \\"content\\": \\"hello\\"}"}}]}}]}',
+                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        if len(chat_reqs) == 2:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"Done"}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        raise AssertionError("Unexpected extra completion call")
+
+    mocker.patch.object(runtime, "execute_tool_call", side_effect=fake_execute_tool_call)
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "write"}],
+        user_input="write",
+        thinking=True,
+    )
+
+    assert result.status == "done"
+    second_payload = json.loads(chat_reqs[1].data.decode("utf-8"))
+    tool_msgs = [msg for msg in second_payload["messages"] if msg.get("role") == "tool"]
+    assert tool_msgs
+    assert huge_text not in tool_msgs[-1]["content"]
+    assert "truncated" in tool_msgs[-1]["content"]
+
+
+def test_tool_result_history_compaction_can_be_disabled(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+            "compact_tool_results_in_history": False,
         }
     }
     agent = Agent(cfg, runtime)
@@ -2977,6 +3040,71 @@ def test_tool_result_history_compaction_can_be_gated_by_tool_name(mocker, runtim
     tool_content = tool_msgs[-1]["content"]
     assert "truncated" in tool_content
     assert huge_text not in tool_content
+
+
+def test_agent_summarizes_history_when_prompt_exceeds_context_budget(mocker, runtime: SkillRuntime):
+    cfg = {
+        "agent": {
+            "model_endpoint": TEST_MODEL_ENDPOINT,
+            "models_endpoint": TEST_MODELS_ENDPOINT,
+            "request_timeout_s": 5,
+            "readiness_timeout_s": 1,
+            "readiness_poll_s": 0.01,
+            "enable_thinking": True,
+            "tls_verify": True,
+            "max_tokens": 256,
+            "context_budget_max_tokens": 128,
+        },
+        "context": {"context_limit": 260, "keep_last_n": 2, "safety_margin": 0},
+    }
+    agent = Agent(cfg, runtime)
+    chat_reqs = []
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
+        chat_reqs.append(req)
+        if len(chat_reqs) == 1:
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"Summary: user wants the context system optimized."}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        if len(chat_reqs) == 2:
+            payload = json.loads(req.data.decode("utf-8"))
+            system_content = payload["messages"][0]["content"]
+            assert "Conversation summary" in system_content
+            assert "context system optimized" in system_content
+            return FakeResponse(
+                [
+                    'data: {"choices":[{"delta":{"content":"Done"}}]}',
+                    'data: {"choices":[{"finish_reason":"stop"}]}',
+                    "data: [DONE]",
+                ]
+            )
+        raise AssertionError("Unexpected extra completion call")
+
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+    history = [
+        {"role": "user", "content": "old request " + ("x" * 800)},
+        {"role": "assistant", "content": "old answer " + ("y" * 800)},
+        {"role": "user", "content": "middle request " + ("z" * 800)},
+        {"role": "assistant", "content": "middle answer " + ("q" * 800)},
+        {"role": "user", "content": "what next?"},
+    ]
+
+    result = agent.run_turn(history_messages=history, user_input="what next?", thinking=True)
+
+    assert result.status == "done"
+    assert result.journal["context_summary"] == "Summary: user wants the context system optimized."
+    report = result.journal["context_report"]
+    assert isinstance(report, dict)
+    assert report["summary_status"] == "model"
+    assert int(report["final_prompt_tokens_estimate"]) > 0
 
 
 def test_agent_can_cancel_while_waiting_for_readiness(mocker, runtime: SkillRuntime):

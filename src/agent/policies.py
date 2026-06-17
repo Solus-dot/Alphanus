@@ -107,10 +107,18 @@ class PromptPolicyRenderer:
 
     def compose_system_content(self, selected: list[SkillManifest], ctx: SkillContext) -> str:
         parts = [self.system_prompt]
+        summary = str(getattr(ctx, "context_summary", "") or "").strip()
+        if summary:
+            parts.append(
+                "Conversation summary:\n"
+                "- This is a compact summary of earlier turns that no longer fit in full context.\n"
+                "- Treat recent raw messages as more authoritative if they conflict.\n"
+                f"{summary}"
+            )
         retrieval_block = self._retrieval_context_block(ctx)
         if retrieval_block:
             parts.append(retrieval_block)
-        skill_index = self.skill_runtime.compose_skill_index()
+        skill_index = self.skill_runtime.compose_skill_index(ctx)
         if skill_index:
             parts.append(skill_index)
         if selected:

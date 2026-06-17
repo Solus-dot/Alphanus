@@ -20,6 +20,7 @@ class TurnPolicyEngine:
         classification,
         *,
         collaboration_mode: str = "execute",
+        context_summary: str = "",
     ) -> TurnState:
         normalized_mode = "plan" if str(collaboration_mode or "").strip().lower() == "plan" else "execute"
         state = TurnState(
@@ -36,6 +37,7 @@ class TurnPolicyEngine:
             evidence=[],
             tool_budgets=dict(self.default_tool_budgets),
             collaboration_mode=normalized_mode,
+            context_summary=str(context_summary or ""),
             trace_data={
                 "started_at": time.time(),
                 "passes": [],

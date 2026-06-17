@@ -92,7 +92,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_action_depth": 10,
         "max_tool_result_chars": 12000,
         "max_reasoning_chars": 20000,
-        "compact_tool_results_in_history": False,
+        "compact_tool_results_in_history": True,
         "compact_tool_result_tools": [],
         "classifier_model": "",
         "classifier_use_primary_model": True,

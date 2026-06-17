@@ -114,6 +114,8 @@ class SkillContext:
     sticky_skill_ids: list[str] = field(default_factory=list)
     explicit_skill_id: str = ""
     explicit_skill_args: str = ""
+    context_summary: str = ""
+    relevant_skill_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -690,14 +692,30 @@ class SkillRuntime:
         self._skill_catalog_cache[max_tags] = catalog
         return catalog
 
-    def compose_skill_index(self) -> str:
-        skills = sorted(self.enabled_skills(), key=lambda item: item.id)
+    def compose_skill_index(self, ctx: SkillContext | None = None, *, full: bool = False) -> str:
+        if full or ctx is None:
+            skills = sorted(self.enabled_skills(), key=lambda item: item.id)
+        else:
+            skill_ids: list[str] = []
+            for source in (
+                getattr(ctx, "loaded_skill_ids", []) or [],
+                getattr(ctx, "relevant_skill_ids", []) or [],
+                getattr(ctx, "sticky_skill_ids", []) or [],
+            ):
+                for skill_id in source:
+                    normalized = str(skill_id).strip()
+                    if normalized and normalized not in skill_ids:
+                        skill_ids.append(normalized)
+            skills = self.skills_by_ids(skill_ids)
+            if not skills:
+                skills = sorted(self.enabled_skills(), key=lambda item: item.id)
         if not skills:
             return ""
 
         lines = [f"  - {skill.id}: {skill.description}" for skill in skills]
+        title = "## Skills (mandatory)" if full or ctx is None else "## Relevant skills (mandatory)"
         return (
-            "## Skills (mandatory)\n"
+            f"{title}\n"
             "Before replying, scan the skills below. If one clearly matches the task, "
             "load it with skill_view(name) and follow its instructions.\n"
             "Do not call namespaced skill tools like skill-name:tool_name. Skill tools are only usable after "

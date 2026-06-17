@@ -190,3 +190,34 @@ def test_prune_preserves_multimodal_structure_in_final_hard_fallback():
     assert pruned[-1]["role"] == "user"
     assert isinstance(pruned[-1]["content"], list)
     assert any(part.get("type") == "image_url" for part in pruned[-1]["content"])
+
+
+def test_split_for_summary_keeps_recent_tool_dependencies() -> None:
+    mgr = ContextWindowManager(context_limit=1000, keep_last_n=2, safety_margin=0)
+    messages = [{"role": "user", "content": f"old {idx}"} for idx in range(4)]
+    messages.extend(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "name": "read_file", "content": '{"ok": true}'},
+        ]
+    )
+
+    summarized, retained = mgr.split_for_summary(messages)
+
+    assert summarized
+    assert retained[-1]["role"] == "tool"
+    assert any(msg.get("role") == "assistant" and msg.get("tool_calls") for msg in retained)
+
+
+def test_deterministic_summary_includes_prior_and_tool_labels() -> None:
+    summary = ContextWindowManager.deterministic_summary(
+        "Earlier goal: refactor context.",
+        [{"role": "tool", "name": "shell_command", "content": '{"stdout":"ok"}'}],
+    )
+
+    assert "Earlier goal" in summary
+    assert "tool shell_command" in summary
