@@ -398,6 +398,26 @@ def _print_review_group(theme: _CliTheme, title: str, rows: list[tuple[str, str]
     print("")
 
 
+def _doctor_state(theme: _CliTheme, state: str) -> str:
+    normalized = state.strip().lower()
+    if normalized == "ok":
+        return theme.ok("[OK]")
+    if normalized == "wait":
+        return theme.warn("[WAIT]")
+    return theme.error("[FAIL]")
+
+
+def _print_doctor_group(theme: _CliTheme, title: str, rows: list[tuple[str, str, str]]) -> None:
+    print(f"  {theme.accent(title)}")
+    label_width = max((len(label) for label, _state, _detail in rows), default=8)
+    for label, state, detail in rows:
+        line = f"    {theme.label((label + ':').ljust(label_width + 1))} {_doctor_state(theme, state)}"
+        if detail:
+            line = f"{line}  {theme.muted(detail)}"
+        print(line)
+    print("")
+
+
 def _run_init(args: Any) -> int:
     theme = _CliTheme()
     section = str(getattr(args, "section", "all") or "all").strip().lower()
@@ -809,8 +829,6 @@ def _run_doctor(args: Any) -> int:
         payload["config_warnings"] = warnings
         print(json.dumps(payload, indent=2))
     else:
-        for warning in warnings:
-            print(f"{theme.warn('config warning:')} {warning}")
         agent_status = _as_object(report_obj.get("agent"))
         workspace_status = _as_object(report_obj.get("workspace"))
         search_status = _as_object(report_obj.get("search"))
@@ -824,31 +842,41 @@ def _run_doctor(args: Any) -> int:
 
         print("")
         print(theme.brand(" ALPHANUS DOCTOR "))
-        print(theme.muted("Running health checks for config, model endpoint, workspace, and search integration."))
+        print(theme.rule())
+        print(theme.muted("Validating model connectivity, workspace access, search, and local state."))
         print("")
-        print(f"  {theme.label('Config:')} {theme.path(str(app_paths.config_path))}")
-        print(f"  {theme.label('Env:')} {theme.path(str(app_paths.dotenv_path))}")
-        print(f"  {theme.label('Sessions:')} {theme.path(str((Path(app_paths.state_root) / 'sessions').resolve()))}")
-        print(f"  {theme.label('Memory:')} {theme.path(str(memory.storage_path))}")
-        print(f"  {theme.label('Workspace:')} {theme.path(str(workspace.workspace_root))}")
-        print("\n")
-        print(theme.accent("Checks"))
-        endpoint_detail = "ok" if endpoint_ok else endpoint_error
-        endpoint_state = theme.ok("[OK]") if endpoint_ok else theme.error("[FAIL]")
-        model_state = theme.ok("[OK]") if model_ok else theme.warn("[WAIT]")
-        workspace_state = theme.ok("[OK]") if workspace_ok else theme.error("[FAIL]")
-        search_state = theme.ok("[OK]") if search_ok else theme.warn("[WAIT]")
-        retrieval_state = theme.ok("[OK]") if retrieval_ok else theme.error("[FAIL]")
+
+        if warnings:
+            print(theme.rule("Config Warnings"))
+            for warning in warnings:
+                print(f"  {theme.warn('!')} {warning}")
+            print("")
+
+        _print_review_group(
+            theme,
+            "Runtime Paths",
+            [
+                ("Config", str(app_paths.config_path)),
+                ("Env", str(app_paths.dotenv_path)),
+                ("Sessions", str((Path(app_paths.state_root) / "sessions").resolve())),
+                ("Memory", str(memory.storage_path)),
+                ("Workspace", str(workspace.workspace_root)),
+            ],
+        )
+
         search_detail = str(search_status.get("reason") or "").strip() or "ok"
         retrieval_detail = str(retrieval_status.get("reason") or "").strip() or "ok"
-        endpoint_suffix = f"  {endpoint_detail}" if endpoint_detail != "ok" else ""
-        search_suffix = f"  {search_detail}" if search_detail != "ok" else ""
-        retrieval_suffix = f"  {retrieval_detail}" if retrieval_detail != "ok" else ""
-        print(f"  endpoint policy:   {endpoint_state}{endpoint_suffix}")
-        print(f"  model readiness:   {model_state}")
-        print(f"  workspace access:  {workspace_state}")
-        print(f"  search provider:   {search_state}{search_suffix}")
-        print(f"  retrieval store:   {retrieval_state}{retrieval_suffix}")
+        _print_doctor_group(
+            theme,
+            "Checks",
+            [
+                ("Endpoint policy", "ok" if endpoint_ok else "fail", "" if endpoint_ok else endpoint_error),
+                ("Model readiness", "ok" if model_ok else "wait", ""),
+                ("Workspace access", "ok" if workspace_ok else "fail", ""),
+                ("Search provider", "ok" if search_ok else "wait", "" if search_detail == "ok" else search_detail),
+                ("Retrieval store", "ok" if retrieval_ok else "fail", "" if retrieval_detail == "ok" else retrieval_detail),
+            ],
+        )
 
     failures = []
     agent_status = _as_object(report_obj.get("agent"))
@@ -866,13 +894,12 @@ def _run_doctor(args: Any) -> int:
     if not bool(retrieval_status.get("ready")):
         failures.append("retrieval")
     if not args.json:
+        print(theme.rule("Result"))
         if failures:
-            print("")
-            print(f"{theme.error('Doctor result: FAIL')} ({', '.join(failures)})")
-            print(theme.muted("Fix failing checks, then rerun `uv run alphanus doctor`."))
+            print(f"  {_doctor_state(theme, 'fail')} {theme.label('Attention required')}  {theme.muted(', '.join(failures))}")
+            print(f"  {theme.muted('Fix failing checks, then rerun `uv run alphanus doctor`.')}")
         else:
-            print("")
-            print(theme.ok("Doctor result: PASS"))
+            print(f"  {_doctor_state(theme, 'ok')} {theme.label('Ready')}")
         print("")
     return 1 if failures else 0
 
