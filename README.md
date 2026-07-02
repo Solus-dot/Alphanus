@@ -29,10 +29,10 @@
   - [Collaboration Modes](#collaboration-modes)
   - [Skills and Tool Loading](#skills-and-tool-loading)
   - [Built-In Skills](#built-in-skills)
-  - [Workspace Operations](#workspace-operations)
+  - [Project Operations](#project-operations)
   - [Memory](#memory)
   - [Search](#search)
-  - [Safety and Permission Profiles](#safety-and-permission-profiles)
+  - [Safety and Permission Modes](#safety-and-permission-modes)
   - [Turn Trace and Diagnostics](#turn-trace-and-diagnostics)
 - [Command Cheat Sheet](#command-cheat-sheet)
 - [Configuration](#configuration)
@@ -117,7 +117,7 @@ Non-interactive setup example:
 
 ```bash
 uv run alphanus init --non-interactive \
-  --workspace-path ~/Desktop/Alphanus-Workspace \
+  --project-path ~/Desktop/Alphanus-Project \
   --base-url https://api.openai.com \
   --endpoint-mode auto \
   --api-key "$ALPHANUS_API_KEY" \
@@ -215,12 +215,12 @@ Useful commands:
 
 ### Built-In Skills
 
-Bundled skills cover workspace work, shell execution, search, memory, and a small set of desktop/local utilities.
+Bundled skills cover project work, shell execution, search, memory, and a small set of desktop/local utilities.
 
-Core workspace/runtime skills:
+Core project/runtime skills:
 
-- `workspace-ops`: read, create, edit, move, delete, tree, and code-search files inside the configured workspace
-- `shell-ops`: run confirmed shell commands from the workspace with visible stdout/stderr previews
+- `project-ops`: read, create, edit, move, delete, tree, and code-search files inside the configured project
+- `shell-ops`: run confirmed shell commands from the project with visible stdout/stderr previews
 - `search-ops`: web search and page fetch through configured providers
 - `memory-rag`: recall and save stable local facts
 - `utilities`: weather, URL/Youtube helpers, and simple local utility lookups
@@ -230,7 +230,7 @@ Desktop and local-inspection skills:
 
 - `app-control`: list, open, focus, and quit desktop applications; open/focus/quit require explicit confirmation
 - `browser-control`: open URLs/searches with confirmation and inspect the current browser page where supported
-- `local-search`: search filenames and text under the configured home/workspace policy, skipping sensitive/protected paths
+- `local-search`: search filenames and text under the project root, skipping sensitive/protected paths
 - `document-tools`: extract text/tables from TXT, CSV, PDF, and DOCX; PDF/DOCX require optional dependencies
 - `screenshot-ocr`: capture screenshots with confirmation and OCR explicit image paths when OCR tooling is installed
 
@@ -243,17 +243,17 @@ Skill discovery is intentionally explicit. `/skills` shows the installed catalog
 - Extra theme directories can be supplied with `ALPHANUS_THEME_PATHS` using the platform path separator
 - A theme JSON file contains `id`, `title`, `description`, Textual `theme` colors, UI `colors`, and optional `syntax_theme` / `text_area_theme`
 
-### Workspace Operations
+### Project Operations
 
-`workspace-ops` covers create/read/edit/move/delete with guardrails.
+`project-ops` covers create/read/edit/move/delete with guardrails.
 
 Current capabilities include:
 
 - section-scoped read/edit by line bounds and anchors
 - regex-based edits
 - ripgrep-backed code search with optional context lines
-- workspace tree rendering
-- path-safe move/delete operations inside the workspace
+- project tree rendering
+- path-safe move/delete operations inside the project
 - symlink-aware listing/tree rendering; directory symlinks are shown but not traversed by the tree
 - no command runner; use `shell-ops` only when shell output itself is required
 
@@ -312,16 +312,19 @@ uv run alphanus init search --non-interactive \
   --tavily-api-key "$TAVILY_API_KEY"
 ```
 
-### Safety and Permission Profiles
+### Safety and Permission Modes
 
 Runtime safety knobs:
 
-- `runtime.profile`: `standard` or `minimal`
-- `capabilities.permission_profile`: `safe`, `workspace`, `full`
-- shell commands require confirmation by default
-- shell commands run through the user's shell when approved, so normal shell syntax such as `&&`, `;`, pipes, redirects, environment assignments, and globbing is available
+- `permissions.mode`: `read-only`, `project-write`, or `danger-full-access`
+- `permissions.approvals`: `on-boundary`
+- `permissions.network`: `false` by default
+- `sandbox.backend`: `auto`, with fail-closed setup checks by default
+- project root detection uses the enclosing git repository, falling back to launch `cwd`; pass `--project-root` for an explicit per-run override
+- project file tools treat relative paths as project-relative, and can operate on explicit absolute paths outside the project when those paths are not protected
+- shell commands run through the platform sandbox in `project-write` and require approval at the configured boundary
 - protected internal state such as `.alphanus` is blocked before execution, including common shell expansion paths
-- dangerous shell patterns are blocked by policy
+- direct `.git` writes and project root deletion are blocked by policy
 - desktop actions such as app launch, browser open, and screenshot capture require explicit tool-level confirmation when they can affect the local machine
 - macOS requires Screen Recording permission for the terminal app or launcher that runs Alphanus; Linux requires `gnome-screenshot` or `scrot`; Windows uses PowerShell screen APIs when available
 
@@ -389,7 +392,7 @@ Per-turn journal includes:
 - `/skill-info <id>`
 - `/memory-stats`
 - `/context`
-- `/workspace-tree`
+- `/project-tree`
 - `/theme`
 - `/config`
 - `/report [file]`
@@ -460,15 +463,20 @@ Trimmed config example:
     "allow_cross_host_endpoints": false,
     "max_tokens": null
   },
-  "workspace": {
-    "path": "~/Desktop/Alphanus-Workspace"
+  "project": {
+    "root_strategy": "git-or-cwd"
+  },
+  "permissions": {
+    "mode": "project-write",
+    "approvals": "on-boundary",
+    "network": false
+  },
+  "sandbox": {
+    "backend": "auto",
+    "fail_closed": true
   },
   "runtime": {
-    "profile": "standard",
     "ask_user_tool": true
-  },
-  "capabilities": {
-    "permission_profile": "full"
   }
 }
 ```
@@ -477,14 +485,14 @@ Trimmed config example:
 
 ## State Layout
 
-Alphanus keeps runtime state separate from your workspace files.
+Alphanus keeps runtime state separate from your project files.
 
 - `~/.alphanus/config/global_config.json` (config)
 - `~/.alphanus/.env` (secrets)
 - `~/.alphanus/sessions/` (sessions)
 - `~/.alphanus/memory/` (memory)
 
-Workspace content remains under `workspace.path`.
+Project content remains under `project.path`.
 
 ---
 

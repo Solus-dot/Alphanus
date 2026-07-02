@@ -42,8 +42,8 @@ Script candidates are `.py`, `.sh`, `.js`, `.mjs`. `tools.py`, `hooks.py`, and `
 
 ```md
 ---
-name: workspace-ops
-description: Read and write workspace files safely.
+name: project-ops
+description: Read and write project files safely.
 ---
 ```
 
