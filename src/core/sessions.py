@@ -97,9 +97,9 @@ class SessionSearchResult:
 
 
 class SessionStore:
-    def __init__(self, workspace_root: str | Path, storage_dir: str | Path | None = None) -> None:
-        self.workspace_root = Path(workspace_root)
-        self.storage_dir = Path(storage_dir) if storage_dir is not None else self.workspace_root / DEFAULT_SESSIONS_DIRNAME
+    def __init__(self, project_root: str | Path, storage_dir: str | Path | None = None) -> None:
+        self.project_root = Path(project_root)
+        self.storage_dir = Path(storage_dir) if storage_dir is not None else self.project_root / DEFAULT_SESSIONS_DIRNAME
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self._manifest_path = self.storage_dir / "manifest.json"
 
