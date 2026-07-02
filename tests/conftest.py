@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from core.memory import LexicalMemory
-from core.workspace import WorkspaceManager
+from core.project import ProjectRuntime
 
 
 @pytest.fixture(autouse=True)
@@ -20,12 +20,12 @@ def _disable_model_classification():
 
 
 @pytest.fixture
-def workspace(tmp_path: Path) -> WorkspaceManager:
+def project(tmp_path: Path) -> ProjectRuntime:
     home = tmp_path / "home"
-    ws = home / "workspace"
+    ws = home / "project"
     home.mkdir(parents=True)
     ws.mkdir(parents=True)
-    return WorkspaceManager(workspace_root=str(ws), home_root=str(home))
+    return ProjectRuntime(project_root=str(ws))
 
 
 @pytest.fixture

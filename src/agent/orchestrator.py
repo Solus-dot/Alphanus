@@ -25,7 +25,7 @@ from core.retrieval import SQLiteRetrievalStore, configured_store_path
 from core.types import (
     AgentTurnResult,
     JsonObject,
-    ShellConfirmationFn,
+    ApprovalRequestFn,
     ToolCall,
     TurnPolicySnapshot,
     TurnState,
@@ -150,7 +150,7 @@ class TurnOrchestrator:
             return
         try:
             store = SQLiteRetrievalStore(configured_store_path(self.config))
-            hits = store.search(state.ctx.user_input, top_k=top_k, sources=["web_page", "memory_fact", "workspace_document"])
+            hits = store.search(state.ctx.user_input, top_k=top_k, sources=["web_page", "memory_fact", "project_document"])
         except Exception as exc:
             self._trace_add(state, "retrieval", {"status": "error", "error": str(exc), "query": state.ctx.user_input})
             self.emit(on_event, {"type": "info", "text": f"Retrieval pre-context unavailable: {exc}"})
@@ -329,9 +329,9 @@ class TurnOrchestrator:
         capability = str(getattr(reg, "capability", "") or "").strip().lower()
         if normalized == "request_user_input" or capability == "user_input_requester":
             return True
-        if normalized == "shell_command" or capability in {"run_shell_command", "workspace_execute"}:
+        if normalized == "shell_command" or capability in {"run_shell_command", "project_execute"}:
             return False
-        if capability in {"workspace_read", "workspace_tree"}:
+        if capability in {"project_read", "project_tree"}:
             return True
         return not self.skill_runtime.tool_is_mutating(normalized)
 
@@ -480,14 +480,14 @@ class TurnOrchestrator:
             )
         return raw
 
-    def workspace_materialization_count(self, state: TurnState) -> int:
-        return self.evidence_guard.workspace_materialization_count(state)
+    def project_materialization_count(self, state: TurnState) -> int:
+        return self.evidence_guard.project_materialization_count(state)
 
-    def workspace_mutation_count(self, state: TurnState) -> int:
-        return self.evidence_guard.workspace_mutation_count(state)
+    def project_mutation_count(self, state: TurnState) -> int:
+        return self.evidence_guard.project_mutation_count(state)
 
-    def workspace_readback_count(self, state: TurnState) -> int:
-        return self.evidence_guard.workspace_readback_count(state)
+    def project_readback_count(self, state: TurnState) -> int:
+        return self.evidence_guard.project_readback_count(state)
 
     @staticmethod
     def tool_result_paths(name: str, payload: dict[str, object]) -> list[str]:
@@ -504,39 +504,39 @@ class TurnOrchestrator:
     def needs_fetch_evidence(self, state: TurnState) -> bool:
         return self.evidence_guard.needs_fetch_evidence(state)
 
-    def workspace_action_evidence(self, state: TurnState) -> JsonObject:
-        return self.evidence_guard.workspace_action_evidence(state)
+    def project_action_evidence(self, state: TurnState) -> JsonObject:
+        return self.evidence_guard.project_action_evidence(state)
 
-    def workspace_action_outcome(self, state: TurnState, text: str, *, stop_event, pass_id: str) -> str:
-        if self.workspace_mutation_count(state) > 0:
+    def project_action_outcome(self, state: TurnState, text: str, *, stop_event, pass_id: str) -> str:
+        if self.project_mutation_count(state) > 0:
             return "completed_with_evidence"
         cleaned = self.sanitizer.sanitize_final_content(text)
-        return self.classifier.classify_workspace_action_outcome(
+        return self.classifier.classify_project_action_outcome(
             current_user_input=state.ctx.user_input,
             recent_routing_hint=getattr(state.ctx, "recent_routing_hint", ""),
             assistant_reply=cleaned,
-            evidence=self.workspace_action_evidence(state),
+            evidence=self.project_action_evidence(state),
             pass_id=pass_id,
             stop_event=stop_event,
         )
 
-    def coerce_workspace_action_failure(self, state: TurnState, result: AgentTurnResult, *, stop_event, pass_id: str) -> AgentTurnResult:
+    def coerce_project_action_failure(self, state: TurnState, result: AgentTurnResult, *, stop_event, pass_id: str) -> AgentTurnResult:
         if self._is_plan_mode(state):
             return result
-        if result.status != "done" or not state.requires_workspace_action or self.workspace_mutation_count(state) > 0:
+        if result.status != "done" or not state.requires_project_action or self.project_mutation_count(state) > 0:
             return result
-        outcome = self.workspace_action_outcome(state, result.content, stop_event=stop_event, pass_id=pass_id)
+        outcome = self.project_action_outcome(state, result.content, stop_event=stop_event, pass_id=pass_id)
         if outcome in {"completed_with_evidence", "declined_or_blocked", "needs_clarification"}:
             return result
         return AgentTurnResult(
             status="error",
             content=(
-                "[agent error] Workspace action was not completed: no successful mutating workspace tool ran. "
+                "[agent error] Project action was not completed: no successful mutating project tool ran. "
                 "The assistant draft was rejected."
             ),
             reasoning=result.reasoning,
             skill_exchanges=result.skill_exchanges,
-            error="workspace_action_not_completed",
+            error="project_action_not_completed",
             journal=result.journal,
         )
 
@@ -905,7 +905,7 @@ class TurnOrchestrator:
         stream_result,
         stop_event=None,
         on_event: Callable[[JsonObject], None] | None = None,
-        confirm_shell: ShellConfirmationFn | None = None,
+        request_approval: ApprovalRequestFn | None = None,
         request_user_input: UserInputRequestFn | None = None,
     ) -> tuple[str, AgentTurnResult | None]:
         return self.tool_loop.execute_tool_calls(
@@ -915,7 +915,7 @@ class TurnOrchestrator:
             stream_result=stream_result,
             stop_event=stop_event,
             on_event=on_event,
-            confirm_shell=confirm_shell,
+            request_approval=request_approval,
             request_user_input=request_user_input,
         )
 
@@ -951,7 +951,7 @@ class TurnOrchestrator:
         collaboration_mode: str = "execute",
         stop_event=None,
         on_event: Callable[[JsonObject], None] | None = None,
-        confirm_shell: ShellConfirmationFn | None = None,
+        request_approval: ApprovalRequestFn | None = None,
         request_user_input: UserInputRequestFn | None = None,
     ) -> AgentTurnResult:
         state = self.prepare_turn(
@@ -999,7 +999,7 @@ class TurnOrchestrator:
                     stream_result=stream_result,
                     stop_event=stop_event,
                     on_event=on_event,
-                    confirm_shell=confirm_shell,
+                    request_approval=request_approval,
                     request_user_input=request_user_input,
                 )
                 if action == "continue":

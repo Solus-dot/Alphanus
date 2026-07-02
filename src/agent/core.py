@@ -22,7 +22,7 @@ from core.configuration import validate_endpoint_policy
 from core.message_types import ChatMessage, JsonObject
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
 from core.search_providers import DEFAULT_TAVILY_API_KEY_ENV, SEARCH_PROVIDER_SEARXNG, SEARCH_PROVIDER_TAVILY
-from core.types import AgentTurnResult, ModelStatus, ShellConfirmationFn
+from core.types import AgentTurnResult, ModelStatus, ApprovalRequestFn
 from skills.runtime import SkillRuntime
 
 
@@ -32,7 +32,7 @@ class Agent:
         self.debug = debug
         self.telemetry = TelemetryEmitter()
         self.harness_metrics = HarnessMetrics()
-        self.system_prompt = build_system_prompt(str(self.skill_runtime.workspace.workspace_root))
+        self.system_prompt = build_system_prompt(str(self.skill_runtime.project.project_root))
         self.context_mgr = ContextWindowManager()
         self.llm_client = LLMClient(config, debug=debug, telemetry=self.telemetry)
         self.classifier = TurnClassifier(config, skill_runtime, self.llm_client, telemetry=self.telemetry)
@@ -87,7 +87,7 @@ class Agent:
         self.context_mgr.context_limit = coerce_int(context_cfg.get("context_limit"), DEFAULT_CONTEXT_LIMIT, minimum=1)
         self.context_mgr.keep_last_n = coerce_int(context_cfg.get("keep_last_n"), DEFAULT_KEEP_LAST_N, minimum=1)
         self.context_mgr.safety_margin = coerce_int(context_cfg.get("safety_margin"), DEFAULT_SAFETY_MARGIN, minimum=0)
-        self.system_prompt = build_system_prompt(str(self.skill_runtime.workspace.workspace_root))
+        self.system_prompt = build_system_prompt(str(self.skill_runtime.project.project_root))
         self.llm_client.reload_config(config)
         self.typed_config = TypedConfigV2.from_normalized_config(config, auth_header=self.llm_client.auth_header)
         self.classifier.reload_config(config)
@@ -151,10 +151,10 @@ class Agent:
     def doctor_report(self, *, probe_ready: bool = True) -> dict[str, object]:
         config_obj = self.config if isinstance(self.config, dict) else {}
         endpoint_error = self._validate_endpoints()
-        workspace_root = Path(self.skill_runtime.workspace.workspace_root)
+        project_root = Path(self.skill_runtime.project.project_root)
         memory_stats = self.skill_runtime.memory.stats()
-        runtime_cfg = get_json_object(config_obj, "runtime")
-        capabilities_cfg = get_json_object(config_obj, "capabilities")
+        permissions_cfg = get_json_object(config_obj, "permissions")
+        sandbox_cfg = get_json_object(config_obj, "sandbox")
         search_cfg = get_json_object(config_obj, "search")
         provider = str(search_cfg.get("provider", SEARCH_PROVIDER_SEARXNG)).strip().lower() or SEARCH_PROVIDER_SEARXNG
         fallback_provider = str(search_cfg.get("fallback_provider", SEARCH_PROVIDER_TAVILY)).strip().lower()
@@ -184,6 +184,7 @@ class Agent:
         else:
             ready = self.get_model_status().state == "online"
         backend_info = self.llm_client.backend_profile_info()
+        sandbox_preflight = self.skill_runtime.project.sandbox_preflight()
         return {
             "agent": {
                 "base_url": self.llm_client.base_url,
@@ -203,14 +204,17 @@ class Agent:
                 "backend_incompatibility_last": str(backend_info.get("incompatibility_last", "")),
                 "compatibility_profile": self.llm_client.compatibility_profile(),
                 "fallback_events": self.llm_client.fallback_events(),
-                "runtime_profile": str(runtime_cfg.get("profile", "standard")),
-                "permission_profile": str(capabilities_cfg.get("permission_profile", "full")),
+                "permission_mode": str(permissions_cfg.get("mode", "project-write")),
+                "approvals": str(permissions_cfg.get("approvals", "on-boundary")),
+                "network": bool(permissions_cfg.get("network", False)),
+                "sandbox_backend": str(sandbox_cfg.get("backend", "auto")),
             },
-            "workspace": {
-                "path": str(workspace_root),
-                "exists": workspace_root.exists(),
-                "writable": os.access(workspace_root, os.W_OK),
+            "project": {
+                "path": str(project_root),
+                "exists": project_root.exists(),
+                "writable": os.access(project_root, os.W_OK),
             },
+            "sandbox": sandbox_preflight,
             "memory": {
                 "backend": memory_stats.get("backend"),
                 "mode": memory_stats.get("mode_label"),
@@ -267,7 +271,7 @@ class Agent:
         collaboration_mode: str = "execute",
         stop_event=None,
         on_event: Callable[[JsonObject], None] | None = None,
-        confirm_shell: ShellConfirmationFn | None = None,
+        request_approval: ApprovalRequestFn | None = None,
     ) -> AgentTurnResult:
         endpoint_err = self._validate_endpoints()
         if endpoint_err:
@@ -324,7 +328,7 @@ class Agent:
                             collaboration_mode=collaboration_mode,
                             stop_event=stop_event,
                             on_event=on_event,
-                            confirm_shell=confirm_shell,
+                            request_approval=request_approval,
                             request_user_input=request_user_input_passthrough,
                         )
                     )
@@ -359,7 +363,7 @@ class Agent:
                 collaboration_mode=collaboration_mode,
                 stop_event=stop_event,
                 on_event=on_event,
-                confirm_shell=confirm_shell,
+                request_approval=request_approval,
                 request_user_input=request_user_input_passthrough,
             )
         )
