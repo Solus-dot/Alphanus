@@ -64,7 +64,7 @@ def _coerce_string_list(value: Any) -> list[str]:
 class UiTimingConfig:
     stream_drain_interval_s: float = 0.033
     scroll_interval_s: float = 0.05
-    shell_confirm_timeout_s: float = 60.0
+    action_approval_timeout_s: float = 60.0
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> UiTimingConfig:
@@ -82,9 +82,9 @@ class UiTimingConfig:
                 float(default_timing["scroll_interval_s"]),
                 minimum=0.001,
             ),
-            shell_confirm_timeout_s=_coerce_float(
-                timing_cfg.get("shell_confirm_timeout_s"),
-                float(default_timing["shell_confirm_timeout_s"]),
+            action_approval_timeout_s=_coerce_float(
+                timing_cfg.get("action_approval_timeout_s"),
+                float(default_timing["action_approval_timeout_s"]),
                 minimum=1.0,
             ),
         )

@@ -26,8 +26,8 @@ class AppPaths:
         return self.state_root / ".env"
 
 
-def default_state_root(home_root: Path | None = None) -> Path:
-    return ((home_root or Path.home()).resolve() / DEFAULT_APP_DIRNAME).resolve()
+def default_state_root(base_dir: Path | None = None) -> Path:
+    return ((base_dir or Path.home()).resolve() / DEFAULT_APP_DIRNAME).resolve()
 
 
 def get_app_paths() -> AppPaths:

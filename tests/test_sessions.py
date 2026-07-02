@@ -48,7 +48,7 @@ def test_search_sessions_matches_content_and_turn_ids(tmp_path: Path) -> None:
     tree.complete_turn(first.id, "The viewport renderer should keep scroll stable.")
     tree.arm_branch("perf branch")
     second = tree.add_turn("Check health panel")
-    second.skill_exchanges.append({"role": "tool", "name": "workspace_tree", "content": "{}"})
+    second.skill_exchanges.append({"role": "tool", "name": "project_tree", "content": "{}"})
     tree.complete_turn(second.id, "done")
     session = store.create_session("Performance Notes", tree=tree)
 
@@ -60,7 +60,7 @@ def test_search_sessions_matches_content_and_turn_ids(tmp_path: Path) -> None:
     assert results[0].kind == "assistant"
     assert "viewport renderer" in results[0].preview
 
-    tool_results = store.search_sessions("workspace_tree")
+    tool_results = store.search_sessions("project_tree")
     assert tool_results[0].turn_id == second.id
     assert tool_results[0].kind == "tool"
 

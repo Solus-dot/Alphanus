@@ -35,15 +35,15 @@ def test_main_does_not_block_on_model_readiness_before_launching_tui(monkeypatch
         alphanus_cli,
         "load_global_config",
         lambda _path, warnings=None: {
-            "workspace": {"path": str(tmp_path / "ws")},
+            "project": {"root_strategy": "git-or-cwd"},
             "memory": {"backup_revisions": 2},
             "agent": {},
         },
     )
     monkeypatch.setattr(alphanus_cli, "normalize_config", lambda config: (config, []))
     monkeypatch.setattr(alphanus_cli, "validate_endpoint_policy", lambda config: None)
-    monkeypatch.setattr(alphanus_cli, "resolve_path", lambda path, _root: path)
-    monkeypatch.setattr(alphanus_cli, "WorkspaceManager", lambda workspace_root: SimpleNamespace(workspace_root=workspace_root))
+    monkeypatch.setattr(alphanus_cli, "resolve_project_root", lambda config, override="", cwd=None: tmp_path / "ws")
+    monkeypatch.setattr(alphanus_cli, "ProjectRuntime", lambda **kwargs: SimpleNamespace(project_root=kwargs["project_root"]))
     memory_calls: list[dict[str, object]] = []
 
     def _memory_stub(**kwargs):
@@ -97,7 +97,7 @@ def test_main_does_not_block_on_model_readiness_before_launching_tui(monkeypatch
 
     monkeypatch.setattr(alphanus_cli, "AlphanusTUI", AppStub)
     monkeypatch.setattr(
-        alphanus_cli.argparse.ArgumentParser, "parse_args", lambda self: SimpleNamespace(debug=False, dangerously_skip_permissions=False)
+        alphanus_cli.argparse.ArgumentParser, "parse_args", lambda self: SimpleNamespace(debug=False, project_root="")
     )
 
     exit_code = alphanus_cli.main()
@@ -130,12 +130,38 @@ def test_main_fails_fast_when_global_config_missing(monkeypatch, tmp_path) -> No
     monkeypatch.setattr(
         alphanus_cli.argparse.ArgumentParser,
         "parse_args",
-        lambda self: SimpleNamespace(command="", debug=False, dangerously_skip_permissions=False),
+        lambda self: SimpleNamespace(command="", debug=False, project_root=""),
     )
 
     exit_code = alphanus_cli.main()
 
     assert exit_code == 2
+
+
+def test_main_reports_missing_project_root_without_traceback(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(alphanus_cli, "_load_runtime_config", lambda _app_paths, _args: ({"agent": {}}, []))
+    monkeypatch.setattr(alphanus_cli, "get_app_paths", lambda: SimpleNamespace())
+
+    class LoggerStub:
+        def warning(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(alphanus_cli, "configure_logging", lambda _config: LoggerStub())
+
+    def _raise_missing_root(*_args, **_kwargs):
+        raise FileNotFoundError("Project root does not exist: /missing")
+
+    monkeypatch.setattr(alphanus_cli, "_build_agent_runtime", _raise_missing_root)
+    monkeypatch.setattr(
+        alphanus_cli.argparse.ArgumentParser,
+        "parse_args",
+        lambda self: SimpleNamespace(command="", debug=False, project_root=""),
+    )
+
+    exit_code = alphanus_cli.main()
+
+    assert exit_code == 2
+    assert "startup failed: Project root does not exist: /missing" in capsys.readouterr().out
 
 
 def test_init_non_interactive_writes_global_config_and_env_template(monkeypatch, tmp_path) -> None:
@@ -161,7 +187,7 @@ def test_init_non_interactive_writes_global_config_and_env_template(monkeypatch,
         lambda self: SimpleNamespace(
             command="init",
             non_interactive=True,
-            workspace_path=str(tmp_path / "ws"),
+            project_root="",
             model_endpoint=TEST_MODEL_ENDPOINT,
             models_endpoint=TEST_MODELS_ENDPOINT,
             search_provider="searxng",
@@ -171,7 +197,6 @@ def test_init_non_interactive_writes_global_config_and_env_template(monkeypatch,
             tavily_api_key_env="",
             theme="catppuccin-macchiato",
             debug=False,
-            dangerously_skip_permissions=False,
         ),
     )
 
@@ -181,7 +206,7 @@ def test_init_non_interactive_writes_global_config_and_env_template(monkeypatch,
     assert config_path.exists()
     assert dotenv_path.exists()
     stored = json.loads(config_path.read_text(encoding="utf-8"))
-    assert stored["workspace"]["path"] == str(tmp_path / "ws")
+    assert stored["project"]["root_strategy"] == "git-or-cwd"
     assert stored["search"]["fallback_provider"] == "tavily"
     assert stored["tui"]["theme"] == "catppuccin-macchiato"
 
@@ -209,7 +234,7 @@ def test_init_search_section_writes_tavily_key_to_env(monkeypatch, tmp_path) -> 
             section="search",
             non_interactive=True,
             reset=False,
-            workspace_path="",
+            project_root="",
             model_endpoint="",
             models_endpoint="",
             search_provider="searxng",
@@ -253,7 +278,7 @@ def test_init_non_interactive_model_section_writes_api_key_to_env(monkeypatch, t
             section="model",
             non_interactive=True,
             reset=False,
-            workspace_path="",
+            project_root="",
             base_url="https://example.com",
             responses_endpoint="https://example.com/v1/responses",
             model_endpoint="https://example.com/v1/chat/completions",
@@ -299,7 +324,7 @@ def test_init_non_interactive_model_section_can_mirror_api_key_for_backend(monke
             section="model",
             non_interactive=True,
             reset=False,
-            workspace_path="",
+            project_root="",
             base_url="http://127.0.0.1:8080",
             responses_endpoint="http://127.0.0.1:8080/v1/responses",
             model_endpoint="http://127.0.0.1:8080/v1/chat/completions",
@@ -343,7 +368,7 @@ def test_init_non_interactive_tavily_primary_skips_searxng_and_fallback(monkeypa
             section="search",
             non_interactive=True,
             reset=False,
-            workspace_path="",
+            project_root="",
             model_endpoint="",
             models_endpoint="",
             search_provider="tavily",
@@ -512,7 +537,7 @@ def test_doctor_json_output_is_machine_readable(monkeypatch, capsys, tmp_path) -
 
     report = {
         "agent": {"ready": True, "endpoint_policy_error": ""},
-        "workspace": {"exists": True, "writable": True},
+        "project": {"exists": True, "writable": True},
         "search": {"ready": True},
         "retrieval": {"ready": True},
     }
@@ -520,7 +545,7 @@ def test_doctor_json_output_is_machine_readable(monkeypatch, capsys, tmp_path) -
         alphanus_cli,
         "_build_agent_runtime",
         lambda *_args, **_kwargs: (
-            SimpleNamespace(workspace_root=Path("/tmp/ws")),
+            SimpleNamespace(project_root=Path("/tmp/ws")),
             SimpleNamespace(storage_path=Path("/tmp/memory/events.jsonl")),
             SimpleNamespace(),
             SimpleNamespace(doctor_report=lambda: report),
@@ -531,7 +556,7 @@ def test_doctor_json_output_is_machine_readable(monkeypatch, capsys, tmp_path) -
         SimpleNamespace(
             json=True,
             debug=False,
-            dangerously_skip_permissions=False,
+            project_root="",
         )
     )
 
@@ -550,7 +575,7 @@ def test_init_partial_reset_preserves_unselected_sections(monkeypatch, tmp_path)
     config_path.write_text("{}", encoding="utf-8")
 
     existing_config = {
-        "workspace": {"path": str(tmp_path / "custom-workspace")},
+        "project": {"root_strategy": "git-or-cwd"},
         "agent": {
             "model_endpoint": "http://custom-host/v1/chat/completions",
             "models_endpoint": "http://custom-host/v1/models",
@@ -578,7 +603,7 @@ def test_init_partial_reset_preserves_unselected_sections(monkeypatch, tmp_path)
             section="model",
             non_interactive=True,
             reset=True,
-            workspace_path="",
+            project_root="",
             model_endpoint="",
             models_endpoint="",
             search_provider="",
@@ -588,7 +613,7 @@ def test_init_partial_reset_preserves_unselected_sections(monkeypatch, tmp_path)
 
     assert exit_code == 0
     stored = json.loads(config_path.read_text(encoding="utf-8"))
-    assert stored["workspace"]["path"] == str(tmp_path / "custom-workspace")
+    assert stored["project"]["root_strategy"] == "git-or-cwd"
     assert stored["search"]["provider"] == "searxng"
     assert stored["agent"]["tls_verify"] is False
     assert stored["agent"]["model_endpoint"] == alphanus_cli.DEFAULT_CONFIG["agent"]["model_endpoint"]
@@ -603,7 +628,7 @@ def test_init_non_interactive_theme_only_updates_theme(monkeypatch, tmp_path) ->
     config_path.write_text("{}", encoding="utf-8")
 
     existing_config = {
-        "workspace": {"path": str(tmp_path / "custom-workspace")},
+        "project": {"root_strategy": "git-or-cwd"},
         "search": {"provider": "searxng", "searxng_base_url": "http://127.0.0.1:8888"},
         "tui": {"theme": "classic"},
     }
@@ -627,7 +652,7 @@ def test_init_non_interactive_theme_only_updates_theme(monkeypatch, tmp_path) ->
             section="theme",
             non_interactive=True,
             reset=False,
-            workspace_path="",
+            project_root="",
             model_endpoint="",
             models_endpoint="",
             search_provider="",
@@ -637,7 +662,7 @@ def test_init_non_interactive_theme_only_updates_theme(monkeypatch, tmp_path) ->
 
     assert exit_code == 0
     stored = json.loads(config_path.read_text(encoding="utf-8"))
-    assert stored["workspace"]["path"] == str(tmp_path / "custom-workspace")
+    assert stored["project"]["root_strategy"] == "git-or-cwd"
     assert stored["search"]["provider"] == "searxng"
     assert stored["tui"]["theme"] == "gruvbox-dark-soft"
 

@@ -73,5 +73,5 @@ def test_built_wheel_contains_bundled_skills(tmp_path: Path) -> None:
 
     assert "alphanus_bundled/utilities/SKILL.md" in names
     assert "alphanus_bundled/utilities/tools.py" in names
-    assert "alphanus_bundled/workspace-ops/SKILL.md" in names
+    assert "alphanus_bundled/project-ops/SKILL.md" in names
     assert "tui/theme_specs/catppuccin-mocha.json" in names

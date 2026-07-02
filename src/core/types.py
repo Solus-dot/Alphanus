@@ -13,7 +13,7 @@ from agent.types import (
     TurnState,
     TurnTelemetry,
 )
-from core.message_types import ChatMessage, JsonObject, ShellConfirmationFn, UserInputRequestFn
+from core.message_types import ApprovalRequestFn, ChatMessage, JsonObject, UserInputRequestFn
 
 __all__ = [
     "AgentTurnResult",
@@ -21,7 +21,7 @@ __all__ = [
     "CompletionEvidence",
     "JsonObject",
     "ModelStatus",
-    "ShellConfirmationFn",
+    "ApprovalRequestFn",
     "StreamPassResult",
     "ToolCall",
     "ToolCallAccumulator",

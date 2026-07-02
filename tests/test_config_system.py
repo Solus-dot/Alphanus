@@ -7,6 +7,7 @@ import pytest
 
 from core.config_model import TypedConfigV2
 from core.configuration import (
+    ConfigMigrationError,
     DEFAULT_CONFIG,
     load_dotenv,
     load_global_config,
@@ -149,30 +150,15 @@ def test_normalize_config_theme_alias_and_invalid_values() -> None:
     assert not any("unsupported 'catppuccin'" in warning for warning in alias_warnings)
 
 
-def test_normalize_config_runtime_profile_aliases() -> None:
-    minimal, minimal_warnings = normalize_config({"runtime": {"profile": "safe"}})
-    standard, standard_warnings = normalize_config({"runtime": {"profile": "workspace"}})
-    invalid, invalid_warnings = normalize_config({"runtime": {"profile": "unknown"}})
-
-    assert minimal["runtime"]["profile"] == "minimal"
-    assert standard["runtime"]["profile"] == "standard"
-    assert invalid["runtime"]["profile"] == DEFAULT_CONFIG["runtime"]["profile"]
-    assert not minimal_warnings
-    assert not standard_warnings
-    assert any("runtime.profile" in warning for warning in invalid_warnings)
+def test_normalize_config_rejects_removed_runtime_profile() -> None:
+    with pytest.raises(ConfigMigrationError, match="uv run alphanus init") as exc_info:
+        normalize_config({"runtime": {"profile": "safe"}})
+    assert "runtime.profile" in str(exc_info.value)
 
 
-def test_normalize_config_permission_profile_aliases() -> None:
-    safe, safe_warnings = normalize_config({"capabilities": {"permission_profile": "minimal"}})
-    workspace, workspace_warnings = normalize_config({"capabilities": {"permission_profile": "standard"}})
-    invalid, invalid_warnings = normalize_config({"capabilities": {"permission_profile": "unknown"}})
-
-    assert safe["capabilities"]["permission_profile"] == "safe"
-    assert workspace["capabilities"]["permission_profile"] == "workspace"
-    assert invalid["capabilities"]["permission_profile"] == DEFAULT_CONFIG["capabilities"]["permission_profile"]
-    assert not safe_warnings
-    assert not workspace_warnings
-    assert any("capabilities.permission_profile" in warning for warning in invalid_warnings)
+def test_normalize_config_rejects_removed_capabilities() -> None:
+    with pytest.raises(ConfigMigrationError, match="capabilities.permission_profile"):
+        normalize_config({"capabilities": {"permission_profile": "minimal"}})
 
 
 def test_load_global_config_reports_and_rejects_bad_json(tmp_path: Path) -> None:
@@ -270,7 +256,7 @@ def test_normalize_config_preserves_new_runtime_boundary_fields() -> None:
             "retry_backoff_s": "0.75",
         },
         "skills": {"python_executable": "/usr/bin/python3", "paths": ["~/agent-skills"]},
-        "tui": {"timing": {"stream_drain_interval_s": "0.02", "shell_confirm_timeout_s": "90"}},
+        "tui": {"timing": {"stream_drain_interval_s": "0.02", "action_approval_timeout_s": "90"}},
     }
 
     normalized, _warnings = normalize_config(raw)
@@ -282,7 +268,7 @@ def test_normalize_config_preserves_new_runtime_boundary_fields() -> None:
     assert normalized["skills"]["python_executable"] == "/usr/bin/python3"
     assert normalized["skills"]["paths"] == ["~/agent-skills"]
     assert normalized["tui"]["timing"]["stream_drain_interval_s"] == 0.02
-    assert normalized["tui"]["timing"]["shell_confirm_timeout_s"] == 90.0
+    assert normalized["tui"]["timing"]["action_approval_timeout_s"] == 90.0
 
 
 def test_normalize_config_clamps_memory_fields() -> None:
@@ -325,7 +311,7 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
         {
             "agent": {"connect_timeout_s": 3, "per_turn_retries": 2},
             "skills": {"python_executable": "/usr/bin/python3", "paths": ["~/agent-skills"]},
-            "tui": {"theme": "gruvbox-dark-soft", "chat_log_max_lines": 1234, "timing": {"shell_confirm_timeout_s": 90}},
+            "tui": {"theme": "gruvbox-dark-soft", "chat_log_max_lines": 1234, "timing": {"action_approval_timeout_s": 90}},
         }
     )
 
@@ -341,7 +327,7 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
     assert skills.paths == ["~/agent-skills"]
     assert ui.theme == "gruvbox-dark-soft"
     assert ui.chat_log_max_lines == 1234
-    assert ui.timing.shell_confirm_timeout_s == 90.0
+    assert ui.timing.action_approval_timeout_s == 90.0
 
 
 def test_tui_chat_log_max_lines_zero_disables_pruning() -> None:
@@ -366,10 +352,11 @@ def test_typed_config_v2_groups_runtime_sections() -> None:
     normalized, _warnings = normalize_config(
         {
             "agent": {"connect_timeout_s": 3, "per_turn_retries": 2},
-            "workspace": {"path": "~/code"},
+            "project": {"root_strategy": "git-or-cwd"},
             "memory": {"backup_revisions": 4},
-            "capabilities": {"permission_profile": "workspace"},
-            "runtime": {"profile": "minimal", "ask_user_tool": False},
+            "permissions": {"mode": "read-only", "approvals": "on-boundary", "network": False},
+            "sandbox": {"backend": "auto", "fail_closed": True},
+            "runtime": {"ask_user_tool": False},
             "search": {"provider": "searxng", "fallback_provider": "tavily", "searxng_base_url": "http://127.0.0.1:8888"},
             "skills": {"python_executable": "/usr/bin/python3", "paths": ["~/agent-skills"]},
             "tui": {"theme": "gruvbox-dark-soft"},
@@ -380,10 +367,13 @@ def test_typed_config_v2_groups_runtime_sections() -> None:
 
     assert typed.provider.connect_timeout_s == 3.0
     assert typed.provider.auth_header == "Authorization: Bearer demo"
-    assert typed.workspace.path == "~/code"
+    assert typed.project.root_strategy == "git-or-cwd"
     assert typed.memory.backup_revisions == 4
-    assert typed.runtime_policy.runtime_profile == "minimal"
-    assert typed.runtime_policy.permission_profile == "workspace"
+    assert typed.runtime_policy.permission_mode == "read-only"
+    assert typed.runtime_policy.approvals == "on-boundary"
+    assert typed.runtime_policy.network is False
+    assert typed.runtime_policy.sandbox_backend == "auto"
+    assert typed.runtime_policy.sandbox_fail_closed is True
     assert typed.runtime_policy.ask_user_tool is False
     assert typed.search.provider == "searxng"
     assert typed.search.fallback_provider == "tavily"

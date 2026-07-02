@@ -8,14 +8,14 @@ from core.runtime_config import ProviderConfig, SkillsRuntimeConfig, UiRuntimeCo
 
 
 @dataclass(frozen=True, slots=True)
-class WorkspaceConfig:
-    path: str
+class ProjectConfig:
+    root_strategy: str
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> WorkspaceConfig:
-        section = config.get("workspace", {}) if isinstance(config.get("workspace"), dict) else {}
-        default_section = DEFAULT_CONFIG["workspace"]
-        return cls(path=str(section.get("path", default_section["path"])).strip())
+    def from_config(cls, config: dict[str, Any]) -> ProjectConfig:
+        section = config.get("project", {}) if isinstance(config.get("project"), dict) else {}
+        default_section = DEFAULT_CONFIG["project"]
+        return cls(root_strategy=str(section.get("root_strategy", default_section["root_strategy"])).strip())
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,24 +41,28 @@ class MemoryConfig:
 
 @dataclass(frozen=True, slots=True)
 class RuntimePolicyConfig:
-    runtime_profile: str
-    permission_profile: str
+    permission_mode: str
+    approvals: str
+    network: bool
+    sandbox_backend: str
+    sandbox_fail_closed: bool
     ask_user_tool: bool
-    shell_require_confirmation: bool
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> RuntimePolicyConfig:
         runtime = config.get("runtime", {}) if isinstance(config.get("runtime"), dict) else {}
-        capabilities = config.get("capabilities", {}) if isinstance(config.get("capabilities"), dict) else {}
+        permissions = config.get("permissions", {}) if isinstance(config.get("permissions"), dict) else {}
+        sandbox = config.get("sandbox", {}) if isinstance(config.get("sandbox"), dict) else {}
         default_runtime = DEFAULT_CONFIG["runtime"]
-        default_capabilities = DEFAULT_CONFIG["capabilities"]
+        default_permissions = DEFAULT_CONFIG["permissions"]
+        default_sandbox = DEFAULT_CONFIG["sandbox"]
         return cls(
-            runtime_profile=str(runtime.get("profile", default_runtime["profile"])),
-            permission_profile=str(capabilities.get("permission_profile", default_capabilities["permission_profile"])),
+            permission_mode=str(permissions.get("mode", default_permissions["mode"])),
+            approvals=str(permissions.get("approvals", default_permissions["approvals"])),
+            network=bool(permissions.get("network", default_permissions["network"])),
+            sandbox_backend=str(sandbox.get("backend", default_sandbox["backend"])),
+            sandbox_fail_closed=bool(sandbox.get("fail_closed", default_sandbox["fail_closed"])),
             ask_user_tool=bool(runtime.get("ask_user_tool", default_runtime["ask_user_tool"])),
-            shell_require_confirmation=bool(
-                capabilities.get("shell_require_confirmation", default_capabilities["shell_require_confirmation"])
-            ),
         )
 
 
@@ -113,7 +117,7 @@ class RetrievalConfig:
 @dataclass(frozen=True, slots=True)
 class TypedConfigV2:
     provider: ProviderConfig
-    workspace: WorkspaceConfig
+    project: ProjectConfig
     memory: MemoryConfig
     runtime_policy: RuntimePolicyConfig
     skills: SkillsRuntimeConfig
@@ -126,7 +130,7 @@ class TypedConfigV2:
     def from_normalized_config(cls, config: dict[str, Any], *, auth_header: str | None = None) -> TypedConfigV2:
         return cls(
             provider=ProviderConfig.from_config(config, auth_header=auth_header),
-            workspace=WorkspaceConfig.from_config(config),
+            project=ProjectConfig.from_config(config),
             memory=MemoryConfig.from_config(config),
             runtime_policy=RuntimePolicyConfig.from_config(config),
             skills=SkillsRuntimeConfig.from_config(config),

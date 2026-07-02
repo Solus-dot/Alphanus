@@ -22,7 +22,6 @@ from core.configuration import (
     load_dotenv,
     load_global_config,
     normalize_config,
-    resolve_path,
     validate_endpoint_policy,
 )
 from core.endpoint_modes import ENDPOINT_MODE_AUTO, ENDPOINT_MODE_CHAT, ENDPOINT_MODE_RESPONSES, ENDPOINT_MODES
@@ -36,12 +35,12 @@ from core.search_providers import (
     SEARCH_PROVIDERS,
 )
 from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
-from core.workspace import WorkspaceManager
+from core.project import ProjectRuntime
 from skills.runtime import SkillRuntime
 from tui.interface import AlphanusTUI
 from tui.themes import available_theme_ids, theme_spec
 
-INIT_SECTIONS = ("all", "workspace", "model", "search", "theme", "permissions")
+INIT_SECTIONS = ("all", "model", "search", "theme", "permissions")
 _VALID_CLI_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -123,9 +122,10 @@ def _build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--debug", action="store_true", help="Enable verbose debug logs")
     common.add_argument(
-        "--dangerously-skip-permissions",
-        action="store_true",
-        help="Disable interactive shell permission prompts (unsafe).",
+        "--project-root",
+        type=str,
+        default="",
+        help="Project root for this run (defaults to enclosing git root, then cwd)",
     )
     parser = argparse.ArgumentParser(description="Alphanus", parents=[common])
     subparsers = parser.add_subparsers(dest="command")
@@ -142,7 +142,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     init_parser.add_argument("--non-interactive", action="store_true", help="Use defaults/flags without prompts")
     init_parser.add_argument("--reset", action="store_true", help="Reset selected section(s) to defaults before applying")
-    init_parser.add_argument("--workspace-path", type=str, default="", help="Workspace root path")
     init_parser.add_argument("--base-url", type=str, default="", help="OpenAI-compatible base URL")
     init_parser.add_argument("--responses-endpoint", type=str, default="", help="Responses API endpoint override")
     init_parser.add_argument("--model-endpoint", type=str, default="", help="Model chat completions endpoint")
@@ -183,7 +182,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     doctor_parser = subparsers.add_parser(
         "doctor",
-        help="Validate config, env, endpoint, and workspace readiness",
+        help="Validate config, env, endpoint, and project readiness",
         parents=[common],
     )
     doctor_parser.add_argument("--json", action="store_true", help="Emit doctor report as JSON")
@@ -208,12 +207,9 @@ def _load_runtime_config(app_paths: Any, args: argparse.Namespace) -> tuple[dict
         debug_dir.mkdir(parents=True, exist_ok=True)
         agent_cfg = config.setdefault("agent", {})
         agent_cfg["debug_log_path"] = str(debug_dir / "http-debug.jsonl")
-    if args.dangerously_skip_permissions:
-        caps = config.setdefault("capabilities", {})
-        caps["dangerously_skip_permissions"] = True
-        caps["shell_require_confirmation"] = False
     config, normalization_warnings = normalize_config(config)
     config_warnings.extend(normalization_warnings)
+    config["_project_root_override"] = str(getattr(args, "project_root", "") or "").strip()
     validate_endpoint_policy(config)
     runtime_cfg = config.setdefault("runtime", {})
     if isinstance(runtime_cfg, dict):
@@ -221,11 +217,48 @@ def _load_runtime_config(app_paths: Any, args: argparse.Namespace) -> tuple[dict
     return config, config_warnings
 
 
+def _git_root_for_cwd(cwd: Path) -> Path | None:
+    git_path = shutil.which("git")
+    if not git_path:
+        return None
+    try:
+        proc = subprocess.run(
+            [git_path, "-C", str(cwd), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    root_text = proc.stdout.strip()
+    return Path(root_text).expanduser().resolve() if root_text else None
+
+
+def resolve_project_root(config: dict[str, Any], *, override: str = "", cwd: Path | None = None) -> Path:
+    if override.strip():
+        return Path(os.path.expanduser(override.strip())).resolve()
+    start = (cwd or Path.cwd()).resolve()
+    strategy = str(_as_object(config.get("project")).get("root_strategy", "git-or-cwd")).strip().lower()
+    if strategy == "git-or-cwd":
+        return _git_root_for_cwd(start) or start
+    return start
+
+
 def _build_agent_runtime(
     app_paths: Any, config: dict[str, Any], *, debug: bool
-) -> tuple[WorkspaceManager, LexicalMemory, SkillRuntime, Agent]:
-    workspace_root = resolve_path(config["workspace"]["path"], app_paths.state_root)
-    workspace = WorkspaceManager(workspace_root=workspace_root)
+) -> tuple[ProjectRuntime, LexicalMemory, SkillRuntime, Agent]:
+    project_root = resolve_project_root(config, override=str(config.get("_project_root_override", "")))
+    permissions_cfg = _as_object(config.get("permissions"))
+    sandbox_cfg = _as_object(config.get("sandbox"))
+    project = ProjectRuntime(
+        project_root=str(project_root),
+        permission_mode=str(permissions_cfg.get("mode", "project-write")),
+        network_access=bool(permissions_cfg.get("network", False)),
+        sandbox_backend=str(sandbox_cfg.get("backend", "auto")),
+        sandbox_fail_closed=bool(sandbox_cfg.get("fail_closed", True)),
+    )
     memory_path = str((Path(app_paths.state_root).resolve() / "memory" / "events.jsonl").resolve())
     memory_cfg = config.get("memory", {})
     memory = LexicalMemory(
@@ -239,13 +272,13 @@ def _build_agent_runtime(
     runtime = SkillRuntime(
         skills_dir=str(runtime_skills_dir),
         bundled_skills_dir=str(app_paths.bundled_skills_dir),
-        workspace=workspace,
+        project=project,
         memory=memory,
         config=config,
         debug=debug,
     )
     agent = Agent(config=config, skill_runtime=runtime, debug=debug)
-    return workspace, memory, runtime, agent
+    return project, memory, runtime, agent
 
 
 def _prompt_with_default(label: str, default: str, *, hint: str = "", theme: _CliTheme | None = None) -> str:
@@ -441,8 +474,6 @@ def _run_init(args: Any) -> int:
             base = copy.deepcopy(DEFAULT_CONFIG)
         else:
             default_cfg = copy.deepcopy(DEFAULT_CONFIG)
-            if _section_selected(section, "workspace"):
-                base["workspace"] = copy.deepcopy(default_cfg.get("workspace", {}))
             if _section_selected(section, "model"):
                 current_agent = base.get("agent", {}) if isinstance(base.get("agent"), dict) else {}
                 default_agent = default_cfg.get("agent", {}) if isinstance(default_cfg.get("agent"), dict) else {}
@@ -469,7 +500,6 @@ def _run_init(args: Any) -> int:
                     current_tui["theme"] = copy.deepcopy(default_tui["theme"])
                 base["tui"] = current_tui
 
-    workspace_default = str(base.get("workspace", {}).get("path", DEFAULT_CONFIG["workspace"]["path"]))
     base_url_default = str(base.get("agent", {}).get("base_url", DEFAULT_CONFIG["agent"]["base_url"]))
     model_endpoint_default = str(base.get("agent", {}).get("model_endpoint", DEFAULT_CONFIG["agent"]["model_endpoint"]))
     responses_endpoint_default = str(base.get("agent", {}).get("responses_endpoint", DEFAULT_CONFIG["agent"]["responses_endpoint"]))
@@ -490,7 +520,6 @@ def _run_init(args: Any) -> int:
     theme_ids = available_theme_ids()
     theme_default, _ = normalize_theme_id(theme_default, default=DEFAULT_THEME_ID, available=theme_ids)
 
-    workspace_path = workspace_default
     base_url = base_url_default
     model_endpoint = model_endpoint_default
     responses_endpoint = responses_endpoint_default
@@ -512,8 +541,6 @@ def _run_init(args: Any) -> int:
     if args.non_interactive:
         print(theme.brand(" ALPHANUS INIT "))
         print(theme.muted(f"Applying non-interactive setup profile ({section})."))
-        if _section_selected(section, "workspace"):
-            workspace_path = str(getattr(args, "workspace_path", "") or "").strip() or workspace_default
         if _section_selected(section, "model"):
             base_url = str(getattr(args, "base_url", "") or "").strip() or base_url_default
             model_endpoint = str(getattr(args, "model_endpoint", "") or "").strip() or model_endpoint_default
@@ -540,7 +567,7 @@ def _run_init(args: Any) -> int:
             requested_theme = str(getattr(args, "theme", "") or "").strip() or theme_default
             ui_theme, _ = normalize_theme_id(requested_theme, default=theme_default, available=theme_ids)
     else:
-        steps = [name for name in ("workspace", "model", "search", "theme", "permissions") if _section_selected(section, name)]
+        steps = [name for name in ("model", "search", "theme", "permissions") if _section_selected(section, name)]
         total_steps = max(len(steps), 1)
         step_index = 1
         print(theme.brand(" ALPHANUS SETUP "))
@@ -549,16 +576,6 @@ def _run_init(args: Any) -> int:
         print(theme.muted("We'll configure runtime state, model connectivity, search, and display theme defaults."))
         print(f"{theme.label('State root:')} {theme.path(str(state_root))}")
         print("")
-        if _section_selected(section, "workspace"):
-            _print_init_step(theme, step_index, total_steps, "Workspace")
-            workspace_path = _prompt_with_default(
-                "Workspace path",
-                workspace_default,
-                hint=theme.muted("where project files live"),
-                theme=theme,
-            )
-            step_index += 1
-            print("")
         if _section_selected(section, "model"):
             _print_init_step(theme, step_index, total_steps, "Model endpoint")
             use_local = _prompt_yes_no(
@@ -696,8 +713,6 @@ def _run_init(args: Any) -> int:
             print("")
 
     updates: dict[str, Any] = {}
-    if _section_selected(section, "workspace"):
-        updates["workspace"] = {"path": workspace_path}
     if _section_selected(section, "model"):
         updates["agent"] = {
             "base_url": base_url,
@@ -728,7 +743,6 @@ def _run_init(args: Any) -> int:
 
     if not args.non_interactive:
         print(theme.rule("Review"))
-        _print_review_group(theme, "Workspace", [("Path", str(normalized["workspace"]["path"]))])
         _print_review_group(
             theme,
             "Model",
@@ -820,7 +834,14 @@ def _run_doctor(args: Any) -> int:
         print(f"{theme.error('doctor config error:')} {exc}")
         return 2
 
-    workspace, memory, _runtime, agent = _build_agent_runtime(app_paths, config, debug=args.debug)
+    try:
+        project, memory, _runtime, agent = _build_agent_runtime(app_paths, config, debug=args.debug)
+    except (FileNotFoundError, NotADirectoryError, OSError, ValueError) as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(exc), "config_warnings": warnings}, indent=2))
+            return 2
+        print(f"{theme.error('doctor runtime error:')} {exc}")
+        return 2
     report = agent.doctor_report()
     report_obj = report if isinstance(report, dict) else {}
     if args.json:
@@ -830,20 +851,20 @@ def _run_doctor(args: Any) -> int:
         print(json.dumps(payload, indent=2))
     else:
         agent_status = _as_object(report_obj.get("agent"))
-        workspace_status = _as_object(report_obj.get("workspace"))
+        project_status = _as_object(report_obj.get("project"))
         search_status = _as_object(report_obj.get("search"))
         retrieval_status = _as_object(report_obj.get("retrieval"))
         endpoint_error = str(agent_status.get("endpoint_policy_error") or "").strip()
         endpoint_ok = not endpoint_error
         model_ok = bool(agent_status.get("ready"))
-        workspace_ok = bool(workspace_status.get("exists")) and bool(workspace_status.get("writable"))
+        project_ok = bool(project_status.get("exists")) and bool(project_status.get("writable"))
         search_ok = bool(search_status.get("ready"))
         retrieval_ok = bool(retrieval_status.get("ready"))
 
         print("")
         print(theme.brand(" ALPHANUS DOCTOR "))
         print(theme.rule())
-        print(theme.muted("Validating model connectivity, workspace access, search, and local state."))
+        print(theme.muted("Validating model connectivity, project access, search, and local state."))
         print("")
 
         if warnings:
@@ -860,7 +881,7 @@ def _run_doctor(args: Any) -> int:
                 ("Env", str(app_paths.dotenv_path)),
                 ("Sessions", str((Path(app_paths.state_root) / "sessions").resolve())),
                 ("Memory", str(memory.storage_path)),
-                ("Workspace", str(workspace.workspace_root)),
+                ("Project", str(project.project_root)),
             ],
         )
 
@@ -872,7 +893,7 @@ def _run_doctor(args: Any) -> int:
             [
                 ("Endpoint policy", "ok" if endpoint_ok else "fail", "" if endpoint_ok else endpoint_error),
                 ("Model readiness", "ok" if model_ok else "wait", ""),
-                ("Workspace access", "ok" if workspace_ok else "fail", ""),
+                ("Project access", "ok" if project_ok else "fail", ""),
                 ("Search provider", "ok" if search_ok else "wait", "" if search_detail == "ok" else search_detail),
                 ("Retrieval store", "ok" if retrieval_ok else "fail", "" if retrieval_detail == "ok" else retrieval_detail),
             ],
@@ -880,15 +901,15 @@ def _run_doctor(args: Any) -> int:
 
     failures = []
     agent_status = _as_object(report_obj.get("agent"))
-    workspace_status = _as_object(report_obj.get("workspace"))
+    project_status = _as_object(report_obj.get("project"))
     search_status = _as_object(report_obj.get("search"))
     retrieval_status = _as_object(report_obj.get("retrieval"))
     if str(agent_status.get("endpoint_policy_error") or "").strip():
         failures.append("endpoint-policy")
     if not bool(agent_status.get("ready")):
         failures.append("model-readiness")
-    if not bool(workspace_status.get("exists")) or not bool(workspace_status.get("writable")):
-        failures.append("workspace")
+    if not bool(project_status.get("exists")) or not bool(project_status.get("writable")):
+        failures.append("project")
     if not bool(search_status.get("ready")):
         failures.append("search")
     if not bool(retrieval_status.get("ready")):
@@ -958,7 +979,11 @@ def _run_tui(args: Any) -> int:
     for warning in config_warnings:
         logger.warning(f"config: {warning}")
 
-    _workspace, memory, _runtime, agent = _build_agent_runtime(app_paths, config, debug=args.debug)
+    try:
+        _project, memory, _runtime, agent = _build_agent_runtime(app_paths, config, debug=args.debug)
+    except (FileNotFoundError, NotADirectoryError, OSError, ValueError) as exc:
+        print(f"startup failed: {exc}")
+        return 2
     if args.debug:
         logger.info(f"debug HTTP log: {config['agent']['debug_log_path']}")
 

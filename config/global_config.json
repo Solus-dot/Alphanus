@@ -19,8 +19,8 @@
     "max_tokens": null,
     "max_action_depth": 10
   },
-  "workspace": {
-    "path": "~/Desktop/Alphanus-Workspace"
+  "project": {
+    "root_strategy": "git-or-cwd"
   },
   "memory": {
     "min_score_default": 0.3,
@@ -31,9 +31,14 @@
   "context": {
     "keep_last_n": 10
   },
-  "capabilities": {
-    "shell_require_confirmation": true,
-    "dangerously_skip_permissions": false
+  "permissions": {
+    "mode": "project-write",
+    "approvals": "on-boundary",
+    "network": false
+  },
+  "sandbox": {
+    "backend": "auto",
+    "fail_closed": true
   },
   "skills": {
     "strict_capability_policy": false,

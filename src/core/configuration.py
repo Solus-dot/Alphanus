@@ -46,23 +46,10 @@ _SECRET_KEYS = {
     "secret",
 }
 _SECRET_SUFFIXES = ("_api_key", "_apikey", "_token", "_secret", "_password")
-_RUNTIME_PROFILE_ALIASES = {
-    "standard": "standard",
-    "workspace": "standard",
-    "full": "standard",
-    "minimal": "minimal",
-    "minimal_reliable": "minimal",
-    "safe": "minimal",
-}
-_PERMISSION_PROFILE_ALIASES = {
-    "safe": "safe",
-    "minimal": "safe",
-    "readonly": "safe",
-    "read-only": "safe",
-    "workspace": "workspace",
-    "standard": "workspace",
-    "full": "full",
-}
+PROJECT_ROOT_STRATEGIES = {"git-or-cwd"}
+PERMISSION_MODES = {"read-only", "project-write", "danger-full-access"}
+APPROVAL_MODES = {"on-boundary"}
+SANDBOX_BACKENDS = {"auto", "macos-seatbelt", "linux-bubblewrap", "windows-native"}
 _VALID_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -99,8 +86,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "enable_structured_classification": True,
         "max_classifier_tokens": 256,
     },
-    "workspace": {
-        "path": "~/Desktop/Alphanus-Workspace",
+    "project": {
+        "root_strategy": "git-or-cwd",
     },
     "memory": {
         "min_score_default": 0.3,
@@ -114,10 +101,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "keep_last_n": 10,
         "safety_margin": 500,
     },
-    "capabilities": {
-        "shell_require_confirmation": True,
-        "dangerously_skip_permissions": False,
-        "permission_profile": "full",
+    "permissions": {
+        "mode": "project-write",
+        "approvals": "on-boundary",
+        "network": False,
+    },
+    "sandbox": {
+        "backend": "auto",
+        "fail_closed": True,
     },
     "skills": {
         "strict_capability_policy": False,
@@ -129,7 +120,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "runtime": {
         "ask_user_tool": True,
-        "profile": "standard",
     },
     "tools": {},
     "search": {
@@ -172,7 +162,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "timing": {
             "stream_drain_interval_s": 0.033,
             "scroll_interval_s": 0.05,
-            "shell_confirm_timeout_s": 60.0,
+            "action_approval_timeout_s": 60.0,
         },
         "tree_compaction": {
             "enabled": True,
@@ -307,6 +297,32 @@ def _coerce_string_list(value: Any, default: Iterable[str], *, path: str, warnin
     return out
 
 
+class ConfigMigrationError(ValueError):
+    pass
+
+
+def _legacy_config_errors(config: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if isinstance(config.get("workspace"), dict) or "workspace" in config:
+        errors.append("`workspace.path` was removed. Launch from the project directory or pass `--project-root`; configure `project.root_strategy` instead.")
+    caps = config.get("capabilities")
+    if isinstance(caps, dict):
+        for key in ("permission_profile", "shell_require_confirmation", "dangerously_skip_permissions"):
+            if key in caps:
+                replacement = {
+                    "permission_profile": "`permissions.mode`",
+                    "shell_require_confirmation": "`permissions.approvals`",
+                    "dangerously_skip_permissions": "`permissions.mode = \"danger-full-access\"`",
+                }[key]
+                errors.append(f"`capabilities.{key}` was removed. Use {replacement}.")
+    elif "capabilities" in config:
+        errors.append("`capabilities` was removed. Use `permissions` and `sandbox`.")
+    runtime = config.get("runtime")
+    if isinstance(runtime, dict) and "profile" in runtime:
+        errors.append("`runtime.profile` was removed. Use `permissions.mode`.")
+    return errors
+
+
 def strip_secret_fields(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     changed = False
 
@@ -396,6 +412,15 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
 
     warnings: list[str] = []
     sanitized_input, stripped = strip_secret_fields(raw_config)
+    legacy_errors = _legacy_config_errors(sanitized_input)
+    if legacy_errors:
+        detail = "\n".join(f"- {item}" for item in legacy_errors)
+        raise ConfigMigrationError(
+            "Config uses removed workspace-era keys.\n"
+            "Run `uv run alphanus init` again to write the new project/permissions config, then retry.\n"
+            "Removed keys:\n"
+            + detail
+        )
     if stripped:
         _warn(warnings, "Removed secret-like fields from config; use environment variables for secrets.")
 
@@ -703,15 +728,19 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         agent_cfg.pop("tool_budgets", None)
     merged["agent"] = agent_cfg
 
-    workspace_cfg = merged.get("workspace", {}) if isinstance(merged.get("workspace"), dict) else {}
-    workspace_cfg["path"] = _coerce_string(
-        workspace_cfg.get("path"),
-        str(DEFAULT_CONFIG["workspace"]["path"]),
-        path="workspace.path",
+    project_cfg = merged.get("project", {}) if isinstance(merged.get("project"), dict) else {}
+    root_strategy = _coerce_string(
+        project_cfg.get("root_strategy"),
+        str(DEFAULT_CONFIG["project"]["root_strategy"]),
+        path="project.root_strategy",
         warnings=warnings,
         allow_empty=False,
-    )
-    merged["workspace"] = workspace_cfg
+    ).lower()
+    if root_strategy not in PROJECT_ROOT_STRATEGIES:
+        _warn(warnings, f"project.root_strategy: unsupported {root_strategy!r}, using 'git-or-cwd'")
+        root_strategy = "git-or-cwd"
+    project_cfg = {"root_strategy": root_strategy}
+    merged["project"] = project_cfg
 
     raw_memory_cfg = merged.get("memory", {}) if isinstance(merged.get("memory"), dict) else {}
     memory_cfg: dict[str, Any] = {}
@@ -786,35 +815,58 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         context_cfg["safety_margin"] = adjusted
     merged["context"] = context_cfg
 
-    caps_cfg = merged.get("capabilities", {}) if isinstance(merged.get("capabilities"), dict) else {}
-    caps_cfg["shell_require_confirmation"] = _coerce_bool(
-        caps_cfg.get("shell_require_confirmation"),
-        bool(DEFAULT_CONFIG["capabilities"]["shell_require_confirmation"]),
-        path="capabilities.shell_require_confirmation",
-        warnings=warnings,
-    )
-    caps_cfg["dangerously_skip_permissions"] = _coerce_bool(
-        caps_cfg.get("dangerously_skip_permissions"),
-        bool(DEFAULT_CONFIG["capabilities"]["dangerously_skip_permissions"]),
-        path="capabilities.dangerously_skip_permissions",
-        warnings=warnings,
-    )
-    permission_profile_raw = _coerce_string(
-        caps_cfg.get("permission_profile"),
-        str(DEFAULT_CONFIG["capabilities"]["permission_profile"]),
-        path="capabilities.permission_profile",
+    raw_permissions_cfg = merged.get("permissions", {}) if isinstance(merged.get("permissions"), dict) else {}
+    permissions_cfg: dict[str, Any] = {}
+    permission_mode = _coerce_string(
+        raw_permissions_cfg.get("mode"),
+        str(DEFAULT_CONFIG["permissions"]["mode"]),
+        path="permissions.mode",
         warnings=warnings,
         allow_empty=False,
     ).lower()
-    permission_profile = _PERMISSION_PROFILE_ALIASES.get(permission_profile_raw)
-    if permission_profile is None:
-        permission_profile = str(DEFAULT_CONFIG["capabilities"]["permission_profile"])
-        _warn(
-            warnings,
-            f"capabilities.permission_profile: unsupported {permission_profile_raw!r}, using {permission_profile!r}",
-        )
-    caps_cfg["permission_profile"] = permission_profile
-    merged["capabilities"] = caps_cfg
+    if permission_mode not in PERMISSION_MODES:
+        _warn(warnings, f"permissions.mode: unsupported {permission_mode!r}, using 'project-write'")
+        permission_mode = "project-write"
+    approvals = _coerce_string(
+        raw_permissions_cfg.get("approvals"),
+        str(DEFAULT_CONFIG["permissions"]["approvals"]),
+        path="permissions.approvals",
+        warnings=warnings,
+        allow_empty=False,
+    ).lower()
+    if approvals not in APPROVAL_MODES:
+        _warn(warnings, f"permissions.approvals: unsupported {approvals!r}, using 'on-boundary'")
+        approvals = "on-boundary"
+    permissions_cfg["mode"] = permission_mode
+    permissions_cfg["approvals"] = approvals
+    permissions_cfg["network"] = _coerce_bool(
+        raw_permissions_cfg.get("network"),
+        bool(DEFAULT_CONFIG["permissions"]["network"]),
+        path="permissions.network",
+        warnings=warnings,
+    )
+    merged["permissions"] = permissions_cfg
+
+    raw_sandbox_cfg = merged.get("sandbox", {}) if isinstance(merged.get("sandbox"), dict) else {}
+    sandbox_cfg: dict[str, Any] = {}
+    sandbox_backend = _coerce_string(
+        raw_sandbox_cfg.get("backend"),
+        str(DEFAULT_CONFIG["sandbox"]["backend"]),
+        path="sandbox.backend",
+        warnings=warnings,
+        allow_empty=False,
+    ).lower()
+    if sandbox_backend not in SANDBOX_BACKENDS:
+        _warn(warnings, f"sandbox.backend: unsupported {sandbox_backend!r}, using 'auto'")
+        sandbox_backend = "auto"
+    sandbox_cfg["backend"] = sandbox_backend
+    sandbox_cfg["fail_closed"] = _coerce_bool(
+        raw_sandbox_cfg.get("fail_closed"),
+        bool(DEFAULT_CONFIG["sandbox"]["fail_closed"]),
+        path="sandbox.fail_closed",
+        warnings=warnings,
+    )
+    merged["sandbox"] = sandbox_cfg
 
     raw_skills_cfg = merged.get("skills", {}) if isinstance(merged.get("skills"), dict) else {}
     skills_cfg: dict[str, Any] = {}
@@ -854,18 +906,6 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         path="runtime.ask_user_tool",
         warnings=warnings,
     )
-    runtime_profile_raw = _coerce_string(
-        runtime_cfg.get("profile"),
-        str(DEFAULT_CONFIG["runtime"]["profile"]),
-        path="runtime.profile",
-        warnings=warnings,
-        allow_empty=False,
-    ).lower()
-    runtime_profile = _RUNTIME_PROFILE_ALIASES.get(runtime_profile_raw)
-    if runtime_profile is None:
-        runtime_profile = str(DEFAULT_CONFIG["runtime"]["profile"])
-        _warn(warnings, f"runtime.profile: unsupported {runtime_profile_raw!r}, using {runtime_profile!r}")
-    runtime_cfg["profile"] = runtime_profile
     merged["runtime"] = runtime_cfg
 
     tools_cfg = merged.get("tools", {}) if isinstance(merged.get("tools"), dict) else {}
@@ -1152,10 +1192,10 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         minimum=0.001,
         maximum=1.0,
     )
-    timing_cfg["shell_confirm_timeout_s"] = _coerce_float(
-        timing_cfg.get("shell_confirm_timeout_s"),
-        float(default_timing["shell_confirm_timeout_s"]),
-        path="tui.timing.shell_confirm_timeout_s",
+    timing_cfg["action_approval_timeout_s"] = _coerce_float(
+        timing_cfg.get("action_approval_timeout_s"),
+        float(default_timing["action_approval_timeout_s"]),
+        path="tui.timing.action_approval_timeout_s",
         warnings=warnings,
         minimum=1.0,
         maximum=600.0,
@@ -1291,10 +1331,3 @@ def load_dotenv(path: Path) -> None:
             continue
         if key not in os.environ:
             os.environ[key] = value
-
-
-def resolve_path(path_str: str, root: Path) -> str:
-    path = Path(os.path.expanduser(path_str))
-    if not path.is_absolute():
-        path = (root / path).resolve()
-    return str(path)

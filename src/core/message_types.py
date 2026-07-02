@@ -6,7 +6,7 @@ from typing import Literal, TypeAlias, TypedDict
 JSONPrimitive = str | int | float | bool | None
 JSONValue: TypeAlias = JSONPrimitive | list["JSONValue"] | dict[str, "JSONValue"]
 JsonObject: TypeAlias = dict[str, JSONValue]
-ShellConfirmationFn: TypeAlias = Callable[[str], bool]
+ApprovalRequestFn: TypeAlias = Callable[[JsonObject], bool]
 UserInputRequestFn: TypeAlias = Callable[[JsonObject], JsonObject]
 
 
