@@ -15,9 +15,11 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from core.workspace_command_policy import WorkspaceCommandPolicy
+from core.project_command_policy import ProjectCommandPolicy
+from core.sandbox import SandboxCommand, SandboxConfig, SandboxRunner, shell_tokens
 
 DEFAULT_BLOCKED_PATTERNS = [
+    ".alphanus",
     ".ssh",
     ".aws",
     ".gnupg",
@@ -26,11 +28,12 @@ DEFAULT_BLOCKED_PATTERNS = [
     ".env",
     ".bash_history",
     ".zsh_history",
-    ".DS_Store",
 ]
 
 MAX_TOOL_TEXT_BYTES = 20000
 PROTECTED_STATE_TOKEN_RE = re.compile(r"(^|[^A-Za-z0-9._-])\.alphanus(?=$|[/\\\\]|[^A-Za-z0-9._-])", re.IGNORECASE)
+NESTED_SHELL_EXECUTABLES = {"sh", "bash", "zsh", "fish", "dash", "ksh", "pwsh", "powershell", "cmd"}
+SHELL_WRAPPER_EXECUTABLES = {"env", "command", "builtin", "exec", "time", "nice", "nohup", "sudo"}
 HEAVY_WALK_DIRS = {
     ".alphanus",
     ".git",
@@ -46,25 +49,77 @@ HEAVY_WALK_DIRS = {
 }
 
 
-class WorkspaceManager:
+def shell_has_approval_boundary(command: str) -> bool:
+    quote: str | None = None
+    escaped = False
+    for idx, char in enumerate(command):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote == "'":
+            if char == "'":
+                quote = None
+            continue
+        if quote == '"':
+            if char == '"':
+                quote = None
+                continue
+            if char == "`":
+                return True
+            if char == "$" and idx + 1 < len(command) and command[idx + 1] == "(":
+                return True
+            continue
+        if char == "'":
+            quote = "'"
+            continue
+        if char == '"':
+            quote = '"'
+            continue
+        if char == "`":
+            return True
+        if char == "$" and idx + 1 < len(command) and command[idx + 1] == "(":
+            return True
+        if quote is None and (char in ";&|<>" or char == "\n"):
+            return True
+    return False
+
+
+class ProjectRuntime:
     def __init__(
         self,
-        workspace_root: str,
-        home_root: str | None = None,
+        project_root: str,
         blocked_patterns: Iterable[str] | None = None,
+        *,
+        permission_mode: str = "project-write",
+        network_access: bool = False,
+        sandbox_backend: str = "auto",
+        sandbox_fail_closed: bool = True,
     ) -> None:
-        self.workspace_root = Path(os.path.expanduser(workspace_root)).resolve()
-        self.home_root = Path(os.path.expanduser(home_root or str(Path.home()))).resolve()
+        self.project_root = Path(os.path.expanduser(project_root)).resolve()
+        if not self.project_root.exists():
+            raise FileNotFoundError(f"Project root does not exist: {self.project_root}")
+        if not self.project_root.is_dir():
+            raise NotADirectoryError(f"Project root is not a directory: {self.project_root}")
         self.blocked_patterns = list(blocked_patterns or DEFAULT_BLOCKED_PATTERNS)
-        self.workspace_root.mkdir(parents=True, exist_ok=True)
+        self.permission_mode = permission_mode if permission_mode in {"read-only", "project-write", "danger-full-access"} else "project-write"
+        self.sandbox_config = SandboxConfig(
+            mode=self.permission_mode,
+            network=bool(network_access),
+            backend=sandbox_backend or "auto",
+            fail_closed=bool(sandbox_fail_closed),
+        )
+        self.sandbox_runner = SandboxRunner()
         self._filesystem_case_insensitive = self._detect_case_insensitive_filesystem()
 
     @property
     def protected_state_dir(self) -> Path:
-        return self.workspace_root / ".alphanus"
+        return self.project_root / ".alphanus"
 
     def _detect_case_insensitive_filesystem(self) -> bool:
-        root = self.workspace_root
+        root = self.project_root
         alt_root_name = root.name.swapcase()
         if alt_root_name and alt_root_name != root.name:
             alt_root = root.parent / alt_root_name
@@ -102,16 +157,50 @@ class WorkspaceManager:
         root_parts = self._path_compare_parts(root)
         return len(path_parts) >= len(root_parts) and path_parts[: len(root_parts)] == root_parts
 
+    def _is_outside_project(self, path: Path) -> bool:
+        try:
+            candidate = path.resolve(strict=False)
+        except OSError:
+            candidate = Path(os.path.abspath(str(path)))
+        return not self._is_path_equal_or_descendant(candidate, self.project_root)
+
     def _is_protected_state_path(self, path: Path) -> bool:
         try:
             candidate = path.resolve(strict=False)
         except OSError:
             candidate = Path(os.path.abspath(str(path)))
+        if any(part.lower() == ".alphanus" for part in candidate.parts):
+            return True
         try:
             protected = self.protected_state_dir.resolve(strict=False)
         except OSError:
             protected = Path(os.path.abspath(str(self.protected_state_dir)))
         return self._is_path_equal_or_descendant(candidate, protected)
+
+    def _is_protected_project_path(self, path: Path) -> bool:
+        if self._is_protected_state_path(path):
+            return True
+        git_dir = self.project_root / ".git"
+        try:
+            candidate = path.resolve(strict=False)
+        except OSError:
+            candidate = Path(os.path.abspath(str(path)))
+        try:
+            resolved_git = git_dir.resolve(strict=False)
+        except OSError:
+            resolved_git = Path(os.path.abspath(str(git_dir)))
+        return (
+            self._is_path_equal_or_descendant(candidate, resolved_git)
+            or any(part.lower() == ".git" for part in candidate.parts)
+            or self._is_secret_path(candidate)
+        )
+
+    def sandbox_preflight(self) -> dict[str, Any]:
+        return self.sandbox_runner.preflight(self.sandbox_config)
+
+    def _ensure_can_write_project(self) -> None:
+        if self.permission_mode == "read-only":
+            raise PermissionError("Project is read-only in the active permission mode")
 
     def _resolve_command_token_path(self, token: str, cwd: Path) -> Path | None:
         value = str(token or "").strip()
@@ -153,7 +242,7 @@ class WorkspaceManager:
         return bool(PROTECTED_STATE_TOKEN_RE.search(str(text)))
 
     def _command_touches_protected_state(self, argv: list[str], cwd: Path) -> bool:
-        git_subcommand_index = WorkspaceCommandPolicy.git_subcommand_index(argv) if argv and argv[0] == "git" else -1
+        git_subcommand_index = ProjectCommandPolicy.git_subcommand_index(argv) if argv and argv[0] == "git" else -1
         for idx, part in enumerate(argv[1:], start=1):
             if self._text_mentions_protected_state(part):
                 return True
@@ -167,6 +256,19 @@ class WorkspaceManager:
                 return True
         return False
 
+    def _command_touches_protected_project_path(self, argv: list[str], cwd: Path) -> bool:
+        git_subcommand_index = ProjectCommandPolicy.git_subcommand_index(argv) if argv and Path(argv[0]).name == "git" else -1
+        for idx, part in enumerate(argv[1:], start=1):
+            if idx == git_subcommand_index:
+                continue
+            for expanded in self._resolve_globbed_command_token_paths(part, cwd):
+                if self._is_protected_project_path(expanded):
+                    return True
+            resolved = self._resolve_command_token_path(part, cwd)
+            if resolved is not None and self._is_protected_project_path(resolved):
+                return True
+        return False
+
     def _shell_command_touches_protected_state(self, command: str, cwd: Path) -> bool:
         if self._text_mentions_protected_state(command):
             return True
@@ -176,12 +278,19 @@ class WorkspaceManager:
             return False
         return self._command_touches_protected_state(argv, cwd)
 
-    def workspace_state_fingerprint(self) -> str:
+    def _shell_command_touches_protected_project_path(self, command: str, cwd: Path) -> bool:
+        try:
+            argv = shlex.split(command, posix=True)
+        except ValueError:
+            return False
+        return self._command_touches_protected_project_path(argv, cwd)
+
+    def project_state_fingerprint(self) -> str:
         digest = hashlib.sha256()
-        for root, dirnames, filenames in os.walk(self.workspace_root, topdown=True, followlinks=False):
+        for root, dirnames, filenames in os.walk(self.project_root, topdown=True, followlinks=False):
             root_path = Path(root)
-            dirnames[:] = sorted(dirname for dirname in dirnames if dirname != ".alphanus")
-            rel_root = root_path.relative_to(self.workspace_root)
+            dirnames[:] = sorted(dirname for dirname in dirnames if dirname not in {".alphanus", ".git"})
+            rel_root = root_path.relative_to(self.project_root)
             for dirname in dirnames:
                 candidate = root_path / dirname
                 try:
@@ -200,11 +309,50 @@ class WorkspaceManager:
                 digest.update(f"f:{rel_path}:{stat.st_mode}:{stat.st_size}:{stat.st_mtime_ns}\n".encode())
         return digest.hexdigest()
 
+    def _git_metadata_fingerprint(self) -> str | None:
+        git_dir = self.project_root / ".git"
+        if git_dir.is_file():
+            try:
+                text = git_dir.read_text(encoding="utf-8", errors="ignore").strip()
+            except OSError:
+                return None
+            if text.startswith("gitdir:"):
+                raw_git_dir = Path(text.split(":", 1)[1].strip())
+                git_dir = raw_git_dir if raw_git_dir.is_absolute() else (self.project_root / raw_git_dir)
+        if not git_dir.is_dir():
+            return None
+
+        digest = hashlib.sha256()
+
+        def update_file(path: Path, label: str) -> None:
+            try:
+                stat = path.lstat()
+                content = path.read_bytes() if path.is_file() else b""
+            except OSError:
+                return
+            digest.update(f"{label}:{stat.st_mode}:{stat.st_size}:".encode())
+            digest.update(hashlib.sha256(content).hexdigest().encode())
+            digest.update(b"\n")
+
+        for name in ("HEAD", "packed-refs"):
+            update_file(git_dir / name, name)
+
+        refs_dir = git_dir / "refs"
+        if refs_dir.is_dir():
+            for root, dirnames, filenames in os.walk(refs_dir, topdown=True, followlinks=False):
+                dirnames[:] = sorted(dirnames)
+                root_path = Path(root)
+                rel_root = root_path.relative_to(git_dir)
+                for filename in sorted(filenames):
+                    update_file(root_path / filename, (rel_root / filename).as_posix())
+
+        return digest.hexdigest()
+
     def _git_status_snapshot(self) -> tuple[str, tuple[tuple[str, str, int, int], ...]] | None:
         git_path = shutil.which("git")
         if not git_path:
             return None
-        base_argv = [git_path, "-C", str(self.workspace_root)]
+        base_argv = [git_path, "-C", str(self.project_root)]
         repo_probe = subprocess.run(
             base_argv + ["rev-parse", "--is-inside-work-tree"],
             capture_output=True,
@@ -234,8 +382,8 @@ class WorkspaceManager:
             path_text = raw_path.strip()
             if not path_text:
                 continue
-            candidate = (self.workspace_root / path_text).resolve()
-            if not self._is_relative_to(candidate, self.workspace_root):
+            candidate = (self.project_root / path_text).resolve()
+            if not self._is_relative_to(candidate, self.project_root):
                 continue
             try:
                 stat = candidate.lstat()
@@ -251,37 +399,68 @@ class WorkspaceManager:
         untracked_meta.sort()
         return (status.stdout, tuple(untracked_meta))
 
-    def _workspace_change_snapshot(self) -> tuple[str, Any]:
+    def _project_change_snapshot(self) -> tuple[str, Any]:
         git_snapshot = self._git_status_snapshot()
         if git_snapshot is not None:
             return ("git", git_snapshot)
-        return ("fingerprint", self.workspace_state_fingerprint())
+        return ("fingerprint", self.project_state_fingerprint())
 
-    def _normalize_workspace_relative(self, path: str) -> Path:
+    def _normalize_project_relative(self, path: str) -> Path:
         raw = Path(os.path.expanduser(path))
         if raw.is_absolute():
             parts = raw.parts
-            if len(parts) > 2 and parts[1] == self.workspace_root.name:
+            if len(parts) > 2 and parts[1] == self.project_root.name:
                 return Path(*parts[2:])
             return raw
         parts = raw.parts
-        if len(parts) > 1 and parts[0] == self.workspace_root.name:
+        if len(parts) > 1 and parts[0] == self.project_root.name:
             return Path(*parts[1:])
         return raw
 
     def _resolve_write_path(self, path: str) -> Path:
-        raw = self._normalize_workspace_relative(path)
-        candidate = (self.workspace_root / raw) if not raw.is_absolute() else raw
+        self._ensure_can_write_project()
+        raw = self._normalize_project_relative(path)
+        candidate = (self.project_root / raw) if not raw.is_absolute() else raw
+        lexical_candidate = Path(os.path.abspath(str(candidate)))
         resolved = candidate.resolve()
-        if not self._is_relative_to(resolved, self.workspace_root):
-            raise PermissionError("Write path escapes workspace root")
-        if self._is_protected_state_path(resolved):
-            raise PermissionError("Writing protected internal state is not allowed")
+        explicit_external = raw.is_absolute() and not self._is_path_equal_or_descendant(lexical_candidate, self.project_root)
+        if not self._is_relative_to(resolved, self.project_root) and not explicit_external:
+            raise PermissionError("Write path escapes project root")
+        if self._is_protected_project_path(resolved):
+            raise PermissionError("Writing protected internal state or project paths is not allowed")
         return resolved
 
+    def write_path_requires_approval(self, path: str, *, overwrite: bool = False) -> bool:
+        target = self._resolve_write_path(path)
+        return bool(overwrite and target.exists() and self._is_outside_project(target))
+
+    def delete_path_requires_approval(self, path: str, *, recursive: bool = False) -> bool:
+        target = self._resolve_write_path(path)
+        if target == self.project_root or target == Path(target.anchor):
+            return False
+        return bool(recursive or self._is_outside_project(target))
+
+    def move_path_requires_approval(self, source_path: str, destination_path: str, *, overwrite: bool = False) -> bool:
+        source = self._resolve_write_path(source_path)
+        destination = self._resolve_write_path(destination_path)
+        return bool(
+            overwrite
+            or self._is_outside_project(source)
+            or self._is_outside_project(destination)
+        )
+
+    def shell_cwd_requires_approval(self, cwd: str | None) -> bool:
+        if not cwd:
+            return False
+        target = self._resolve_read_path(cwd, extra_allowed_roots=[cwd])
+        if target.is_file():
+            target = target.parent
+        return self._is_outside_project(target)
+
     def _resolve_read_path(self, path: str, extra_allowed_roots: Iterable[str] | None = None) -> Path:
-        raw = self._normalize_workspace_relative(path)
-        candidate = (self.workspace_root / raw) if not raw.is_absolute() else raw
+        raw = self._normalize_project_relative(path)
+        candidate = (self.project_root / raw) if not raw.is_absolute() else raw
+        lexical_candidate = Path(os.path.abspath(str(candidate)))
         resolved = candidate.resolve()
 
         # Block core system trees.
@@ -289,11 +468,14 @@ class WorkspaceManager:
             if self._is_relative_to(resolved, blocked_root):
                 raise PermissionError("Read path is in restricted system location")
 
-        # Workspace reads must remain valid even when the workspace itself is
-        # configured outside the user's home directory.
-        if self._is_relative_to(resolved, self.workspace_root):
-            if self._is_protected_state_path(resolved):
-                raise PermissionError("Read path targets protected internal state")
+        if self._is_relative_to(resolved, self.project_root):
+            if self._is_protected_project_path(resolved):
+                raise PermissionError("Read path targets protected internal state or project paths")
+            return resolved
+        explicit_external = raw.is_absolute() and not self._is_path_equal_or_descendant(lexical_candidate, self.project_root)
+        if explicit_external:
+            if self._is_protected_project_path(resolved):
+                raise PermissionError("Read path targets protected internal state or project paths")
             return resolved
         for root_text in extra_allowed_roots or []:
             try:
@@ -302,12 +484,7 @@ class WorkspaceManager:
                 continue
             if self._is_relative_to(resolved, allowed_root):
                 return resolved
-
-        if not self._is_relative_to(resolved, self.home_root):
-            raise PermissionError("Read path must remain inside home directory")
-        if self._is_secret_path(resolved):
-            raise PermissionError("Read path matches sensitive file policy")
-        return resolved
+        raise PermissionError("Read path escapes project root")
 
     def _is_secret_path(self, path: Path) -> bool:
         norm = str(path).lower()
@@ -453,8 +630,10 @@ class WorkspaceManager:
             )
         return files
 
-    def create_file(self, filepath: str, content: str) -> str:
+    def create_file(self, filepath: str, content: str, *, approved: bool = False) -> str:
         target = self._resolve_write_path(filepath)
+        if self.write_path_requires_approval(filepath, overwrite=True) and self.permission_mode != "danger-full-access" and not approved:
+            raise PermissionError("External file overwrite requires approval before execution")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         return str(target)
@@ -471,19 +650,21 @@ class WorkspaceManager:
         target.write_text(content, encoding="utf-8")
         return str(target)
 
-    def move_path(self, source_path: str, destination_path: str, overwrite: bool = False) -> str:
+    def move_path(self, source_path: str, destination_path: str, overwrite: bool = False, *, approved: bool = False) -> str:
         source = self._resolve_write_path(source_path)
         destination = self._resolve_write_path(destination_path)
 
         if not source.exists():
             raise FileNotFoundError(str(source))
-        if source == self.workspace_root:
-            raise PermissionError("Moving the workspace root is not allowed")
+        if source == self.project_root:
+            raise PermissionError("Moving the project root is not allowed")
 
-        if self._is_protected_state_path(source) or self._is_protected_state_path(destination):
-            raise PermissionError("Moving protected internal state is not allowed")
+        if self._is_protected_project_path(source) or self._is_protected_project_path(destination):
+            raise PermissionError("Moving protected internal state or project paths is not allowed")
         if source == destination:
             raise ValueError("Source and destination must be different")
+        if self.move_path_requires_approval(source_path, destination_path, overwrite=overwrite) and self.permission_mode != "danger-full-access" and not approved:
+            raise PermissionError("Move crosses the project-write approval boundary")
 
         if destination.exists():
             if not overwrite:
@@ -497,22 +678,18 @@ class WorkspaceManager:
         moved = shutil.move(str(source), str(destination))
         return str(Path(moved).resolve())
 
-    def delete_path(self, path: str, recursive: bool = False) -> str:
-        raw = self._normalize_workspace_relative(path)
-        candidate = (self.workspace_root / raw) if not raw.is_absolute() else raw
-        candidate = Path(os.path.abspath(str(candidate)))
-        if not self._is_relative_to(candidate, self.workspace_root):
-            raise PermissionError("Write path escapes workspace root")
-
-        if candidate == self.workspace_root:
-            raise PermissionError("Deleting the workspace root is not allowed")
-        if self._is_protected_state_path(candidate):
-            raise PermissionError("Deleting protected internal state is not allowed")
-        if candidate.is_symlink():
-            candidate.unlink()
-            return str(candidate)
-
+    def delete_path(self, path: str, recursive: bool = False, *, approved: bool = False) -> str:
         target = self._resolve_write_path(path)
+        if target == self.project_root:
+            raise PermissionError("Deleting the project root is not allowed")
+        if target == Path(target.anchor):
+            raise PermissionError("Deleting the filesystem root is not allowed")
+        if self.delete_path_requires_approval(path, recursive=recursive) and self.permission_mode != "danger-full-access" and not approved:
+            raise PermissionError("Delete crosses the project-write approval boundary")
+        if target.is_symlink():
+            target.unlink()
+            return str(target)
+
         if not target.exists():
             raise FileNotFoundError(str(target))
         if target.is_file():
@@ -530,21 +707,16 @@ class WorkspaceManager:
         return str(target)
 
     def delete_path_metadata(self, path: str) -> dict[str, Any]:
-        raw = self._normalize_workspace_relative(path)
-        candidate = (self.workspace_root / raw) if not raw.is_absolute() else raw
-        candidate = Path(os.path.abspath(str(candidate)))
-        if not self._is_relative_to(candidate, self.workspace_root):
-            raise PermissionError("Write path escapes workspace root")
-        if candidate == self.workspace_root:
-            raise PermissionError("Deleting the workspace root is not allowed")
-        if self._is_protected_state_path(candidate):
-            raise PermissionError("Deleting protected internal state is not allowed")
+        target = self._resolve_write_path(path)
+        if target == self.project_root:
+            raise PermissionError("Deleting the project root is not allowed")
+        if target == Path(target.anchor):
+            raise PermissionError("Deleting the filesystem root is not allowed")
 
-        if candidate.is_symlink():
-            stat = candidate.lstat()
+        if target.is_symlink():
+            stat = target.lstat()
             return {"is_dir": False, "size_bytes": stat.st_size, "file_count": 1}
 
-        target = self._resolve_write_path(path)
         if not target.exists():
             raise FileNotFoundError(str(target))
         if not target.is_dir():
@@ -576,8 +748,8 @@ class WorkspaceManager:
             results.append(child.name + suffix)
         return results
 
-    def workspace_tree(self, max_depth: int = 3) -> str:
-        lines: list[str] = [f"{self.workspace_root.name}/"]
+    def project_tree(self, max_depth: int = 3) -> str:
+        lines: list[str] = [f"{self.project_root.name}/"]
 
         def walk(path: Path, prefix: str, depth: int) -> None:
             if depth > max_depth:
@@ -600,7 +772,7 @@ class WorkspaceManager:
                 if is_walkable_dir:
                     walk(entry, prefix + ("    " if last else "│   "), depth + 1)
 
-        walk(self.workspace_root, "", 1)
+        walk(self.project_root, "", 1)
         return "\n".join(lines)
 
     @staticmethod
@@ -623,7 +795,7 @@ class WorkspaceManager:
         proc = subprocess.run(
             argv,
             shell=False,
-            cwd=str(cwd or self.workspace_root),
+            cwd=str(cwd or self.project_root),
             capture_output=True,
             text=True,
             timeout=timeout_s,
@@ -638,7 +810,7 @@ class WorkspaceManager:
             "stdout_truncated": stdout_truncated,
             "stderr_truncated": stderr_truncated,
             "returncode": proc.returncode,
-            "cwd": str(cwd or self.workspace_root),
+            "cwd": str(cwd or self.project_root),
             "duration_ms": int((time.perf_counter() - start) * 1000),
         }
 
@@ -648,35 +820,21 @@ class WorkspaceManager:
         *,
         timeout_s: int = 30,
         cwd: Path | None = None,
+        extra_roots: Iterable[Path] | None = None,
         max_output_bytes: int = MAX_TOOL_TEXT_BYTES,
     ) -> dict[str, Any]:
-        configured_shell = os.environ.get("SHELL") or ""
-        shell = configured_shell if configured_shell and (Path(configured_shell).exists() or shutil.which(configured_shell)) else "/bin/sh"
-        start = time.perf_counter()
-        proc = subprocess.run(
-            command,
-            shell=True,
-            executable=shell,
-            cwd=str(cwd or self.workspace_root),
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
+        return self.sandbox_runner.run(
+            SandboxCommand(
+                command=command,
+                cwd=cwd or self.project_root,
+                project_root=self.project_root,
+                timeout_s=timeout_s,
+                config=self.sandbox_config,
+                extra_roots=tuple(extra_roots or ()),
+            )
         )
-        stdout, stdout_truncated = self._clip_text(proc.stdout, max_output_bytes)
-        stderr, stderr_truncated = self._clip_text(proc.stderr, max_output_bytes)
-        return {
-            "command": command,
-            "argv": [shell, "-c", command],
-            "stdout": stdout,
-            "stderr": stderr,
-            "stdout_truncated": stdout_truncated,
-            "stderr_truncated": stderr_truncated,
-            "returncode": proc.returncode,
-            "cwd": str(cwd or self.workspace_root),
-            "duration_ms": int((time.perf_counter() - start) * 1000),
-        }
 
-    def _resolve_workspace_subpath(self, path: str) -> Path:
+    def _resolve_project_subpath(self, path: str) -> Path:
         return self._resolve_read_path(path or ".")
 
     def _is_searchable_path(self, path: Path) -> bool:
@@ -719,9 +877,9 @@ class WorkspaceManager:
         if candidate.is_absolute():
             return str(candidate)
         try:
-            return str((self.workspace_root / candidate).resolve())
+            return str((self.project_root / candidate).resolve())
         except OSError:
-            return str(self.workspace_root / candidate)
+            return str(self.project_root / candidate)
 
     def _search_result_context(
         self,
@@ -775,7 +933,7 @@ class WorkspaceManager:
         before_context: int,
         after_context: int,
     ) -> dict[str, Any] | None:
-        if not self._is_relative_to(target, self.workspace_root):
+        if not self._is_relative_to(target, self.project_root):
             return None
         if not target.exists():
             return {
@@ -833,7 +991,7 @@ class WorkspaceManager:
         proc = subprocess.Popen(
             argv,
             shell=False,
-            cwd=str(self.workspace_root),
+            cwd=str(self.project_root),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -935,7 +1093,7 @@ class WorkspaceManager:
         if self._text_mentions_protected_state(needle):
             raise PermissionError("Queries mentioning protected internal state are not allowed")
 
-        target = self._resolve_workspace_subpath(path)
+        target = self._resolve_project_subpath(path)
         limit = max(1, int(max_results))
         rg_result = self._search_code_with_rg(
             target,
@@ -1029,30 +1187,97 @@ class WorkspaceManager:
             raise PermissionError("Empty command is not allowed")
         return trimmed
 
+    @staticmethod
+    def shell_command_requires_approval(command: str) -> bool:
+        command_text = str(command or "")
+        if shell_has_approval_boundary(command_text):
+            return True
+        argv = shell_tokens(command)
+        if not argv:
+            return True
+        executable_index = 0
+        while executable_index < len(argv):
+            candidate = argv[executable_index]
+            candidate_name = Path(candidate).name
+            if "=" in candidate and not candidate.startswith("-") and candidate.split("=", 1)[0]:
+                executable_index += 1
+                continue
+            if candidate_name in SHELL_WRAPPER_EXECUTABLES:
+                executable_index += 1
+                while executable_index < len(argv) and argv[executable_index].startswith("-"):
+                    executable_index += 1
+                continue
+            break
+        if executable_index >= len(argv):
+            return True
+        executable = Path(argv[executable_index]).name
+        remaining = argv[executable_index + 1 :]
+        if executable in NESTED_SHELL_EXECUTABLES and any(part == "/c" or (part.startswith("-") and "c" in part) for part in remaining):
+            return True
+        if executable in {"chmod", "chown"} and any(part == "-R" or part.startswith("-R") for part in remaining):
+            return True
+        if executable in {"rm", "trash"} and any(part in {"-r", "-R", "-rf", "-fr"} or ("r" in part and part.startswith("-")) for part in remaining):
+            return True
+        if executable == "git":
+            subcommand = ProjectCommandPolicy.git_subcommand(argv[executable_index:])
+            if subcommand == "clean":
+                return True
+            if subcommand == "reset" and "--hard" in remaining:
+                return True
+        package_managers = {"npm", "pnpm", "yarn", "pip", "pip3", "uv", "brew", "apt", "apt-get", "dnf", "yum", "cargo"}
+        if executable in package_managers and any(part in {"install", "add", "update", "upgrade"} for part in remaining):
+            return True
+        return False
+
     def run_shell_command(
         self,
         command: str,
         timeout_s: int = 30,
         cwd: str | None = None,
         allowed_cwd_roots: Iterable[str] | None = None,
+        approved: bool = False,
     ) -> dict:
         start = time.perf_counter()
         try:
             command_text = self._validate_shell_command(command)
-            target_cwd = self._resolve_read_path(cwd, extra_allowed_roots=allowed_cwd_roots) if cwd else self.workspace_root
+            target_cwd = self._resolve_read_path(cwd, extra_allowed_roots=allowed_cwd_roots) if cwd else self.project_root
             if target_cwd.is_file():
                 target_cwd = target_cwd.parent
-            if self._is_protected_state_path(target_cwd):
-                raise PermissionError("Commands touching protected internal state are not allowed")
+            if self._is_protected_project_path(target_cwd):
+                raise PermissionError("Commands touching protected project paths are not allowed")
             if self._shell_command_touches_protected_state(command_text, target_cwd):
                 raise PermissionError("Commands touching protected internal state are not allowed")
-            snapshot_before = self._workspace_change_snapshot()
-            fingerprint_before = self.workspace_state_fingerprint() if snapshot_before[0] == "git" else None
-            run = self._run_shell_string(command_text, timeout_s=timeout_s, cwd=target_cwd)
-            snapshot_after = self._workspace_change_snapshot()
-            workspace_changed = snapshot_before != snapshot_after
-            if not workspace_changed and snapshot_before[0] == "git" and fingerprint_before is not None:
-                workspace_changed = fingerprint_before != self.workspace_state_fingerprint()
+            if self._shell_command_touches_protected_project_path(command_text, target_cwd):
+                raise PermissionError("Commands touching protected project paths are not allowed")
+            if self.permission_mode == "read-only" and ProjectCommandPolicy.classify_shell_command(shell_tokens(command_text)) != "readonly":
+                raise PermissionError("Mutating shell commands are not allowed in read-only mode")
+            external_cwd = self.shell_cwd_requires_approval(str(target_cwd))
+            if self.permission_mode != "danger-full-access" and external_cwd and not approved:
+                raise PermissionError("Shell command outside the project requires approval before execution")
+            if self.permission_mode != "danger-full-access" and self.shell_command_requires_approval(command_text) and not approved:
+                raise PermissionError("Shell command requires approval before execution")
+            snapshot_before = self._project_change_snapshot()
+            project_fingerprint_before = self.project_state_fingerprint() if snapshot_before[0] == "git" else None
+            git_fingerprint_before = self._git_metadata_fingerprint() if snapshot_before[0] == "git" else None
+            extra_roots = [target_cwd] if external_cwd else []
+            run = self._run_shell_string(command_text, timeout_s=timeout_s, cwd=target_cwd, extra_roots=extra_roots)
+            sandbox_error = run.get("sandbox_error")
+            if isinstance(sandbox_error, dict):
+                return {
+                    "ok": False,
+                    "data": None,
+                    "error": {
+                        "code": str(sandbox_error.get("code", "E_SANDBOX_SETUP")),
+                        "message": str(sandbox_error.get("message", "Sandbox setup failed")),
+                    },
+                    "meta": {"duration_ms": int(run.get("duration_ms", 0)), "project_changed": False},
+                }
+            snapshot_after = self._project_change_snapshot()
+            project_changed = snapshot_before != snapshot_after
+            if not project_changed and snapshot_before[0] == "git" and project_fingerprint_before is not None:
+                project_changed = project_fingerprint_before != self.project_state_fingerprint()
+            if not project_changed and snapshot_before[0] == "git" and git_fingerprint_before is not None:
+                project_changed = git_fingerprint_before != self._git_metadata_fingerprint()
             if run["returncode"] != 0:
                 detail = (run["stderr"] or run["stdout"] or "").strip()
                 message = f"Command exited with code {run['returncode']}"
@@ -1071,7 +1296,7 @@ class WorkspaceManager:
                         "stderr_truncated": run["stderr_truncated"],
                     },
                     "error": {"code": "E_SHELL", "message": message},
-                    "meta": {"duration_ms": run["duration_ms"], "workspace_changed": workspace_changed},
+                    "meta": {"duration_ms": run["duration_ms"], "project_changed": project_changed},
                 }
             return {
                 "ok": True,
@@ -1086,7 +1311,7 @@ class WorkspaceManager:
                     "stderr_truncated": run["stderr_truncated"],
                 },
                 "error": None,
-                "meta": {"duration_ms": run["duration_ms"], "workspace_changed": workspace_changed},
+                "meta": {"duration_ms": run["duration_ms"], "project_changed": project_changed},
             }
         except subprocess.TimeoutExpired:
             return {

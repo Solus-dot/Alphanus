@@ -20,7 +20,7 @@ MUTATING_SHELL_COMMANDS = {"touch", "mkdir", "mv", "cp", "rm", "chmod", "chown",
 MUTATING_GIT_SUBCOMMANDS = {"add", "rm", "mv", "restore", "checkout", "switch", "commit", "clean", "apply", "am", "stash"}
 
 
-class WorkspaceCommandPolicy:
+class ProjectCommandPolicy:
     @staticmethod
     def git_subcommand(argv: list[str]) -> str:
         if len(argv) < 2:
@@ -51,7 +51,7 @@ class WorkspaceCommandPolicy:
         if executable != "git":
             return "ambiguous"
 
-        subcommand = WorkspaceCommandPolicy.git_subcommand(argv)
+        subcommand = ProjectCommandPolicy.git_subcommand(argv)
         if subcommand == "branch":
             if "--show-current" in argv:
                 return "readonly"
