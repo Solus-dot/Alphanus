@@ -85,7 +85,7 @@ class SkillEntrypointDef:
     install: list[str] = field(default_factory=list)
     verify: list[str] = field(default_factory=list)
     timeout_s: int = 30
-    cwd: str = "workspace"
+    cwd: str = "project"
 
 
 @dataclass(slots=True)
@@ -220,7 +220,7 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
                 "install": execution_raw.get("install") or execution_raw.get("install_commands") or global_install,
                 "verify": execution_raw.get("verify") or execution_raw.get("verify_commands") or global_verify,
                 "timeout-s": execution_raw.get("timeout-s", execution_raw.get("timeout_s", 30)),
-                "cwd": execution_raw.get("cwd", "workspace"),
+                "cwd": execution_raw.get("cwd", "project"),
             }
         ]
     if raw_entrypoints and not isinstance(raw_entrypoints, list):
@@ -247,9 +247,9 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         timeout_s = int(raw.get("timeout-s", 30))
         if timeout_s <= 0:
             raise ValueError(f"SKILL.md execution.entrypoints[{idx}] timeout-s must be > 0")
-        cwd = str(raw.get("cwd", "workspace")).strip().lower() or "workspace"
-        if cwd not in {"workspace", "skill"}:
-            raise ValueError(f"SKILL.md execution.entrypoints[{idx}] cwd must be 'workspace' or 'skill'")
+        cwd = str(raw.get("cwd", "project")).strip().lower() or "project"
+        if cwd not in {"project", "skill"}:
+            raise ValueError(f"SKILL.md execution.entrypoints[{idx}] cwd must be 'project' or 'skill'")
         intents = _as_str_list(raw.get("intents") or raw.get("intent") or ["general"])
         produces_for_entry = _dedupe(_as_str_list(raw.get("produces") or raw.get("artifacts") or produces))
         install = _as_str_list(raw.get("install") or raw.get("install_commands") or global_install)
@@ -333,7 +333,7 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
             warnings.append(f"tool '{tool_name}' has non-positive timeout {timeout_s}; defaulting to 30")
             timeout_s = 30
         cwd = str(raw.get("cwd", "skill")).strip().lower() or "skill"
-        if cwd not in {"workspace", "skill"}:
+        if cwd not in {"project", "skill"}:
             warnings.append(f"tool '{tool_name}' has unsupported cwd '{cwd}'; defaulting to skill")
             cwd = "skill"
         tool_definitions.append(

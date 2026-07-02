@@ -13,8 +13,7 @@ class SkillProcessEnvBuilder:
     @staticmethod
     def build_base_env(
         *,
-        workspace_root: Path,
-        home_root: Path,
+        project_root: Path,
         memory_path: Path,
         python_executable: str,
         skills_dir: Path,
@@ -22,8 +21,7 @@ class SkillProcessEnvBuilder:
         config: dict[str, Any],
     ) -> dict[str, str]:
         env = os.environ.copy()
-        env["ALPHANUS_WORKSPACE_ROOT"] = str(workspace_root)
-        env["ALPHANUS_HOME_ROOT"] = str(home_root)
+        env["ALPHANUS_PROJECT_ROOT"] = str(project_root)
         env["ALPHANUS_MEMORY_PATH"] = str(memory_path)
         env["ALPHANUS_MEMORY_BACKEND"] = "lexical"
         env["ALPHANUS_USER_SKILLS_DIR"] = str(skills_dir)

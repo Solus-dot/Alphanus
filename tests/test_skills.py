@@ -6,7 +6,7 @@ import pytest
 
 import skills.skill_process_env as skill_process_env_module
 from core.memory import LexicalMemory
-from core.workspace import WorkspaceManager
+from core.project import ProjectRuntime
 from skills.runtime import SkillContext, SkillRuntime
 
 
@@ -27,7 +27,7 @@ def test_bundled_skill_allowed_tools_match_registered_tool_specs(tmp_path: Path)
 
     runtime = SkillRuntime(
         skills_dir=str(repo_root / "bundled-skills"),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
@@ -49,7 +49,7 @@ def test_skill_index_warns_against_namespaced_skill_tool_calls(tmp_path: Path):
 
     runtime = SkillRuntime(
         skills_dir="bundled-skills",
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
@@ -61,7 +61,7 @@ def test_skill_index_warns_against_namespaced_skill_tool_calls(tmp_path: Path):
     assert "exact unqualified function names" in index
 
 
-def test_runtime_minimal_profile_restricts_optional_tools(tmp_path: Path):
+def test_project_write_mode_exposes_selected_tools(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     home.mkdir()
@@ -69,33 +69,33 @@ def test_runtime_minimal_profile_restricts_optional_tools(tmp_path: Path):
 
     runtime = SkillRuntime(
         skills_dir="bundled-skills",
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"runtime": {"profile": "minimal", "ask_user_tool": True}},
+        config={"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": False}},
         debug=True,
     )
     ctx = SkillContext(
         user_input="search the latest news",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
     runtime.skill_view("search-ops", "", ctx)
-    runtime.skill_view("workspace-ops", "", ctx)
-    ctx.loaded_skill_ids = ["search-ops", "workspace-ops"]
+    runtime.skill_view("project-ops", "", ctx)
+    ctx.loaded_skill_ids = ["search-ops", "project-ops"]
     selected = runtime.select_skills(ctx)
     names = set(runtime.allowed_tool_names(selected, ctx=ctx))
 
     assert "create_file" in names
     assert "read_file" in names
-    assert "web_search" not in names
-    assert "fetch_url" not in names
+    assert "web_search" in names
+    assert "fetch_url" in names
     assert "skills_list" in names
     assert "skill_view" in names
 
 
-def test_permission_profile_safe_allows_read_only_workspace_tools(tmp_path: Path):
+def test_read_only_mode_allows_read_only_project_tools(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     home.mkdir()
@@ -103,24 +103,23 @@ def test_permission_profile_safe_allows_read_only_workspace_tools(tmp_path: Path
 
     runtime = SkillRuntime(
         skills_dir="bundled-skills",
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"capabilities": {"permission_profile": "safe"}},
+        config={"permissions": {"mode": "read-only", "approvals": "on-boundary", "network": False}},
         debug=True,
     )
-    selected = runtime.skills_by_ids(["workspace-ops", "search-ops", "shell-ops"])
+    selected = runtime.skills_by_ids(["project-ops", "search-ops", "shell-ops"])
     names = set(runtime.allowed_tool_names(selected))
 
     assert "read_file" in names
     assert "list_files" in names
-    assert "workspace_tree" in names
+    assert "project_tree" in names
     assert "create_file" not in names
     assert "delete_path" not in names
-    assert "web_search" not in names
     assert "shell_command" not in names
 
 
-def test_permission_profile_workspace_allows_workspace_mutation_but_blocks_web_and_shell(tmp_path: Path):
+def test_project_write_mode_allows_project_mutation_web_and_shell(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     home.mkdir()
@@ -128,21 +127,21 @@ def test_permission_profile_workspace_allows_workspace_mutation_but_blocks_web_a
 
     runtime = SkillRuntime(
         skills_dir="bundled-skills",
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"capabilities": {"permission_profile": "workspace"}},
+        config={"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": False}},
         debug=True,
     )
-    selected = runtime.skills_by_ids(["workspace-ops", "search-ops", "shell-ops"])
+    selected = runtime.skills_by_ids(["project-ops", "search-ops", "shell-ops"])
     names = set(runtime.allowed_tool_names(selected))
 
     assert "create_file" in names
     assert "edit_file" in names
     assert "delete_path" in names
     assert "run_checks" not in names
-    assert "web_search" not in names
-    assert "fetch_url" not in names
-    assert "shell_command" not in names
+    assert "web_search" in names
+    assert "fetch_url" in names
+    assert "shell_command" in names
 
 
 def test_skill_load_select_and_execute(tmp_path: Path):
@@ -177,7 +176,7 @@ Use carefully
         """
 TOOL_SPECS = {
   "create_file": {
-    "capability": "workspace_write",
+    "capability": "project_write",
     "description": "Create file",
     "parameters": {
       "type": "object",
@@ -186,7 +185,7 @@ TOOL_SPECS = {
     }
   },
   "read_file": {
-    "capability": "workspace_read",
+    "capability": "project_read",
     "description": "Read file",
     "parameters": {
       "type": "object",
@@ -198,10 +197,10 @@ TOOL_SPECS = {
 
 def execute(tool_name, args, env):
     if tool_name == "create_file":
-        path = env.workspace.create_file(args["filepath"], args["content"])
+        path = env.project.create_file(args["filepath"], args["content"])
         return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
     if tool_name == "read_file":
-        content = env.workspace.read_file(args["filepath"])
+        content = env.project.read_file(args["filepath"])
         return {"ok": True, "data": {"content": content}, "error": None, "meta": {}}
     return {"ok": False, "data": None, "error": {"code": "E_UNSUPPORTED", "message": "nope"}, "meta": {}}
 """.strip(),
@@ -210,7 +209,7 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         debug=True,
     )
@@ -219,7 +218,7 @@ def execute(tool_name, args, env):
         user_input="write a file",
         branch_labels=[],
         attachments=["main.py"],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
         explicit_skill_id="s1",
     )
@@ -258,7 +257,7 @@ tools:
   allowed-tools:
     - write_blob
 ---
-Workspace only
+Project only
 """.strip(),
         encoding="utf-8",
     )
@@ -266,7 +265,7 @@ Workspace only
         """
 TOOL_SPECS = {
   "write_blob": {
-    "capability": "workspace_write",
+    "capability": "project_write",
     "description": "Create file",
     "parameters": {
       "type": "object",
@@ -275,7 +274,7 @@ TOOL_SPECS = {
     }
   },
   "read_blob": {
-    "capability": "workspace_read",
+    "capability": "project_read",
     "description": "Read file",
     "parameters": {
       "type": "object",
@@ -287,10 +286,10 @@ TOOL_SPECS = {
 
 def execute(tool_name, args, env):
     if tool_name == "write_blob":
-        path = env.workspace.create_file(args["filepath"], args["content"])
+        path = env.project.create_file(args["filepath"], args["content"])
         return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
     if tool_name == "read_blob":
-        content = env.workspace.read_file(args["filepath"])
+        content = env.project.read_file(args["filepath"])
         return {"ok": True, "data": {"content": content}, "error": None, "meta": {}}
     return {"ok": False, "data": None, "error": {"code": "E_UNSUPPORTED", "message": "nope"}, "meta": {}}
 """.strip(),
@@ -299,7 +298,7 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
@@ -307,7 +306,7 @@ def execute(tool_name, args, env):
         user_input="read a file",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
     selected = runtime.select_skills(ctx)
@@ -322,29 +321,29 @@ def test_tools_for_turn_requires_selected_skill_for_native_tools(tmp_path: Path)
     skills = tmp_path / "skills"
     home.mkdir()
     ws.mkdir()
-    (skills / "workspace-ops").mkdir(parents=True)
+    (skills / "project-ops").mkdir(parents=True)
     (skills / "search-ops").mkdir(parents=True)
 
-    (skills / "workspace-ops" / "SKILL.md").write_text(
+    (skills / "project-ops" / "SKILL.md").write_text(
         """
 ---
-name: workspace-ops
-description: workspace core tools
+name: project-ops
+description: project core tools
 version: 1.0.0
 tools:
   allowed-tools:
     - create_file
     - read_file
 ---
-Workspace core.
+Project core.
 """.strip(),
         encoding="utf-8",
     )
-    (skills / "workspace-ops" / "tools.py").write_text(
+    (skills / "project-ops" / "tools.py").write_text(
         """
 TOOL_SPECS = {
   "create_file": {
-    "capability": "workspace_write",
+    "capability": "project_write",
     "description": "Create file",
     "parameters": {
       "type": "object",
@@ -353,7 +352,7 @@ TOOL_SPECS = {
     }
   },
   "read_file": {
-    "capability": "workspace_read",
+    "capability": "project_read",
     "description": "Read file",
     "parameters": {
       "type": "object",
@@ -365,10 +364,10 @@ TOOL_SPECS = {
 
 def execute(tool_name, args, env):
     if tool_name == "create_file":
-        path = env.workspace.create_file(args["filepath"], args["content"])
+        path = env.project.create_file(args["filepath"], args["content"])
         return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
     if tool_name == "read_file":
-        content = env.workspace.read_file(args["filepath"])
+        content = env.project.read_file(args["filepath"])
         return {"ok": True, "data": {"content": content}, "error": None, "meta": {}}
     return {"ok": False, "data": None, "error": {"code": "E_UNSUPPORTED", "message": "nope"}, "meta": {}}
 """.strip(),
@@ -410,17 +409,17 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
     runtime_only_tool_names = set(_tool_names(runtime, []))
     assert runtime_only_tool_names == _always_available_tool_names()
 
-    workspace_skill = runtime.get_skill("workspace-ops")
+    project_skill = runtime.get_skill("project-ops")
     search_skill = runtime.get_skill("search-ops")
-    assert workspace_skill is not None and search_skill is not None
-    merged_tool_names = set(_tool_names(runtime, [workspace_skill, search_skill]))
+    assert project_skill is not None and search_skill is not None
+    merged_tool_names = set(_tool_names(runtime, [project_skill, search_skill]))
     assert merged_tool_names == {
         "create_file",
         "read_file",
@@ -440,27 +439,27 @@ def test_core_tool_names_for_turn_include_model_exposed_core_tools_without_selec
     skills = tmp_path / "skills"
     home.mkdir()
     ws.mkdir()
-    (skills / "workspace-ops").mkdir(parents=True)
+    (skills / "project-ops").mkdir(parents=True)
 
-    (skills / "workspace-ops" / "SKILL.md").write_text(
+    (skills / "project-ops" / "SKILL.md").write_text(
         """
 ---
-name: workspace-ops
-description: workspace core tools
+name: project-ops
+description: project core tools
 version: 1.0.0
 tools:
   allowed-tools:
     - create_file
 ---
-Workspace core.
+Project core.
 """.strip(),
         encoding="utf-8",
     )
-    (skills / "workspace-ops" / "tools.py").write_text(
+    (skills / "project-ops" / "tools.py").write_text(
         """
 TOOL_SPECS = {
   "create_file": {
-    "capability": "workspace_write",
+    "capability": "project_write",
     "description": "Create file",
     "parameters": {
       "type": "object",
@@ -478,14 +477,14 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     ctx = SkillContext(
         user_input="save a summary to notes.md",
         branch_labels=[],
         attachments=["image.png"],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
 
@@ -526,7 +525,7 @@ Use the helper script when available.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
@@ -556,7 +555,7 @@ execution:
       description: Create a PDF report artifact.
       intents: [create]
       produces: [.pdf]
-      command: python3 {skill_root}/scripts/create_report.py {workspace_root}/{filename}
+      command: python3 {skill_root}/scripts/create_report.py {project_root}/{filename}
       parameters:
         type: object
         properties:
@@ -576,7 +575,7 @@ Create PDFs with the declared entrypoint.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("report-pdf")
@@ -585,7 +584,7 @@ Create PDFs with the declared entrypoint.
         user_input="Create a report PDF and save it as report.pdf",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
 
@@ -618,7 +617,7 @@ Use validate_json.py when available.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
@@ -649,7 +648,7 @@ execution:
       description: Create the PDF artifact for later review.
       intents: [create]
       produces: [.pdf]
-      command: python3 {skill_root}/scripts/create_preview.py {workspace_root}/{filename}
+      command: python3 {skill_root}/scripts/create_preview.py {project_root}/{filename}
       parameters:
         type: object
         properties:
@@ -669,7 +668,7 @@ Create PDFs through the declared entrypoint.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("preview-pdf")
@@ -678,7 +677,7 @@ Create PDFs through the declared entrypoint.
         user_input="Create preview.pdf and review it after generation",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
 
@@ -691,27 +690,27 @@ def test_core_tool_executes_with_selected_skill(tmp_path: Path):
     skills = tmp_path / "skills"
     home.mkdir()
     ws.mkdir()
-    (skills / "workspace-ops").mkdir(parents=True)
+    (skills / "project-ops").mkdir(parents=True)
 
-    (skills / "workspace-ops" / "SKILL.md").write_text(
+    (skills / "project-ops" / "SKILL.md").write_text(
         """
 ---
-name: workspace-ops
-description: workspace core tools
+name: project-ops
+description: project core tools
 version: 1.0.0
 tools:
   allowed-tools:
     - create_file
 ---
-Workspace core.
+Project core.
 """.strip(),
         encoding="utf-8",
     )
-    (skills / "workspace-ops" / "tools.py").write_text(
+    (skills / "project-ops" / "tools.py").write_text(
         """
 TOOL_SPECS = {
   "create_file": {
-    "capability": "workspace_write",
+    "capability": "project_write",
     "description": "Create file",
     "parameters": {
       "type": "object",
@@ -722,7 +721,7 @@ TOOL_SPECS = {
 }
 
 def execute(tool_name, args, env):
-    path = env.workspace.create_file(args["filepath"], args["content"])
+    path = env.project.create_file(args["filepath"], args["content"])
     return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
 """.strip(),
         encoding="utf-8",
@@ -730,21 +729,21 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     ctx = SkillContext(
         user_input="write a file",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
 
-    loaded = runtime.skill_view("workspace-ops", "", ctx)
+    loaded = runtime.skill_view("project-ops", "", ctx)
     assert loaded["loaded"] is True
     selected = runtime.select_skills(ctx)
-    assert [skill.id for skill in selected] == ["workspace-ops"]
+    assert [skill.id for skill in selected] == ["project-ops"]
 
     out = runtime.execute_tool_call(
         "create_file",
@@ -779,7 +778,7 @@ Lazy tool
         """
 TOOL_SPECS = {
   "lazy_tool": {
-    "capability": "workspace_read",
+    "capability": "project_read",
     "description": "Lazy tool",
     "parameters": {
       "type": "object",
@@ -800,7 +799,7 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         debug=True,
     )
@@ -811,7 +810,7 @@ def execute(tool_name, args, env):
         user_input="run lazy tool",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
     out = runtime.execute_tool_call("lazy_tool", {}, selected=[skill], ctx=ctx)
@@ -864,7 +863,7 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         debug=False,
     )
@@ -875,7 +874,7 @@ def execute(tool_name, args, env):
         user_input="run faulty tool",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
     out = runtime.execute_tool_call("faulty_tool", {}, selected=[skill], ctx=ctx)
@@ -914,7 +913,7 @@ Make the interface look great.
         """
 ---
 name: shell-ops
-description: Run terminal commands in the workspace.
+description: Run terminal commands in the project.
 metadata:
   tags:
     - shell
@@ -947,7 +946,7 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
@@ -956,7 +955,7 @@ def execute(tool_name, args, env):
         user_input="Design a bold landing page in HTML and CSS for a boutique hotel.",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
 
@@ -999,7 +998,7 @@ Search the internet.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
@@ -1008,7 +1007,7 @@ Search the internet.
         user_input="hi",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
 
@@ -1051,7 +1050,7 @@ Design well.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
@@ -1060,7 +1059,7 @@ Design well.
         user_input="what is the current situation in iran",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
 
@@ -1103,7 +1102,7 @@ Design well.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
@@ -1111,7 +1110,7 @@ Design well.
         user_input="look up the latest weather news on the web",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
     runtime.skill_view("frontend-design", "", ctx)
@@ -1122,20 +1121,20 @@ Design well.
     assert [skill.id for skill in selected] == ["search-ops"]
 
 
-def test_tool_is_blocked_for_local_workspace_uses_capability_metadata(tmp_path: Path):
+def test_tool_is_blocked_for_local_project_uses_capability_metadata(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
     home.mkdir()
     ws.mkdir()
-    (skills / "workspace-ops").mkdir(parents=True)
+    (skills / "project-ops").mkdir(parents=True)
     (skills / "utilities").mkdir(parents=True)
 
-    (skills / "workspace-ops" / "SKILL.md").write_text(
+    (skills / "project-ops" / "SKILL.md").write_text(
         """
 ---
-name: workspace-ops
-description: Workspace tools
+name: project-ops
+description: Project tools
 tools:
   allowed-tools:
     - read_blob
@@ -1144,11 +1143,11 @@ Read files.
 """.strip(),
         encoding="utf-8",
     )
-    (skills / "workspace-ops" / "tools.py").write_text(
+    (skills / "project-ops" / "tools.py").write_text(
         """
 TOOL_SPECS = {
   "read_blob": {
-    "capability": "workspace_read",
+    "capability": "project_read",
     "description": "Read file",
     "parameters": {"type": "object", "properties": {}, "required": []}
   }
@@ -1190,51 +1189,15 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
 
-    assert runtime.tool_is_blocked_for_local_workspace("read_blob") is False
-    assert runtime.tool_is_blocked_for_local_workspace("open_url") is True
-    assert runtime.tool_is_blocked_for_local_workspace("request_user_input") is False
-    assert runtime.tool_is_blocked_for_local_workspace("unknown_tool") is True
-
-
-def test_rebase_vendor_paths_uses_discovered_skill_roots(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = home / ".codex" / "skills"
-    home.mkdir()
-    ws.mkdir(parents=True)
-    (skills / "demo").mkdir(parents=True)
-    (skills / "demo" / "SKILL.md").write_text(
-        """
----
-name: demo
-description: Demo skill
----
-Demo.
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={},
-    )
-    skill = runtime.get_skill("demo")
-    assert skill is not None
-
-    rebased = runtime._rebase_vendor_paths(
-        "Use ~/.codex/skills/demo/notes.md and ~/.claude/skills/demo/notes.md",
-        skill,
-    )
-
-    assert str(skill.path) in rebased
-    assert "~/.claude/skills/demo/notes.md" in rebased
+    assert runtime.tool_is_blocked_for_local_project("read_blob") is False
+    assert runtime.tool_is_blocked_for_local_project("open_url") is True
+    assert runtime.tool_is_blocked_for_local_project("request_user_input") is False
+    assert runtime.tool_is_blocked_for_local_project("unknown_tool") is True
 
 
 def test_skill_catalog_includes_tools_for_model_routing(tmp_path: Path):
@@ -1261,7 +1224,7 @@ Utilities.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
@@ -1297,7 +1260,7 @@ Search.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
@@ -1333,7 +1296,7 @@ Binary required.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
@@ -1360,7 +1323,7 @@ def test_runtime_env_exposes_global_npm_root_as_node_path(tmp_path: Path, monkey
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
@@ -1388,7 +1351,7 @@ Toggle.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
@@ -1428,7 +1391,7 @@ Closing note.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("docs-skill")
@@ -1466,7 +1429,7 @@ Body
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("wrong-name")
@@ -1507,14 +1470,14 @@ Beta
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     ctx = SkillContext(
         user_input="load",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
     with pytest.raises(FileNotFoundError):
@@ -1561,7 +1524,7 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     listed = runtime.list_skills()
@@ -1623,9 +1586,9 @@ if __name__ == "__main__":
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"capabilities": {"shell_require_confirmation": False, "dangerously_skip_permissions": True}},
+        config={"permissions": {"mode": "danger-full-access", "approvals": "on-boundary", "network": False}},
     )
     skill = runtime.get_skill("echo-skill")
     assert skill is not None
@@ -1634,7 +1597,7 @@ if __name__ == "__main__":
         user_input="echo this",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
     out = runtime.execute_tool_call("echo_text", {"text": "hello"}, selected=[skill], ctx=ctx)
@@ -1667,7 +1630,7 @@ Loaded on demand
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("lazy-skill")
@@ -1704,7 +1667,7 @@ Hooked skill.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("hooked-skill")
@@ -1739,7 +1702,7 @@ Use the helper script if your runtime knows how.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("script-only")
@@ -1786,7 +1749,7 @@ if __name__ == "__main__":
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("script-only")
@@ -1795,7 +1758,7 @@ if __name__ == "__main__":
         user_input="run the bundled helper",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
 
@@ -1814,15 +1777,15 @@ if __name__ == "__main__":
     assert out["data"]["stdout"] == "hello"
     assert out["data"]["payload"] == {"mode": "demo"}
 
-    legacy = runtime.execute_tool_call(
+    invalid_args = runtime.execute_tool_call(
         "run_skill",
         {"script": "helper.py", "args": {"mode": "demo"}},
         selected=[skill],
         ctx=ctx,
     )
-    assert legacy["ok"] is False
-    assert legacy["error"]["code"] == "E_VALIDATION"
-    assert "Unexpected arguments: args" in legacy["error"]["message"]
+    assert invalid_args["ok"] is False
+    assert invalid_args["error"]["code"] == "E_VALIDATION"
+    assert "Unexpected arguments: args" in invalid_args["error"]["message"]
 
 
 def test_generic_script_runner_respects_allowed_tools_policy(tmp_path: Path):
@@ -1848,7 +1811,7 @@ Do not expose the raw script runner.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("script-wrapper")
@@ -1857,7 +1820,7 @@ Do not expose the raw script runner.
         user_input="run the helper script",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
 
@@ -1898,7 +1861,7 @@ execution:
         - python3 -c "print('install-ok')"
       verify:
         - python3 -c "print('verify-ok')"
-      command: python3 {skill_root}/scripts/create_report.py {workspace_root}/{filename}
+      command: python3 {skill_root}/scripts/create_report.py {project_root}/{filename}
       parameters:
         type: object
         properties:
@@ -1918,9 +1881,9 @@ Create PDFs with the declared entrypoint.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"capabilities": {"shell_require_confirmation": False, "dangerously_skip_permissions": True}},
+        config={"permissions": {"mode": "danger-full-access", "approvals": "on-boundary", "network": False}},
     )
     skill = runtime.get_skill("report-pdf")
     assert skill is not None
@@ -1928,7 +1891,7 @@ Create PDFs with the declared entrypoint.
         user_input="Create a report PDF and save it as report.pdf",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
 
@@ -1963,8 +1926,8 @@ description: Compact execution manifest.
 produces:
   - .txt
 execution:
-  command: python3 {skill_root}/scripts/create_report.py {workspace_root}/{filename}
-  cwd: workspace
+  command: python3 {skill_root}/scripts/create_report.py {project_root}/{filename}
+  cwd: project
   timeout_s: 20
   parameters:
     type: object
@@ -1985,9 +1948,9 @@ Generate the report through the compact execution contract.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"capabilities": {"shell_require_confirmation": False, "dangerously_skip_permissions": True}},
+        config={"permissions": {"mode": "danger-full-access", "approvals": "on-boundary", "network": False}},
     )
     skill = runtime.get_skill("compact-report")
     assert skill is not None
@@ -1995,7 +1958,7 @@ Generate the report through the compact execution contract.
         user_input="create compact-report.txt",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
 
@@ -2071,9 +2034,9 @@ if __name__ == "__main__":
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"capabilities": {"shell_require_confirmation": False, "dangerously_skip_permissions": True}},
+        config={"permissions": {"mode": "danger-full-access", "approvals": "on-boundary", "network": False}},
     )
     skill = runtime.get_skill("meta-skill")
     assert skill is not None
@@ -2081,7 +2044,7 @@ if __name__ == "__main__":
         user_input="echo",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
     out = runtime.execute_tool_call("echo_text", {"text": "hello"}, selected=[skill], ctx=ctx)
@@ -2128,9 +2091,9 @@ print("definitely not json")
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"capabilities": {"shell_require_confirmation": False, "dangerously_skip_permissions": True}},
+        config={"permissions": {"mode": "danger-full-access", "approvals": "on-boundary", "network": False}},
     )
     skill = runtime.get_skill("bad-output")
     assert skill is not None
@@ -2139,7 +2102,7 @@ print("definitely not json")
         user_input="bad",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
     out = runtime.execute_tool_call("bad_tool", {}, selected=[skill], ctx=ctx)
@@ -2189,9 +2152,9 @@ time.sleep(2)
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"capabilities": {"shell_require_confirmation": False, "dangerously_skip_permissions": True}},
+        config={"permissions": {"mode": "danger-full-access", "approvals": "on-boundary", "network": False}},
     )
     skill = runtime.get_skill("slow-skill")
     assert skill is not None
@@ -2199,7 +2162,7 @@ time.sleep(2)
         user_input="wait",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
     out = runtime.execute_tool_call("slow_tool", {}, selected=[skill], ctx=ctx)
@@ -2227,7 +2190,7 @@ Hello
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     report = runtime.skill_health_report()
@@ -2236,7 +2199,7 @@ Hello
     assert report[0]["availability_code"] == "ready"
 
 
-def test_bundled_skill_inside_workspace_repo_is_executable(tmp_path: Path):
+def test_bundled_skill_inside_project_repo_is_executable(tmp_path: Path):
     home = tmp_path / "home"
     repo = home / "Desktop" / "Alphanus"
     skills = repo / "skills"
@@ -2280,7 +2243,7 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(repo), home_root=str(home)),
+        project=ProjectRuntime(str(repo)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
@@ -2292,14 +2255,14 @@ def execute(tool_name, args, env):
     assert set(_tool_names(runtime, [skill])) == (_always_available_tool_names() | {"echo_text"})
 
 
-def test_bundled_skill_under_home_outside_workspace_is_executable(tmp_path: Path):
+def test_bundled_skill_under_home_outside_project_is_executable(tmp_path: Path):
     home = tmp_path / "home"
     repo = home / "Desktop" / "Alphanus"
-    workspace_root = home / "projects" / "demo"
+    project_root = home / "projects" / "demo"
     skills = repo / "skills"
     skill_dir = skills / "repo-helper"
     home.mkdir()
-    workspace_root.mkdir(parents=True)
+    project_root.mkdir(parents=True)
     skill_dir.mkdir(parents=True)
 
     (skill_dir / "SKILL.md").write_text(
@@ -2316,7 +2279,7 @@ Bundled repo helper.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(workspace_root), home_root=str(home)),
+        project=ProjectRuntime(str(project_root)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
@@ -2389,7 +2352,7 @@ Do work.
 
     runtime = SkillRuntime(
         skills_dir=str(bundled),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
@@ -2402,11 +2365,11 @@ def test_only_bundled_root_is_used_for_discovery(tmp_path: Path):
     ws = home / "ws"
     bundled = tmp_path / "bundled"
     bundled_skill = bundled / "dup-skill"
-    workspace_skill = ws / ".claude" / "skills" / "dup-skill"
+    project_skill = ws / ".claude" / "skills" / "dup-skill"
     home.mkdir()
     ws.mkdir()
     bundled_skill.mkdir(parents=True)
-    workspace_skill.mkdir(parents=True)
+    project_skill.mkdir(parents=True)
 
     (bundled_skill / "SKILL.md").write_text(
         """
@@ -2419,21 +2382,21 @@ Bundled version.
 """.strip(),
         encoding="utf-8",
     )
-    (workspace_skill / "SKILL.md").write_text(
+    (project_skill / "SKILL.md").write_text(
         """
 ---
 name: dup-skill
-description: workspace
+description: project
 version: 2.0.0
 ---
-Workspace version.
+Project version.
 """.strip(),
         encoding="utf-8",
     )
 
     runtime = SkillRuntime(
         skills_dir=str(bundled),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
@@ -2474,7 +2437,7 @@ version: 1.0.0
     runtime = SkillRuntime(
         skills_dir=str(user_root),
         bundled_skills_dir=str(bundled_root),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={"skills": {"paths": [str(configured_root)]}},
     )
@@ -2515,7 +2478,7 @@ version: 1.0.0
     runtime = SkillRuntime(
         skills_dir=str(user_root),
         bundled_skills_dir=str(bundled_root),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
@@ -2547,7 +2510,7 @@ Ask for clarification when needed.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("asker")
@@ -2556,7 +2519,7 @@ Ask for clarification when needed.
         user_input="use skill asker",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
         explicit_skill_id="asker",
     )
@@ -2605,7 +2568,7 @@ Use the bundled helper script when available.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
@@ -2647,7 +2610,7 @@ Use the bundled helper script when available.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
@@ -2679,7 +2642,7 @@ Use the bundled helper script when available.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
@@ -2731,7 +2694,7 @@ Use the bundled helper script when available.
     missing_python = tmp_path / "missing-python"
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={"skills": {"python_executable": str(missing_python)}},
     )
@@ -2769,7 +2732,7 @@ Read the bundled README when needed.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("doc-helper")
@@ -2778,7 +2741,7 @@ Read the bundled README when needed.
         user_input="read the doc helper resource",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
 
@@ -2819,7 +2782,7 @@ echo {skill_id}
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     alpha = runtime.get_skill("alpha")
@@ -2829,7 +2792,7 @@ echo {skill_id}
         user_input="use both skills",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
 
@@ -2869,7 +2832,7 @@ Use the bundled helper script when available.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("script-skill")
@@ -2879,14 +2842,14 @@ Use the bundled helper script when available.
         user_input="set up report.docx",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
     png_ctx = SkillContext(
         user_input="create image.png",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
 
@@ -2935,7 +2898,7 @@ Use timeout tool.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("timeout-skill")
@@ -2960,7 +2923,7 @@ version: 1.0.0
 tools:
   definitions:
     - name: unsupported_tool
-      tool: legacy_runner
+      tool: unsupported_runner
       command: "echo ok"
       parameters:
         type: object
@@ -2973,14 +2936,14 @@ Use strict tool.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("strict-tool")
 
     assert skill is not None
     assert runtime.tool_registration("unsupported_tool") is None
-    assert any("uses unsupported runtime tool 'legacy_runner'; ignored" in warning for warning in skill.validation_warnings)
+    assert any("uses unsupported runtime tool 'unsupported_runner'; ignored" in warning for warning in skill.validation_warnings)
 
 
 def test_skill_entrypoint_unsupported_runtime_is_rejected(tmp_path: Path):
@@ -2999,7 +2962,7 @@ version: 1.0.0
 execution:
   entrypoints:
     - name: unsupported_entrypoint
-      tool: legacy_runner
+      tool: unsupported_runner
       command: "echo ok"
       parameters:
         type: object
@@ -3012,7 +2975,7 @@ Use strict entrypoint.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
@@ -3042,7 +3005,7 @@ Use helper script.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("broken-script")
@@ -3077,7 +3040,7 @@ Explode.
         """
 TOOL_SPECS = {
   "explode_tool": {
-    "capability": "workspace_read",
+    "capability": "project_read",
     "description": "Explodes",
     "parameters": {"type": "object", "properties": {}, "required": []}
   }
@@ -3090,7 +3053,7 @@ def execute(tool_name, args, env):
     )
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         debug=False,
     )
@@ -3100,7 +3063,7 @@ def execute(tool_name, args, env):
         user_input="explode",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
 

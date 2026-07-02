@@ -8,15 +8,15 @@ import os
 import re
 import shutil
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
 
 from core.memory import LexicalMemory
-from core.message_types import JSONValue, ShellConfirmationFn, UserInputRequestFn
+from core.message_types import JSONValue, ApprovalRequestFn, UserInputRequestFn
 from core.runtime_config import SkillsRuntimeConfig
 from core.tool_results import ToolResult, error_result, ok_result
-from core.workspace import WorkspaceManager
+from core.project import ProjectRuntime
 from skills.skill_discovery import SkillDiscovery
 from skills.skill_executor import SkillExecutor
 from skills.skill_inventory import SkillInventoryLoader
@@ -35,7 +35,7 @@ _CORE_TOOL_NAMES = frozenset(
         "read_files",
         "list_files",
         "search_code",
-        "workspace_tree",
+        "project_tree",
         "create_directory",
         "create_file",
         "edit_file",
@@ -68,45 +68,12 @@ def _err(code: str, message: str, duration_ms: int) -> ToolResult:
     return error_result(code, message, duration_ms=duration_ms)
 
 
-def _recover_tool_args(raw_args: dict[str, object]) -> dict[str, object]:
-    if not isinstance(raw_args, dict):
-        return {}
-    out = dict(raw_args)
-    raw = out.get("_raw")
-    if not isinstance(raw, str) or not raw.strip():
-        return out
-    text = raw.strip()
-
-    parsed: dict[str, object] | None = None
-    try:
-        value = json.loads(text)
-        if isinstance(value, dict):
-            parsed = value
-    except Exception:
-        parsed = None
-
-    if parsed is None:
-        m = re.search(r'"command"\s*:\s*"((?:\\.|[^"\\])*)"', text)
-        if m:
-            try:
-                command = bytes(m.group(1), "utf-8").decode("unicode_escape")
-            except Exception:
-                command = m.group(1)
-            parsed = {"command": command}
-
-    if parsed:
-        for key, value in parsed.items():
-            if key not in out:
-                out[key] = value
-    return out
-
-
 @dataclass(slots=True)
 class SkillContext:
     user_input: str
     branch_labels: list[str]
     attachments: list[str]
-    workspace_root: str
+    project_root: str
     memory_hits: list[dict[str, JSONValue]]
     retrieval_hits: list[dict[str, JSONValue]] = field(default_factory=list)
     loaded_skill_ids: list[str] = field(default_factory=list)
@@ -120,11 +87,11 @@ class SkillContext:
 
 @dataclass(slots=True)
 class ToolExecutionEnv:
-    workspace: WorkspaceManager
+    project: ProjectRuntime
     memory: LexicalMemory
     config: dict[str, JSONValue]
     debug: bool
-    confirm_shell: ShellConfirmationFn | None = None
+    request_approval: ApprovalRequestFn | None = None
     request_user_input: UserInputRequestFn | None = None
 
 
@@ -150,7 +117,7 @@ class SkillRuntime:
     def __init__(
         self,
         skills_dir: str,
-        workspace: WorkspaceManager,
+        project: ProjectRuntime,
         memory: LexicalMemory,
         config: dict | None = None,
         bundled_skills_dir: str | None = None,
@@ -160,7 +127,7 @@ class SkillRuntime:
         self.skills_dir = Path(skills_dir).resolve()
         self.bundled_skills_dir = Path(bundled_skills_dir).resolve() if bundled_skills_dir else None
         self._configured_extra_skill_dirs = [Path(item).expanduser().resolve() for item in extra_skill_dirs or [] if str(item).strip()]
-        self.workspace = workspace
+        self.project = project
         self.memory = memory
         self.config = {}
         self.runtime_config = SkillsRuntimeConfig()
@@ -220,28 +187,27 @@ class SkillRuntime:
                 path = Path(os.path.expanduser(text)).resolve()
                 if path not in self.extra_skill_dirs and path != self.skills_dir and path != self.bundled_skills_dir:
                     self.extra_skill_dirs.append(path)
-        runtime_cfg = self.config.get("runtime", {}) if isinstance(self.config.get("runtime"), dict) else {}
-        profile_raw = str(runtime_cfg.get("profile", "standard")).strip().lower()
-        self.runtime_profile = "minimal" if profile_raw in {"minimal", "safe", "minimal_reliable"} else "standard"
-        capabilities_cfg = self.config.get("capabilities", {}) if isinstance(self.config.get("capabilities"), dict) else {}
-        permission_profile_raw = str(capabilities_cfg.get("permission_profile", "full")).strip().lower()
-        if permission_profile_raw in {"safe", "minimal", "readonly", "read-only"}:
-            self.permission_profile = "safe"
-        elif permission_profile_raw in {"workspace", "standard"}:
-            self.permission_profile = "workspace"
-        else:
-            self.permission_profile = "full"
+        permissions_cfg = self.config.get("permissions", {}) if isinstance(self.config.get("permissions"), dict) else {}
+        permission_mode = str(permissions_cfg.get("mode", "project-write")).strip().lower()
+        if permission_mode not in {"read-only", "project-write", "danger-full-access"}:
+            permission_mode = "project-write"
+        self.permission_mode = permission_mode
+        self.project.permission_mode = permission_mode
+        self.project.sandbox_config = replace(
+            self.project.sandbox_config,
+            mode=permission_mode,
+            network=bool(permissions_cfg.get("network", False)),
+        )
 
     def refresh_process_env(self) -> None:
         self._proc_env_base = self._build_proc_env_base()
 
-    def is_minimal_profile(self) -> bool:
-        return self.runtime_profile == "minimal"
+    def is_read_only_mode(self) -> bool:
+        return self.permission_mode == "read-only"
 
     def _build_proc_env_base(self) -> dict[str, str]:
         return SkillProcessEnvBuilder.build_base_env(
-            workspace_root=self.workspace.workspace_root,
-            home_root=self.workspace.home_root,
+            project_root=self.project.project_root,
             memory_path=self.memory.storage_path,
             python_executable=self.python_executable,
             skills_dir=self.skills_dir,
@@ -564,7 +530,7 @@ class SkillRuntime:
             if not command_template:
                 continue
             cwd = str(definition.get("cwd", "skill")).strip().lower() or "skill"
-            if cwd not in {"workspace", "skill"}:
+            if cwd not in {"project", "skill"}:
                 self._append_unique(manifest.validation_warnings, f"tool '{tool_name}' has unsupported cwd '{cwd}'; defaulting to skill")
                 cwd = "skill"
             timeout_raw = definition.get("timeout_s", 30)
@@ -626,10 +592,8 @@ class SkillRuntime:
                     return f"configured/{resolved.relative_to(root.resolve())}"
             if self.bundled_skills_dir is not None and self._is_relative_to(resolved, self.bundled_skills_dir.resolve()):
                 return f"bundled-skills/{resolved.relative_to(self.bundled_skills_dir.resolve())}"
-            if self._is_relative_to(resolved, self.workspace.workspace_root.resolve()):
-                return f"workspace/{resolved.relative_to(self.workspace.workspace_root.resolve())}"
-            if self._is_relative_to(resolved, self.workspace.home_root.resolve()):
-                return f"home/{resolved.relative_to(self.workspace.home_root.resolve())}"
+            if self._is_relative_to(resolved, self.project.project_root.resolve()):
+                return f"project/{resolved.relative_to(self.project.project_root.resolve())}"
             return str(resolved.relative_to(self.skills_dir.parent))
         except Exception:
             return str(path)
@@ -647,10 +611,8 @@ class SkillRuntime:
                     return "configured"
             if self.bundled_skills_dir is not None and self._is_relative_to(resolved, self.bundled_skills_dir.resolve()):
                 return "bundled"
-            if self._is_relative_to(resolved, self.workspace.workspace_root.resolve()):
-                return "workspace"
-            if self._is_relative_to(resolved, self.workspace.home_root.resolve()):
-                return "home"
+            if self._is_relative_to(resolved, self.project.project_root.resolve()):
+                return "project"
             return "external"
         except Exception:
             return "external"
@@ -884,26 +846,30 @@ class SkillRuntime:
     def tool_registration(self, tool_name: str) -> RegisteredTool | None:
         return self._tool_registry.get(str(tool_name).strip())
 
-    def _tool_allowed_for_permission_profile(self, reg: RegisteredTool) -> bool:
-        profile = str(getattr(self, "permission_profile", "full") or "full").strip().lower()
-        if profile == "full":
+    def _tool_allowed_for_permission_mode(self, reg: RegisteredTool) -> bool:
+        mode = str(getattr(self, "permission_mode", "project-write") or "project-write").strip().lower()
+        if mode == "danger-full-access":
             return True
 
         capability = str(reg.capability or "").strip().lower()
         if reg.name in {_SKILLS_LIST_TOOL_NAME, _SKILL_VIEW_TOOL_NAME, _REQUEST_USER_INPUT_TOOL_NAME}:
             return True
         if reg.name == _RUN_SKILL_TOOL_NAME:
-            return False
+            return mode in {"project-write", "danger-full-access"}
         if capability == "run_shell_command":
-            return False
+            return mode == "project-write"
         if capability.startswith(("web_", "utility_")):
-            return False
+            return mode == "project-write"
         if capability.startswith("memory_"):
             return True
-        if profile == "workspace":
-            return capability.startswith("workspace_") or capability.startswith("skill_")
-        # safe profile: read-only workspace, memory helpers, and skill catalog/load utilities.
-        return capability in {"workspace_read", "workspace_tree"} or capability.startswith("skill_")
+        if mode == "project-write":
+            return True
+        # read-only: read-only project, memory helpers, and skill catalog/load utilities.
+        if capability in {"project_read", "project_tree"} or capability.startswith("skill_"):
+            return True
+        if capability.startswith(("web_", "utility_")):
+            return True
+        return False
 
     def tool_is_mutating(self, tool_name: str) -> bool:
         reg = self.tool_registration(tool_name)
@@ -912,19 +878,19 @@ class SkillRuntime:
         if reg.mutates is not None:
             return bool(reg.mutates)
         capability = str(reg.capability or "").strip().lower()
-        if capability.startswith("workspace_") and capability != "workspace_read":
+        if capability.startswith("project_") and capability != "project_read":
             return True
         if reg.tool_scope == "skill" and (capability.endswith("_runner") or capability == "skill_executor"):
             return True
         return False
 
-    def tool_is_blocked_for_local_workspace(self, tool_name: str) -> bool:
+    def tool_is_blocked_for_local_project(self, tool_name: str) -> bool:
         reg = self.tool_registration(tool_name)
         if reg is None:
             normalized_name = str(tool_name).strip()
             return normalized_name not in (_CORE_TOOL_NAMES | _ALWAYS_AVAILABLE_TOOL_NAMES | {_RUN_SKILL_TOOL_NAME, "shell_command"})
         capability = str(reg.capability or "").strip().lower()
-        if capability.startswith(("workspace_", "memory_", "skill_")):
+        if capability.startswith(("project_", "memory_", "skill_")):
             return False
         if capability in {"run_shell_command", "user_input_requester"}:
             return False
@@ -968,38 +934,6 @@ class SkillRuntime:
             used = budget
 
         return "\n\n".join(out)
-
-    def _rebase_vendor_paths(self, text: str, skill: SkillManifest) -> str:
-        out = str(text or "")
-        skill_root = str(skill.path or "")
-        if not skill_root:
-            return out
-        replacements: dict[str, str] = {}
-        discovered_roots: list[Path] = []
-        for root in self.skill_roots:
-            try:
-                resolved_root = root.resolve()
-            except OSError:
-                continue
-            if resolved_root not in discovered_roots:
-                discovered_roots.append(resolved_root)
-        for candidate in self.list_skills():
-            if not candidate.path:
-                continue
-            resolved_candidate = candidate.path.resolve()
-            for root in discovered_roots:
-                if not self._is_relative_to(resolved_candidate, root):
-                    continue
-                source = root / candidate.id
-                replacements[str(source)] = str(candidate.path)
-                try:
-                    home_relative = source.relative_to(self.workspace.home_root.resolve())
-                except ValueError:
-                    continue
-                replacements[f"~/{home_relative.as_posix()}"] = str(candidate.path)
-        for source, target in sorted(replacements.items(), key=lambda item: -len(item[0])):
-            out = out.replace(source, target)
-        return out
 
     def _skill_linked_files(self, skill: SkillManifest) -> dict[str, list[str]]:
         linked: dict[str, list[str]] = {}
@@ -1114,7 +1048,7 @@ class SkillRuntime:
         allowed: list[str] = []
         for tool_name, reg in self._tool_registry.items():
             if tool_name == _RUN_SKILL_TOOL_NAME:
-                if not self._tool_allowed_for_permission_profile(reg):
+                if not self._tool_allowed_for_permission_mode(reg):
                     continue
                 if any(
                     (self._exposed_relevant_skill_entrypoints(skill) or self._exposed_relevant_skill_scripts(skill))
@@ -1125,7 +1059,7 @@ class SkillRuntime:
                 continue
             if reg.skill_id == "__runtime__":
                 continue
-            if not self._tool_allowed_for_permission_profile(reg):
+            if not self._tool_allowed_for_permission_mode(reg):
                 continue
             skill = selected_map.get(reg.skill_id)
             if not skill:
@@ -1139,7 +1073,7 @@ class SkillRuntime:
 
     def optional_tool_names(self, selected: list[SkillManifest], ctx: SkillContext | None = None) -> list[str]:
         _ = ctx
-        if self.is_minimal_profile():
+        if self.is_read_only_mode():
             return []
         return self._optional_tool_names_for_turn(selected)
 
@@ -1148,7 +1082,7 @@ class SkillRuntime:
         selected: list[SkillManifest],
         ctx: SkillContext | None = None,
     ) -> list[str]:
-        if self.is_minimal_profile():
+        if self.is_read_only_mode():
             turn_core_names = {
                 name
                 for name in (set(self.model_exposed_tool_names()) | set(self._optional_tool_names_for_turn(selected)))
@@ -1301,8 +1235,7 @@ class SkillRuntime:
         args: dict[str, Any],
         selected: list[SkillManifest],
     ) -> dict[str, Any]:
-        recovered = _recover_tool_args(args)
-        validated = self._validate_tool_args(reg, recovered)
+        validated = self._validate_tool_args(reg, args)
         if reg.name == _RUN_SKILL_TOOL_NAME:
             validated = self._run_validator.validate_run_skill_args(validated, selected)
         return validated
@@ -1313,7 +1246,7 @@ class SkillRuntime:
         args: dict[str, Any],
         selected: list[SkillManifest],
         ctx: SkillContext,
-        confirm_shell: ShellConfirmationFn | None = None,
+        request_approval: ApprovalRequestFn | None = None,
         request_user_input: UserInputRequestFn | None = None,
     ) -> dict[str, Any]:
         return self._skill_executor.execute_tool_call(
@@ -1321,6 +1254,6 @@ class SkillRuntime:
             args,
             selected,
             ctx,
-            confirm_shell=confirm_shell,
+            request_approval=request_approval,
             request_user_input=request_user_input,
         )

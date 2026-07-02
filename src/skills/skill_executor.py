@@ -59,14 +59,14 @@ class SkillExecutor:
         if skill is None or not skill.path:
             raise FileNotFoundError("Selected skill root is unavailable")
         template_values: dict[str, Any] = {
-            "workspace_root": str(runtime.workspace.workspace_root),
+            "project_root": str(runtime.project.project_root),
             "skill_root": str(skill.path),
         }
         template_values.update(args)
         command = self.resolve_entrypoint_placeholders(str(reg.command_template), template_values)
         timeout_s = max(1, int(getattr(reg, "timeout_s", 30) or 30))
         cwd_mode = str(getattr(reg, "cwd", "skill")).strip().lower() or "skill"
-        command_cwd = str(skill.path) if cwd_mode == "skill" else str(runtime.workspace.workspace_root)
+        command_cwd = str(skill.path) if cwd_mode == "skill" else str(runtime.project.project_root)
         run_data = self.run_shell_workflow_command(command, env, timeout_s, cwd=command_cwd)
         stdout = str(run_data.get("stdout", "") or "").strip()
         if stdout:
@@ -98,7 +98,7 @@ class SkillExecutor:
         args: dict[str, Any],
         selected,
         ctx,
-        confirm_shell=None,
+        request_approval=None,
         request_user_input=None,
     ) -> dict[str, Any]:
         runtime = self.runtime
@@ -107,11 +107,11 @@ class SkillExecutor:
             reg, _owner = runtime._resolve_tool_call(tool_name, selected, ctx=ctx)
             normalized_args = runtime._prepare_tool_args(reg, args, selected)
             env = runtime.ToolExecutionEnv(
-                workspace=runtime.workspace,
+                project=runtime.project,
                 memory=runtime.memory,
                 config=runtime.config,
                 debug=runtime.debug,
-                confirm_shell=confirm_shell,
+                request_approval=request_approval,
                 request_user_input=request_user_input,
             )
             result = self.execute_registered_tool(reg, normalized_args, env, ctx)
@@ -234,20 +234,28 @@ class SkillExecutor:
         return re.sub(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", repl, template)
 
     def run_shell_workflow_command(self, command: str, env, timeout_s: int, cwd: str | None = None) -> dict[str, Any]:
-        caps = env.config.get("capabilities", {})
-        dangerously_skip_permissions = bool(caps.get("dangerously_skip_permissions", False))
-        shell_require_confirmation = bool(caps.get("shell_require_confirmation", True))
-        if shell_require_confirmation and not dangerously_skip_permissions:
-            if not env.confirm_shell:
-                raise PermissionError("Shell confirmation callback is required")
-            if not env.confirm_shell(command):
+        approved = False
+        if env.project.shell_command_requires_approval(command) and env.project.permission_mode != "danger-full-access":
+            if not env.request_approval:
+                raise PermissionError("Approval callback is required")
+            approved = bool(
+                env.request_approval(
+                    {
+                        "kind": "shell_command",
+                        "command": command,
+                        "cwd": str(cwd or env.project.project_root),
+                        "reason": "Command crosses the project-write approval boundary.",
+                    }
+                )
+            )
+            if not approved:
                 raise PermissionError("Shell command rejected by user")
-        allowed_cwd_roots = [cwd] if cwd else None
-        result = env.workspace.run_shell_command(
+        result = env.project.run_shell_command(
             command,
             timeout_s=max(1, int(timeout_s)),
             cwd=cwd,
-            allowed_cwd_roots=allowed_cwd_roots,
+            allowed_cwd_roots=[cwd] if cwd else None,
+            approved=approved,
         )
         if not result.get("ok"):
             error = result.get("error") or {}
@@ -273,7 +281,7 @@ class SkillExecutor:
         raw_params = args.get("params")
         params = raw_params if isinstance(raw_params, dict) else {}
         template_values: dict[str, Any] = {
-            "workspace_root": str(runtime.workspace.workspace_root),
+            "project_root": str(runtime.project.project_root),
             "skill_root": str(skill.path),
         }
         template_values.update(params)
@@ -281,7 +289,7 @@ class SkillExecutor:
 
         install_results: list[dict[str, Any]] = []
         verify_results: list[dict[str, Any]] = []
-        command_cwd = str(skill.path) if entrypoint.cwd == "skill" else str(runtime.workspace.workspace_root)
+        command_cwd = str(skill.path) if entrypoint.cwd == "skill" else str(runtime.project.project_root)
         for template in entrypoint.install:
             command = self.resolve_entrypoint_placeholders(template, template_values)
             install_results.append(self.run_shell_workflow_command(command, env, timeout_s, cwd=command_cwd))
