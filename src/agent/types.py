@@ -82,8 +82,8 @@ class ToolExecutionRecord:
 @dataclass(slots=True)
 class TurnClassification:
     time_sensitive: bool = False
-    requires_workspace_action: bool = False
-    prefer_local_workspace_tools: bool = False
+    requires_project_action: bool = False
+    prefer_local_project_tools: bool = False
     explicit_external_path: str = ""
     followup_kind: str = "new_request"
     used_model: bool = False
@@ -95,10 +95,10 @@ class TurnPolicySnapshot:
     search_mode: bool = False
     time_sensitive_query: bool = False
     forced_search_retry: bool = False
-    requires_workspace_action: bool = False
+    requires_project_action: bool = False
     forced_action_retry: bool = False
     explicit_external_path: str = ""
-    prefer_local_workspace_tools: bool = False
+    prefer_local_project_tools: bool = False
     shell_tool_exposed: bool = False
     collaboration_mode: str = "execute"
 
@@ -163,12 +163,12 @@ class TurnState:
         self.classification.time_sensitive = bool(value)
 
     @property
-    def requires_workspace_action(self) -> bool:
-        return self.classification.requires_workspace_action
+    def requires_project_action(self) -> bool:
+        return self.classification.requires_project_action
 
     @property
-    def prefer_local_workspace_tools(self) -> bool:
-        return self.classification.prefer_local_workspace_tools
+    def prefer_local_project_tools(self) -> bool:
+        return self.classification.prefer_local_project_tools
 
     @property
     def explicit_external_path(self) -> str:

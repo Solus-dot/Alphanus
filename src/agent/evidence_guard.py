@@ -11,34 +11,34 @@ class EvidenceGuard:
         self.skill_runtime = skill_runtime
 
     @staticmethod
-    def workspace_materialization_count(state: TurnState) -> int:
+    def project_materialization_count(state: TurnState) -> int:
         return len(state.completion.materialized_paths)
 
-    def tool_counts_as_workspace_mutation(self, record: ToolExecutionRecord) -> bool:
+    def tool_counts_as_project_mutation(self, record: ToolExecutionRecord) -> bool:
         if record.policy_blocked or not bool(record.result.get("ok")):
             return False
         if record.name == "shell_command":
             meta = record.result.get("meta")
-            return bool(isinstance(meta, dict) and meta.get("workspace_changed"))
+            return bool(isinstance(meta, dict) and meta.get("project_changed"))
         if record.name == "run_skill":
             meta = record.result.get("meta")
-            return bool(isinstance(meta, dict) and meta.get("workspace_changed"))
+            return bool(isinstance(meta, dict) and meta.get("project_changed"))
         reg = self.skill_runtime.tool_registration(record.name)
         capability = str(getattr(reg, "capability", "") or "").strip().lower()
-        return capability.startswith("workspace_") and self.skill_runtime.tool_is_mutating(record.name)
+        return capability.startswith("project_") and self.skill_runtime.tool_is_mutating(record.name)
 
-    def workspace_mutation_count(self, state: TurnState) -> int:
-        return sum(1 for record in state.evidence if self.tool_counts_as_workspace_mutation(record))
+    def project_mutation_count(self, state: TurnState) -> int:
+        return sum(1 for record in state.evidence if self.tool_counts_as_project_mutation(record))
 
     @staticmethod
-    def workspace_readback_count(state: TurnState) -> int:
+    def project_readback_count(state: TurnState) -> int:
         return len(state.completion.readback_paths)
 
     @staticmethod
     def needs_fetch_evidence(state: TurnState) -> bool:
         return state.search_mode and state.time_sensitive_query and not state.completion.search_has_fetch_content
 
-    def workspace_action_evidence(self, state: TurnState) -> JsonObject:
+    def project_action_evidence(self, state: TurnState) -> JsonObject:
         successful_tools: list[JSONValue] = []
         successful_mutating_tools: list[JSONValue] = []
         successful_non_mutating_tools: list[JSONValue] = []
@@ -47,7 +47,7 @@ class EvidenceGuard:
         recent_tools: list[JSONValue] = []
         for record in state.evidence[-12:]:
             ok = bool(record.result.get("ok"))
-            mutating = self.tool_counts_as_workspace_mutation(record)
+            mutating = self.tool_counts_as_project_mutation(record)
             reg = self.skill_runtime.tool_registration(record.name)
             capability = str(getattr(reg, "capability", "") or "").strip()
             actions = [str(item).strip().lower() for item in (getattr(reg, "actions", ()) or ()) if str(item).strip()]

@@ -158,7 +158,7 @@ class PromptPolicyRenderer:
                 "Plan mode rule:\n"
                 "- This turn is in plan mode.\n"
                 "- You may use only non-mutating tools to inspect context and gather facts.\n"
-                "- Do not perform workspace mutations, run shell commands, or execute skill scripts.\n"
+                "- Do not perform project mutations, run shell commands, or execute skill scripts.\n"
                 "- If key intent or implementation details are missing, ask a concise follow-up question.\n"
                 "- Conclude with a concrete implementation plan that can be executed later."
             )
@@ -170,26 +170,26 @@ class PromptPolicyRenderer:
                 "- Do not answer from memory cutoff or prior knowledge alone.\n"
                 "- If web_search fails, say you could not verify the answer."
             )
-        if snapshot.requires_workspace_action and snapshot.forced_action_retry:
+        if snapshot.requires_project_action and snapshot.forced_action_retry:
             blocks.append(
                 "Mandatory action rule:\n"
-                "- This is a confirmation of an immediate prior workspace action request.\n"
-                "- Use the available workspace tools to perform the requested action if policy allows.\n"
-                "- Do not replace an available workspace tool action with manual terminal instructions.\n"
-                "- Only decline if the required workspace tool is unavailable or policy blocks the action."
+                "- This is a confirmation of an immediate prior project action request.\n"
+                "- Use the available project tools to perform the requested action if policy allows.\n"
+                "- Do not replace an available project tool action with manual terminal instructions.\n"
+                "- Only decline if the required project tool is unavailable or policy blocks the action."
             )
         if snapshot.explicit_external_path:
             block = (
                 "Explicit path rule:\n"
-                f"- The user explicitly named a filesystem path outside the current workspace: {snapshot.explicit_external_path}\n"
-                "- Do not silently substitute the current workspace root for that path.\n"
-                "- Acknowledge the mismatch if you need to reference the current workspace.\n"
-                "- If a tool can safely operate on the explicit path, pass that path directly.\n"
+                f"- The user explicitly named a filesystem path outside the current project: {snapshot.explicit_external_path}\n"
+                "- Do not silently substitute the current project root for that path.\n"
+                "- For file read/write/edit/move/delete tasks, pass that absolute path directly to project tools when policy allows it.\n"
+                "- If policy denies the path, report that denial plainly instead of substituting another location.\n"
             )
             if snapshot.shell_tool_exposed:
                 block += (
-                    "- If command execution in that directory is required, use the exposed shell tool with the explicit path.\n"
-                    "- Do not assume commands run from the current workspace when the user named a different path."
+                    "- If command execution in that directory is required, use the exposed shell tool with that explicit path as cwd.\n"
+                    "- Do not assume commands run from the current project when the user named a different path."
                 )
             else:
                 block += (
@@ -197,19 +197,19 @@ class PromptPolicyRenderer:
                     "- Ask to enable or load the needed skill before attempting command execution there."
                 )
             blocks.append(block)
-        if snapshot.prefer_local_workspace_tools:
+        if snapshot.prefer_local_project_tools:
             block = (
-                "Local workspace tool rule:\n"
-                "- This request is about local workspace files or folders.\n"
-                "- Prefer native workspace tools for local file creation, reading, editing, and folder creation whenever they can directly do the job.\n"
-                "- Do not use web_search, fetch_url, open_url, or play_youtube for local workspace file tasks."
+                "Local project tool rule:\n"
+                "- This request is about local project files or folders.\n"
+                "- Prefer native project tools for local file creation, reading, editing, and folder creation whenever they can directly do the job.\n"
+                "- Do not use web_search, fetch_url, open_url, or play_youtube for local project file tasks."
             )
             if snapshot.shell_tool_exposed:
                 block += (
-                    "\n- A shell tool is exposed in this turn; use it only when workspace tools cannot directly accomplish the task or when shell output itself is required.\n"
-                    "- Do not use a shell tool for generic folder creation or local file inspection when workspace tools already cover it."
+                    "\n- A shell tool is exposed in this turn; use it only when project tools cannot directly accomplish the task or when shell output itself is required.\n"
+                    "- Do not use a shell tool for generic folder creation or local file inspection when project tools already cover it."
                 )
             else:
-                block += "\n- No shell tool is exposed in this turn; stay within the available workspace tools."
+                block += "\n- No shell tool is exposed in this turn; stay within the available project tools."
             blocks.append(block)
         return "\n\n".join(blocks)

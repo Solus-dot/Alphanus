@@ -38,8 +38,8 @@ class FinalizationEngine:
     def _is_plan_mode(self, state) -> bool:
         return self.orchestrator._is_plan_mode(state)
 
-    def workspace_mutation_count(self, state) -> int:
-        return self.orchestrator.workspace_mutation_count(state)
+    def project_mutation_count(self, state) -> int:
+        return self.orchestrator.project_mutation_count(state)
 
     def finalize_turn(
         self, system_content: str, state: TurnState, stop_event, on_event, pass_id: str, extra_rules: str = ""
@@ -165,10 +165,10 @@ class FinalizationEngine:
                         "- If a search/fetch tool failed, explicitly say the web lookup failed in this turn and ask for a retry or alternate source.",
                     ]
                 )
-            if state.requires_workspace_action and not self._is_plan_mode(state):
+            if state.requires_project_action and not self._is_plan_mode(state):
                 lines.extend(
                     [
-                        "- If the requested workspace action was not completed with tools, say that plainly.",
+                        "- If the requested project action was not completed with tools, say that plainly.",
                         "- Do not claim success unless the tool history supports it.",
                     ]
                 )
@@ -194,8 +194,8 @@ class FinalizationEngine:
                 causes.append("tool_failure")
             if state.search_mode:
                 causes.append("search_evidence=insufficient")
-            if state.requires_workspace_action and not self._is_plan_mode(state) and self.workspace_mutation_count(state) == 0:
-                causes.append("workspace_action=not_completed")
+            if state.requires_project_action and not self._is_plan_mode(state) and self.project_mutation_count(state) == 0:
+                causes.append("project_action=not_completed")
             if state.completion.tool_counts:
                 causes.append("finalization=blocked_markup_after_tools")
             else:
@@ -212,8 +212,8 @@ class FinalizationEngine:
                         "failed_tools": failed_tools[-3:],
                         "tool_counts": dict(state.completion.tool_counts),
                         "search_mode": state.search_mode,
-                        "requires_workspace_action": state.requires_workspace_action,
-                        "workspace_mutation_count": self.workspace_mutation_count(state),
+                        "requires_project_action": state.requires_project_action,
+                        "project_mutation_count": self.project_mutation_count(state),
                     }
                 },
             )

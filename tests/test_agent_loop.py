@@ -16,7 +16,7 @@ from agent.policies import PromptPolicyRenderer
 from agent.provider_metadata import ProviderMetadataExtractor
 from core.memory import LexicalMemory
 from core.types import ModelStatus, TurnClassification, TurnPolicySnapshot
-from core.workspace import WorkspaceManager
+from core.project import ProjectRuntime
 from skills.runtime import SkillContext, SkillRuntime
 
 TEST_BASE_URL = "http://127.0.0.1:8080"
@@ -51,28 +51,28 @@ def runtime(tmp_path: Path) -> SkillRuntime:
     skills = tmp_path / "skills"
     home.mkdir()
     ws.mkdir()
-    (skills / "workspace-ops").mkdir(parents=True)
+    (skills / "project-ops").mkdir(parents=True)
 
-    (skills / "workspace-ops" / "SKILL.md").write_text(
+    (skills / "project-ops" / "SKILL.md").write_text(
         """
 ---
-name: workspace-ops
-description: workspace
+name: project-ops
+description: project
 version: 1.0.0
 tools:
   allowed-tools:
     - create_directory
     - create_file
 ---
-workspace
+project
 """.strip(),
         encoding="utf-8",
     )
-    (skills / "workspace-ops" / "tools.py").write_text(
+    (skills / "project-ops" / "tools.py").write_text(
         """
 TOOL_SPECS = {
   "create_directory": {
-    "capability": "workspace_write",
+    "capability": "project_write",
     "description": "Create directory",
     "parameters": {
       "type": "object",
@@ -81,7 +81,7 @@ TOOL_SPECS = {
     }
   },
   "create_file": {
-    "capability": "workspace_write",
+    "capability": "project_write",
     "description": "Create file",
     "parameters": {
       "type": "object",
@@ -93,10 +93,10 @@ TOOL_SPECS = {
 
 def execute(tool_name, args, env):
     if tool_name == "create_directory":
-        path = env.workspace.create_directory(args["path"])
+        path = env.project.create_directory(args["path"])
         return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
     if tool_name == "create_file":
-        path = env.workspace.create_file(args["filepath"], args["content"])
+        path = env.project.create_file(args["filepath"], args["content"])
         return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
     return {"ok": False, "data": None, "error": {"code": "E_UNSUPPORTED", "message": "nope"}, "meta": {}}
 """.strip(),
@@ -105,7 +105,7 @@ def execute(tool_name, args, env):
 
     return SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
@@ -240,7 +240,7 @@ def test_image_turn_without_selected_skill_tools_omits_tool_schemas(mocker, runt
         if len(requests) == 1:
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"content":"{\\"time_sensitive\\":false,\\"requires_workspace_action\\":false,\\"prefer_local_workspace_tools\\":false,\\"followup_kind\\":\\"new_request\\"}"}}]}',
+                    'data: {"choices":[{"delta":{"content":"{\\"time_sensitive\\":false,\\"requires_project_action\\":false,\\"prefer_local_project_tools\\":false,\\"followup_kind\\":\\"new_request\\"}"}}]}',
                     'data: {"choices":[{"finish_reason":"stop"}]}',
                     "data: [DONE]",
                 ]
@@ -274,7 +274,7 @@ def test_image_turn_without_selected_skill_tools_omits_tool_schemas(mocker, runt
     assert "tools" not in requests[0]
 
 
-def test_image_turn_keeps_model_exposed_core_tools_for_workspace_actions(
+def test_image_turn_keeps_model_exposed_core_tools_for_project_actions(
     mocker,
     runtime: SkillRuntime,
     monkeypatch: pytest.MonkeyPatch,
@@ -558,7 +558,7 @@ def test_agent_run_turn_exercises_structured_classification_path(mocker, runtime
         if "Classify the next local assistant turn." in system_prompt:
             return FakeResponse(
                 [
-                    'data: {"choices":[{"delta":{"content":"{\\"time_sensitive\\":false,\\"requires_workspace_action\\":false,\\"prefer_local_workspace_tools\\":false,\\"followup_kind\\":\\"new_request\\"}"}}]}',
+                    'data: {"choices":[{"delta":{"content":"{\\"time_sensitive\\":false,\\"requires_project_action\\":false,\\"prefer_local_project_tools\\":false,\\"followup_kind\\":\\"new_request\\"}"}}]}',
                     'data: {"choices":[{"finish_reason":"stop"}]}',
                     "data: [DONE]",
                 ]
@@ -740,7 +740,7 @@ Alpha.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
@@ -784,7 +784,7 @@ Alpha.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
@@ -817,7 +817,7 @@ Alpha.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
@@ -834,12 +834,12 @@ def test_confirmation_turn_reuses_immediate_prior_skill_context(mocker, runtime:
     agent = Agent({"agent": {}}, runtime)
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
-        return type("R", (), {"finish_reason": "stop", "content": '{"skills":["workspace-ops"]}'})()
+        return type("R", (), {"finish_reason": "stop", "content": '{"skills":["project-ops"]}'})()
 
     mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
 
     history_messages = [
-        {"role": "user", "content": "delete all files in the workspace"},
+        {"role": "user", "content": "delete all files in the project"},
         {
             "role": "assistant",
             "tool_calls": [
@@ -856,9 +856,9 @@ def test_confirmation_turn_reuses_immediate_prior_skill_context(mocker, runtime:
 
     ctx = agent.classifier.build_skill_context("yes", [], [], history_messages)
 
-    assert "previous user request: delete all files in the workspace" in ctx.recent_routing_hint
+    assert "previous user request: delete all files in the project" in ctx.recent_routing_hint
     assert "tools just used: create_file" in ctx.recent_routing_hint
-    assert ctx.sticky_skill_ids == ["workspace-ops"]
+    assert ctx.sticky_skill_ids == ["project-ops"]
 
     assert agent.skill_runtime.select_skills(ctx) == []
 
@@ -913,18 +913,18 @@ def test_contextual_followup_seed_reuses_immediate_prior_skill_context(runtime: 
     assert agent.skill_runtime.select_skills(ctx) == []
 
 
-def test_confirmation_workspace_action_retries_instead_of_accepting_manual_terminal_advice(mocker, runtime: SkillRuntime):
+def test_confirmation_project_action_retries_instead_of_accepting_manual_terminal_advice(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
-        agent.classifier, "classify", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation")
+        agent.classifier, "classify", return_value=TurnClassification(requires_project_action=True, followup_kind="confirmation")
     )
 
     calls = []
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
         calls.append(pass_id)
-        if pass_id == "pass_1_workspace_action_outcome":
+        if pass_id == "pass_1_project_action_outcome":
             return type("R", (), {"finish_reason": "stop", "content": '{"outcome":"not_completed"}'})()
         if pass_id == "pass_1":
             return type(
@@ -966,14 +966,14 @@ def test_confirmation_workspace_action_retries_instead_of_accepting_manual_termi
                 (),
                 {
                     "finish_reason": "stop",
-                    "content": "Done with workspace tools.",
+                    "content": "Done with project tools.",
                     "reasoning": "",
                     "tool_calls": [],
                 },
             )()
         raise AssertionError(f"Unexpected pass id: {pass_id}")
 
-    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
+    def fake_execute_tool_call(tool_name, args, selected, ctx, request_approval=None, **_kwargs):
         assert tool_name == "create_file"
         return {"ok": True, "data": {"filepath": "notes.txt"}, "error": None, "meta": {}}
 
@@ -981,32 +981,32 @@ def test_confirmation_workspace_action_retries_instead_of_accepting_manual_termi
     mocker.patch.object(runtime, "execute_tool_call", side_effect=fake_execute_tool_call)
 
     result = agent.run_turn(
-        history_messages=[{"role": "user", "content": "create notes.txt in the workspace"}],
+        history_messages=[{"role": "user", "content": "create notes.txt in the project"}],
         user_input="yes",
         thinking=True,
     )
 
     assert result.status == "done"
-    assert result.content == "Done with workspace tools."
-    assert calls[-4:] == ["pass_1", "pass_1_workspace_action_outcome", "pass_2", "pass_3"]
+    assert result.content == "Done with project tools."
+    assert calls[-4:] == ["pass_1", "pass_1_project_action_outcome", "pass_2", "pass_3"]
 
 
-def test_confirmation_workspace_action_rejects_manual_terminal_advice_after_retry(mocker, runtime: SkillRuntime):
+def test_confirmation_project_action_rejects_manual_terminal_advice_after_retry(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
-        agent.classifier, "classify", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation")
+        agent.classifier, "classify", return_value=TurnClassification(requires_project_action=True, followup_kind="confirmation")
     )
 
     calls = []
-    outcome_calls = {"pass_1_workspace_action_outcome": 0, "pass_2_workspace_action_outcome": 0}
+    outcome_calls = {"pass_1_project_action_outcome": 0, "pass_2_project_action_outcome": 0}
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
         calls.append(pass_id)
-        if pass_id == "pass_1_workspace_action_outcome":
+        if pass_id == "pass_1_project_action_outcome":
             outcome_calls[pass_id] += 1
             return type("R", (), {"finish_reason": "stop", "content": '{"outcome":"not_completed"}'})()
-        if pass_id == "pass_2_workspace_action_outcome":
+        if pass_id == "pass_2_project_action_outcome":
             outcome_calls[pass_id] += 1
             outcome = "not_completed" if outcome_calls[pass_id] == 1 else "declined_or_blocked"
             return type("R", (), {"finish_reason": "stop", "content": f'{{"outcome":"{outcome}"}}'})()
@@ -1016,7 +1016,7 @@ def test_confirmation_workspace_action_rejects_manual_terminal_advice_after_retr
                 (),
                 {
                     "finish_reason": "stop",
-                    "content": "No workspace tool actually ran.",
+                    "content": "No project tool actually ran.",
                     "reasoning": "",
                     "tool_calls": [],
                 },
@@ -1035,34 +1035,34 @@ def test_confirmation_workspace_action_rejects_manual_terminal_advice_after_retr
     mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
 
     result = agent.run_turn(
-        history_messages=[{"role": "user", "content": "delete all files in the workspace"}],
+        history_messages=[{"role": "user", "content": "delete all files in the project"}],
         user_input="yes",
         thinking=True,
     )
 
     assert result.status == "done"
     assert result.error is None
-    assert result.content == "No workspace tool actually ran."
+    assert result.content == "No project tool actually ran."
     assert "rm -rf" not in result.content
     assert "pass_2_final" in calls
 
 
-def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_use(mocker, runtime: SkillRuntime):
+def test_confirmation_project_action_rejects_claimed_completion_without_tool_use(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
-        agent.classifier, "classify", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation")
+        agent.classifier, "classify", return_value=TurnClassification(requires_project_action=True, followup_kind="confirmation")
     )
 
     calls = []
-    outcome_calls = {"pass_1_workspace_action_outcome": 0, "pass_2_workspace_action_outcome": 0}
+    outcome_calls = {"pass_1_project_action_outcome": 0, "pass_2_project_action_outcome": 0}
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
         calls.append(pass_id)
-        if pass_id == "pass_1_workspace_action_outcome":
+        if pass_id == "pass_1_project_action_outcome":
             outcome_calls[pass_id] += 1
             return type("R", (), {"finish_reason": "stop", "content": '{"outcome":"not_completed"}'})()
-        if pass_id == "pass_2_workspace_action_outcome":
+        if pass_id == "pass_2_project_action_outcome":
             outcome_calls[pass_id] += 1
             outcome = "not_completed" if outcome_calls[pass_id] == 1 else "declined_or_blocked"
             return type("R", (), {"finish_reason": "stop", "content": f'{{"outcome":"{outcome}"}}'})()
@@ -1072,7 +1072,7 @@ def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_u
                 (),
                 {
                     "finish_reason": "stop",
-                    "content": "No workspace tool actually ran.",
+                    "content": "No project tool actually ran.",
                     "reasoning": "",
                     "tool_calls": [],
                 },
@@ -1082,7 +1082,7 @@ def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_u
             (),
             {
                 "finish_reason": "stop",
-                "content": "I have deleted the following files from your workspace: a.txt and b.txt. The workspace is now empty.",
+                "content": "I have deleted the following files from your project: a.txt and b.txt. The project is now empty.",
                 "reasoning": "",
                 "tool_calls": [],
             },
@@ -1091,27 +1091,27 @@ def test_confirmation_workspace_action_rejects_claimed_completion_without_tool_u
     mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
 
     result = agent.run_turn(
-        history_messages=[{"role": "user", "content": "delete all files in the workspace"}],
+        history_messages=[{"role": "user", "content": "delete all files in the project"}],
         user_input="yes",
         thinking=True,
     )
 
     assert result.status == "done"
     assert result.error is None
-    assert result.content == "No workspace tool actually ran."
-    assert "workspace is now empty" not in result.content.lower()
+    assert result.content == "No project tool actually ran."
+    assert "project is now empty" not in result.content.lower()
     assert "pass_2_final" in calls
 
 
-def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_success_claim(mocker, runtime: SkillRuntime):
+def test_confirmation_project_action_requires_mutating_tool_before_accepting_success_claim(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
-        agent.classifier, "classify", return_value=TurnClassification(requires_workspace_action=True, followup_kind="confirmation")
+        agent.classifier, "classify", return_value=TurnClassification(requires_project_action=True, followup_kind="confirmation")
     )
 
     calls = []
-    outcome_calls = {"pass_2_workspace_action_outcome": 0, "pass_3_workspace_action_outcome": 0}
+    outcome_calls = {"pass_2_project_action_outcome": 0, "pass_3_project_action_outcome": 0}
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
         calls.append(pass_id)
@@ -1132,7 +1132,7 @@ def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_s
                     ],
                 },
             )()
-        if pass_id == "pass_2_workspace_action_outcome":
+        if pass_id == "pass_2_project_action_outcome":
             outcome_calls[pass_id] += 1
             return type("R", (), {"finish_reason": "stop", "content": '{"outcome":"not_completed"}'})()
         if pass_id == "pass_2":
@@ -1157,7 +1157,7 @@ def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_s
                     "tool_calls": [],
                 },
             )()
-        if pass_id == "pass_3_workspace_action_outcome":
+        if pass_id == "pass_3_project_action_outcome":
             outcome_calls[pass_id] += 1
             outcome = "not_completed" if outcome_calls[pass_id] == 1 else "declined_or_blocked"
             return type("R", (), {"finish_reason": "stop", "content": f'{{"outcome":"{outcome}"}}'})()
@@ -1167,14 +1167,14 @@ def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_s
                 (),
                 {
                     "finish_reason": "stop",
-                    "content": "No workspace tool actually ran.",
+                    "content": "No project tool actually ran.",
                     "reasoning": "",
                     "tool_calls": [],
                 },
             )()
         raise AssertionError(f"Unexpected pass id: {pass_id}")
 
-    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
+    def fake_execute_tool_call(tool_name, args, selected, ctx, request_approval=None, **_kwargs):
         assert tool_name == "read_file"
         return {"ok": True, "data": {"filepath": "foo.txt", "content": "alpha"}, "error": None, "meta": {}}
 
@@ -1189,16 +1189,16 @@ def test_confirmation_workspace_action_requires_mutating_tool_before_accepting_s
 
     assert result.status == "done"
     assert result.error is None
-    assert result.content == "No workspace tool actually ran."
+    assert result.content == "No project tool actually ran."
     assert "pass_3" in calls
 
 
-def test_workspace_action_preserves_policy_blocked_reply_when_outcome_classifier_fails(mocker, runtime: SkillRuntime):
+def test_project_action_preserves_policy_blocked_reply_when_outcome_classifier_fails(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
         agent.classifier, "classify",
-        return_value=TurnClassification(requires_workspace_action=True, prefer_local_workspace_tools=True, followup_kind="confirmation"),
+        return_value=TurnClassification(requires_project_action=True, prefer_local_project_tools=True, followup_kind="confirmation"),
     )
 
     calls = []
@@ -1228,35 +1228,35 @@ def test_workspace_action_preserves_policy_blocked_reply_when_outcome_classifier
                 (),
                 {
                     "finish_reason": "stop",
-                    "content": "shell_command is not allowed for local workspace file tasks; use workspace tools instead.",
+                    "content": "shell_command is not allowed for local project file tasks; use project tools instead.",
                     "reasoning": "",
                     "tool_calls": [],
                 },
             )()
-        if pass_id == "pass_2_workspace_action_outcome":
+        if pass_id == "pass_2_project_action_outcome":
             raise RuntimeError("timeout")
         raise AssertionError(f"Unexpected pass id: {pass_id}")
 
     mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
 
     result = agent.run_turn(
-        history_messages=[{"role": "user", "content": "delete all files in the workspace"}],
+        history_messages=[{"role": "user", "content": "delete all files in the project"}],
         user_input="yes",
         thinking=True,
     )
 
     assert result.status == "done"
-    assert result.content == "shell_command is not allowed for local workspace file tasks; use workspace tools instead."
-    assert "no workspace tool actually ran" not in result.content.lower()
-    assert calls == ["pass_1", "pass_2", "pass_2_workspace_action_outcome"]
+    assert result.content == "shell_command is not allowed for local project file tasks; use project tools instead."
+    assert "no project tool actually ran" not in result.content.lower()
+    assert calls == ["pass_1", "pass_2", "pass_2_project_action_outcome"]
 
 
-def test_workspace_action_classifier_failure_does_not_accept_manual_shell_advice_after_block(mocker, runtime: SkillRuntime):
+def test_project_action_classifier_failure_does_not_accept_manual_shell_advice_after_block(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
         agent.classifier, "classify",
-        return_value=TurnClassification(requires_workspace_action=True, prefer_local_workspace_tools=True, followup_kind="confirmation"),
+        return_value=TurnClassification(requires_project_action=True, prefer_local_project_tools=True, followup_kind="confirmation"),
     )
 
     calls = []
@@ -1302,7 +1302,7 @@ def test_workspace_action_classifier_failure_does_not_accept_manual_shell_advice
                     "tool_calls": [],
                 },
             )()
-        if pass_id in {"pass_2_workspace_action_outcome", "pass_3_workspace_action_outcome"}:
+        if pass_id in {"pass_2_project_action_outcome", "pass_3_project_action_outcome"}:
             raise RuntimeError("timeout")
         if pass_id == "pass_3_final":
             return type(
@@ -1310,7 +1310,7 @@ def test_workspace_action_classifier_failure_does_not_accept_manual_shell_advice
                 (),
                 {
                     "finish_reason": "stop",
-                    "content": "No workspace tool actually ran.",
+                    "content": "No project tool actually ran.",
                     "reasoning": "",
                     "tool_calls": [],
                 },
@@ -1320,23 +1320,23 @@ def test_workspace_action_classifier_failure_does_not_accept_manual_shell_advice
     mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
 
     result = agent.run_turn(
-        history_messages=[{"role": "user", "content": "delete all files in the workspace"}],
+        history_messages=[{"role": "user", "content": "delete all files in the project"}],
         user_input="yes",
         thinking=True,
     )
 
     assert result.status == "done"
     assert result.error is None
-    assert result.content == "No workspace tool actually ran."
+    assert result.content == "No project tool actually ran."
     assert "rm -rf" not in result.content.lower()
     assert calls == [
         "pass_1",
         "pass_2",
-        "pass_2_workspace_action_outcome",
+        "pass_2_project_action_outcome",
         "pass_3",
-        "pass_3_workspace_action_outcome",
+        "pass_3_project_action_outcome",
         "pass_3_final",
-        "pass_3_workspace_action_outcome",
+        "pass_3_project_action_outcome",
     ]
 
 
@@ -1559,10 +1559,10 @@ utilities
     assert calls == ["pass_1", "pass_2"]
 
 
-def test_batch_workspace_delete_does_not_stop_after_first_successful_tool(mocker, runtime: SkillRuntime):
+def test_batch_project_delete_does_not_stop_after_first_successful_tool(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
-    selected = [runtime.get_skill("workspace-ops")]
+    selected = [runtime.get_skill("project-ops")]
     mocker.patch.object(agent.skill_runtime, "select_skills", return_value=selected)
 
     calls = []
@@ -1608,8 +1608,8 @@ def test_batch_workspace_delete_does_not_stop_after_first_successful_tool(mocker
     mocker.patch.object(runtime, "tools_for_turn", return_value=[{"type": "function", "function": {"name": "delete_path"}}])
 
     result = agent.run_turn(
-        history_messages=[{"role": "user", "content": "delete all files in workspace"}],
-        user_input="delete all files in workspace",
+        history_messages=[{"role": "user", "content": "delete all files in project"}],
+        user_input="delete all files in project",
         thinking=True,
     )
 
@@ -1618,11 +1618,11 @@ def test_batch_workspace_delete_does_not_stop_after_first_successful_tool(mocker
     assert calls == ["pass_1", "pass_2"]
 
 
-def test_local_workspace_tasks_prefer_workspace_tools_but_still_block_fetch_tools(mocker, runtime: SkillRuntime):
+def test_local_project_tasks_prefer_project_tools_but_still_block_fetch_tools(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
-    mocker.patch.object(agent.classifier, "classify", return_value=TurnClassification(prefer_local_workspace_tools=True))
-    selected = [runtime.get_skill("workspace-ops")]
+    mocker.patch.object(agent.classifier, "classify", return_value=TurnClassification(prefer_local_project_tools=True))
+    selected = [runtime.get_skill("project-ops")]
     mocker.patch.object(agent.skill_runtime, "select_skills", return_value=selected)
 
     calls = []
@@ -1704,9 +1704,9 @@ def test_local_workspace_tasks_prefer_workspace_tools_but_still_block_fetch_tool
     executed = []
     real_execute = runtime.execute_tool_call
 
-    def wrapped_execute(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
+    def wrapped_execute(tool_name, args, selected, ctx, request_approval=None, **_kwargs):
         executed.append(tool_name)
-        return real_execute(tool_name, args, selected=selected, ctx=ctx, confirm_shell=confirm_shell)
+        return real_execute(tool_name, args, selected=selected, ctx=ctx, request_approval=request_approval)
 
     mocker.patch.object(runtime, "execute_tool_call", side_effect=wrapped_execute)
     mocker.patch.object(
@@ -1731,14 +1731,14 @@ def test_local_workspace_tasks_prefer_workspace_tools_but_still_block_fetch_tool
     assert calls == ["pass_1", "pass_2", "pass_3"]
 
 
-def test_workspace_action_accepts_successful_mutating_shell_command(mocker, runtime: SkillRuntime):
+def test_project_action_accepts_successful_mutating_shell_command(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
         agent.classifier, "classify",
-        return_value=TurnClassification(requires_workspace_action=True, prefer_local_workspace_tools=True),
+        return_value=TurnClassification(requires_project_action=True, prefer_local_project_tools=True),
     )
-    selected = [runtime.get_skill("workspace-ops")]
+    selected = [runtime.get_skill("project-ops")]
     mocker.patch.object(agent.skill_runtime, "select_skills", return_value=selected)
 
     calls = []
@@ -1784,7 +1784,7 @@ def test_workspace_action_accepts_successful_mutating_shell_command(mocker, runt
     mocker.patch.object(
         runtime,
         "execute_tool_call",
-        side_effect=lambda tool_name, args, selected, ctx, confirm_shell=None, **_kwargs: runtime.workspace.run_shell_command(
+        side_effect=lambda tool_name, args, selected, ctx, request_approval=None, **_kwargs: runtime.project.run_shell_command(
             args["command"]
         ),
     )
@@ -1793,23 +1793,23 @@ def test_workspace_action_accepts_successful_mutating_shell_command(mocker, runt
         history_messages=[{"role": "user", "content": "create a folder named 1738"}],
         user_input="yes",
         thinking=True,
-        confirm_shell=lambda _command: True,
+        request_approval=lambda _command: True,
     )
 
     assert result.status == "done"
     assert result.content == "Done."
-    assert (runtime.workspace.workspace_root / "1738").is_dir()
+    assert (runtime.project.project_root / "1738").is_dir()
     assert calls == ["pass_1", "pass_2"]
 
 
-def test_workspace_action_allows_snapshotting_around_shell_command(mocker, runtime: SkillRuntime):
+def test_project_action_allows_snapshotting_around_shell_command(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
         agent.classifier, "classify",
-        return_value=TurnClassification(requires_workspace_action=True, prefer_local_workspace_tools=True),
+        return_value=TurnClassification(requires_project_action=True, prefer_local_project_tools=True),
     )
-    selected = [runtime.get_skill("workspace-ops")]
+    selected = [runtime.get_skill("project-ops")]
     mocker.patch.object(agent.skill_runtime, "select_skills", return_value=selected)
     mocker.patch.object(
         runtime,
@@ -1851,7 +1851,7 @@ def test_workspace_action_allows_snapshotting_around_shell_command(mocker, runti
     mocker.patch.object(
         runtime,
         "execute_tool_call",
-        side_effect=lambda tool_name, args, selected, ctx, confirm_shell=None, **_kwargs: runtime.workspace.run_shell_command(
+        side_effect=lambda tool_name, args, selected, ctx, request_approval=None, **_kwargs: runtime.project.run_shell_command(
             args["command"]
         ),
     )
@@ -1860,41 +1860,41 @@ def test_workspace_action_allows_snapshotting_around_shell_command(mocker, runti
         history_messages=[{"role": "user", "content": "create a folder named 1738"}],
         user_input="yes",
         thinking=True,
-        confirm_shell=lambda _command: True,
+        request_approval=lambda _command: True,
     )
 
     assert result.status == "done"
-    assert (runtime.workspace.workspace_root / "1738").is_dir()
+    assert (runtime.project.project_root / "1738").is_dir()
 
 
-def test_explicit_external_path_disables_local_workspace_routing(runtime: SkillRuntime):
+def test_explicit_external_path_disables_local_project_routing(runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
-    other_path = str(Path(runtime.workspace.home_root) / "other-project")
+    other_path = str(Path(runtime.project.project_root).parent / "other-project")
     ctx = SkillContext(
         user_input=f"Update the packages in {other_path}, it uses uv",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(runtime.workspace.workspace_root),
+        project_root=str(runtime.project.project_root),
         memory_hits=[],
     )
 
-    assert agent.classifier._explicit_path_outside_workspace(ctx.user_input) == other_path
-    assert agent.classifier.classify(ctx).prefer_local_workspace_tools is False
+    assert agent.classifier._explicit_path_outside_project(ctx.user_input) == other_path
+    assert agent.classifier.classify(ctx).prefer_local_project_tools is False
 
 
-def test_explicit_external_path_adds_prompt_rule_and_skips_local_workspace_rule(mocker, runtime: SkillRuntime):
+def test_explicit_external_path_adds_prompt_rule_and_skips_local_project_rule(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
-    selected = [runtime.get_skill("workspace-ops")]
+    selected = [runtime.get_skill("project-ops")]
     mocker.patch.object(agent.skill_runtime, "select_skills", return_value=selected)
     mocker.patch.object(runtime, "tools_for_turn", return_value=[])
-    other_path = str(Path(runtime.workspace.home_root) / "other-project")
+    other_path = str(Path(runtime.project.project_root).parent / "other-project")
 
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
         system_text = payload["messages"][0]["content"]
         assert "Explicit path rule:" in system_text
         assert other_path in system_text
-        assert "Local workspace tool rule:" not in system_text
+        assert "Local project tool rule:" not in system_text
         return type("R", (), {"finish_reason": "stop", "content": "Need confirmation.", "reasoning": "", "tool_calls": []})()
 
     mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
@@ -1914,7 +1914,7 @@ def test_policy_rules_require_shell_tool_exposure_for_external_path_guidance(run
     rules = agent.prompt_renderer.render_policy_rules(
         TurnPolicySnapshot(
             explicit_external_path="/tmp/other-project",
-            prefer_local_workspace_tools=True,
+            prefer_local_project_tools=True,
             shell_tool_exposed=False,
         )
     )
@@ -1929,7 +1929,7 @@ def test_policy_rules_include_shell_guidance_only_when_shell_tool_is_exposed(run
     rules = agent.prompt_renderer.render_policy_rules(
         TurnPolicySnapshot(
             explicit_external_path="/tmp/other-project",
-            prefer_local_workspace_tools=True,
+            prefer_local_project_tools=True,
             shell_tool_exposed=True,
         )
     )
@@ -1942,22 +1942,22 @@ def test_policy_rules_include_shell_guidance_only_when_shell_tool_is_exposed(run
 def test_explicit_external_path_ignores_urls(runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
 
-    assert agent.classifier._explicit_path_outside_workspace("Use https://example.com as inspiration for the landing page") == ""
+    assert agent.classifier._explicit_path_outside_project("Use https://example.com as inspiration for the landing page") == ""
 
 
 def test_explicit_external_path_supports_quoted_paths_with_spaces(runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
-    other_path = str(Path(runtime.workspace.home_root) / "Other Project")
+    other_path = str(Path(runtime.project.project_root).parent / "Other Project")
     ctx = SkillContext(
         user_input=f'Update the packages in "{other_path}", it uses uv',
         branch_labels=[],
         attachments=[],
-        workspace_root=str(runtime.workspace.workspace_root),
+        project_root=str(runtime.project.project_root),
         memory_hits=[],
     )
 
-    assert agent.classifier._explicit_path_outside_workspace(ctx.user_input) == other_path
-    assert agent.classifier.classify(ctx).prefer_local_workspace_tools is False
+    assert agent.classifier._explicit_path_outside_project(ctx.user_input) == other_path
+    assert agent.classifier.classify(ctx).prefer_local_project_tools is False
 
 
 def test_finalization_retries_when_model_leaks_tool_markup(mocker, runtime: SkillRuntime):
@@ -2618,7 +2618,7 @@ Use artifact_forge when needed.
         """
 TOOL_SPECS = {
   "artifact_forge": {
-    "capability": "workspace_write",
+    "capability": "project_write",
     "description": "Forge an artifact",
     "parameters": {
       "type": "object",
@@ -2629,7 +2629,7 @@ TOOL_SPECS = {
 }
 
 def execute(tool_name, args, env):
-    path = env.workspace.create_file(args["filepath"], args["content"])
+    path = env.project.create_file(args["filepath"], args["content"])
     return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
 """.strip(),
         encoding="utf-8",
@@ -2642,7 +2642,7 @@ def execute(tool_name, args, env):
         user_input="make an artifact for me",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(runtime.workspace.workspace_root),
+        project_root=str(runtime.project.project_root),
         memory_hits=[],
     )
     selected = agent.skill_runtime.select_skills(ctx)
@@ -2669,7 +2669,7 @@ def test_prompt_policy_renderer_uses_configured_context_limit_for_skill_budget(m
         user_input="hello",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(runtime.workspace.workspace_root),
+        project_root=str(runtime.project.project_root),
         memory_hits=[],
     )
 
@@ -2870,7 +2870,7 @@ def test_tool_result_history_compacted_by_default(mocker, runtime: SkillRuntime)
 
     chat_reqs = []
 
-    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
+    def fake_execute_tool_call(tool_name, args, selected, ctx, request_approval=None, **_kwargs):
         return {"ok": True, "data": {"blob": huge_text}, "error": None, "meta": {}}
 
     def fake_urlopen(req, timeout=None, context=None):
@@ -2933,7 +2933,7 @@ def test_tool_result_history_compaction_can_be_disabled(mocker, runtime: SkillRu
 
     chat_reqs = []
 
-    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
+    def fake_execute_tool_call(tool_name, args, selected, ctx, request_approval=None, **_kwargs):
         return {"ok": True, "data": {"blob": huge_text}, "error": None, "meta": {}}
 
     def fake_urlopen(req, timeout=None, context=None):
@@ -2997,7 +2997,7 @@ def test_tool_result_history_compaction_can_be_gated_by_tool_name(mocker, runtim
 
     chat_reqs = []
 
-    def fake_execute_tool_call(tool_name, args, selected, ctx, confirm_shell=None, **_kwargs):
+    def fake_execute_tool_call(tool_name, args, selected, ctx, request_approval=None, **_kwargs):
         return {"ok": True, "data": {"blob": huge_text}, "error": None, "meta": {}}
 
     def fake_urlopen(req, timeout=None, context=None):
@@ -3165,7 +3165,7 @@ def test_doctor_report_uses_env_auth_header(mocker, runtime: SkillRuntime, monke
     mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
     report = agent.doctor_report()
     assert report["agent"]["auth_header_source"] == "env"
-    assert report["agent"]["permission_profile"] == "full"
+    assert report["agent"]["permission_mode"] == "project-write"
     assert report["harness_metrics"]["turns_total"] == 0
 
 
@@ -3199,7 +3199,7 @@ def test_doctor_report_handles_non_object_runtime_and_capabilities_sections(mock
             "tls_verify": True,
         },
         "runtime": "not-a-dict",
-        "capabilities": ["not", "a", "dict"],
+        "permissions": ["not", "a", "dict"],
     }
     agent = Agent(cfg, runtime)
 
@@ -3210,8 +3210,8 @@ def test_doctor_report_handles_non_object_runtime_and_capabilities_sections(mock
 
     mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
     report = agent.doctor_report()
-    assert report["agent"]["runtime_profile"] == "standard"
-    assert report["agent"]["permission_profile"] == "full"
+    assert report["agent"]["permission_mode"] == "project-write"
+    assert report["agent"]["approvals"] == "on-boundary"
 
 
 def test_doctor_report_can_skip_readiness_probe(mocker, runtime: SkillRuntime):
@@ -3331,7 +3331,7 @@ def test_select_skills_returns_only_explicitly_loaded_skills(runtime: SkillRunti
         user_input="write a file",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(runtime.workspace.workspace_root),
+        project_root=str(runtime.project.project_root),
         memory_hits=[],
     )
     assert agent.skill_runtime.select_skills(ctx) == []
@@ -3909,7 +3909,7 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     cfg = {
@@ -3983,7 +3983,7 @@ Use scripts/convert.py when needed.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     cfg = {

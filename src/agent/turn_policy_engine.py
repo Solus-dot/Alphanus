@@ -84,10 +84,10 @@ class TurnPolicyEngine:
             search_mode=state.search_mode,
             time_sensitive_query=state.time_sensitive_query,
             forced_search_retry=state.forced_search_retry and state.completion.tool_counts.get("web_search", 0) == 0,
-            requires_workspace_action=state.requires_workspace_action,
+            requires_project_action=state.requires_project_action,
             forced_action_retry=state.forced_action_retry and not state.completion.tool_counts,
             explicit_external_path=state.explicit_external_path,
-            prefer_local_workspace_tools=state.prefer_local_workspace_tools,
+            prefer_local_project_tools=state.prefer_local_project_tools,
             shell_tool_exposed="shell_command" in turn_tool_names,
             collaboration_mode=(
                 "plan" if str(getattr(state, "collaboration_mode", "execute") or "").strip().lower() == "plan" else "execute"

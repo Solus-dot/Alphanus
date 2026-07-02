@@ -16,7 +16,7 @@ from core.memory import LexicalMemory
 from core.retrieval import SQLiteRetrievalStore
 from core.streaming import StreamError
 from core.types import AgentTurnResult, ModelStatus, StreamPassResult, ToolCall, TurnClassification
-from core.workspace import WorkspaceManager
+from core.project import ProjectRuntime
 from skills.runtime import SkillContext, SkillRuntime
 
 
@@ -26,27 +26,27 @@ def _runtime(tmp_path: Path) -> SkillRuntime:
     skills = tmp_path / "skills"
     home.mkdir()
     ws.mkdir()
-    (skills / "workspace-ops").mkdir(parents=True)
-    (skills / "workspace-ops" / "SKILL.md").write_text(
+    (skills / "project-ops").mkdir(parents=True)
+    (skills / "project-ops" / "SKILL.md").write_text(
         """
 ---
-name: workspace-ops
-description: workspace
+name: project-ops
+description: project
 version: 1.0.0
 tools:
   allowed-tools:
     - create_directory
     - create_file
 ---
-workspace
+project
 """.strip(),
         encoding="utf-8",
     )
-    (skills / "workspace-ops" / "tools.py").write_text(
+    (skills / "project-ops" / "tools.py").write_text(
         """
 TOOL_SPECS = {
   "create_directory": {
-    "capability": "workspace_write",
+    "capability": "project_write",
     "description": "Create directory",
     "parameters": {
       "type": "object",
@@ -57,13 +57,13 @@ TOOL_SPECS = {
 }
 
 def execute(tool_name, args, env):
-    return {"ok": True, "data": {"filepath": env.workspace.create_directory(args["path"])}, "error": None, "meta": {}}
+    return {"ok": True, "data": {"filepath": env.project.create_directory(args["path"])}, "error": None, "meta": {}}
 """.strip(),
         encoding="utf-8",
     )
     return SkillRuntime(
         skills_dir=str(skills),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
 
@@ -117,7 +117,7 @@ def test_malformed_auth_header_template_emits_telemetry(tmp_path: Path, monkeypa
     assert any(item.get("event") == "auth_header_template_invalid" for item in events)
 
 
-def test_classifier_uses_model_for_local_workspace_task(mocker, tmp_path: Path) -> None:
+def test_classifier_uses_model_for_local_project_task(mocker, tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
     llm_client = LLMClient(cfg)
@@ -140,7 +140,7 @@ def test_classifier_uses_model_for_local_workspace_task(mocker, tmp_path: Path) 
                 "finish_reason": "stop",
                 "content": json.dumps(
                     {
-                        "prefer_local_workspace_tools": True,
+                        "prefer_local_project_tools": True,
                     }
                 ),
             },
@@ -152,7 +152,7 @@ def test_classifier_uses_model_for_local_workspace_task(mocker, tmp_path: Path) 
     classification = classifier.classify(ctx)
 
     assert classification.used_model is True
-    assert classification.prefer_local_workspace_tools is True
+    assert classification.prefer_local_project_tools is True
 
 
 def test_classifier_rule_path_reports_rules_source(mocker, tmp_path: Path) -> None:
@@ -206,13 +206,13 @@ def test_classifier_seed_keeps_time_sensitive_flag_without_model(tmp_path: Path)
     assert classification.time_sensitive is False
 
 
-def test_classifier_seed_does_not_infer_workspace_flags_without_model(tmp_path: Path) -> None:
+def test_classifier_seed_does_not_infer_project_flags_without_model(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
     llm_client = LLMClient(cfg)
     classifier = TurnClassifier(cfg, runtime, llm_client)
     history_messages = [
-        {"role": "user", "content": "delete all files in the workspace"},
+        {"role": "user", "content": "delete all files in the project"},
         {
             "role": "assistant",
             "tool_calls": [
@@ -231,12 +231,12 @@ def test_classifier_seed_does_not_infer_workspace_flags_without_model(tmp_path: 
     classification = classifier.classify(ctx)
 
     assert classification.used_model is False
-    assert classification.requires_workspace_action is False
-    assert classification.prefer_local_workspace_tools is False
+    assert classification.requires_project_action is False
+    assert classification.prefer_local_project_tools is False
     assert classification.followup_kind == "new_request"
 
 
-def test_classifier_clears_workspace_action_for_desktop_app_requests(mocker, tmp_path: Path) -> None:
+def test_classifier_clears_project_action_for_desktop_app_requests(mocker, tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
     llm_client = LLMClient(cfg)
@@ -255,8 +255,8 @@ def test_classifier_clears_workspace_action_for_desktop_app_requests(mocker, tmp
                 "content": json.dumps(
                     {
                         "time_sensitive": False,
-                        "requires_workspace_action": True,
-                        "prefer_local_workspace_tools": True,
+                        "requires_project_action": True,
+                        "prefer_local_project_tools": True,
                         "followup_kind": "new_request",
                     }
                 ),
@@ -269,16 +269,16 @@ def test_classifier_clears_workspace_action_for_desktop_app_requests(mocker, tmp
     classification = classifier.classify(ctx)
 
     assert classification.used_model is True
-    assert classification.requires_workspace_action is False
-    assert classification.prefer_local_workspace_tools is False
+    assert classification.requires_project_action is False
+    assert classification.prefer_local_project_tools is False
 
 
-def test_classifier_keeps_workspace_action_for_file_requests(mocker, tmp_path: Path) -> None:
+def test_classifier_keeps_project_action_for_file_requests(mocker, tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
     llm_client = LLMClient(cfg)
     classifier = TurnClassifier(cfg, runtime, llm_client)
-    ctx = classifier.build_skill_context("create notes.txt in the workspace", [], [])
+    ctx = classifier.build_skill_context("create notes.txt in the project", [], [])
 
     mocker.patch.object(TurnClassifier, "_should_model_classify", return_value=True)
 
@@ -292,8 +292,8 @@ def test_classifier_keeps_workspace_action_for_file_requests(mocker, tmp_path: P
                 "content": json.dumps(
                     {
                         "time_sensitive": False,
-                        "requires_workspace_action": True,
-                        "prefer_local_workspace_tools": True,
+                        "requires_project_action": True,
+                        "prefer_local_project_tools": True,
                         "followup_kind": "new_request",
                     }
                 ),
@@ -305,11 +305,11 @@ def test_classifier_keeps_workspace_action_for_file_requests(mocker, tmp_path: P
 
     classification = classifier.classify(ctx)
 
-    assert classification.requires_workspace_action is True
-    assert classification.prefer_local_workspace_tools is True
+    assert classification.requires_project_action is True
+    assert classification.prefer_local_project_tools is True
 
 
-def test_classifier_keeps_workspace_action_for_extensionless_file_requests(mocker, tmp_path: Path) -> None:
+def test_classifier_keeps_project_action_for_extensionless_file_requests(mocker, tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
     llm_client = LLMClient(cfg)
@@ -328,8 +328,8 @@ def test_classifier_keeps_workspace_action_for_extensionless_file_requests(mocke
                 "content": json.dumps(
                     {
                         "time_sensitive": False,
-                        "requires_workspace_action": True,
-                        "prefer_local_workspace_tools": True,
+                        "requires_project_action": True,
+                        "prefer_local_project_tools": True,
                         "followup_kind": "new_request",
                     }
                 ),
@@ -341,7 +341,7 @@ def test_classifier_keeps_workspace_action_for_extensionless_file_requests(mocke
 
     classification = classifier.classify(ctx)
 
-    assert classification.requires_workspace_action is True
+    assert classification.requires_project_action is True
 
 
 def test_classifier_seed_does_not_infer_contextual_followup_without_model(tmp_path: Path) -> None:
@@ -417,17 +417,17 @@ def test_classifier_uses_model_for_contextual_followup(mocker, tmp_path: Path) -
     assert "turn_classify" in calls
 
 
-def test_workspace_action_outcome_skips_model_when_structured_classification_disabled(mocker, tmp_path: Path) -> None:
+def test_project_action_outcome_skips_model_when_structured_classification_disabled(mocker, tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
     llm_client = LLMClient(cfg)
     classifier = TurnClassifier(cfg, runtime, llm_client)
     call = mocker.patch.object(classifier, "call_with_retry")
 
-    outcome = classifier.classify_workspace_action_outcome(
+    outcome = classifier.classify_project_action_outcome(
         current_user_input="yes",
         recent_routing_hint="",
-        assistant_reply="shell_command is not allowed for local workspace file tasks; use workspace tools instead.",
+        assistant_reply="shell_command is not allowed for local project file tasks; use project tools instead.",
         evidence={
             "has_successful_mutation": False,
             "policy_blocked_tools": ["shell_command"],
@@ -449,17 +449,17 @@ def test_workspace_action_outcome_skips_model_when_structured_classification_dis
     call.assert_not_called()
 
 
-def test_workspace_action_outcome_falls_back_to_blocked_when_classifier_call_fails(mocker, tmp_path: Path) -> None:
+def test_project_action_outcome_falls_back_to_blocked_when_classifier_call_fails(mocker, tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
     llm_client = LLMClient(cfg)
     classifier = TurnClassifier(cfg, runtime, llm_client)
     mocker.patch.object(classifier, "call_with_retry", side_effect=RuntimeError("timeout"))
 
-    outcome = classifier.classify_workspace_action_outcome(
+    outcome = classifier.classify_project_action_outcome(
         current_user_input="yes",
         recent_routing_hint="",
-        assistant_reply="shell_command is not allowed for local workspace file tasks; use workspace tools instead.",
+        assistant_reply="shell_command is not allowed for local project file tasks; use project tools instead.",
         evidence={
             "has_successful_mutation": False,
             "policy_blocked_tools": ["shell_command"],
@@ -480,13 +480,13 @@ def test_workspace_action_outcome_falls_back_to_blocked_when_classifier_call_fai
     assert outcome == "declined_or_blocked"
 
 
-def test_workspace_action_outcome_accepts_shell_rejected_by_user(tmp_path: Path) -> None:
+def test_project_action_outcome_accepts_shell_rejected_by_user(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
     llm_client = LLMClient(cfg)
     classifier = TurnClassifier(cfg, runtime, llm_client)
 
-    outcome = classifier.classify_workspace_action_outcome(
+    outcome = classifier.classify_project_action_outcome(
         current_user_input="what go version am i using?",
         recent_routing_hint="",
         assistant_reply="I attempted to run `go version`, but the command was rejected.",
@@ -513,13 +513,13 @@ def test_workspace_action_outcome_accepts_shell_rejected_by_user(tmp_path: Path)
     assert outcome == "declined_or_blocked"
 
 
-def test_workspace_action_outcome_accepts_shell_timeout_limitation(tmp_path: Path) -> None:
+def test_project_action_outcome_accepts_shell_timeout_limitation(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
     llm_client = LLMClient(cfg)
     classifier = TurnClassifier(cfg, runtime, llm_client)
 
-    outcome = classifier.classify_workspace_action_outcome(
+    outcome = classifier.classify_project_action_outcome(
         current_user_input="what go version am i using?",
         recent_routing_hint="",
         assistant_reply="I attempted to run `go version`, but the command timed out.",
@@ -546,13 +546,13 @@ def test_workspace_action_outcome_accepts_shell_timeout_limitation(tmp_path: Pat
     assert outcome == "declined_or_blocked"
 
 
-def test_workspace_action_outcome_rules_rejects_user_delegation_even_with_blocked_evidence(tmp_path: Path) -> None:
+def test_project_action_outcome_rules_rejects_user_delegation_even_with_blocked_evidence(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
     llm_client = LLMClient(cfg)
     classifier = TurnClassifier(cfg, runtime, llm_client)
 
-    outcome = classifier.classify_workspace_action_outcome(
+    outcome = classifier.classify_project_action_outcome(
         current_user_input="yes",
         recent_routing_hint="",
         assistant_reply="The tool is blocked here. Please delete the files yourself.",
@@ -576,13 +576,13 @@ def test_workspace_action_outcome_rules_rejects_user_delegation_even_with_blocke
     assert outcome == "not_completed"
 
 
-def test_workspace_action_outcome_rules_rejects_false_success_claim_even_with_blocked_evidence(tmp_path: Path) -> None:
+def test_project_action_outcome_rules_rejects_false_success_claim_even_with_blocked_evidence(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
     llm_client = LLMClient(cfg)
     classifier = TurnClassifier(cfg, runtime, llm_client)
 
-    outcome = classifier.classify_workspace_action_outcome(
+    outcome = classifier.classify_project_action_outcome(
         current_user_input="yes",
         recent_routing_hint="",
         assistant_reply="shell_command is not allowed here, but I deleted the files for you.",
@@ -606,7 +606,7 @@ def test_workspace_action_outcome_rules_rejects_false_success_claim_even_with_bl
     assert outcome == "not_completed"
 
 
-def test_classifier_clears_local_workspace_preference_for_environment_question(mocker, tmp_path: Path) -> None:
+def test_classifier_clears_local_project_preference_for_environment_question(mocker, tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
     llm_client = LLMClient(cfg)
@@ -629,7 +629,7 @@ def test_classifier_clears_local_workspace_preference_for_environment_question(m
                 "finish_reason": "stop",
                 "content": json.dumps(
                     {
-                        "prefer_local_workspace_tools": True,
+                        "prefer_local_project_tools": True,
                     }
                 ),
             },
@@ -641,17 +641,17 @@ def test_classifier_clears_local_workspace_preference_for_environment_question(m
     classification = classifier.classify(ctx)
 
     assert classification.used_model is True
-    assert classification.prefer_local_workspace_tools is False
+    assert classification.prefer_local_project_tools is False
 
 
-def test_classifier_clears_local_workspace_preference_for_shell_confirmation_followup(mocker, tmp_path: Path) -> None:
+def test_classifier_clears_local_project_preference_for_action_approvalation_followup(mocker, tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
     llm_client = LLMClient(cfg)
     classifier = TurnClassifier(cfg, runtime, llm_client)
     history_messages = [
         {"role": "user", "content": "how do i check my go version"},
-        {"role": "assistant", "content": "I can run `go version` in the workspace if you want."},
+        {"role": "assistant", "content": "I can run `go version` in the project if you want."},
     ]
     ctx = classifier.build_skill_context("yes check it", [], [], history_messages)
 
@@ -667,8 +667,8 @@ def test_classifier_clears_local_workspace_preference_for_shell_confirmation_fol
                 "content": json.dumps(
                     {
                         "followup_kind": "confirmation",
-                        "requires_workspace_action": True,
-                        "prefer_local_workspace_tools": True,
+                        "requires_project_action": True,
+                        "prefer_local_project_tools": True,
                     }
                 ),
             },
@@ -681,8 +681,8 @@ def test_classifier_clears_local_workspace_preference_for_shell_confirmation_fol
 
     assert classification.used_model is True
     assert classification.followup_kind == "confirmation"
-    assert classification.requires_workspace_action is True
-    assert classification.prefer_local_workspace_tools is False
+    assert classification.requires_project_action is True
+    assert classification.prefer_local_project_tools is False
 
 
 def _orchestrator_runtime(tmp_path: Path) -> tuple[SkillRuntime, TurnClassifier, TurnOrchestrator]:
@@ -700,13 +700,13 @@ def _orchestrator_runtime(tmp_path: Path) -> tuple[SkillRuntime, TurnClassifier,
     return runtime, classifier, orchestrator
 
 
-def _turn_state(tmp_path: Path, *, user_input: str, time_sensitive: bool, workspace_action: bool):
+def _turn_state(tmp_path: Path, *, user_input: str, time_sensitive: bool, project_action: bool):
     runtime, classifier, orchestrator = _orchestrator_runtime(tmp_path)
     ctx = classifier.build_skill_context(user_input, [], [], [])
     classification = TurnClassification(
         time_sensitive=time_sensitive,
-        requires_workspace_action=workspace_action,
-        prefer_local_workspace_tools=workspace_action,
+        requires_project_action=project_action,
+        prefer_local_project_tools=project_action,
         source="rules",
     )
     state = orchestrator.build_turn_state(ctx, [], [], classification)
@@ -718,7 +718,7 @@ def test_orchestrator_policy_snapshot_captures_forced_flags_and_shell_exposure(m
         tmp_path,
         user_input="latest updates",
         time_sensitive=True,
-        workspace_action=True,
+        project_action=True,
     )
     state.search_tools_enabled = True
     state.forced_search_retry = True
@@ -734,18 +734,18 @@ def test_orchestrator_policy_snapshot_captures_forced_flags_and_shell_exposure(m
     assert snapshot.search_mode is True
     assert snapshot.time_sensitive_query is True
     assert snapshot.forced_search_retry is True
-    assert snapshot.requires_workspace_action is True
+    assert snapshot.requires_project_action is True
     assert snapshot.forced_action_retry is True
     assert snapshot.shell_tool_exposed is True
     assert snapshot.collaboration_mode == "execute"
 
 
-def test_orchestrator_records_workspace_evidence_and_policy_blocks(tmp_path: Path) -> None:
+def test_orchestrator_records_project_evidence_and_policy_blocks(tmp_path: Path) -> None:
     _runtime, orchestrator, state = _turn_state(
         tmp_path,
         user_input="create a file",
         time_sensitive=False,
-        workspace_action=True,
+        project_action=True,
     )
 
     mutating_shell_call = ToolCall(
@@ -770,7 +770,7 @@ def test_orchestrator_records_workspace_evidence_and_policy_blocks(tmp_path: Pat
             "ok": True,
             "data": {"stdout": "", "stderr": ""},
             "error": None,
-            "meta": {"workspace_changed": True},
+            "meta": {"project_changed": True},
         },
     )
     orchestrator.record_tool_effects(
@@ -785,7 +785,7 @@ def test_orchestrator_records_workspace_evidence_and_policy_blocks(tmp_path: Pat
         policy_blocked=True,
     )
 
-    evidence = orchestrator.workspace_action_evidence(state)
+    evidence = orchestrator.project_action_evidence(state)
 
     assert state.completion.tool_counts["shell_command"] == 2
     assert evidence["has_successful_tool"] is True
@@ -795,12 +795,12 @@ def test_orchestrator_records_workspace_evidence_and_policy_blocks(tmp_path: Pat
     assert "shell_command" in evidence["policy_blocked_tools"]
 
 
-def test_orchestrator_counts_run_skill_workspace_changes_as_mutations(tmp_path: Path) -> None:
+def test_orchestrator_counts_run_skill_project_changes_as_mutations(tmp_path: Path) -> None:
     _runtime, orchestrator, state = _turn_state(
         tmp_path,
         user_input="create a report through the selected skill",
         time_sensitive=False,
-        workspace_action=True,
+        project_action=True,
     )
     call = ToolCall(
         stream_id="call_1",
@@ -817,23 +817,23 @@ def test_orchestrator_counts_run_skill_workspace_changes_as_mutations(tmp_path: 
             "ok": True,
             "data": {"stdout": "", "stderr": "", "returncode": 0},
             "error": None,
-            "meta": {"workspace_changed": True},
+            "meta": {"project_changed": True},
         },
     )
 
-    evidence = orchestrator.workspace_action_evidence(state)
+    evidence = orchestrator.project_action_evidence(state)
 
-    assert orchestrator.workspace_mutation_count(state) == 1
+    assert orchestrator.project_mutation_count(state) == 1
     assert evidence["has_successful_mutation"] is True
     assert "run_skill" in evidence["successful_mutating_tools"]
 
 
-def test_workspace_action_outcome_accepts_successful_non_mutating_open_action(tmp_path: Path) -> None:
+def test_project_action_outcome_accepts_successful_non_mutating_open_action(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
     classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
 
-    outcome = classifier.classify_workspace_action_outcome(
+    outcome = classifier.classify_project_action_outcome(
         current_user_input="open it using the open command please",
         recent_routing_hint="",
         assistant_reply="The website has been opened in your default browser.",
@@ -852,12 +852,12 @@ def test_workspace_action_outcome_accepts_successful_non_mutating_open_action(tm
     assert outcome == "completed_with_evidence"
 
 
-def test_workspace_action_outcome_accepts_shell_version_query(tmp_path: Path) -> None:
+def test_project_action_outcome_accepts_shell_version_query(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
     classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
 
-    outcome = classifier.classify_workspace_action_outcome(
+    outcome = classifier.classify_project_action_outcome(
         current_user_input="what go version am i running?",
         recent_routing_hint="",
         assistant_reply="You are running Go version `go1.26.4` on `darwin/arm64`.",
@@ -876,12 +876,12 @@ def test_workspace_action_outcome_accepts_shell_version_query(tmp_path: Path) ->
     assert outcome == "completed_with_evidence"
 
 
-def test_workspace_action_outcome_accepts_read_file_version_query(tmp_path: Path) -> None:
+def test_project_action_outcome_accepts_read_file_version_query(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
     classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
 
-    outcome = classifier.classify_workspace_action_outcome(
+    outcome = classifier.classify_project_action_outcome(
         current_user_input="read package.json and tell me the version",
         recent_routing_hint="",
         assistant_reply="I read package.json. The version is `1.2.3`.",
@@ -900,12 +900,12 @@ def test_workspace_action_outcome_accepts_read_file_version_query(tmp_path: Path
     assert outcome == "completed_with_evidence"
 
 
-def test_workspace_action_outcome_accepts_open_followup_after_mutating_hint(tmp_path: Path) -> None:
+def test_project_action_outcome_accepts_open_followup_after_mutating_hint(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
     classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
 
-    outcome = classifier.classify_workspace_action_outcome(
+    outcome = classifier.classify_project_action_outcome(
         current_user_input="open it",
         recent_routing_hint="previous user request: create notes.txt",
         assistant_reply="The website has been opened in your default browser.",
@@ -924,15 +924,15 @@ def test_workspace_action_outcome_accepts_open_followup_after_mutating_hint(tmp_
     assert outcome == "completed_with_evidence"
 
 
-def test_workspace_action_outcome_accepts_show_request_with_list_evidence(tmp_path: Path) -> None:
+def test_project_action_outcome_accepts_show_request_with_list_evidence(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
     classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
 
-    outcome = classifier.classify_workspace_action_outcome(
-        current_user_input="show me the files in the workspace",
+    outcome = classifier.classify_project_action_outcome(
+        current_user_input="show me the files in the project",
         recent_routing_hint="",
-        assistant_reply="I listed the files in the workspace.",
+        assistant_reply="I listed the files in the project.",
         evidence={
             "has_successful_tool": True,
             "successful_tools": ["list_files"],
@@ -948,23 +948,23 @@ def test_workspace_action_outcome_accepts_show_request_with_list_evidence(tmp_pa
     assert outcome == "completed_with_evidence"
 
 
-def test_workspace_action_outcome_accepts_display_tree_with_workspace_tree_evidence(tmp_path: Path) -> None:
+def test_project_action_outcome_accepts_display_tree_with_project_tree_evidence(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
     classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
 
-    outcome = classifier.classify_workspace_action_outcome(
+    outcome = classifier.classify_project_action_outcome(
         current_user_input="display the directory tree",
         recent_routing_hint="",
         assistant_reply="I displayed the directory tree.",
         evidence={
             "has_successful_tool": True,
-            "successful_tools": ["workspace_tree"],
+            "successful_tools": ["project_tree"],
             "has_successful_mutation": False,
             "successful_mutating_tools": [],
             "successful_action_labels": ["read"],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "workspace_tree", "actions": ["read"], "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tools": [{"name": "project_tree", "actions": ["read"], "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -972,12 +972,12 @@ def test_workspace_action_outcome_accepts_display_tree_with_workspace_tree_evide
     assert outcome == "completed_with_evidence"
 
 
-def test_workspace_action_outcome_rejects_ack_followup_to_mutating_request_without_mutation(tmp_path: Path) -> None:
+def test_project_action_outcome_rejects_ack_followup_to_mutating_request_without_mutation(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
     classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
 
-    outcome = classifier.classify_workspace_action_outcome(
+    outcome = classifier.classify_project_action_outcome(
         current_user_input="yes, do it",
         recent_routing_hint="previous user request: create notes.txt",
         assistant_reply="I checked notes.txt.",
@@ -995,13 +995,13 @@ def test_workspace_action_outcome_rejects_ack_followup_to_mutating_request_witho
     assert outcome == "not_completed"
 
 
-def test_workspace_action_outcome_overrides_structured_ack_followup_without_mutation(tmp_path: Path) -> None:
+def test_project_action_outcome_overrides_structured_ack_followup_without_mutation(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
     classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
     classifier.call_with_retry = lambda *_args, **_kwargs: SimpleNamespace(content='{"outcome":"completed_with_evidence"}')
 
-    outcome = classifier.classify_workspace_action_outcome(
+    outcome = classifier.classify_project_action_outcome(
         current_user_input="do it",
         recent_routing_hint="previous user request: delete old.txt",
         assistant_reply="I checked old.txt.",
@@ -1019,12 +1019,12 @@ def test_workspace_action_outcome_overrides_structured_ack_followup_without_muta
     assert outcome == "not_completed"
 
 
-def test_workspace_action_outcome_rejects_open_claim_with_only_read_evidence(tmp_path: Path) -> None:
+def test_project_action_outcome_rejects_open_claim_with_only_read_evidence(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
     classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
 
-    outcome = classifier.classify_workspace_action_outcome(
+    outcome = classifier.classify_project_action_outcome(
         current_user_input="open the app",
         recent_routing_hint="",
         assistant_reply="I opened the app.",
@@ -1042,13 +1042,13 @@ def test_workspace_action_outcome_rejects_open_claim_with_only_read_evidence(tmp
     assert outcome == "not_completed"
 
 
-def test_workspace_action_outcome_overrides_structured_open_claim_with_only_read_evidence(tmp_path: Path) -> None:
+def test_project_action_outcome_overrides_structured_open_claim_with_only_read_evidence(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
     classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
     classifier.call_with_retry = lambda *_args, **_kwargs: SimpleNamespace(content='{"outcome":"completed_with_evidence"}')
 
-    outcome = classifier.classify_workspace_action_outcome(
+    outcome = classifier.classify_project_action_outcome(
         current_user_input="open the app",
         recent_routing_hint="",
         assistant_reply="I opened the app.",
@@ -1066,12 +1066,12 @@ def test_workspace_action_outcome_overrides_structured_open_claim_with_only_read
     assert outcome == "not_completed"
 
 
-def test_workspace_action_outcome_still_rejects_file_creation_claim_without_mutation(tmp_path: Path) -> None:
+def test_project_action_outcome_still_rejects_file_creation_claim_without_mutation(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
     classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
 
-    outcome = classifier.classify_workspace_action_outcome(
+    outcome = classifier.classify_project_action_outcome(
         current_user_input="create notes.txt",
         recent_routing_hint="",
         assistant_reply="I created notes.txt.",
@@ -1089,12 +1089,12 @@ def test_workspace_action_outcome_still_rejects_file_creation_claim_without_muta
     assert outcome == "not_completed"
 
 
-def test_workspace_action_outcome_rejects_non_mutating_completion_for_mutating_request(tmp_path: Path) -> None:
+def test_project_action_outcome_rejects_non_mutating_completion_for_mutating_request(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}
     classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
 
-    outcome = classifier.classify_workspace_action_outcome(
+    outcome = classifier.classify_project_action_outcome(
         current_user_input="create notes.txt",
         recent_routing_hint="",
         assistant_reply="I checked notes.txt.",
@@ -1112,13 +1112,13 @@ def test_workspace_action_outcome_rejects_non_mutating_completion_for_mutating_r
     assert outcome == "not_completed"
 
 
-def test_workspace_action_outcome_overrides_structured_completion_without_mutation(tmp_path: Path) -> None:
+def test_project_action_outcome_overrides_structured_completion_without_mutation(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
     classifier = TurnClassifier(cfg, runtime, LLMClient(cfg))
     classifier.call_with_retry = lambda *_args, **_kwargs: SimpleNamespace(content='{"outcome":"completed_with_evidence"}')
 
-    outcome = classifier.classify_workspace_action_outcome(
+    outcome = classifier.classify_project_action_outcome(
         current_user_input="create notes.txt",
         recent_routing_hint="",
         assistant_reply="I checked notes.txt.",
@@ -1141,7 +1141,7 @@ def test_orchestrator_search_budget_reason_is_explicit_for_time_sensitive_turns(
         tmp_path,
         user_input="latest status",
         time_sensitive=True,
-        workspace_action=False,
+        project_action=False,
     )
     state.search_tools_enabled = True
     state.tool_budgets["web_search"] = 1
@@ -1165,7 +1165,7 @@ def test_search_tool_effects_record_attempt_metadata_and_empty_evidence(tmp_path
         tmp_path,
         user_input="latest status",
         time_sensitive=True,
-        workspace_action=False,
+        project_action=False,
     )
     state.search_tools_enabled = True
     call = ToolCall(
@@ -1202,7 +1202,7 @@ def test_fetch_tool_effects_do_not_count_unusable_text_as_fetch_evidence(tmp_pat
         tmp_path,
         user_input="latest status",
         time_sensitive=True,
-        workspace_action=False,
+        project_action=False,
     )
     state.search_tools_enabled = True
     call = ToolCall(
@@ -1242,7 +1242,7 @@ def test_policy_retrieval_injects_time_sensitive_context(tmp_path: Path) -> None
         tmp_path,
         user_input="What is the current alpha release status?",
         time_sensitive=True,
-        workspace_action=False,
+        project_action=False,
     )
     orchestrator.config["retrieval"] = {"store_path": str(db_path), "pre_context_top_k": 2}
     events: list[dict[str, object]] = []
@@ -1269,7 +1269,7 @@ def test_policy_retrieval_skips_non_time_sensitive_turns(tmp_path: Path) -> None
         tmp_path,
         user_input="Say hello",
         time_sensitive=False,
-        workspace_action=False,
+        project_action=False,
     )
     orchestrator.config["retrieval"] = {"store_path": str(db_path), "pre_context_top_k": 2}
 
@@ -1284,7 +1284,7 @@ def test_auto_memory_capture_stores_safe_preference(tmp_path: Path) -> None:
         tmp_path,
         user_input="I prefer concise answers for this project.",
         time_sensitive=False,
-        workspace_action=False,
+        project_action=False,
     )
     orchestrator.config["retrieval"] = {"store_path": str(db_path)}
 
@@ -1306,7 +1306,7 @@ def test_auto_memory_capture_respects_disabled_retrieval(tmp_path: Path) -> None
         tmp_path,
         user_input="I prefer concise answers for this project.",
         time_sensitive=False,
-        workspace_action=False,
+        project_action=False,
     )
     orchestrator.config["retrieval"] = {"enabled": False, "store_path": str(db_path)}
 
@@ -1324,7 +1324,7 @@ def test_auto_memory_capture_ignores_secret_like_text(tmp_path: Path) -> None:
         tmp_path,
         user_input="I prefer api key abc123 for tests.",
         time_sensitive=False,
-        workspace_action=False,
+        project_action=False,
     )
 
     orchestrator.maybe_auto_capture_memory(
@@ -1341,7 +1341,7 @@ def test_successful_tool_outcome_is_indexed_for_retrieval(tmp_path: Path) -> Non
         tmp_path,
         user_input="read README",
         time_sensitive=False,
-        workspace_action=False,
+        project_action=False,
     )
     orchestrator.config["retrieval"] = {"store_path": str(db_path)}
     call = ToolCall(stream_id="call_1", index=0, id="call_1", name="read_file", arguments={"filepath": "README.md"})
@@ -1363,7 +1363,7 @@ def test_failed_tool_outcome_is_not_indexed(tmp_path: Path) -> None:
         tmp_path,
         user_input="read README",
         time_sensitive=False,
-        workspace_action=False,
+        project_action=False,
     )
     orchestrator.config["retrieval"] = {"store_path": str(db_path)}
     call = ToolCall(stream_id="call_1", index=0, id="call_1", name="read_file", arguments={"filepath": "README.md"})
@@ -1377,14 +1377,14 @@ def test_failed_tool_outcome_is_not_indexed(tmp_path: Path) -> None:
     assert SQLiteRetrievalStore(db_path).search("failed", top_k=1, sources=["tool_outcome"]) == []
 
 
-def test_workspace_action_coercion_preserves_clarification_reply(mocker, tmp_path: Path) -> None:
+def test_project_action_coercion_preserves_clarification_reply(mocker, tmp_path: Path) -> None:
     _runtime, orchestrator, state = _turn_state(
         tmp_path,
         user_input="edit the config",
         time_sensitive=False,
-        workspace_action=True,
+        project_action=True,
     )
-    mocker.patch.object(orchestrator, "workspace_action_outcome", return_value="needs_clarification")
+    mocker.patch.object(orchestrator, "project_action_outcome", return_value="needs_clarification")
     result = AgentTurnResult(
         status="done",
         content="Which config file should I edit?",
@@ -1392,27 +1392,27 @@ def test_workspace_action_coercion_preserves_clarification_reply(mocker, tmp_pat
         skill_exchanges=[],
     )
 
-    coerced = orchestrator.coerce_workspace_action_failure(state, result, stop_event=None, pass_id="pass_1")
+    coerced = orchestrator.coerce_project_action_failure(state, result, stop_event=None, pass_id="pass_1")
 
     assert coerced is result
 
 
-def test_workspace_action_coercion_preserves_declined_or_blocked_reply(mocker, tmp_path: Path) -> None:
+def test_project_action_coercion_preserves_declined_or_blocked_reply(mocker, tmp_path: Path) -> None:
     _runtime, orchestrator, state = _turn_state(
         tmp_path,
-        user_input="delete all workspace files",
+        user_input="delete all project files",
         time_sensitive=False,
-        workspace_action=True,
+        project_action=True,
     )
-    mocker.patch.object(orchestrator, "workspace_action_outcome", return_value="declined_or_blocked")
+    mocker.patch.object(orchestrator, "project_action_outcome", return_value="declined_or_blocked")
     result = AgentTurnResult(
         status="done",
-        content="No workspace tool actually ran because the requested operation was blocked.",
+        content="No project tool actually ran because the requested operation was blocked.",
         reasoning="",
         skill_exchanges=[],
     )
 
-    coerced = orchestrator.coerce_workspace_action_failure(state, result, stop_event=None, pass_id="pass_1")
+    coerced = orchestrator.coerce_project_action_failure(state, result, stop_event=None, pass_id="pass_1")
 
     assert coerced is result
 
@@ -1480,7 +1480,7 @@ def test_plan_mode_blocks_mutating_tool_calls(mocker, tmp_path: Path) -> None:
         tmp_path,
         user_input="create src folder",
         time_sensitive=False,
-        workspace_action=True,
+        project_action=True,
     )
     state.collaboration_mode = "plan"
     execute_call = mocker.patch.object(runtime, "execute_tool_call")
@@ -1517,20 +1517,20 @@ def test_plan_mode_blocks_mutating_tool_calls(mocker, tmp_path: Path) -> None:
     assert blocked.policy_blocked is True
 
 
-def test_plan_mode_allows_workspace_tree_read_only_tool(tmp_path: Path) -> None:
+def test_plan_mode_allows_project_tree_read_only_tool(tmp_path: Path) -> None:
     runtime, _classifier, orchestrator = _orchestrator_runtime(tmp_path)
-    runtime.tool_registration = lambda name: type("Reg", (), {"capability": "workspace_tree"})() if name == "workspace_tree" else None
+    runtime.tool_registration = lambda name: type("Reg", (), {"capability": "project_tree"})() if name == "project_tree" else None
     runtime.tool_is_mutating = lambda _name: True
 
-    assert orchestrator._tool_allowed_in_plan_mode("workspace_tree") is True
+    assert orchestrator._tool_allowed_in_plan_mode("project_tree") is True
 
 
-def test_finalize_response_skips_workspace_action_enforcement_in_plan_mode(tmp_path: Path) -> None:
+def test_finalize_response_skips_project_action_enforcement_in_plan_mode(tmp_path: Path) -> None:
     _runtime, orchestrator, state = _turn_state(
         tmp_path,
         user_input="delete temp files",
         time_sensitive=False,
-        workspace_action=True,
+        project_action=True,
     )
     state.collaboration_mode = "plan"
     stream_result = type(
@@ -1561,7 +1561,7 @@ def test_finalize_response_accepts_read_only_shell_version_evidence(tmp_path: Pa
         tmp_path,
         user_input="what go version am i running?",
         time_sensitive=False,
-        workspace_action=True,
+        project_action=True,
     )
     original_tool_registration = runtime.tool_registration
     shell_registration = SimpleNamespace(capability="run_shell_command", actions=("run",), mutates=True)
@@ -1580,7 +1580,7 @@ def test_finalize_response_accepts_read_only_shell_version_evidence(tmp_path: Pa
                 "returncode": 0,
             },
             "error": None,
-            "meta": {"workspace_changed": False},
+            "meta": {"project_changed": False},
         },
     )
     stream_result = type(
@@ -1611,7 +1611,7 @@ def test_finalize_response_preserves_shell_rejection_explanation(tmp_path: Path)
         tmp_path,
         user_input="what go version am i using?",
         time_sensitive=False,
-        workspace_action=True,
+        project_action=True,
     )
     orchestrator.classifier.llm_client.enable_structured_classification = False
     call = ToolCall(stream_id="call_1", index=0, id="call_1", name="shell_command", arguments={"command": "go version"})
@@ -1656,7 +1656,7 @@ def test_skill_runtime_only_exposes_custom_tools_after_skill_view_load(tmp_path:
         user_input="create",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(runtime.workspace.workspace_root),
+        project_root=str(runtime.project.project_root),
         memory_hits=[],
     )
 
@@ -1664,7 +1664,7 @@ def test_skill_runtime_only_exposes_custom_tools_after_skill_view_load(tmp_path:
     names_before = set(runtime.allowed_tool_names(selected_before, ctx=skill_ctx))
     assert "create_directory" not in names_before
 
-    load_result = runtime.skill_view("workspace-ops", "", skill_ctx)
+    load_result = runtime.skill_view("project-ops", "", skill_ctx)
     assert load_result.get("loaded") is True
 
     selected_after = runtime.select_skills(skill_ctx)

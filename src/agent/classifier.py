@@ -41,12 +41,12 @@ _NON_MUTATING_ACTION_PATTERNS = {
     "list": re.compile(r"\b(?:list|listed)\b"),
     "check": re.compile(r"\b(?:inspect|inspected|check|checked|verify|verified)\b"),
 }
-_DRAFT_WORKSPACE_DONE_RE = re.compile(r"\b(?:workspace is now empty|done with workspace tools)\b")
+_DRAFT_PROJECT_DONE_RE = re.compile(r"\b(?:project is now empty|done with project tools)\b")
 _DRAFT_LIMITATION_RE = re.compile(
     r"\b(?:could not|couldn't|cannot|can't|unable|not allowed|blocked|rejected|declined|denied|timed out|timeout|permission|permissions|unsupported|unavailable|disabled)\b"
 )
-_WORKSPACE_FILE_TOKEN_RE = re.compile(r"(?<![\w/.-])(?:[\w.-]+/)*[\w.-]+\.[a-z0-9]{1,16}\b", re.IGNORECASE)
-_WORKSPACE_ABS_PATH_RE = re.compile(r"(?<![:/\w])(?:~/|/)[^\s\"'`]+")
+_PROJECT_FILE_TOKEN_RE = re.compile(r"(?<![\w/.-])(?:[\w.-]+/)*[\w.-]+\.[a-z0-9]{1,16}\b", re.IGNORECASE)
+_PROJECT_ABS_PATH_RE = re.compile(r"(?<![:/\w])(?:~/|/)[^\s\"'`]+")
 
 class TurnClassifier:
     def __init__(
@@ -167,15 +167,15 @@ class TurnClassifier:
             user_input=user_input,
             branch_labels=branch_labels,
             attachments=attachments,
-            workspace_root=str(self.skill_runtime.workspace.workspace_root),
+            project_root=str(self.skill_runtime.project.project_root),
             memory_hits=hits,
             loaded_skill_ids=[str(item).strip() for item in (loaded_skill_ids or []) if str(item).strip()],
             recent_routing_hint=recent_hint,
             sticky_skill_ids=sticky_skill_ids,
         )
 
-    def _explicit_path_outside_workspace(self, text: str) -> str:
-        workspace_root = Path(self.skill_runtime.workspace.workspace_root)
+    def _explicit_path_outside_project(self, text: str) -> str:
+        project_root = Path(self.skill_runtime.project.project_root)
         seen: set[str] = set()
         for match in _EXPLICIT_PATH_PATTERN.finditer(text or ""):
             raw = match.group("quoted_path") or match.group("plain_path") or ""
@@ -189,7 +189,7 @@ class TurnClassifier:
                 continue
             seen.add(resolved_str)
             try:
-                resolved.relative_to(workspace_root)
+                resolved.relative_to(project_root)
             except ValueError:
                 return resolved_str
         return ""
@@ -234,7 +234,7 @@ class TurnClassifier:
         return bool(_DRAFT_CLARIFICATION_RE.search(lowered))
 
     @classmethod
-    def _draft_defers_workspace_action_to_user(cls, assistant_reply: str) -> bool:
+    def _draft_defers_project_action_to_user(cls, assistant_reply: str) -> bool:
         lowered = cls._normalized_text(assistant_reply)
         if not lowered:
             return False
@@ -243,20 +243,20 @@ class TurnClassifier:
         return bool(_DRAFT_DEFER_RE.search(lowered))
 
     @classmethod
-    def _draft_claims_workspace_completion_without_evidence(cls, assistant_reply: str) -> bool:
+    def _draft_claims_project_completion_without_evidence(cls, assistant_reply: str) -> bool:
         lowered = cls._normalized_text(assistant_reply)
         if not lowered:
             return False
         if _DRAFT_COMPLETION_RE.search(lowered):
             return True
-        return bool(_DRAFT_WORKSPACE_DONE_RE.search(lowered))
+        return bool(_DRAFT_PROJECT_DONE_RE.search(lowered))
 
     @classmethod
     def _draft_reports_supported_limitation(cls, assistant_reply: str) -> bool:
         lowered = cls._normalized_text(assistant_reply)
         if not lowered:
             return False
-        if "no workspace tool actually ran" in lowered:
+        if "no project tool actually ran" in lowered:
             return True
         return bool(_DRAFT_LIMITATION_RE.search(lowered))
 
@@ -289,7 +289,7 @@ class TurnClassifier:
         return isinstance(tools, list) and bool(tools)
 
     @classmethod
-    def _request_requires_workspace_mutation(cls, current_user_input: str, recent_routing_hint: str = "") -> bool:
+    def _request_requires_project_mutation(cls, current_user_input: str, recent_routing_hint: str = "") -> bool:
         text = cls._normalized_text(current_user_input)
         if text and _MUTATING_REQUEST_RE.search(text):
             return True
@@ -381,48 +381,48 @@ class TurnClassifier:
         return bool(successful_actions and required_actions.issubset(successful_actions))
 
     @classmethod
-    def _text_targets_workspace_artifacts(cls, text: str) -> bool:
+    def _text_targets_project_artifacts(cls, text: str) -> bool:
         raw = str(text or "")
         lowered = cls._normalized_text(raw)
         if not lowered:
             return False
-        if _WORKSPACE_FILE_TOKEN_RE.search(raw):
+        if _PROJECT_FILE_TOKEN_RE.search(raw):
             return True
-        if _WORKSPACE_ABS_PATH_RE.search(raw):
+        if _PROJECT_ABS_PATH_RE.search(raw):
             return True
         if re.search(r"\b(?:file|files|folder|folders|filename|filenames)\b", lowered):
             return True
         action_pattern = r"(?:create|make|write|save|edit|update|modify|delete|remove|rename|move|read|open|list|show|inspect|find|copy|scaffold|generate)"
-        target_pattern = r"(?:directory|directories|workspace|repo|repository|project)"
+        target_pattern = r"(?:directory|directories|project|repo|repository|project)"
         return bool(
             re.search(rf"\b{action_pattern}\b[^.\n]{{0,40}}\b{target_pattern}\b", lowered)
             or re.search(rf"\b{target_pattern}\b[^.\n]{{0,40}}\b{action_pattern}\b", lowered)
         )
 
-    def _supports_local_workspace_preference(self, ctx: SkillContext, classification: TurnClassification) -> bool:
-        if self._text_targets_workspace_artifacts(ctx.user_input):
+    def _supports_local_project_preference(self, ctx: SkillContext, classification: TurnClassification) -> bool:
+        if self._text_targets_project_artifacts(ctx.user_input):
             return True
-        if classification.followup_kind in {"confirmation", "contextual_followup"} and self._text_targets_workspace_artifacts(
+        if classification.followup_kind in {"confirmation", "contextual_followup"} and self._text_targets_project_artifacts(
             getattr(ctx, "recent_routing_hint", "")
         ):
             return True
         return False
 
-    def _supports_workspace_action_requirement(self, ctx: SkillContext, classification: TurnClassification) -> bool:
-        if self._supports_local_workspace_preference(ctx, classification):
+    def _supports_project_action_requirement(self, ctx: SkillContext, classification: TurnClassification) -> bool:
+        if self._supports_local_project_preference(ctx, classification):
             return True
-        if self._request_requires_workspace_mutation(ctx.user_input, getattr(ctx, "recent_routing_hint", "")):
+        if self._request_requires_project_mutation(ctx.user_input, getattr(ctx, "recent_routing_hint", "")):
             return True
         hint = self._normalized_text(getattr(ctx, "recent_routing_hint", ""))
         if (
             classification.followup_kind in {"confirmation", "contextual_followup"}
-            and "workspace" in hint
+            and "project" in hint
             and self._non_mutating_actions_in_text(hint)
         ):
             return True
         return False
 
-    def classify_workspace_action_outcome(
+    def classify_project_action_outcome(
         self,
         *,
         current_user_input: str,
@@ -432,7 +432,7 @@ class TurnClassifier:
         pass_id: str,
         stop_event=None,
     ) -> str:
-        rules_outcome = self._rule_based_workspace_action_outcome(
+        rules_outcome = self._rule_based_project_action_outcome(
             assistant_reply,
             evidence,
             current_user_input=current_user_input,
@@ -441,15 +441,15 @@ class TurnClassifier:
         if not bool(self.llm_client.enable_structured_classification):
             return rules_outcome
         prompt = (
-            "Classify an assistant draft for a local workspace action request.\n"
+            "Classify an assistant draft for a local project action request.\n"
             "Return strict JSON only with this field:\n"
             '{"outcome":"not_completed"}\n'
             "Allowed outcome values: completed_with_evidence, declined_or_blocked, needs_clarification, not_completed.\n"
             "Use the provided tool evidence as the source of truth.\n"
             "- Choose completed_with_evidence when the evidence shows a successful tool that satisfies the requested action.\n"
-            "- For create, edit, delete, move, save, or write requests, require successful mutating workspace-tool evidence.\n"
+            "- For create, edit, delete, move, save, or write requests, require successful mutating project-tool evidence.\n"
             "- For open, run, read, list, inspect, check, or verify requests, a successful non-mutating tool can be sufficient evidence.\n"
-            "- Choose declined_or_blocked only when the reply transparently reports a real limitation supported by the evidence, such as a policy-blocked tool, unavailable tooling, or an explicit statement that no successful workspace tool actually ran.\n"
+            "- Choose declined_or_blocked only when the reply transparently reports a real limitation supported by the evidence, such as a policy-blocked tool, unavailable tooling, or an explicit statement that no successful project tool actually ran.\n"
             "- Choose needs_clarification when the assistant is explicitly asking the user for information needed before acting.\n"
             "- Choose not_completed for drafts that hand the requested action back to the user, unsupported success claims, or deflections/refusals that are not supported by the evidence.\n"
             "Do not explain."
@@ -469,9 +469,9 @@ class TurnClassifier:
             model_override=self.llm_client.classifier_model if not self.llm_client.classifier_use_primary_model else "",
         )
         try:
-            result = self.call_with_retry(payload, stop_event, None, pass_id=f"{pass_id}_workspace_action_outcome")
+            result = self.call_with_retry(payload, stop_event, None, pass_id=f"{pass_id}_project_action_outcome")
         except Exception as exc:
-            self.telemetry.emit("workspace_action_outcome_classification_failed", error=str(exc))
+            self.telemetry.emit("project_action_outcome_classification_failed", error=str(exc))
             return rules_outcome
         if result is None:
             return rules_outcome
@@ -480,7 +480,7 @@ class TurnClassifier:
         if outcome in {"completed_with_evidence", "declined_or_blocked", "needs_clarification", "not_completed"}:
             if (
                 outcome == "completed_with_evidence"
-                and self._request_requires_workspace_mutation(current_user_input, recent_routing_hint)
+                and self._request_requires_project_mutation(current_user_input, recent_routing_hint)
                 and not bool(evidence.get("has_successful_mutation"))
             ):
                 return "not_completed"
@@ -498,7 +498,7 @@ class TurnClassifier:
         return rules_outcome
 
     @staticmethod
-    def _rule_based_workspace_action_outcome(
+    def _rule_based_project_action_outcome(
         assistant_reply: str,
         evidence: JsonObject,
         *,
@@ -512,10 +512,10 @@ class TurnClassifier:
             return "not_completed"
         if TurnClassifier._draft_requests_clarification(assistant_reply):
             return "needs_clarification"
-        if TurnClassifier._draft_defers_workspace_action_to_user(assistant_reply):
+        if TurnClassifier._draft_defers_project_action_to_user(assistant_reply):
             return "not_completed"
         if (
-            not TurnClassifier._request_requires_workspace_mutation(current_user_input, recent_routing_hint)
+            not TurnClassifier._request_requires_project_mutation(current_user_input, recent_routing_hint)
             and TurnClassifier._evidence_shows_successful_action_tool(evidence)
             and _DRAFT_NON_MUTATING_ACTION_DONE_RE.search(lowered)
             and TurnClassifier._evidence_supports_non_mutating_completion(
@@ -525,7 +525,7 @@ class TurnClassifier:
             )
         ):
             return "completed_with_evidence"
-        if TurnClassifier._draft_claims_workspace_completion_without_evidence(assistant_reply):
+        if TurnClassifier._draft_claims_project_completion_without_evidence(assistant_reply):
             return "not_completed"
         if TurnClassifier._evidence_shows_blocked_or_unavailable_tool(evidence) and TurnClassifier._draft_reports_supported_limitation(
             assistant_reply
@@ -535,7 +535,7 @@ class TurnClassifier:
 
     def classify(self, ctx: SkillContext, stop_event=None) -> TurnClassification:
         seed = TurnClassification(
-            explicit_external_path=self._explicit_path_outside_workspace(ctx.user_input),
+            explicit_external_path=self._explicit_path_outside_project(ctx.user_input),
             source="rules",
         )
         if not self._should_model_classify():
@@ -543,10 +543,10 @@ class TurnClassifier:
         prompt = (
             "Classify the next local assistant turn.\n"
             "Return strict JSON only with these fields:\n"
-            '{"time_sensitive":false,"requires_workspace_action":false,'
-            '"prefer_local_workspace_tools":false,"followup_kind":"new_request"}\n'
+            '{"time_sensitive":false,"requires_project_action":false,'
+            '"prefer_local_project_tools":false,"followup_kind":"new_request"}\n'
             "Allowed followup_kind values: new_request, confirmation, contextual_followup.\n"
-            "Set requires_workspace_action only for actions on workspace files, folders, projects, or repository state. "
+            "Set requires_project_action only for actions on project files, folders, projects, or repository state. "
             "Do not set it for desktop apps, browser actions, screenshots, OCR, package managers, or general system checks.\n"
             "Do not explain."
         )
@@ -575,17 +575,17 @@ class TurnClassifier:
             followup_kind = seed.followup_kind
         merged = TurnClassification(
             time_sensitive=bool(parsed.get("time_sensitive", seed.time_sensitive)),
-            requires_workspace_action=bool(parsed.get("requires_workspace_action", seed.requires_workspace_action)),
-            prefer_local_workspace_tools=bool(parsed.get("prefer_local_workspace_tools", seed.prefer_local_workspace_tools)),
+            requires_project_action=bool(parsed.get("requires_project_action", seed.requires_project_action)),
+            prefer_local_project_tools=bool(parsed.get("prefer_local_project_tools", seed.prefer_local_project_tools)),
             explicit_external_path=seed.explicit_external_path,
             followup_kind=followup_kind,
             used_model=True,
             source="model",
         )
-        if merged.prefer_local_workspace_tools and not self._supports_local_workspace_preference(ctx, merged):
-            merged.prefer_local_workspace_tools = False
-        if merged.requires_workspace_action and not self._supports_workspace_action_requirement(ctx, merged):
-            merged.requires_workspace_action = False
+        if merged.prefer_local_project_tools and not self._supports_local_project_preference(ctx, merged):
+            merged.prefer_local_project_tools = False
+        if merged.requires_project_action and not self._supports_project_action_requirement(ctx, merged):
+            merged.requires_project_action = False
         self.telemetry.emit(
             "turn_classified",
             source=merged.source,

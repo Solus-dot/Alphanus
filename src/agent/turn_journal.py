@@ -54,8 +54,8 @@ class TurnJournalBuilder:
                 "source": state.classification.source,
                 "followup_kind": state.classification.followup_kind,
                 "time_sensitive": state.classification.time_sensitive,
-                "requires_workspace_action": state.classification.requires_workspace_action,
-                "prefer_local_workspace_tools": state.classification.prefer_local_workspace_tools,
+                "requires_project_action": state.classification.requires_project_action,
+                "prefer_local_project_tools": state.classification.prefer_local_project_tools,
             },
             "search_mode": state.search_mode,
             "search_failures": state.completion.search_failure_count,
@@ -75,7 +75,7 @@ class TurnJournalBuilder:
                 JSONValue,
                 build_file_audit_from_evidence(
                     state.evidence,
-                    workspace_root=getattr(state.ctx, "workspace_root", ""),
+                    project_root=getattr(state.ctx, "project_root", ""),
                 ),
             ),
             "turn_trace": {

@@ -21,14 +21,14 @@ class ResponseFinalizer:
     def _is_plan_mode(self, state: TurnState) -> bool:
         return self.orchestrator._is_plan_mode(state)
 
-    def workspace_mutation_count(self, state: TurnState) -> int:
-        return self.orchestrator.workspace_mutation_count(state)
+    def project_mutation_count(self, state: TurnState) -> int:
+        return self.orchestrator.project_mutation_count(state)
 
-    def workspace_action_outcome(self, state: TurnState, text: str, *, stop_event, pass_id: str) -> str:
-        return self.orchestrator.workspace_action_outcome(state, text, stop_event=stop_event, pass_id=pass_id)
+    def project_action_outcome(self, state: TurnState, text: str, *, stop_event, pass_id: str) -> str:
+        return self.orchestrator.project_action_outcome(state, text, stop_event=stop_event, pass_id=pass_id)
 
-    def coerce_workspace_action_failure(self, state: TurnState, result: AgentTurnResult, *, stop_event, pass_id: str) -> AgentTurnResult:
-        return self.orchestrator.coerce_workspace_action_failure(state, result, stop_event=stop_event, pass_id=pass_id)
+    def coerce_project_action_failure(self, state: TurnState, result: AgentTurnResult, *, stop_event, pass_id: str) -> AgentTurnResult:
+        return self.orchestrator.coerce_project_action_failure(state, result, stop_event=stop_event, pass_id=pass_id)
 
     def needs_fetch_evidence(self, state: TurnState) -> bool:
         return self.orchestrator.needs_fetch_evidence(state)
@@ -92,12 +92,12 @@ class ResponseFinalizer:
             )
             return "finalized", finalized
 
-        if not self._is_plan_mode(state) and state.requires_workspace_action and self.workspace_mutation_count(state) == 0:
+        if not self._is_plan_mode(state) and state.requires_project_action and self.project_mutation_count(state) == 0:
             if not final.strip():
                 if not state.forced_action_retry:
                     state.forced_action_retry = True
                     return "continue", None
-            elif self.workspace_action_outcome(state, final, stop_event=stop_event, pass_id=pass_id) == "not_completed":
+            elif self.project_action_outcome(state, final, stop_event=stop_event, pass_id=pass_id) == "not_completed":
                 if not state.forced_action_retry:
                     state.forced_action_retry = True
                     return "continue", None
@@ -107,9 +107,9 @@ class ResponseFinalizer:
                     stop_event,
                     on_event,
                     pass_id,
-                    "Workspace tool usage rule:\n- No workspace tool was used to complete the requested action.\n- Say plainly that the action was not completed.\n- Do not provide manual shell deletion advice.\n- Do not claim success.",
+                    "Project tool usage rule:\n- No project tool was used to complete the requested action.\n- Say plainly that the action was not completed.\n- Do not provide manual shell deletion advice.\n- Do not claim success.",
                 )
-                finalized = self.coerce_workspace_action_failure(state, finalized, stop_event=stop_event, pass_id=pass_id)
+                finalized = self.coerce_project_action_failure(state, finalized, stop_event=stop_event, pass_id=pass_id)
                 return "finalized", finalized
 
         if self.needs_fetch_evidence(state):

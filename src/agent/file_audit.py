@@ -10,13 +10,13 @@ from core.types import ToolExecutionRecord
 _FILE_TOOLS = {"create_file", "create_directory", "edit_file", "move_path", "delete_path"}
 
 
-def _relativize_path(path: object, workspace_root: str | Path | None) -> str:
+def _relativize_path(path: object, project_root: str | Path | None) -> str:
     text = str(path or "").strip()
     if not text:
         return ""
-    if workspace_root is None:
+    if project_root is None:
         return text
-    root = Path(workspace_root).expanduser().resolve()
+    root = Path(project_root).expanduser().resolve()
     raw = Path(text).expanduser()
     try:
         candidate = raw.resolve(strict=False) if raw.is_absolute() else (root / raw).resolve(strict=False)
@@ -39,10 +39,10 @@ def _base_row(action: str, tool: str, *, status: str) -> dict[str, JSONValue]:
     return {"action": action, "tool": tool, "status": status}
 
 
-def _file_row_from_success(name: str, data: dict[str, object], workspace_root: str | Path | None) -> dict[str, JSONValue] | None:
+def _file_row_from_success(name: str, data: dict[str, object], project_root: str | Path | None) -> dict[str, JSONValue] | None:
     if name == "create_file":
         row = _base_row("created", name, status="success")
-        row["path"] = _relativize_path(data.get("filepath"), workspace_root)
+        row["path"] = _relativize_path(data.get("filepath"), project_root)
         row["kind"] = "file"
         if (value := _num(data.get("bytes_written"))) is not None:
             row["bytes"] = value
@@ -52,13 +52,13 @@ def _file_row_from_success(name: str, data: dict[str, object], workspace_root: s
 
     if name == "create_directory":
         row = _base_row("created", name, status="success")
-        row["path"] = _relativize_path(data.get("filepath"), workspace_root)
+        row["path"] = _relativize_path(data.get("filepath"), project_root)
         row["kind"] = "directory"
         return row if row.get("path") else None
 
     if name == "edit_file":
         row = _base_row("edited", name, status="success")
-        row["path"] = _relativize_path(data.get("filepath"), workspace_root)
+        row["path"] = _relativize_path(data.get("filepath"), project_root)
         row["kind"] = str(data.get("kind") or "file")
         row["changed"] = bool(data.get("changed"))
         if (value := _num(data.get("changed_lines"))) is not None:
@@ -74,15 +74,15 @@ def _file_row_from_success(name: str, data: dict[str, object], workspace_root: s
 
     if name == "move_path":
         row = _base_row("moved", name, status="success")
-        row["from"] = _relativize_path(data.get("source_path"), workspace_root)
-        row["to"] = _relativize_path(data.get("destination_path") or data.get("filepath"), workspace_root)
+        row["from"] = _relativize_path(data.get("source_path"), project_root)
+        row["to"] = _relativize_path(data.get("destination_path") or data.get("filepath"), project_root)
         row["kind"] = str(data.get("kind") or "path")
         row["overwrite"] = bool(data.get("overwrite"))
         return row if row.get("from") or row.get("to") else None
 
     if name == "delete_path":
         row = _base_row("deleted", name, status="success")
-        row["path"] = _relativize_path(data.get("filepath"), workspace_root)
+        row["path"] = _relativize_path(data.get("filepath"), project_root)
         row["kind"] = str(data.get("kind") or "path")
         row["recursive"] = bool(data.get("recursive"))
         if (value := _num(data.get("size_bytes"))) is not None:
@@ -94,7 +94,7 @@ def _file_row_from_success(name: str, data: dict[str, object], workspace_root: s
     return None
 
 
-def _file_row_from_failure(name: str, args: dict[str, object], result: dict[str, object], workspace_root: str | Path | None) -> dict[str, JSONValue] | None:
+def _file_row_from_failure(name: str, args: dict[str, object], result: dict[str, object], project_root: str | Path | None) -> dict[str, JSONValue] | None:
     if name not in _FILE_TOOLS:
         return None
     action = {
@@ -106,11 +106,11 @@ def _file_row_from_failure(name: str, args: dict[str, object], result: dict[str,
     }.get(name, "changed")
     row = _base_row(action, name, status="failed")
     if name == "move_path":
-        row["from"] = _relativize_path(args.get("source_path"), workspace_root)
-        row["to"] = _relativize_path(args.get("destination_path"), workspace_root)
+        row["from"] = _relativize_path(args.get("source_path"), project_root)
+        row["to"] = _relativize_path(args.get("destination_path"), project_root)
     else:
         path_key = "path" if name in {"create_directory", "delete_path"} else "filepath"
-        row["path"] = _relativize_path(args.get(path_key), workspace_root)
+        row["path"] = _relativize_path(args.get(path_key), project_root)
     error = result.get("error")
     if isinstance(error, dict):
         message = str(error.get("message") or "").strip()
@@ -126,11 +126,11 @@ def _shell_row(name: str, result: dict[str, object]) -> dict[str, JSONValue] | N
     if name != "shell_command":
         return None
     meta = result.get("meta")
-    if not isinstance(meta, dict) or not bool(meta.get("workspace_changed")):
+    if not isinstance(meta, dict) or not bool(meta.get("project_changed")):
         return None
     data = result.get("data")
     data_obj = data if isinstance(data, dict) else {}
-    row = _base_row("workspace_changed", name, status="success" if result.get("ok") else "failed")
+    row = _base_row("project_changed", name, status="success" if result.get("ok") else "failed")
     row["paths_known"] = False
     row["command"] = str(data_obj.get("command") or "")
     row["cwd"] = str(data_obj.get("cwd") or "")
@@ -145,25 +145,25 @@ def _row_from_tool_result(
     name: str,
     args: dict[str, object],
     result: dict[str, object],
-    workspace_root: str | Path | None,
+    project_root: str | Path | None,
 ) -> dict[str, JSONValue] | None:
     if shell_row := _shell_row(name, result):
         return shell_row
     data = result.get("data")
     data_obj = data if isinstance(data, dict) else {}
     if result.get("ok"):
-        return _file_row_from_success(name, data_obj, workspace_root)
-    return _file_row_from_failure(name, args, result, workspace_root)
+        return _file_row_from_success(name, data_obj, project_root)
+    return _file_row_from_failure(name, args, result, project_root)
 
 
 def build_file_audit_from_evidence(
     evidence: list[ToolExecutionRecord],
     *,
-    workspace_root: str | Path | None = None,
+    project_root: str | Path | None = None,
 ) -> list[dict[str, JSONValue]]:
     rows: list[dict[str, JSONValue]] = []
     for item in evidence:
-        row = _row_from_tool_result(item.name, cast(dict[str, object], item.args), cast(dict[str, object], item.result), workspace_root)
+        row = _row_from_tool_result(item.name, cast(dict[str, object], item.args), cast(dict[str, object], item.result), project_root)
         if row is not None:
             rows.append(row)
     return rows
@@ -197,7 +197,7 @@ def _tool_calls_from_message(message: ChatMessage) -> list[tuple[str, str, dict[
 def build_file_audit_from_skill_exchanges(
     skill_exchanges: list[ChatMessage],
     *,
-    workspace_root: str | Path | None = None,
+    project_root: str | Path | None = None,
 ) -> list[dict[str, JSONValue]]:
     rows: list[dict[str, JSONValue]] = []
     pending_by_id: dict[str, tuple[str, dict[str, object]]] = {}
@@ -225,7 +225,7 @@ def build_file_audit_from_skill_exchanges(
             _call_name, args = pending_by_id.pop(tool_call_id)
         elif pending_by_name.get(name):
             args = pending_by_name[name].pop(0)
-        row = _row_from_tool_result(name, args, cast(dict[str, object], result), workspace_root)
+        row = _row_from_tool_result(name, args, cast(dict[str, object], result), project_root)
         if row is not None:
             rows.append(row)
     return rows
