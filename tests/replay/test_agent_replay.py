@@ -21,7 +21,7 @@ from agent.types import ModelStatus, StreamPassResult, ToolCall, TurnClassificat
 from core.memory import LexicalMemory
 from core.message_types import ChatMessage
 from core.types import JsonObject
-from core.workspace import WorkspaceManager
+from core.project import ProjectRuntime
 from skills.runtime import SkillContext, SkillRuntime
 
 FIXTURE_DIR = Path(__file__).with_name("fixtures")
@@ -81,8 +81,8 @@ class ReplayHooks:
         raw = self.fixture.get("classification", {})
         return TurnClassification(
             time_sensitive=bool(raw.get("time_sensitive", False)),
-            requires_workspace_action=bool(raw.get("requires_workspace_action", False)),
-            prefer_local_workspace_tools=bool(raw.get("prefer_local_workspace_tools", False)),
+            requires_project_action=bool(raw.get("requires_project_action", False)),
+            prefer_local_project_tools=bool(raw.get("prefer_local_project_tools", False)),
             explicit_external_path=str(raw.get("explicit_external_path", "")),
             followup_kind=str(raw.get("followup_kind", "new_request")),
             source="replay",
@@ -97,9 +97,9 @@ def _load_fixture(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _write_initial_files(workspace_root: Path, files: dict[str, str]) -> None:
+def _write_initial_files(project_root: Path, files: dict[str, str]) -> None:
     for relative, content in files.items():
-        target = workspace_root / relative
+        target = project_root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
 
@@ -126,10 +126,10 @@ def _deep_merge(base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]
 
 def _build_agent(tmp_path: Path, fixture: dict[str, Any]) -> Agent:
     home = tmp_path / "home"
-    workspace_root = home / "workspace"
+    project_root = home / "project"
     skills_root = home / "skills"
     home.mkdir()
-    workspace_root.mkdir()
+    project_root.mkdir()
     skills_root.mkdir()
     _write_fixture_skills(skills_root, fixture)
     config = _deep_merge(
@@ -144,7 +144,7 @@ def _build_agent(tmp_path: Path, fixture: dict[str, Any]) -> Agent:
                 "tls_verify": True,
                 "max_tokens": 256,
             },
-            "capabilities": {"shell_require_confirmation": True, "dangerously_skip_permissions": False},
+            "permissions": {"mode": "project-write", "approvals": "on-boundary", "network": False},
             "retrieval": {"enabled": False},
             "memory": {"auto_capture": False},
         },
@@ -153,7 +153,7 @@ def _build_agent(tmp_path: Path, fixture: dict[str, Any]) -> Agent:
     runtime = SkillRuntime(
         skills_dir=str(skills_root),
         bundled_skills_dir=str(REPO_ROOT / "bundled-skills"),
-        workspace=WorkspaceManager(str(workspace_root), home_root=str(home)),
+        project=ProjectRuntime(str(project_root)),
         memory=LexicalMemory(storage_path=str(tmp_path / "memory.jsonl")),
         config=config,
     )
@@ -185,8 +185,8 @@ def _tool_results_by_name(events: list[dict[str, Any]]) -> dict[str, list[dict[s
 def test_replay_core_coding_loop(fixture_path: Path, tmp_path: Path) -> None:
     fixture = _load_fixture(fixture_path)
     agent = _build_agent(tmp_path, fixture)
-    workspace_root = Path(agent.skill_runtime.workspace.workspace_root)
-    _write_initial_files(workspace_root, dict(fixture.get("initial_files", {})))
+    project_root = Path(agent.skill_runtime.project.project_root)
+    _write_initial_files(project_root, dict(fixture.get("initial_files", {})))
 
     hooks = ReplayHooks(agent, fixture)
     runtime_hooks = cast(TurnRuntimeHooks, hooks)
@@ -205,11 +205,11 @@ def test_replay_core_coding_loop(fixture_path: Path, tmp_path: Path) -> None:
         if stop_event is not None and event.get("type") == fixture.get("cancel_on_event_type"):
             stop_event.set()
 
-    confirm_shell_calls: list[str] = []
+    request_approval_calls: list[dict[str, Any]] = []
 
-    def confirm_shell(command: str) -> bool:
-        confirm_shell_calls.append(command)
-        return bool(fixture.get("confirm_shell", False))
+    def request_approval(request: dict[str, Any]) -> bool:
+        request_approval_calls.append(request)
+        return bool(fixture.get("request_approval", False))
 
     result = agent.run_turn(
         history_messages=cast(
@@ -221,7 +221,7 @@ def test_replay_core_coding_loop(fixture_path: Path, tmp_path: Path) -> None:
         loaded_skill_ids=list(fixture.get("skills", [])),
         stop_event=stop_event,
         on_event=on_event,
-        confirm_shell=confirm_shell,
+        request_approval=request_approval,
     )
 
     expected = fixture["expect"]
@@ -251,11 +251,11 @@ def test_replay_core_coding_loop(fixture_path: Path, tmp_path: Path) -> None:
             assert isinstance(error, dict)
             assert error.get("code") == expectation["error_code"]
 
-    for relative, content in expected.get("workspace_files", {}).items():
-        assert (workspace_root / relative).read_text(encoding="utf-8") == content
-    for relative in expected.get("workspace_paths", []):
-        assert (workspace_root / relative).exists(), f"missing workspace path: {relative}"
+    for relative, content in expected.get("project_files", {}).items():
+        assert (project_root / relative).read_text(encoding="utf-8") == content
+    for relative in expected.get("project_paths", []):
+        assert (project_root / relative).exists(), f"missing project path: {relative}"
 
-    if fixture.get("confirm_shell") is not None and "shell-ops" in fixture.get("skills", []):
-        assert confirm_shell_calls
+    if fixture.get("expect_approval_call"):
+        assert request_approval_calls
     assert len(hooks.passes) == int(expected.get("unconsumed_model_passes", 0))

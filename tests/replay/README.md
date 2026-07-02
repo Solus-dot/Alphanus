@@ -9,12 +9,12 @@ Each fixture may define:
 - `user_input`: the prompt passed to `Agent.run_turn`.
 - `skills`: bundled skill ids to expose for the turn.
 - `classification`: optional routing flags used by the scripted classifier.
-- `initial_files`: workspace files to create before the turn.
+- `initial_files`: project files to create before the turn.
 - `model_passes`: deterministic model pass outputs. Use `tool_calls` for tool
   phases and `content` with `finish_reason: "stop"` for final answers.
 - `cancel_on_event_type`: set a stop event when the named agent event is
   emitted.
-- `expect`: final status, content substrings, tool sequence, workspace file
+- `expect`: final status, content substrings, tool sequence, project file
   contents, tool result checks, event types, and optional skill-exchange tool
   messages.
 

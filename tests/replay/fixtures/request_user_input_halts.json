@@ -17,7 +17,7 @@
           "id": "call_later",
           "name": "skill_view",
           "arguments": {
-            "name": "workspace-ops",
+            "name": "project-ops",
             "file_path": "SKILL.md"
           }
         }

@@ -1,10 +1,10 @@
 {
   "name": "scaffold_directory_then_files",
   "user_input": "Make a bakery landing page in a folder called arjun.",
-  "skills": ["workspace-ops"],
+  "skills": ["project-ops"],
   "classification": {
-    "requires_workspace_action": true,
-    "prefer_local_workspace_tools": true
+    "requires_project_action": true,
+    "prefer_local_project_tools": true
   },
   "model_passes": [
     {
@@ -57,12 +57,12 @@
     "status": "done",
     "content_contains": "Done",
     "tool_sequence": ["create_directory", "create_file", "create_file", "create_file"],
-    "workspace_files": {
+    "project_files": {
       "arjun/index.html": "<html></html>",
       "arjun/styles.css": "body{}",
       "arjun/script.js": "console.log(1)\n"
     },
-    "workspace_paths": ["arjun"],
+    "project_paths": ["arjun"],
     "event_types": ["tool_call", "tool_result", "pass_end"]
   }
 }

@@ -1,10 +1,10 @@
 {
   "name": "create_then_readback",
   "user_input": "Create notes.txt containing alpha, then read it back.",
-  "skills": ["workspace-ops"],
+  "skills": ["project-ops"],
   "classification": {
-    "requires_workspace_action": true,
-    "prefer_local_workspace_tools": true
+    "requires_project_action": true,
+    "prefer_local_project_tools": true
   },
   "model_passes": [
     {
@@ -41,7 +41,7 @@
     "status": "done",
     "content_contains": "notes.txt=alpha",
     "tool_sequence": ["create_file", "read_file"],
-    "workspace_files": {
+    "project_files": {
       "notes.txt": "alpha"
     },
     "event_types": ["tool_call", "tool_result", "pass_end"],

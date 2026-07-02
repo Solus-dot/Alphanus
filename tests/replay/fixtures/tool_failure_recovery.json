@@ -1,10 +1,10 @@
 {
   "name": "tool_failure_recovery",
   "user_input": "Make missing.txt say recovered.",
-  "skills": ["workspace-ops"],
+  "skills": ["project-ops"],
   "classification": {
-    "requires_workspace_action": true,
-    "prefer_local_workspace_tools": true
+    "requires_project_action": true,
+    "prefer_local_project_tools": true
   },
   "model_passes": [
     {
@@ -43,7 +43,7 @@
     "status": "done",
     "content_contains": "Recovered",
     "tool_sequence": ["edit_file", "create_file"],
-    "workspace_files": {
+    "project_files": {
       "missing.txt": "recovered\n"
     },
     "event_types": ["tool_call", "tool_result", "pass_end"],

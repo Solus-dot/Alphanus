@@ -2,7 +2,7 @@
   "name": "shell_approval",
   "user_input": "Run pwd.",
   "skills": ["shell-ops"],
-  "confirm_shell": true,
+  "request_approval": true,
   "model_passes": [
     {
       "finish_reason": "tool_calls",

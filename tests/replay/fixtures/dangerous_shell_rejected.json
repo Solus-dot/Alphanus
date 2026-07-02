@@ -2,7 +2,7 @@
   "name": "dangerous_shell_rejected",
   "user_input": "Read Alphanus internal state.",
   "skills": ["shell-ops"],
-  "confirm_shell": true,
+  "request_approval": true,
   "initial_files": {
     "keep.txt": "do not remove\n"
   },
@@ -28,7 +28,7 @@
     "status": "done",
     "content_contains": "protected internal state",
     "tool_sequence": ["shell_command"],
-    "workspace_files": {
+    "project_files": {
       "keep.txt": "do not remove\n"
     },
     "event_types": ["tool_call", "tool_result", "pass_end"],

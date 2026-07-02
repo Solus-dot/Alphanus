@@ -1,10 +1,10 @@
 {
   "name": "multi_file_single_pass",
   "user_input": "Create eleven scaffold files.",
-  "skills": ["workspace-ops"],
+  "skills": ["project-ops"],
   "classification": {
-    "requires_workspace_action": true,
-    "prefer_local_workspace_tools": true
+    "requires_project_action": true,
+    "prefer_local_project_tools": true
   },
   "config": {
     "agent": {
@@ -49,7 +49,7 @@
       "create_file",
       "create_file"
     ],
-    "workspace_paths": [
+    "project_paths": [
       "scaffold/file_0.txt",
       "scaffold/file_1.txt",
       "scaffold/file_2.txt",
