@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 from core.memory import LexicalMemory
-from core.workspace import WorkspaceManager
+from core.project import ProjectRuntime
 from skills.runtime import SkillContext, SkillRuntime
 
 
@@ -18,28 +18,28 @@ def _runtime(tmp_path: Path) -> SkillRuntime:
     ws.mkdir()
     return SkillRuntime(
         skills_dir=str(repo_root / "bundled-skills"),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
 
 
-def _ctx(workspace_root: str) -> SkillContext:
+def _ctx(project_root: str) -> SkillContext:
     return SkillContext(
         user_input="edit a file",
         branch_labels=[],
         attachments=[],
-        workspace_root=workspace_root,
+        project_root=project_root,
         memory_hits=[],
     )
 
 
-def test_workspace_ops_returns_rich_file_metadata(tmp_path: Path):
+def test_project_ops_returns_rich_file_metadata(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     created = runtime.execute_tool_call(
         "create_file",
         {"filepath": "notes.txt", "content": "alpha\nbeta\n"},
@@ -83,12 +83,33 @@ def test_workspace_ops_returns_rich_file_metadata(tmp_path: Path):
     assert read["data"]["line_count"] == 3
 
 
-def test_workspace_ops_edit_file_supports_localized_replacement(tmp_path: Path):
+def test_project_ops_create_file_allows_explicit_absolute_path_outside_project(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
+    assert skill is not None
+    outside = runtime.project.project_root.parent / "outside"
+    outside.mkdir()
+    target = outside / "hello.rs"
+
+    ctx = _ctx(str(runtime.project.project_root))
+    created = runtime.execute_tool_call(
+        "create_file",
+        {"filepath": str(target), "content": 'fn main() {\n    println!("Hello, world!");\n}\n'},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    assert created["ok"] is True
+    assert created["data"]["filepath"] == str(target.resolve())
+    assert target.read_text(encoding="utf-8") == 'fn main() {\n    println!("Hello, world!");\n}\n'
+
+
+def test_project_ops_edit_file_supports_localized_replacement(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     runtime.execute_tool_call(
         "create_file",
         {"filepath": "notes.txt", "content": "alpha\nbeta\n"},
@@ -106,15 +127,15 @@ def test_workspace_ops_edit_file_supports_localized_replacement(tmp_path: Path):
     assert edited["ok"] is True
     assert edited["data"]["edit_mode"] == "replace_one"
     assert edited["data"]["replacements_applied"] == 1
-    assert runtime.workspace.read_file("notes.txt") == "alpha\ngamma\n"
+    assert runtime.project.read_file("notes.txt") == "alpha\ngamma\n"
 
 
-def test_workspace_ops_edit_file_rejects_ambiguous_localized_replacement(tmp_path: Path):
+def test_project_ops_edit_file_rejects_ambiguous_localized_replacement(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     runtime.execute_tool_call(
         "create_file",
         {"filepath": "notes.txt", "content": "beta\nalpha\nbeta\n"},
@@ -135,12 +156,12 @@ def test_workspace_ops_edit_file_rejects_ambiguous_localized_replacement(tmp_pat
     )
 
 
-def test_workspace_ops_edit_file_supports_replace_all(tmp_path: Path):
+def test_project_ops_edit_file_supports_replace_all(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     runtime.execute_tool_call(
         "create_file",
         {"filepath": "notes.txt", "content": "beta\nalpha\nbeta\n"},
@@ -158,15 +179,15 @@ def test_workspace_ops_edit_file_supports_replace_all(tmp_path: Path):
     assert edited["ok"] is True
     assert edited["data"]["edit_mode"] == "replace_all"
     assert edited["data"]["replacements_applied"] == 2
-    assert runtime.workspace.read_file("notes.txt") == "gamma\nalpha\ngamma\n"
+    assert runtime.project.read_file("notes.txt") == "gamma\nalpha\ngamma\n"
 
 
-def test_workspace_ops_edit_file_supports_section_scoped_replacement(tmp_path: Path):
+def test_project_ops_edit_file_supports_section_scoped_replacement(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     runtime.execute_tool_call(
         "create_file",
         {"filepath": "notes.txt", "content": "head\nvalue=1\nmid\nvalue=1\n"},
@@ -192,15 +213,15 @@ def test_workspace_ops_edit_file_supports_section_scoped_replacement(tmp_path: P
     assert edited["data"]["resolved_start_line"] == 1
     assert edited["data"]["resolved_end_line"] == 2
     assert edited["data"]["replacements_applied"] == 1
-    assert runtime.workspace.read_file("notes.txt") == "head\nvalue=2\nmid\nvalue=1\n"
+    assert runtime.project.read_file("notes.txt") == "head\nvalue=2\nmid\nvalue=1\n"
 
 
-def test_workspace_ops_edit_file_supports_section_scoped_regex_replacement(tmp_path: Path):
+def test_project_ops_edit_file_supports_section_scoped_regex_replacement(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     runtime.execute_tool_call(
         "create_file",
         {"filepath": "notes.txt", "content": "A=1\nA=2\nA=3\n"},
@@ -226,15 +247,15 @@ def test_workspace_ops_edit_file_supports_section_scoped_regex_replacement(tmp_p
     assert edited["data"]["edit_mode"] == "regex_replace_all"
     assert edited["data"]["section_scoped"] is True
     assert edited["data"]["replacements_applied"] == 2
-    assert runtime.workspace.read_file("notes.txt") == "A=1\nA=9\nA=9\n"
+    assert runtime.project.read_file("notes.txt") == "A=1\nA=9\nA=9\n"
 
 
-def test_workspace_ops_edit_file_rejects_mixed_edit_modes(tmp_path: Path):
+def test_project_ops_edit_file_rejects_mixed_edit_modes(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     runtime.execute_tool_call(
         "create_file",
         {"filepath": "notes.txt", "content": "alpha\nbeta\n"},
@@ -260,12 +281,12 @@ def test_workspace_ops_edit_file_rejects_mixed_edit_modes(tmp_path: Path):
     )
 
 
-def test_workspace_ops_create_directory_and_create_file(tmp_path: Path):
+def test_project_ops_create_directory_and_create_file(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     created_dir = runtime.execute_tool_call(
         "create_directory",
         {"path": "site/assets"},
@@ -282,22 +303,22 @@ def test_workspace_ops_create_directory_and_create_file(tmp_path: Path):
         ctx=ctx,
     )
     assert created_file["ok"] is True
-    assert (runtime.workspace.workspace_root / "site" / "index.html").exists()
+    assert (runtime.project.project_root / "site" / "index.html").exists()
     runtime.execute_tool_call(
         "create_file",
         {"filepath": "site/script.js", "content": "console.log('hi')\n"},
         selected=[skill],
         ctx=ctx,
     )
-    assert (runtime.workspace.workspace_root / "site" / "script.js").exists()
+    assert (runtime.project.project_root / "site" / "script.js").exists()
 
 
-def test_workspace_ops_list_delete_and_tree(tmp_path: Path):
+def test_project_ops_list_delete_and_tree(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     runtime.execute_tool_call(
         "create_file",
         {"filepath": "src/app.py", "content": "print('hi')\n"},
@@ -316,7 +337,7 @@ def test_workspace_ops_list_delete_and_tree(tmp_path: Path):
     assert listed["data"]["files"] == ["app.py"]
 
     tree = runtime.execute_tool_call(
-        "workspace_tree",
+        "project_tree",
         {"max_depth": 3},
         selected=[skill],
         ctx=ctx,
@@ -337,12 +358,12 @@ def test_workspace_ops_list_delete_and_tree(tmp_path: Path):
     assert deleted["data"]["kind"] == "file"
 
 
-def test_workspace_ops_move_path_renames_file(tmp_path: Path):
+def test_project_ops_move_path_renames_file(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     created = runtime.execute_tool_call(
         "create_file",
         {"filepath": "index.html", "content": "<h1>hello</h1>\n"},
@@ -362,19 +383,19 @@ def test_workspace_ops_move_path_renames_file(tmp_path: Path):
     assert moved["data"]["moved"] is True
     assert moved["data"]["kind"] == "file"
     assert moved["data"]["destination_path"].endswith("/site/index.html")
-    assert not (runtime.workspace.workspace_root / "index.html").exists()
-    assert (runtime.workspace.workspace_root / "site" / "index.html").exists()
+    assert not (runtime.project.project_root / "index.html").exists()
+    assert (runtime.project.project_root / "site" / "index.html").exists()
 
 
-def test_workspace_ops_delete_path_supports_binary_files(tmp_path: Path):
+def test_project_ops_delete_path_supports_binary_files(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    binary_path = runtime.workspace.workspace_root / ".DS_Store"
+    binary_path = runtime.project.project_root / ".DS_Store"
     binary_path.write_bytes(b"\x00\x87binary")
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     deleted = runtime.execute_tool_call(
         "delete_path",
         {"path": ".DS_Store"},
@@ -387,12 +408,12 @@ def test_workspace_ops_delete_path_supports_binary_files(tmp_path: Path):
     assert deleted["data"]["kind"] == "file"
 
 
-def test_workspace_ops_delete_path_supports_directories(tmp_path: Path):
+def test_project_ops_delete_path_supports_directories(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     runtime.execute_tool_call(
         "create_file",
         {"filepath": "site/assets/a.txt", "content": "alpha"},
@@ -413,6 +434,7 @@ def test_workspace_ops_delete_path_supports_directories(tmp_path: Path):
         {"path": "site", "recursive": True},
         selected=[skill],
         ctx=ctx,
+        request_approval=lambda _request: True,
     )
     assert recursive["ok"] is True
     assert recursive["data"]["deleted"] is True
@@ -421,15 +443,15 @@ def test_workspace_ops_delete_path_supports_directories(tmp_path: Path):
     assert recursive["data"]["file_count"] == 1
 
 
-def test_workspace_ops_delete_path_handles_empty_directory(tmp_path: Path):
+def test_project_ops_delete_path_handles_empty_directory(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    empty_dir = runtime.workspace.workspace_root / "empty-dir"
+    empty_dir = runtime.project.project_root / "empty-dir"
     empty_dir.mkdir(parents=True)
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     deleted = runtime.execute_tool_call(
         "delete_path",
         {"path": "empty-dir"},
@@ -441,22 +463,23 @@ def test_workspace_ops_delete_path_handles_empty_directory(tmp_path: Path):
     assert deleted["data"]["file_count"] == 0
 
 
-def test_workspace_ops_accepts_workspace_root_prefixed_relative_paths(tmp_path: Path):
+def test_project_ops_accepts_project_root_prefixed_relative_paths(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    nested = runtime.workspace.workspace_root / "nested"
+    nested = runtime.project.project_root / "nested"
     nested.mkdir(parents=True)
     (nested / "file.txt").write_text("alpha", encoding="utf-8")
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
-    prefixed = f"{runtime.workspace.workspace_root.name}/nested"
+    ctx = _ctx(str(runtime.project.project_root))
+    prefixed = f"{runtime.project.project_root.name}/nested"
     deleted = runtime.execute_tool_call(
         "delete_path",
         {"path": prefixed, "recursive": True},
         selected=[skill],
         ctx=ctx,
+        request_approval=lambda _request: True,
     )
 
     assert deleted["ok"] is True
@@ -464,22 +487,23 @@ def test_workspace_ops_accepts_workspace_root_prefixed_relative_paths(tmp_path: 
     assert not nested.exists()
 
 
-def test_workspace_ops_accepts_workspace_root_prefixed_absolute_like_paths(tmp_path: Path):
+def test_project_ops_accepts_project_root_prefixed_absolute_like_paths(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    nested = runtime.workspace.workspace_root / "nested"
+    nested = runtime.project.project_root / "nested"
     nested.mkdir(parents=True)
     (nested / "file.txt").write_text("alpha", encoding="utf-8")
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
-    prefixed = f"/{runtime.workspace.workspace_root.name}/nested"
+    ctx = _ctx(str(runtime.project.project_root))
+    prefixed = f"/{runtime.project.project_root.name}/nested"
     deleted = runtime.execute_tool_call(
         "delete_path",
         {"path": prefixed, "recursive": True},
         selected=[skill],
         ctx=ctx,
+        request_approval=lambda _request: True,
     )
 
     assert deleted["ok"] is True
@@ -487,12 +511,51 @@ def test_workspace_ops_accepts_workspace_root_prefixed_absolute_like_paths(tmp_p
     assert not nested.exists()
 
 
-def test_workspace_ops_read_files_and_search_code(tmp_path: Path):
+def test_project_ops_external_delete_requires_approval(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
+    assert skill is not None
+    outside = runtime.project.project_root.parent / "outside.txt"
+    outside.write_text("important", encoding="utf-8")
+
+    ctx = _ctx(str(runtime.project.project_root))
+    denied = runtime.execute_tool_call(
+        "delete_path",
+        {"path": str(outside)},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert denied["ok"] is False
+    assert outside.exists()
+
+    declined = runtime.execute_tool_call(
+        "delete_path",
+        {"path": str(outside)},
+        selected=[skill],
+        ctx=ctx,
+        request_approval=lambda _request: False,
+    )
+    assert declined["ok"] is False
+    assert outside.exists()
+
+    approved = runtime.execute_tool_call(
+        "delete_path",
+        {"path": str(outside)},
+        selected=[skill],
+        ctx=ctx,
+        request_approval=lambda request: request["kind"] == "project_path_delete",
+    )
+    assert approved["ok"] is True
+    assert approved["data"]["deleted"] is True
+    assert not outside.exists()
+
+
+def test_project_ops_read_files_and_search_code(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     runtime.execute_tool_call(
         "create_file",
         {
@@ -534,12 +597,12 @@ def test_workspace_ops_read_files_and_search_code(tmp_path: Path):
     assert read_many["data"]["files"][0]["truncated"] is True
     assert read_many["data"]["files"][0]["returned_chars"] == 20
 
-def test_workspace_ops_read_file_supports_section_and_numbered_output(tmp_path: Path):
+def test_project_ops_read_file_supports_section_and_numbered_output(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     runtime.execute_tool_call(
         "create_file",
         {"filepath": "notes.txt", "content": "alpha\nbeta\ngamma\ndelta"},
@@ -568,12 +631,12 @@ def test_workspace_ops_read_file_supports_section_and_numbered_output(tmp_path: 
     assert read["data"]["returned_line_count"] == 2
 
 
-def test_workspace_ops_section_bounds_can_use_reported_line_count(tmp_path: Path):
+def test_project_ops_section_bounds_can_use_reported_line_count(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     runtime.execute_tool_call(
         "create_file",
         {"filepath": "notes.txt", "content": "alpha\nbeta\n"},
@@ -614,15 +677,15 @@ def test_workspace_ops_section_bounds_can_use_reported_line_count(tmp_path: Path
         ctx=ctx,
     )
     assert edited["ok"] is True
-    assert runtime.workspace.read_file("notes.txt") == "alpha\ngamma\n"
+    assert runtime.project.read_file("notes.txt") == "alpha\ngamma\n"
 
 
-def test_workspace_ops_search_code_supports_context_lines(tmp_path: Path):
+def test_project_ops_search_code_supports_context_lines(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     runtime.execute_tool_call(
         "create_file",
         {
@@ -649,18 +712,18 @@ def test_workspace_ops_search_code_supports_context_lines(tmp_path: Path):
     assert match["after_context"] == [{"line_number": 5, "line": "    return f'hello {name}'"}]
 
 
-def test_workspace_ops_search_code_skips_blocked_home_descendants(tmp_path: Path):
+def test_project_ops_search_code_allows_explicit_external_root_but_skips_secrets(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    home = runtime.workspace.home_root
+    home = runtime.project.project_root.parent
     (home / ".ssh").mkdir(parents=True, exist_ok=True)
     (home / ".ssh" / "id_rsa").write_text("topsecret\n", encoding="utf-8")
     (home / ".env").write_text("API_KEY=topsecret\n", encoding="utf-8")
     (home / "notes.txt").write_text("topsecret is only here\n", encoding="utf-8")
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     search = runtime.execute_tool_call(
         "search_code",
         {"query": "topsecret", "path": str(home)},
@@ -669,19 +732,19 @@ def test_workspace_ops_search_code_skips_blocked_home_descendants(tmp_path: Path
     )
     assert search["ok"] is True
     assert search["data"]["count"] == 1
-    assert search["data"]["results"][0]["filepath"].endswith("notes.txt")
-    assert ".ssh" not in search["data"]["results"][0]["filepath"]
-    assert ".env" not in search["data"]["results"][0]["filepath"]
+    assert search["data"]["results"][0]["filepath"] == str(home / "notes.txt")
 
 
-def test_workspace_search_code_uses_direct_rg_without_prelisting_workspace_files(tmp_path: Path, monkeypatch):
-    manager = WorkspaceManager(str(tmp_path / "ws"), home_root=str(tmp_path / "home"))
-    (manager.workspace_root / "src").mkdir(parents=True)
-    (manager.workspace_root / "src" / "app.py").write_text("def greet(name):\n    return f'hello {name}'\n", encoding="utf-8")
+def test_project_search_code_uses_direct_rg_without_prelisting_project_files(tmp_path: Path, monkeypatch):
+    project_root = tmp_path / "ws"
+    project_root.mkdir()
+    manager = ProjectRuntime(str(project_root))
+    (manager.project_root / "src").mkdir(parents=True)
+    (manager.project_root / "src" / "app.py").write_text("def greet(name):\n    return f'hello {name}'\n", encoding="utf-8")
     monkeypatch.setattr(
         manager, "_iter_searchable_files", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not pre-list files"))
     )
-    monkeypatch.setattr("core.workspace.shutil.which", lambda name: "/usr/bin/rg" if name == "rg" else None)
+    monkeypatch.setattr("core.project.shutil.which", lambda name: "/usr/bin/rg" if name == "rg" else None)
 
     match_event = {
         "type": "match",
@@ -717,11 +780,13 @@ def test_workspace_search_code_uses_direct_rg_without_prelisting_workspace_files
     assert result["results"][0]["filepath"].endswith("src/app.py")
 
 
-def test_workspace_search_code_tolerates_rg_io_exit_with_partial_results(tmp_path: Path, monkeypatch):
-    manager = WorkspaceManager(str(tmp_path / "ws"), home_root=str(tmp_path / "home"))
-    (manager.workspace_root / "src").mkdir(parents=True)
-    (manager.workspace_root / "src" / "app.py").write_text("def greet(name):\n    return f'hello {name}'\n", encoding="utf-8")
-    monkeypatch.setattr("core.workspace.shutil.which", lambda name: "/usr/bin/rg" if name == "rg" else None)
+def test_project_search_code_tolerates_rg_io_exit_with_partial_results(tmp_path: Path, monkeypatch):
+    project_root = tmp_path / "ws"
+    project_root.mkdir()
+    manager = ProjectRuntime(str(project_root))
+    (manager.project_root / "src").mkdir(parents=True)
+    (manager.project_root / "src" / "app.py").write_text("def greet(name):\n    return f'hello {name}'\n", encoding="utf-8")
+    monkeypatch.setattr("core.project.shutil.which", lambda name: "/usr/bin/rg" if name == "rg" else None)
 
     match_event = {
         "type": "match",
@@ -757,14 +822,16 @@ def test_workspace_search_code_tolerates_rg_io_exit_with_partial_results(tmp_pat
     assert result["results"][0]["filepath"].endswith("src/app.py")
 
 
-def test_workspace_search_code_reuses_context_lines_for_same_file(tmp_path: Path, monkeypatch):
-    manager = WorkspaceManager(str(tmp_path / "ws"), home_root=str(tmp_path / "home"))
-    (manager.workspace_root / "src").mkdir(parents=True)
-    (manager.workspace_root / "src" / "app.py").write_text(
+def test_project_search_code_reuses_context_lines_for_same_file(tmp_path: Path, monkeypatch):
+    project_root = tmp_path / "ws"
+    project_root.mkdir()
+    manager = ProjectRuntime(str(project_root))
+    (manager.project_root / "src").mkdir(parents=True)
+    (manager.project_root / "src" / "app.py").write_text(
         "def greet_one(name):\n    return name\n\ndef greet_two(name):\n    return name\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr("core.workspace.shutil.which", lambda name: "/usr/bin/rg" if name == "rg" else None)
+    monkeypatch.setattr("core.project.shutil.which", lambda name: "/usr/bin/rg" if name == "rg" else None)
 
     match_one = {
         "type": "match",
@@ -819,12 +886,12 @@ def test_workspace_search_code_reuses_context_lines_for_same_file(tmp_path: Path
     assert len(resolve_calls) == 1
 
 
-def test_workspace_ops_does_not_expose_run_checks(tmp_path: Path):
+def test_project_ops_does_not_expose_run_checks(tmp_path: Path):
     runtime = _runtime(tmp_path)
-    skill = runtime.get_skill("workspace-ops")
+    skill = runtime.get_skill("project-ops")
     assert skill is not None
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     out = runtime.execute_tool_call(
         "run_checks",
         {"command": "python3", "args": ["-c", "print('hi')"]},

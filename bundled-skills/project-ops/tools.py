@@ -8,10 +8,10 @@ from skills.runtime import ToolExecutionEnv
 
 TOOL_SPECS = {
     "create_directory": {
-        "capability": "workspace_write",
+        "capability": "project_write",
         "mutates": True,
         "actions": ["create"],
-        "description": "Create a directory in the workspace.",
+        "description": "Create a directory in the project, or at an explicit absolute path when policy allows it.",
         "parameters": {
             "type": "object",
             "properties": {"path": {"type": "string"}},
@@ -19,10 +19,10 @@ TOOL_SPECS = {
         },
     },
     "create_file": {
-        "capability": "workspace_write",
+        "capability": "project_write",
         "mutates": True,
         "actions": ["create", "write", "save"],
-        "description": "Create or overwrite a file in the workspace.",
+        "description": "Create or overwrite a file in the project, or at an explicit absolute path when policy allows it.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -33,11 +33,11 @@ TOOL_SPECS = {
         },
     },
     "edit_file": {
-        "capability": "workspace_edit",
+        "capability": "project_edit",
         "mutates": True,
         "actions": ["edit", "update", "write"],
         "description": (
-            "Edit an existing workspace file. Supports exactly one mode per call: full content replace, "
+            "Edit an existing project file, or an explicit absolute file when policy allows it. Supports exactly one mode per call: full content replace, "
             "localized old_string/new_string, or regex replacement. Optional line-range and anchor selectors "
             "can scope non-content edits."
         ),
@@ -63,10 +63,10 @@ TOOL_SPECS = {
         },
     },
     "read_file": {
-        "capability": "workspace_read",
+        "capability": "project_read",
         "mutates": False,
         "actions": ["read"],
-        "description": "Read a file under home/workspace policy. Optional line-range and anchor selectors can return a specific section.",
+        "description": "Read a project file, or an explicit absolute file when policy allows it. Optional line-range and anchor selectors can return a specific section.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -81,10 +81,10 @@ TOOL_SPECS = {
         },
     },
     "read_files": {
-        "capability": "workspace_read",
+        "capability": "project_read",
         "mutates": False,
         "actions": ["read"],
-        "description": "Read multiple files under home/workspace policy with per-file truncation metadata.",
+        "description": "Read multiple project or explicit absolute files with per-file truncation metadata.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -98,7 +98,7 @@ TOOL_SPECS = {
         },
     },
     "list_files": {
-        "capability": "workspace_read",
+        "capability": "project_read",
         "mutates": False,
         "actions": ["list", "read"],
         "description": "List files in a directory.",
@@ -109,10 +109,10 @@ TOOL_SPECS = {
         },
     },
     "search_code": {
-        "capability": "workspace_read",
+        "capability": "project_read",
         "mutates": False,
         "actions": ["read", "check"],
-        "description": "Search the workspace codebase with ripgrep when available. Optional context lines can be returned per match.",
+        "description": "Search the project codebase with ripgrep when available. Optional context lines can be returned per match.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -129,10 +129,10 @@ TOOL_SPECS = {
         },
     },
     "move_path": {
-        "capability": "workspace_write",
+        "capability": "project_write",
         "mutates": True,
         "actions": ["move", "rename"],
-        "description": "Move or rename a workspace file or directory.",
+        "description": "Move or rename a project path, or an explicit absolute path when policy allows it.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -144,10 +144,10 @@ TOOL_SPECS = {
         },
     },
     "delete_path": {
-        "capability": "workspace_delete",
+        "capability": "project_delete",
         "mutates": True,
         "actions": ["delete", "remove"],
-        "description": "Delete a workspace file or directory inside the workspace.",
+        "description": "Delete a project path, or an explicit absolute path when policy allows it.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -157,11 +157,11 @@ TOOL_SPECS = {
             "required": ["path"],
         },
     },
-    "workspace_tree": {
-        "capability": "workspace_tree",
+    "project_tree": {
+        "capability": "project_tree",
         "mutates": False,
         "actions": ["list", "read"],
-        "description": "Render the workspace tree.",
+        "description": "Render the project tree.",
         "parameters": {
             "type": "object",
             "properties": {"max_depth": {"type": "integer"}},
@@ -196,6 +196,17 @@ def _path_info(path_str: str) -> dict[str, object]:
         "filepath": path_str,
         "basename": path.name,
     }
+
+
+def _require_approval(env: ToolExecutionEnv, request: dict[str, object]) -> bool:
+    if env.project.permission_mode == "danger-full-access":
+        return True
+    if not env.request_approval:
+        raise PermissionError("Approval callback is required")
+    approved = bool(env.request_approval(request))
+    if not approved:
+        raise PermissionError("Project operation rejected by user")
+    return approved
 
 
 def _optional_positive_int(args: dict[str, object], key: str) -> int | None:
@@ -260,7 +271,19 @@ def _render_numbered_content(content: str, start_line: int) -> str:
 
 def _create_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     content = str(args["content"])
-    path_str = env.workspace.create_file(str(args["filepath"]), content)
+    filepath = str(args["filepath"])
+    approved = False
+    if env.project.write_path_requires_approval(filepath, overwrite=True):
+        approved = _require_approval(
+            env,
+            {
+                "kind": "project_file_write",
+                "path": filepath,
+                "operation": "overwrite",
+                "reason": "External file overwrite crosses the project-write approval boundary.",
+            },
+        )
+    path_str = env.project.create_file(filepath, content, approved=approved)
     data = _path_info(path_str)
     data.update(
         {
@@ -276,7 +299,7 @@ def _create_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, ob
 
 
 def _create_directory(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
-    path_str = env.workspace.create_directory(str(args["path"]))
+    path_str = env.project.create_directory(str(args["path"]))
     data = _path_info(path_str)
     data.update({"created": True, "kind": "directory"})
     return data
@@ -284,7 +307,7 @@ def _create_directory(args: dict[str, object], env: ToolExecutionEnv) -> dict[st
 
 def _edit_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     filepath = str(args["filepath"])
-    before = env.workspace.read_file(filepath)
+    before = env.project.read_file(filepath)
     section = _section_selectors(args)
     has_section_selectors = _has_section_selectors(section)
 
@@ -306,7 +329,7 @@ def _edit_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, obje
         total_line_count_before = _line_count(before)
         total_line_count_after = _line_count(after)
     else:
-        resolved = env.workspace.resolve_text_section(
+        resolved = env.project.resolve_text_section(
             before,
             start_line=section["start_line"],
             end_line=section["end_line"],
@@ -372,7 +395,7 @@ def _edit_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, obje
         total_line_count_before = int(resolved["total_line_count"])
         total_line_count_after = _line_count(after)
 
-    path_str = env.workspace.edit_file(filepath, after)
+    path_str = env.project.edit_file(filepath, after)
     diff_text = "\n".join(
         difflib.unified_diff(
             before.splitlines(),
@@ -407,9 +430,9 @@ def _edit_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, obje
 
 def _read_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     filepath = str(args["filepath"])
-    content = env.workspace.read_file(filepath)
+    content = env.project.read_file(filepath)
     section = _section_selectors(args)
-    resolved = env.workspace.resolve_text_section(
+    resolved = env.project.resolve_text_section(
         content,
         start_line=section["start_line"],
         end_line=section["end_line"],
@@ -450,20 +473,20 @@ def _read_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, obje
 def _read_files(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     max_chars = int(args.get("max_chars_per_file", 20000))
     paths = [str(item) for item in args.get("paths") or []]
-    files = env.workspace.read_files(paths, max_chars_per_file=max_chars)
+    files = env.project.read_files(paths, max_chars_per_file=max_chars)
     return {"files": files, "count": len(files), "max_chars_per_file": max_chars}
 
 
 def _list_files(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     path = str(args.get("path", "."))
-    names = env.workspace.list_files(path)
+    names = env.project.list_files(path)
     return {"path": path, "files": names, "count": len(names)}
 
 
 def _search_code(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     before_context = _optional_non_negative_int(args, "before_context", 0)
     after_context = _optional_non_negative_int(args, "after_context", 0)
-    return env.workspace.search_code(
+    return env.project.search_code(
         str(args["query"]),
         path=str(args.get("path", ".")),
         glob=str(args["glob"]) if "glob" in args and args.get("glob") is not None else None,
@@ -478,9 +501,20 @@ def _search_code(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, ob
 def _delete_path(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     path = str(args["path"])
     recursive = bool(args.get("recursive", False))
-    metadata = env.workspace.delete_path_metadata(path)
+    approved = False
+    if env.project.delete_path_requires_approval(path, recursive=recursive):
+        approved = _require_approval(
+            env,
+            {
+                "kind": "project_path_delete",
+                "path": path,
+                "recursive": recursive,
+                "reason": "Delete crosses the project-write approval boundary.",
+            },
+        )
+    metadata = env.project.delete_path_metadata(path)
     is_dir = bool(metadata["is_dir"])
-    path_str = env.workspace.delete_path(path, recursive=recursive)
+    path_str = env.project.delete_path(path, recursive=recursive, approved=approved)
     data = _path_info(path_str)
     data.update(
         {
@@ -498,10 +532,22 @@ def _move_path(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, obje
     source_path = str(args["source_path"])
     destination_path = str(args["destination_path"])
     overwrite = bool(args.get("overwrite", False))
+    approved = False
+    if env.project.move_path_requires_approval(source_path, destination_path, overwrite=overwrite):
+        approved = _require_approval(
+            env,
+            {
+                "kind": "project_path_move",
+                "source_path": source_path,
+                "destination_path": destination_path,
+                "overwrite": overwrite,
+                "reason": "Move crosses the project-write approval boundary.",
+            },
+        )
 
-    source = env.workspace._resolve_read_path(source_path)
+    source = env.project._resolve_read_path(source_path)
     is_dir = source.is_dir()
-    moved_to = env.workspace.move_path(source_path, destination_path, overwrite=overwrite)
+    moved_to = env.project.move_path(source_path, destination_path, overwrite=overwrite, approved=approved)
     data = _path_info(moved_to)
     data.update(
         {
@@ -515,9 +561,9 @@ def _move_path(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, obje
     return data
 
 
-def _workspace_tree(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
+def _project_tree(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     max_depth = max(1, int(args.get("max_depth", 3)))
-    tree = env.workspace.workspace_tree(max_depth=max_depth)
+    tree = env.project.project_tree(max_depth=max_depth)
     return {"tree": tree, "max_depth": max_depth}
 
 
@@ -540,6 +586,6 @@ def execute(tool_name: str, args: dict[str, object], env: ToolExecutionEnv):
         return _move_path(args, env)
     if tool_name == "delete_path":
         return _delete_path(args, env)
-    if tool_name == "workspace_tree":
-        return _workspace_tree(args, env)
+    if tool_name == "project_tree":
+        return _project_tree(args, env)
     raise ValueError(f"Unsupported tool: {tool_name}")
