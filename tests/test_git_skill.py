@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 from core.memory import LexicalMemory
-from core.workspace import WorkspaceManager
+from core.project import ProjectRuntime
 from skills.runtime import SkillContext, SkillRuntime
 
 
@@ -16,18 +16,18 @@ def _runtime(tmp_path: Path) -> SkillRuntime:
     ws.mkdir()
     return SkillRuntime(
         skills_dir=str(repo_root / "bundled-skills"),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
 
 
-def _ctx(workspace_root: str) -> SkillContext:
+def _ctx(project_root: str) -> SkillContext:
     return SkillContext(
         user_input="use git",
         branch_labels=[],
         attachments=[],
-        workspace_root=workspace_root,
+        project_root=project_root,
         memory_hits=[],
         loaded_skill_ids=["git"],
     )
@@ -36,7 +36,7 @@ def _ctx(workspace_root: str) -> SkillContext:
 def _git(runtime: SkillRuntime, tool_name: str, args: dict[str, object]):
     skill = runtime.get_skill("git")
     assert skill is not None
-    return runtime.execute_tool_call(tool_name, args, selected=[skill], ctx=_ctx(str(runtime.workspace.workspace_root)))
+    return runtime.execute_tool_call(tool_name, args, selected=[skill], ctx=_ctx(str(runtime.project.project_root)))
 
 
 def _run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -73,17 +73,17 @@ def test_git_skill_loads_with_core_tool_surface(tmp_path: Path):
         "git_push",
         "git_init",
     }
-    assert "git_init" in runtime.allowed_tool_names([skill], ctx=_ctx(str(runtime.workspace.workspace_root)))
+    assert "git_init" in runtime.allowed_tool_names([skill], ctx=_ctx(str(runtime.project.project_root)))
 
 
-def test_git_init_blocks_workspace_root(tmp_path: Path):
+def test_git_init_blocks_project_root(tmp_path: Path):
     runtime = _runtime(tmp_path)
 
     out = _git(runtime, "git_init", {"path": ".", "create_if_missing": False})
 
     assert out["ok"] is False
     assert out["error"]["code"] == "E_POLICY"
-    assert out["data"]["block_reason"] == "workspace_root"
+    assert out["data"]["block_reason"] == "project_root"
 
 
 def test_git_init_allows_nested_subfolder(tmp_path: Path):
@@ -104,7 +104,7 @@ def test_git_init_blocks_path_escape(tmp_path: Path):
 
     assert out["ok"] is False
     assert out["error"]["code"] == "E_POLICY"
-    assert "escapes workspace root" in out["error"]["message"]
+    assert "escapes project root" in out["error"]["message"]
 
 
 def test_git_init_blocks_nested_repo_initialization(tmp_path: Path):

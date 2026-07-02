@@ -10,10 +10,10 @@ from skills.runtime import ToolExecutionEnv
 
 TOOL_SPECS = {
     "git_status": {
-        "capability": "workspace_read",
+        "capability": "project_read",
         "mutates": False,
         "actions": ["check", "read"],
-        "description": "Return structured Git status for a repository inside the workspace.",
+        "description": "Return structured Git status for a repository inside the project.",
         "parameters": {
             "type": "object",
             "properties": {"path": {"type": "string"}},
@@ -21,10 +21,10 @@ TOOL_SPECS = {
         },
     },
     "git_log": {
-        "capability": "workspace_read",
+        "capability": "project_read",
         "mutates": False,
         "actions": ["read", "list"],
-        "description": "Return recent Git commits for a repository inside the workspace.",
+        "description": "Return recent Git commits for a repository inside the project.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -36,10 +36,10 @@ TOOL_SPECS = {
         },
     },
     "git_diff": {
-        "capability": "workspace_read",
+        "capability": "project_read",
         "mutates": False,
         "actions": ["read", "check"],
-        "description": "Return Git diff output for a repository inside the workspace.",
+        "description": "Return Git diff output for a repository inside the project.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -52,10 +52,10 @@ TOOL_SPECS = {
         },
     },
     "git_show": {
-        "capability": "workspace_read",
+        "capability": "project_read",
         "mutates": False,
         "actions": ["read"],
-        "description": "Show a Git object or revision inside a workspace repository.",
+        "description": "Show a Git object or revision inside a project repository.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -67,7 +67,7 @@ TOOL_SPECS = {
         },
     },
     "git_branch_list": {
-        "capability": "workspace_read",
+        "capability": "project_read",
         "mutates": False,
         "actions": ["list", "read"],
         "description": "List local and optional remote Git branches.",
@@ -81,10 +81,10 @@ TOOL_SPECS = {
         },
     },
     "git_branch_create": {
-        "capability": "workspace_write",
+        "capability": "project_write",
         "mutates": True,
         "actions": ["create"],
-        "description": "Create a Git branch in a workspace repository.",
+        "description": "Create a Git branch in a project repository.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -97,7 +97,7 @@ TOOL_SPECS = {
         },
     },
     "git_branch_switch": {
-        "capability": "workspace_write",
+        "capability": "project_write",
         "mutates": True,
         "actions": ["update"],
         "description": "Switch Git branches when the working tree is clean.",
@@ -112,10 +112,10 @@ TOOL_SPECS = {
         },
     },
     "git_add": {
-        "capability": "workspace_write",
+        "capability": "project_write",
         "mutates": True,
         "actions": ["update"],
-        "description": "Stage explicit paths in a workspace Git repository.",
+        "description": "Stage explicit paths in a project Git repository.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -127,7 +127,7 @@ TOOL_SPECS = {
         },
     },
     "git_commit": {
-        "capability": "workspace_write",
+        "capability": "project_write",
         "mutates": True,
         "actions": ["save", "write"],
         "description": "Commit currently staged changes with a non-empty message.",
@@ -142,10 +142,10 @@ TOOL_SPECS = {
         },
     },
     "git_fetch": {
-        "capability": "workspace_write",
+        "capability": "project_write",
         "mutates": True,
         "actions": ["update"],
-        "description": "Fetch from a Git remote in a workspace repository.",
+        "description": "Fetch from a Git remote in a project repository.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -156,7 +156,7 @@ TOOL_SPECS = {
         },
     },
     "git_pull": {
-        "capability": "workspace_write",
+        "capability": "project_write",
         "mutates": True,
         "actions": ["update"],
         "description": "Pull from a Git remote, defaulting to rebase.",
@@ -172,7 +172,7 @@ TOOL_SPECS = {
         },
     },
     "git_push": {
-        "capability": "workspace_write",
+        "capability": "project_write",
         "mutates": True,
         "actions": ["update"],
         "description": "Push to a Git remote after explicit confirmation. Force push modes are rejected.",
@@ -190,10 +190,10 @@ TOOL_SPECS = {
         },
     },
     "git_init": {
-        "capability": "workspace_write",
+        "capability": "project_write",
         "mutates": True,
         "actions": ["create"],
-        "description": "Initialize a Git repository in an explicit descendant folder inside the workspace, never at workspace root.",
+        "description": "Initialize a Git repository in an explicit descendant folder inside the project, never at project root.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -232,8 +232,8 @@ def _is_under(path: Path, root: Path) -> bool:
         return False
 
 
-def _resolve_inside_workspace(env: ToolExecutionEnv, path: str | object = ".") -> Path:
-    root = Path(env.workspace.workspace_root).resolve()
+def _resolve_inside_project(env: ToolExecutionEnv, path: str | object = ".") -> Path:
+    root = Path(env.project.project_root).resolve()
     raw_text = str(path or ".").strip() or "."
     raw = Path(os.path.expanduser(raw_text))
     candidate = raw if raw.is_absolute() else root / raw
@@ -242,7 +242,7 @@ def _resolve_inside_workspace(env: ToolExecutionEnv, path: str | object = ".") -
     except OSError:
         resolved = Path(os.path.abspath(str(candidate)))
     if not _is_under(resolved, root):
-        raise PermissionError("Git path escapes workspace root")
+        raise PermissionError("Git path escapes project root")
     return resolved
 
 
@@ -286,7 +286,7 @@ def _git_failure_message(run: dict[str, Any], fallback: str = "Git command faile
     return f"{fallback} with exit code {run.get('returncode')}"
 
 
-def _repo_root_for(cwd: Path, workspace_root: Path) -> tuple[Path | None, dict[str, Any] | None]:
+def _repo_root_for(cwd: Path, project_root: Path) -> tuple[Path | None, dict[str, Any] | None]:
     ok, run = _git_success(cwd, ["rev-parse", "--show-toplevel"])
     if not ok:
         return None, run
@@ -294,21 +294,21 @@ def _repo_root_for(cwd: Path, workspace_root: Path) -> tuple[Path | None, dict[s
     if not root_text:
         return None, run
     repo_root = Path(root_text).resolve()
-    if not _is_under(repo_root, workspace_root):
-        raise PermissionError("Git repository root escapes workspace root")
+    if not _is_under(repo_root, project_root):
+        raise PermissionError("Git repository root escapes project root")
     return repo_root, run
 
 
 def _require_repo(env: ToolExecutionEnv, path: object = ".") -> tuple[Path, Path]:
-    cwd = _resolve_inside_workspace(env, path)
+    cwd = _resolve_inside_project(env, path)
     if not cwd.exists():
         raise FileNotFoundError(str(cwd))
     if cwd.is_file():
         cwd = cwd.parent
     if not cwd.is_dir():
         raise FileNotFoundError(str(cwd))
-    workspace_root = Path(env.workspace.workspace_root).resolve()
-    repo_root, run = _repo_root_for(cwd, workspace_root)
+    project_root = Path(env.project.project_root).resolve()
+    repo_root, run = _repo_root_for(cwd, project_root)
     if repo_root is None:
         message = _git_failure_message(run or {}, "Path is not inside a Git repository")
         raise ValueError(f"Path is not inside a Git repository: {message}")
@@ -337,7 +337,7 @@ def _optional_clean_arg(args: dict[str, object], key: str) -> str:
 def _pathspecs(env: ToolExecutionEnv, repo_root: Path, raw_paths: object) -> list[str]:
     if not isinstance(raw_paths, list) or not raw_paths:
         raise ValueError("paths must be a non-empty array")
-    workspace_root = Path(env.workspace.workspace_root).resolve()
+    project_root = Path(env.project.project_root).resolve()
     out: list[str] = []
     for item in raw_paths:
         text = str(item or "").strip()
@@ -348,10 +348,10 @@ def _pathspecs(env: ToolExecutionEnv, repo_root: Path, raw_paths: object) -> lis
             resolved = raw.resolve(strict=False)
         else:
             repo_relative = (repo_root / raw).resolve(strict=False)
-            workspace_relative = (workspace_root / raw).resolve(strict=False)
-            resolved = workspace_relative if _is_under(workspace_relative, repo_root) else repo_relative
-        if not _is_under(resolved, workspace_root):
-            raise PermissionError("Git pathspec escapes workspace root")
+            project_relative = (project_root / raw).resolve(strict=False)
+            resolved = project_relative if _is_under(project_relative, repo_root) else repo_relative
+        if not _is_under(resolved, project_root):
+            raise PermissionError("Git pathspec escapes project root")
         if not _is_under(resolved, repo_root):
             raise PermissionError("Git pathspec must remain inside the target repository")
         try:
@@ -582,39 +582,39 @@ def _nearest_existing_parent(path: Path) -> Path:
 def _init(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, Any]:
     if "path" not in args or str(args.get("path") or "").strip() == "":
         raise ValueError("path is required")
-    workspace_root = Path(env.workspace.workspace_root).resolve()
-    target = _resolve_inside_workspace(env, args["path"])
+    project_root = Path(env.project.project_root).resolve()
+    target = _resolve_inside_project(env, args["path"])
     created = False
 
-    if target == workspace_root:
+    if target == project_root:
         return _err(
             "E_POLICY",
-            "git_init is not allowed at the workspace root; choose an explicit nested folder inside the workspace",
-            {"path": str(target), "workspace_root": str(workspace_root), "created": False, "block_reason": "workspace_root"},
+            "git_init is not allowed at the project root; choose an explicit nested folder inside the project",
+            {"path": str(target), "project_root": str(project_root), "created": False, "block_reason": "project_root"},
         )
-    if not _is_under(target, workspace_root):
+    if not _is_under(target, project_root):
         return _err(
             "E_POLICY",
-            "git_init path escapes workspace root",
-            {"path": str(target), "workspace_root": str(workspace_root), "created": False, "block_reason": "outside_workspace"},
+            "git_init path escapes project root",
+            {"path": str(target), "project_root": str(project_root), "created": False, "block_reason": "outside_project"},
         )
     if target.exists() and not target.is_dir():
         return _err(
             "E_NOT_DIRECTORY",
             "git_init target must be a directory",
-            {"path": str(target), "workspace_root": str(workspace_root), "created": False, "block_reason": "not_directory"},
+            {"path": str(target), "project_root": str(project_root), "created": False, "block_reason": "not_directory"},
         )
 
     existing_parent = _nearest_existing_parent(target)
     if existing_parent.exists():
-        repo_root, _ = _repo_root_for(existing_parent if existing_parent.is_dir() else existing_parent.parent, workspace_root)
+        repo_root, _ = _repo_root_for(existing_parent if existing_parent.is_dir() else existing_parent.parent, project_root)
         if repo_root is not None:
             return _err(
                 "E_POLICY",
                 "git_init target is already inside an existing Git repository; nested repository initialization is blocked",
                 {
                     "path": str(target),
-                    "workspace_root": str(workspace_root),
+                    "project_root": str(project_root),
                     "existing_repo_root": str(repo_root),
                     "created": False,
                     "block_reason": "nested_repo",
@@ -626,7 +626,7 @@ def _init(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, Any]:
             return _err(
                 "E_NOT_FOUND",
                 "git_init target directory does not exist; set create_if_missing=true to create it",
-                {"path": str(target), "workspace_root": str(workspace_root), "created": False, "block_reason": "missing"},
+                {"path": str(target), "project_root": str(project_root), "created": False, "block_reason": "missing"},
             )
         target.mkdir(parents=True, exist_ok=True)
         created = True
@@ -634,7 +634,7 @@ def _init(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, Any]:
     run = _run_git(target, ["init"])
     if run["returncode"] != 0:
         return _err("E_GIT", _git_failure_message(run), {**run, "path": str(target), "created": created})
-    return _ok({**run, "path": str(target), "workspace_root": str(workspace_root), "created": created, "initialized": True})
+    return _ok({**run, "path": str(target), "project_root": str(project_root), "created": created, "initialized": True})
 
 
 def execute(tool_name: str, args: dict[str, object], env: ToolExecutionEnv):

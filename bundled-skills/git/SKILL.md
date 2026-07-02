@@ -1,6 +1,6 @@
 ---
 name: git
-description: Inspect and update Git repositories inside the workspace with guarded, structured Git operations.
+description: Inspect and update Git repositories inside the project with guarded, structured Git operations.
 allowed-tools: git_status git_log git_diff git_show git_branch_list git_branch_create git_branch_switch git_add git_commit git_fetch git_pull git_push git_init
 metadata:
   version: "1.0.0"
@@ -18,10 +18,10 @@ metadata:
       - status
       - repository
 ---
-Use these tools for focused Git work inside the workspace.
+Use these tools for focused Git work inside the project.
 
 Rules:
-- Keep all Git operations inside the configured workspace root.
+- Keep all Git operations inside the configured project root.
 - Use the structured Git tools here instead of raw shell commands for supported Git tasks.
 - Do not request or manage credentials. Git commands use the system Git credential configuration.
 - Use `git_status`, `git_log`, `git_diff`, and `git_show` for inspection.
@@ -32,4 +32,4 @@ Rules:
 - Use `git_pull` without an explicit mode unless the user requests otherwise; it defaults to `--rebase`.
 - Use `git_push` only when the user explicitly asks to push, and set `confirm_push=true` only for that explicit request.
 - Never attempt force-push modes; the tool rejects them.
-- Use `git_init` only for an explicit target path inside the workspace. It is forbidden at the workspace root, and nested repository initialization is blocked when the target is already under another Git repository.
+- Use `git_init` only for an explicit target path inside the project. It is forbidden at the project root, and nested repository initialization is blocked when the target is already under another Git repository.
