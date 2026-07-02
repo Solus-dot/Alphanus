@@ -52,7 +52,7 @@ TOOL_SPECS = {
         "capability": "knowledge_retrieve",
         "mutates": False,
         "actions": ["read", "check"],
-        "description": "Search the local SQLite retrieval index for web, memory, workspace, and tool outcome records.",
+        "description": "Search the local SQLite retrieval index for web, memory, project, and tool outcome records.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -63,11 +63,11 @@ TOOL_SPECS = {
             "required": ["query"],
         },
     },
-    "index_workspace": {
-        "capability": "workspace_index",
+    "index_project": {
+        "capability": "project_index",
         "mutates": True,
         "actions": ["update"],
-        "description": "Index explicitly selected workspace files into the local retrieval store.",
+        "description": "Index explicitly selected project files into the local retrieval store.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1280,10 +1280,10 @@ def _retrieve_knowledge(args: dict[str, Any], env: ToolExecutionEnv) -> dict[str
     return {"query": query, "hits": hits[:top_k], "backend": "sqlite_hybrid" if vectors else "sqlite_fts"}
 
 
-def _index_workspace(args: dict[str, Any], env: ToolExecutionEnv) -> dict[str, Any]:
+def _index_project(args: dict[str, Any], env: ToolExecutionEnv) -> dict[str, Any]:
     raw_paths = args.get("paths") or []
     if not isinstance(raw_paths, list) or not raw_paths:
-        raise ValueError("paths must contain at least one workspace file")
+        raise ValueError("paths must contain at least one project file")
     if not _retrieval_enabled(env):
         return {"indexed": [], "count": 0, "disabled": True}
     limit = max(500, min(int(args.get("max_chars_per_file", 20000) or 20000), 100000))
@@ -1293,9 +1293,9 @@ def _index_workspace(args: dict[str, Any], env: ToolExecutionEnv) -> dict[str, A
         path = str(raw_path).strip()
         if not path:
             continue
-        content = env.workspace.read_file(path)
+        content = env.project.read_file(path)
         record = store.upsert_record(
-            record_type="workspace_document",
+            record_type="project_document",
             source=path,
             canonical_source=path,
             title=path,
@@ -1357,8 +1357,8 @@ def execute(tool_name: str, args: dict[str, Any], env: ToolExecutionEnv):
         return page
     if tool_name == "retrieve_knowledge":
         return _retrieve_knowledge(args, env)
-    if tool_name == "index_workspace":
-        return _index_workspace(args, env)
+    if tool_name == "index_project":
+        return _index_project(args, env)
     if tool_name == "retrieval_stats":
         return _retrieval_stats(env)
     if tool_name == "forget_retrieval_record":

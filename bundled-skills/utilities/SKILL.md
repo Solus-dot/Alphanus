@@ -1,7 +1,7 @@
 ---
 name: utilities
 description: Utility actions for weather, local file search, opening URLs, and playing videos/songs on YouTube.
-allowed-tools: get_weather search_home_files open_url play_youtube
+allowed-tools: get_weather search_project_files open_url play_youtube
 metadata:
   version: "1.1.0"
   tags:
@@ -19,7 +19,7 @@ Rules:
 - Prefer direct answer when possible.
 - If network actions fail, return a clear structured error.
 - Keep utility responses concise and actionable.
-- Use `search_home_files` for filename lookup only; do not use it as a substitute for reading or editing workspace files.
+- Use `search_project_files` for filename lookup only; do not use it as a substitute for reading or editing project files.
 - After `open_url`, confirm that the exact URL was opened.
 - After `play_youtube`, inspect the tool result:
   - If `resolved_first_result` is true, say that the first playable YouTube result was opened.

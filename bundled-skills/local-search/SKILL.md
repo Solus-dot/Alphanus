@@ -13,6 +13,6 @@ Use local-search when the user wants to find files or text on disk.
 
 Rules:
 - `search_local_files` is read-only and can run directly.
-- Search only under the configured home/workspace policy.
+- Search only under the project root.
 - Return concise matches and snippets; do not dump whole files.
-- Use workspace tools for reading exact workspace files after search identifies them.
+- Use project tools for reading exact project files after search identifies them.

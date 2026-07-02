@@ -1,7 +1,7 @@
 ---
 name: search-ops
 description: Search SearXNG or Tavily fallback, fetch sources, and retrieve indexed local knowledge for current research.
-allowed-tools: web_search fetch_url retrieve_knowledge index_workspace retrieval_stats forget_retrieval_record
+allowed-tools: web_search fetch_url retrieve_knowledge index_project retrieval_stats forget_retrieval_record
 metadata:
   version: "1.3.0"
   tags:
@@ -37,9 +37,9 @@ Use search and retrieval tools when the user needs current public internet infor
 Rules:
 - Prefer direct answers from existing context when the information is already available.
 - Use `web_search` first to gather SearXNG candidate sources, or Tavily candidates when the fallback is active, then `fetch_url` only for the results you actually need.
-- Use `retrieve_knowledge` before searching when previously fetched sources, memories, explicitly indexed workspace files, or successful tool outcomes may answer the task.
-- Use `index_workspace` only for files the user asked you to index or files directly needed for the current task.
-- Do not use internet search tools to inspect local workspace files; use `workspace-ops` for local files.
+- Use `retrieve_knowledge` before searching when previously fetched sources, memories, explicitly indexed project files, or successful tool outcomes may answer the task.
+- Use `index_project` only for files the user asked you to index or files directly needed for the current task.
+- Do not use internet search tools to inspect local project files; use `project-ops` for local files.
 - Use internet search for time-sensitive or factual lookup tasks.
 - Prefer official, primary, or clearly attributable sources when they are available.
 - Keep citations compact: mention the source title or domain when summarizing fetched pages, and include dates if the fetched metadata exposes them.

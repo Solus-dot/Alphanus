@@ -11,7 +11,7 @@ TOOL_SPECS = {
         "capability": "local_search",
         "mutates": False,
         "actions": ["read", "list", "check"],
-        "description": "Search local filenames and text content under home/workspace policy.",
+        "description": "Search local filenames and text content under the project root.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -47,28 +47,29 @@ def _is_under(path: Path, root: Path) -> bool:
 
 
 def _allowed_root(raw: str, env: ToolExecutionEnv) -> Path:
-    home = Path(env.workspace.home_root).expanduser().resolve()
-    workspace = Path(env.workspace.workspace_root).expanduser().resolve()
-    root = Path(os.path.expanduser(raw or str(home))).resolve()
-    if not (_is_under(root, home) or _is_under(root, workspace)):
-        raise PermissionError("Search root is outside allowed home/workspace roots")
+    project = Path(env.project.project_root).expanduser().resolve()
+    root = Path(os.path.expanduser(raw or str(project))).resolve()
+    if not _is_under(root, project):
+        raise PermissionError("Search root is outside project root")
     if not root.exists() or not root.is_dir():
         raise FileNotFoundError(f"Search root not found: {root}")
     return root
 
 
-def _is_allowed_candidate(path: Path, env: ToolExecutionEnv) -> bool:
+def _is_allowed_candidate(path: Path, env: ToolExecutionEnv, root: Path) -> bool:
     try:
         resolved = path.resolve(strict=True)
     except OSError:
         return False
+    if not _is_under(resolved, root):
+        return False
     try:
-        env.workspace._resolve_read_path(str(resolved))  # noqa: SLF001
+        env.project._resolve_read_path(str(resolved))  # noqa: SLF001
     except (OSError, PermissionError):
         return False
     return not (
-        env.workspace._is_secret_path(resolved)  # noqa: SLF001
-        or env.workspace._is_protected_state_path(resolved)  # noqa: SLF001
+        env.project._is_secret_path(resolved)  # noqa: SLF001
+        or env.project._is_protected_state_path(resolved)  # noqa: SLF001
     )
 
 
@@ -120,7 +121,7 @@ def _search(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]
             path = Path(dirpath) / name
             scanned += 1
             rel = str(path)
-            if not _is_allowed_candidate(path, env):
+            if not _is_allowed_candidate(path, env, root):
                 continue
             try:
                 stat = path.stat()

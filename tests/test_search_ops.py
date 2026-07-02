@@ -12,7 +12,7 @@ from typing import cast
 import pytest
 
 from core.memory import LexicalMemory
-from core.workspace import WorkspaceManager
+from core.project import ProjectRuntime
 from skills.runtime import SkillContext, SkillRuntime
 
 
@@ -935,7 +935,7 @@ def test_search_ops_skill_loads_and_executes_from_repo(tmp_path: Path, mocker):
 
     runtime = SkillRuntime(
         skills_dir=str(Path(__file__).resolve().parents[1] / "bundled-skills"),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(mem)),
         config={
             "search": {"provider": "searxng", "searxng_base_url": "http://127.0.0.1:8888"},
@@ -949,7 +949,7 @@ def test_search_ops_skill_loads_and_executes_from_repo(tmp_path: Path, mocker):
         user_input="search the web for example",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(ws),
+        project_root=str(ws),
         memory_hits=[],
     )
     out = runtime.execute_tool_call("web_search", {"query": "example"}, selected=[skill], ctx=ctx)

@@ -23,11 +23,11 @@ TOOL_SPECS = {
             "required": ["city"],
         },
     },
-    "search_home_files": {
+    "search_project_files": {
         "capability": "utility_file_search",
         "mutates": False,
         "actions": ["read", "list", "check"],
-        "description": "Search filenames under home directory.",
+        "description": "Search filenames under the project root.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -107,13 +107,13 @@ def _get_weather(args: dict[str, object]) -> dict[str, object]:
     )
 
 
-def _search_home_files(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
+def _search_project_files(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     query = str(args["query"]).lower()
-    home_root = Path(os.path.expanduser(str(env.workspace.home_root))).resolve()
-    directory = str(args.get("directory") or str(home_root))
+    project_root = Path(os.path.expanduser(str(env.project.project_root))).resolve()
+    directory = str(args.get("directory") or str(project_root))
     root = Path(os.path.expanduser(directory)).resolve()
-    if not _is_under(root, home_root):
-        raise PermissionError("Search directory outside home root")
+    if not _is_under(root, project_root):
+        raise PermissionError("Search directory outside project root")
 
     matches = []
     ignore_dirs = {".git", "node_modules", ".venv", "venv", "__pycache__", ".next", "dist", "build"}
@@ -193,8 +193,8 @@ def _play_youtube(args: dict[str, object]) -> dict[str, object]:
 def execute(tool_name: str, args: dict[str, object], env: ToolExecutionEnv):
     if tool_name == "get_weather":
         return _get_weather(args)
-    if tool_name == "search_home_files":
-        return _search_home_files(args, env)
+    if tool_name == "search_project_files":
+        return _search_project_files(args, env)
     if tool_name == "open_url":
         return _open_url(args)
     if tool_name == "play_youtube":

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from core.attachments import build_content, classify_attachment, image_mime_type
 from core.memory import LexicalMemory
-from core.workspace import WorkspaceManager
+from core.project import ProjectRuntime
 from skills.runtime import SkillContext, SkillRuntime
 
 
@@ -58,18 +58,18 @@ def _runtime(tmp_path: Path) -> SkillRuntime:
     ws.mkdir()
     return SkillRuntime(
         skills_dir=str(repo_root / "bundled-skills"),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
 
 
-def _ctx(workspace_root: str) -> SkillContext:
+def _ctx(project_root: str) -> SkillContext:
     return SkillContext(
         user_input="utility task",
         branch_labels=[],
         attachments=[],
-        workspace_root=workspace_root,
+        project_root=project_root,
         memory_hits=[],
     )
 
@@ -91,7 +91,7 @@ def test_get_weather_preserves_structured_network_error_in_runtime(mocker, tmp_p
         "get_weather",
         {"city": "London"},
         selected=[skill],
-        ctx=_ctx(str(runtime.workspace.workspace_root)),
+        ctx=_ctx(str(runtime.project.project_root)),
     )
 
     assert out["ok"] is False
@@ -117,7 +117,7 @@ def test_open_url_preserves_browser_failure_message_in_runtime(mocker, tmp_path:
         "open_url",
         {"url": "https://example.com"},
         selected=[skill],
-        ctx=_ctx(str(runtime.workspace.workspace_root)),
+        ctx=_ctx(str(runtime.project.project_root)),
     )
 
     assert out["ok"] is False
@@ -197,7 +197,7 @@ def test_open_url_accepts_file_urls_in_runtime(mocker, tmp_path: Path):
         "open_url",
         {"url": file_url},
         selected=[skill],
-        ctx=_ctx(str(runtime.workspace.workspace_root)),
+        ctx=_ctx(str(runtime.project.project_root)),
     )
 
     assert out["ok"] is True
