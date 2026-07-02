@@ -25,7 +25,7 @@ def refresh_command_popup(app: Any, value: str, *, chat_input_cls: Any) -> None:
     chat_input = app.query_one(chat_input_cls)
     query = popup_command_query(value, chat_input.cursor_position)
     next_matches = command_entries_for_query(query)
-    if not next_matches or app.streaming or app._await_shell_confirm:
+    if not next_matches or app.streaming or app._await_action_approval:
         next_matches = []
 
     if not next_matches:

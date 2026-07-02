@@ -284,7 +284,8 @@ def _skill_needs_attention(skill: dict[str, Any]) -> bool:
 
 def health_report_markup(report: dict[str, Any]) -> str:
     agent = report.get("agent", {}) if isinstance(report.get("agent"), dict) else {}
-    workspace = report.get("workspace", {}) if isinstance(report.get("workspace"), dict) else {}
+    project = report.get("project", {}) if isinstance(report.get("project"), dict) else {}
+    sandbox = report.get("sandbox", {}) if isinstance(report.get("sandbox"), dict) else {}
     search = report.get("search", {}) if isinstance(report.get("search"), dict) else {}
     retrieval = report.get("retrieval", {}) if isinstance(report.get("retrieval"), dict) else {}
     memory = report.get("memory", {}) if isinstance(report.get("memory"), dict) else {}
@@ -306,7 +307,7 @@ def health_report_markup(report: dict[str, Any]) -> str:
     search_reason = str(search.get("reason") or "")
     retrieval_reason = str(retrieval.get("reason") or "")
     lines = [
-        "[bold]Workspace Health[/bold]",
+        "[bold]Project Health[/bold]",
         "",
         line("model endpoint", _health_status(bool(agent.get("ready")), warn=bool(endpoint_policy_error)), str(agent.get("endpoint_mode", ""))),
         line("endpoint policy", _health_status(not bool(endpoint_policy_error)), endpoint_policy_error or "valid"),
@@ -316,9 +317,9 @@ def health_report_markup(report: dict[str, Any]) -> str:
             f"{agent.get('backend_profile_selected', 'unknown')} · integrity {backend_integrity}",
         ),
         line(
-            "workspace",
-            _health_status(bool(workspace.get("exists")) and bool(workspace.get("writable"))),
-            str(workspace.get("path", "")),
+            "project",
+            _health_status(bool(project.get("exists")) and bool(project.get("writable"))),
+            str(project.get("path", "")),
         ),
         line("search", _health_status(bool(search.get("ready"))), search_reason or str(search.get("provider", ""))),
         line("retrieval", _health_status(bool(retrieval.get("ready"))), retrieval_reason or "ready"),
@@ -331,7 +332,12 @@ def health_report_markup(report: dict[str, Any]) -> str:
         line(
             "runtime",
             _health_status(True),
-            f"{agent.get('runtime_profile', 'standard')} · permissions {agent.get('permission_profile', 'full')}",
+            f"{agent.get('permission_mode', 'project-write')} · approvals {agent.get('approvals', 'on-boundary')}",
+        ),
+        line(
+            "sandbox",
+            _health_status(bool(sandbox.get("ok"))),
+            str(sandbox.get("message") or sandbox.get("backend") or ""),
         ),
     ]
     return "\n".join(lines)

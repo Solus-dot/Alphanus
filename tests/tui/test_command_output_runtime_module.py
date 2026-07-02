@@ -65,7 +65,7 @@ class _DoctorApp:
         self.agent = SimpleNamespace(
             doctor_report=lambda: {
                 "agent": {"ready": True},
-                "workspace": {"path": "/workspace", "writable": True},
+                "project": {"path": "/project", "writable": True},
                 "memory": {},
                 "search": {},
                 "skills": [

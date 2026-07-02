@@ -34,7 +34,7 @@ class _Options:
 class _App:
     def __init__(self, *, separator_y: int) -> None:
         self.streaming = False
-        self._await_shell_confirm = False
+        self._await_action_approval = False
         self._command_matches = []
         self._popup = _Popup()
         self._options = _Options()

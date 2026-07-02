@@ -127,7 +127,7 @@ def status_right_markup(
 
 def status_left_markup(
     *,
-    await_shell_confirm: bool,
+    await_action_approval: bool,
     streaming: bool,
     spinner_frame: str,
     stop_requested: bool,
@@ -138,7 +138,7 @@ def status_left_markup(
     colors: dict[str, str] | None = None,
 ) -> str:
     theme = _theme_colors(colors)
-    if await_shell_confirm:
+    if await_action_approval:
         return "[bold yellow]approve shell command?[/bold yellow] [dim][y/n][/dim]"
     if streaming:
         if stop_requested:

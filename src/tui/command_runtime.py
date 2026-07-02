@@ -218,8 +218,8 @@ def handle_command(app, text: str) -> bool:
     if cmd == "/audit":
         return app._cmd_audit(arg)
 
-    if cmd == "/workspace-tree":
-        return app._cmd_workspace("tree")
+    if cmd == "/project-tree":
+        return app._cmd_project("tree")
 
     if cmd == "/theme":
         return app._write_usage("/theme") if arg else (app._cmd_theme() or True)

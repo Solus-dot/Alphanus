@@ -114,10 +114,10 @@ class LiveToolPreviewManager:
         clipped_for_display = len(content) > self.max_static_preview_chars or len(split_lines) > self.max_static_preview_lines
         return lines, clipped_for_display
 
-    def _read_workspace_preview(self, workspace_root: str | Path | None, filepath: str) -> str | None:
-        if workspace_root is None or not filepath:
+    def _read_project_preview(self, project_root: str | Path | None, filepath: str) -> str | None:
+        if project_root is None or not filepath:
             return None
-        root = Path(workspace_root).expanduser().resolve()
+        root = Path(project_root).expanduser().resolve()
         raw_path = Path(filepath).expanduser()
         candidate = raw_path if raw_path.is_absolute() else root / raw_path
         try:
@@ -293,7 +293,7 @@ class LiveToolPreviewManager:
         write_indented: WriteIndentedFn,
         write_code: WriteCodeFn,
         *,
-        workspace_root: str | Path | None = None,
+        project_root: str | Path | None = None,
     ) -> None:
         if not isinstance(args, dict):
             return
@@ -304,14 +304,14 @@ class LiveToolPreviewManager:
         if not isinstance(content, str) or not content.strip():
             return
         if self._content_is_compacted_history(content):
-            restored_content = self._read_workspace_preview(workspace_root, filepath)
+            restored_content = self._read_project_preview(project_root, filepath)
             if restored_content is None or not restored_content.strip():
                 label = filepath or "file"
                 write(self._label_markup("file draft", label))
                 write_indented(self._muted_markup("preview unavailable; compacted history no longer contains file contents"), 2)
                 return
             self._write_file_preview(filepath, restored_content, write, write_indented, write_code)
-            write_indented(self._muted_markup("preview restored from current workspace file"), 2)
+            write_indented(self._muted_markup("preview restored from current project file"), 2)
             return
 
         lines, clipped_for_display = self._clipped_preview_lines(content)

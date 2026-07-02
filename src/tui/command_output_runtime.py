@@ -269,7 +269,8 @@ def cmd_doctor(app: Any, *, accent_color: str) -> None:
     report = app.agent.doctor_report()
     app._write_section_heading("Doctor")
     agent = report.get("agent", {})
-    workspace = report.get("workspace", {})
+    project = report.get("project", {})
+    sandbox = report.get("sandbox", {})
     memory = report.get("memory", {})
     search = report.get("search", {})
     app._write_detail_line("endpoint_ready", str(agent.get("ready", False)).lower())
@@ -281,9 +282,13 @@ def cmd_doctor(app: Any, *, accent_color: str) -> None:
     app._write_detail_line("backend_model_integrity", str(agent.get("backend_model_integrity", "unknown")))
     if agent.get("backend_incompatibility_last"):
         app._write_detail_line("backend_incompatibility", str(agent.get("backend_incompatibility_last")))
-    app._write_detail_line("permission_profile", str(agent.get("permission_profile", "full")))
-    app._write_detail_line("workspace", str(workspace.get("path", "")))
-    app._write_detail_line("workspace_writable", str(workspace.get("writable", False)).lower())
+    app._write_detail_line("permission_mode", str(agent.get("permission_mode", "project-write")))
+    app._write_detail_line("approvals", str(agent.get("approvals", "on-boundary")))
+    app._write_detail_line("network", str(agent.get("network", False)).lower())
+    app._write_detail_line("sandbox_backend", str(sandbox.get("backend", agent.get("sandbox_backend", "auto"))))
+    app._write_detail_line("sandbox_ready", str(sandbox.get("ok", False)).lower())
+    app._write_detail_line("project", str(project.get("path", "")))
+    app._write_detail_line("project_writable", str(project.get("writable", False)).lower())
     app._write_detail_line("memory_backend", str(memory.get("backend", "lexical")))
     app._write_detail_line("memory_mode", str(memory.get("mode", "")))
     app._write_detail_line("memory_min_score_default", str(memory.get("min_score_default", "")))
@@ -334,15 +339,15 @@ def cmd_report(app: Any, arg: str) -> bool:
     return True
 
 
-def cmd_workspace(app: Any, arg: str) -> bool:
+def cmd_project(app: Any, arg: str) -> bool:
     sub = arg.strip().lower()
     if sub == "tree":
-        tree = app.agent.skill_runtime.workspace.workspace_tree()
-        app._write_section_heading("Workspace Tree")
+        tree = app.agent.skill_runtime.project.project_tree()
+        app._write_section_heading("Project Tree")
         app._write_muted_lines(tree.splitlines())
         app._write("")
         return True
-    return app._write_usage("/workspace-tree")
+    return app._write_usage("/project-tree")
 
 
 def cmd_code(app: Any, arg: str) -> bool:

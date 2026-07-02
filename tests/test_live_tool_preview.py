@@ -158,9 +158,9 @@ def test_static_file_preview_skips_compacted_history_content_when_file_is_unavai
     assert code_blocks == []
 
 
-def test_static_file_preview_restores_compacted_history_from_workspace_file(tmp_path):
-    workspace = tmp_path / "workspace"
-    target = workspace / "UNIV" / "style.css"
+def test_static_file_preview_restores_compacted_history_from_project_file(tmp_path):
+    project = tmp_path / "project"
+    target = project / "UNIV" / "style.css"
     target.parent.mkdir(parents=True)
     target.write_text("body {\n  color: black;\n}\n", encoding="utf-8")
     manager = LiveToolPreviewManager()
@@ -177,12 +177,12 @@ def test_static_file_preview_restores_compacted_history_from_workspace_file(tmp_
         writes.append,
         lambda text, indent: indented.append((text, indent)),
         lambda lines, language, indent: code_blocks.append((list(lines), language, indent)),
-        workspace_root=workspace,
+        project_root=project,
     )
 
     assert writes == ["[dim]  · file draft: UNIV/style.css[/dim]"]
     assert code_blocks == [(["body {", "  color: black;", "}"], "css", 2)]
-    assert indented == [("[dim]preview restored from current workspace file[/dim]", 2)]
+    assert indented == [("[dim]preview restored from current project file[/dim]", 2)]
 
 
 def test_live_preview_resets_when_stream_rewinds():
@@ -242,7 +242,7 @@ def test_live_preview_accepts_namespaced_legacy_write_file_alias():
 
     rendered = manager.update(
         "s6",
-        "workspace-ops:write_file",
+        "project-ops:write_file",
         '{"filepath":"login.html","content":"<main>Login</main>"}',
         writes.append,
         lambda lines, language: previews.append((list(lines), language)),

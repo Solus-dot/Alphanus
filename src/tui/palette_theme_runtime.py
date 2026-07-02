@@ -30,14 +30,14 @@ _THEME_PICKER_DESCRIPTIONS = {
 }
 
 
-def workspace_file_candidates(
+def project_file_candidates(
     app: Any,
     *,
     max_items: int = 60,
     classify_attachment_fn: Any = None,
 ) -> list[Path]:
     classifier = classify_attachment_fn or classify_attachment
-    root = app._workspace_root()
+    root = app._project_root()
     if not root.exists() or not root.is_dir():
         return []
     files: list[Path] = []
@@ -125,9 +125,9 @@ def build_global_palette_catalog(app: Any, *, command_palette_item_cls: Any) -> 
             rank=1 if summary.is_active else 2,
         )
 
-    workspace_root = app._workspace_root()
-    for path in workspace_file_candidates(app, max_items=60):
-        rel = app._root_relative_label(path, workspace_root)
+    project_root = app._project_root()
+    for path in project_file_candidates(app, max_items=60):
+        rel = app._root_relative_label(path, project_root)
         add_item(
             kind="file_attach",
             value=str(path),

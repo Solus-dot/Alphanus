@@ -15,7 +15,7 @@ def _plain_lines(markup: str) -> list[str]:
     return Text.from_markup(markup).plain.splitlines()
 
 
-def test_metadata_helpers_include_workspace_branch_and_context() -> None:
+def test_metadata_helpers_include_project_branch_and_context() -> None:
     center = metadata_center_markup(session_name="Session 1", branch_name="root", width=180)
     right = metadata_right_markup(
         endpoint="http://127.0.0.1:8080/v1/chat/completions",
@@ -107,7 +107,7 @@ def test_activity_markup_renders_live_tool_rows() -> None:
 
 def test_status_left_changes_with_focused_panel() -> None:
     tree_status = status_left_markup(
-        await_shell_confirm=False,
+        await_action_approval=False,
         streaming=False,
         spinner_frame="x",
         stop_requested=False,
@@ -117,7 +117,7 @@ def test_status_left_changes_with_focused_panel() -> None:
         width=180,
     )
     chat_status = status_left_markup(
-        await_shell_confirm=False,
+        await_action_approval=False,
         streaming=False,
         spinner_frame="x",
         stop_requested=False,
@@ -137,7 +137,7 @@ def test_status_left_changes_with_focused_panel() -> None:
 
 def test_status_left_input_focus_includes_file_shortcut_hint() -> None:
     status_left = status_left_markup(
-        await_shell_confirm=False,
+        await_action_approval=False,
         streaming=False,
         spinner_frame="x",
         stop_requested=False,
@@ -154,7 +154,7 @@ def test_status_left_input_focus_includes_file_shortcut_hint() -> None:
 
 def test_status_left_streaming_copy_distinguishes_interrupt_states() -> None:
     normal = status_left_markup(
-        await_shell_confirm=False,
+        await_action_approval=False,
         streaming=True,
         spinner_frame="x",
         stop_requested=False,
@@ -164,7 +164,7 @@ def test_status_left_streaming_copy_distinguishes_interrupt_states() -> None:
         width=180,
     )
     armed = status_left_markup(
-        await_shell_confirm=False,
+        await_action_approval=False,
         streaming=True,
         spinner_frame="x",
         stop_requested=False,
@@ -174,7 +174,7 @@ def test_status_left_streaming_copy_distinguishes_interrupt_states() -> None:
         width=180,
     )
     stopping = status_left_markup(
-        await_shell_confirm=False,
+        await_action_approval=False,
         streaming=True,
         spinner_frame="x",
         stop_requested=True,

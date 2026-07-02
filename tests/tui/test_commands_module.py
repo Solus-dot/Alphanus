@@ -26,7 +26,7 @@ def test_help_sections_are_derived_from_command_metadata() -> None:
     assert ("/theme", "Open theme picker") in sections["UTILITIES"]
 
     file_entry = next(entry for entry in COMMAND_ENTRIES if entry.prompt == "/file [path]")
-    assert file_entry.description == "Attach a file or open the workspace picker"
+    assert file_entry.description == "Attach a file or open the project picker"
     assert file_entry.help_description == "Attach a file to the next message or open the picker"
 
 

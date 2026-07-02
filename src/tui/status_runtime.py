@@ -65,7 +65,7 @@ def apply_model_status(host: Any, status: ModelStatus) -> None:
 def update_status2(app: Any) -> None:
     colors = app._theme_spec().colors if hasattr(app, "_theme_spec") else None
     left = status_left_markup(
-        await_shell_confirm=app._await_shell_confirm,
+        await_action_approval=app._await_action_approval,
         streaming=app.streaming,
         spinner_frame=app._spin_frames[app._spin_i % len(app._spin_frames)],
         stop_requested=app._stop_event.is_set(),

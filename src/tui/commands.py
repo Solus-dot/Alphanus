@@ -39,7 +39,7 @@ _COMMAND_SECTIONS: tuple[_CommandSection, ...] = (
             CommandEntry(
                 "/file [path]",
                 "/file ",
-                "Attach a file or open the workspace picker",
+                "Attach a file or open the project picker",
                 help_description="Attach a file to the next message or open the picker",
             ),
             CommandEntry("/detach [n|last|all]", "/detach ", "Remove pending attachments"),
@@ -64,7 +64,7 @@ _COMMAND_SECTIONS: tuple[_CommandSection, ...] = (
             CommandEntry("/skills", "/skills", "List installed skills"),
             CommandEntry("/reload", "/reload", "Reload skills from disk"),
             CommandEntry("/doctor", "/doctor", "Run readiness diagnostics"),
-            CommandEntry("/health", "/health", "Open workspace health summary"),
+            CommandEntry("/health", "/health", "Open project health summary"),
             CommandEntry("/skill-on <id>", "/skill-on ", "Enable a skill"),
             CommandEntry("/skill-off <id>", "/skill-off ", "Disable a skill"),
             CommandEntry(
@@ -89,7 +89,7 @@ _COMMAND_SECTIONS: tuple[_CommandSection, ...] = (
             CommandEntry("/memory-stats", "/memory-stats", "Show memory stats"),
             CommandEntry("/context", "/context", "Show inference engine context usage"),
             CommandEntry("/audit", "/audit", "Show current turn file changes"),
-            CommandEntry("/workspace-tree", "/workspace-tree", "Render workspace tree"),
+            CommandEntry("/project-tree", "/project-tree", "Render project tree"),
             CommandEntry("/theme", "/theme", "Open theme picker"),
             CommandEntry("/config", "/config", "Edit the global config in a popup"),
             CommandEntry("/report [file]", "/report ", "Save a support bundle JSON"),

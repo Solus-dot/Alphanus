@@ -91,10 +91,10 @@ def initialize_shell_state(app: Any, *, agent: Any, debug: bool) -> None:
     app._spin_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
     app._spin_i = 0
 
-    app._await_shell_confirm = False
-    app._shell_confirm_command = ""
-    app._shell_confirm_event = None
-    app._shell_confirm_result = None
+    app._await_action_approval = False
+    app._action_approval_command = ""
+    app._action_approval_event = None
+    app._action_approval_result = None
     app._command_matches = []
     app._global_palette_actions = {}
     app._code_blocks = []

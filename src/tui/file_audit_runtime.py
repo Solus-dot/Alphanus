@@ -11,19 +11,19 @@ from core.message_types import ChatMessage, JSONValue
 
 
 def audit_rows_for_turn(app: Any, turn: Turn) -> list[dict[str, JSONValue]]:
-    workspace_root: str | Path | None = None
-    workspace_root_fn = getattr(app, "_workspace_root", None)
-    if callable(workspace_root_fn):
+    project_root: str | Path | None = None
+    project_root_fn = getattr(app, "_project_root", None)
+    if callable(project_root_fn):
         try:
-            value = workspace_root_fn()
+            value = project_root_fn()
             if isinstance(value, str | Path):
-                workspace_root = value
+                project_root = value
         except Exception:
-            workspace_root = None
+            project_root = None
     skill_exchanges = getattr(turn, "skill_exchanges", [])
     return build_file_audit_from_skill_exchanges(
         cast(list[ChatMessage], skill_exchanges if isinstance(skill_exchanges, list) else []),
-        workspace_root=workspace_root,
+        project_root=project_root,
     )
 
 
@@ -70,9 +70,9 @@ def _row_summary(row: dict[str, JSONValue]) -> str:
         elif size := _format_bytes(row.get("bytes")):
             details.append(size)
         return f"{prefix}deleted  {path}  {', '.join(details)}".strip()
-    if action == "workspace_changed":
+    if action == "project_changed":
         command = str(row.get("command") or "shell command")
-        return f"{prefix}shell    {command}  workspace changed, paths unknown".strip()
+        return f"{prefix}shell    {command}  project changed, paths unknown".strip()
     return f"{prefix}{action or 'changed'}"
 
 
