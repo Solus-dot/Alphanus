@@ -61,32 +61,44 @@ def show_keyboard_shortcuts(app: Any, *, sections) -> None:
         app._write("")
 
 
-def confirm_shell_command(app: Any, command: str) -> bool:
+def request_approval_command(app: Any, request: dict[str, Any]) -> bool:
     event = threading.Event()
     holder = {"value": False}
-    app.call_from_thread(app._begin_shell_confirm, command, event, holder)
-    if not event.wait(timeout=app._timing_config().shell_confirm_timeout_s):
-        app.call_from_thread(app._expire_shell_confirm, event)
+    app.call_from_thread(app._begin_action_approval, request, event, holder)
+    if not event.wait(timeout=app._timing_config().action_approval_timeout_s):
+        app.call_from_thread(app._expire_action_approval, event)
         return False
     return bool(holder.get("value", False))
 
 
-def begin_shell_confirm(app: Any, command: str, event: threading.Event, holder: dict[str, bool], *, esc) -> None:
-    app._await_shell_confirm = True
-    app._shell_confirm_command = command
-    app._shell_confirm_event = event
-    app._shell_confirm_result = holder
+def begin_action_approval(app: Any, request: dict[str, Any], event: threading.Event, holder: dict[str, bool], *, esc) -> None:
+    command = str(request.get("command") or "")
+    reason = str(request.get("reason") or "Action crosses the active permission boundary.")
+    cwd = str(request.get("cwd") or "")
+    app._await_action_approval = True
+    app._action_approval_command = command
+    app._action_approval_event = event
+    app._action_approval_result = holder
     warning = app._theme_color("warning", "#f59e0b")
     muted = app._theme_color("muted", "#a1a1aa")
     app._write("")
     app._write_assistant_bar_line(
-        f"[bold {warning}]Shell Approval Required[/bold {warning}]",
+        f"[bold {warning}]Action Approval Required[/bold {warning}]",
         content_indent=2,
     )
     app._write_assistant_bar_line(
-        f"[bold {warning}]![/bold {warning}] command waiting for approval",
+        f"[bold {warning}]![/bold {warning}] action waiting for approval",
         content_indent=2,
     )
+    app._write_assistant_bar_line(
+        f"[{muted}]reason:[/{muted}] {esc(reason)}",
+        content_indent=2,
+    )
+    if cwd:
+        app._write_assistant_bar_line(
+            f"[{muted}]cwd:[/{muted}] {esc(cwd)}",
+            content_indent=2,
+        )
     app._write_assistant_bar_line(
         f"[{muted}]command:[/{muted}] {esc(command)}",
         content_indent=2,
@@ -99,32 +111,32 @@ def begin_shell_confirm(app: Any, command: str, event: threading.Event, holder: 
     app._update_status2()
 
 
-def expire_shell_confirm(app: Any, event: threading.Event) -> None:
-    if not app._await_shell_confirm:
+def expire_action_approval(app: Any, event: threading.Event) -> None:
+    if not app._await_action_approval:
         return
-    if app._shell_confirm_event is not event:
+    if app._action_approval_event is not event:
         return
-    if app._shell_confirm_result is not None:
-        app._shell_confirm_result["value"] = False
-    app._shell_confirm_event.set()
-    app._await_shell_confirm = False
-    app._shell_confirm_command = ""
-    app._shell_confirm_event = None
-    app._shell_confirm_result = None
+    if app._action_approval_result is not None:
+        app._action_approval_result["value"] = False
+    app._action_approval_event.set()
+    app._await_action_approval = False
+    app._action_approval_command = ""
+    app._action_approval_event = None
+    app._action_approval_result = None
     app._update_status2()
 
 
-def finish_shell_confirm(app: Any, approved: bool) -> None:
-    if not app._await_shell_confirm:
+def finish_action_approval(app: Any, approved: bool) -> None:
+    if not app._await_action_approval:
         return
-    if app._shell_confirm_result is not None:
-        app._shell_confirm_result["value"] = approved
-    if app._shell_confirm_event is not None:
-        app._shell_confirm_event.set()
-    app._await_shell_confirm = False
-    app._shell_confirm_command = ""
-    app._shell_confirm_event = None
-    app._shell_confirm_result = None
+    if app._action_approval_result is not None:
+        app._action_approval_result["value"] = approved
+    if app._action_approval_event is not None:
+        app._action_approval_event.set()
+    app._await_action_approval = False
+    app._action_approval_command = ""
+    app._action_approval_event = None
+    app._action_approval_result = None
     app._update_status2()
 
 
@@ -162,17 +174,20 @@ def action_handle_esc(app: Any, *, chat_input_cls: Any) -> None:
             app._update_status2()
             return
         if app._stop_event is not None and not app._stop_event.is_set():
+            flush_content = getattr(app, "_flush_content_buffer", None)
+            if callable(flush_content):
+                flush_content(include_partial=True, update_partial=True)
             app._stop_event.set()
             write_info = getattr(app, "_write_info", None)
             if callable(write_info):
                 write_info("Interrupt requested. Stopping current turn...")
-        if app._await_shell_confirm:
-            app._finish_shell_confirm(False)
+        if app._await_action_approval:
+            app._finish_action_approval(False)
         app._esc_pending = False
         app._update_status2()
         return
-    if app._await_shell_confirm:
-        app._finish_shell_confirm(False)
+    if app._await_action_approval:
+        app._finish_action_approval(False)
         return
     if app._command_popup_active():
         app._hide_command_popup()

@@ -81,7 +81,7 @@ def handle_key(app: Any, event: Any, *, chat_input_cls: Any) -> None:
     if (
         chat_input.has_focus
         and not app.streaming
-        and not app._await_shell_confirm
+        and not app._await_action_approval
         and not app._command_popup_active()
         and event.key.lower() == "backspace"
         and not chat_input.value
@@ -90,17 +90,17 @@ def handle_key(app: Any, event: Any, *, chat_input_cls: Any) -> None:
         app.action_remove_last_attachment()
         event.stop()
         return
-    if not app._await_shell_confirm:
+    if not app._await_action_approval:
         return
     key_values = {
         str(getattr(event, "key", "") or "").strip().lower(),
         str(getattr(event, "character", "") or "").strip().lower(),
     }
     if "y" in key_values:
-        app._finish_shell_confirm(True)
+        app._finish_action_approval(True)
         event.stop()
     elif key_values.intersection({"n", "escape"}):
-        app._finish_shell_confirm(False)
+        app._finish_action_approval(False)
         event.stop()
 
 

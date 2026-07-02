@@ -15,21 +15,18 @@ DEFAULT_TEXT_COLOR = fallback_color("text")
 DEFAULT_MUTED_COLOR = fallback_color("muted")
 
 
-def workspace_root(app: Any) -> Path:
-    return Path(str(app.agent.skill_runtime.workspace.workspace_root)).resolve()
-
-
-def home_root(app: Any) -> Path:
-    candidate = getattr(app.agent.skill_runtime.workspace, "home_root", None)
-    return Path(str(candidate)).resolve() if candidate else Path.home().resolve()
+def project_root(app: Any) -> Path:
+    return Path(str(app.agent.skill_runtime.project.project_root)).resolve()
 
 
 def attachment_root_path(app: Any, root_id: str) -> Path:
-    return home_root(app) if root_id == "home" else workspace_root(app)
+    if root_id == "home":
+        raise PermissionError("Attachment browsing is limited to the project root")
+    return project_root(app)
 
 
 def attachment_root_label(root_id: str) -> str:
-    return "Home" if root_id == "home" else "Workspace"
+    return "Project"
 
 
 def root_relative_label(path: Path, root: Path) -> str:
@@ -43,18 +40,21 @@ def root_relative_label(path: Path, root: Path) -> str:
 
 def resolve_attachment_path(app: Any, raw_path: str) -> Path:
     candidate = Path(os.path.expanduser(raw_path.strip()))
+    root = project_root(app)
     if candidate.is_absolute():
         resolved = candidate.resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise PermissionError("Attachment path escapes project root") from exc
         if resolved.is_file():
             return resolved
         raise FileNotFoundError(str(resolved))
 
-    workspace_candidate = (workspace_root(app) / candidate).resolve()
-    cwd_candidate = (Path.cwd() / candidate).resolve()
-    for resolved in (workspace_candidate, cwd_candidate):
-        if resolved.is_file():
-            return resolved
-    raise FileNotFoundError(str(workspace_candidate))
+    project_candidate = (root / candidate).resolve()
+    if project_candidate.is_file():
+        return project_candidate
+    raise FileNotFoundError(str(project_candidate))
 
 
 def attach_file_path(app: Any, path: str | Path) -> bool:
@@ -77,21 +77,12 @@ def attach_file_path(app: Any, path: str | Path) -> bool:
 
 
 def attachment_picker_items(
-    app: Any, relative_dir: str = ".", *, root_id: str = "workspace", accent_color: str = DEFAULT_ACCENT_COLOR
+    app: Any, relative_dir: str = ".", *, root_id: str = "project", accent_color: str = DEFAULT_ACCENT_COLOR
 ) -> list[PickerItem]:
     text_color = app._theme_color("text", DEFAULT_TEXT_COLOR) if hasattr(app, "_theme_color") else DEFAULT_TEXT_COLOR
     muted = app._theme_color("muted", DEFAULT_MUTED_COLOR) if hasattr(app, "_theme_color") else DEFAULT_MUTED_COLOR
     items: list[PickerItem] = []
     current = Path(relative_dir)
-    for candidate_root in ("workspace", "home"):
-        if candidate_root == root_id:
-            continue
-        items.append(
-            PickerItem(
-                id=f"root:{candidate_root}:.",
-                prompt=f"[bold {accent_color}]switch -> {attachment_root_label(candidate_root).lower()}[/bold {accent_color}]",
-            )
-        )
     if relative_dir not in {".", ""}:
         parent = current.parent.as_posix()
         if parent == "":
@@ -100,7 +91,7 @@ def attachment_picker_items(
 
     root_path = attachment_root_path(app, root_id)
     list_target = str(root_path if relative_dir in {".", ""} else (root_path / relative_dir))
-    entries = app.agent.skill_runtime.workspace.list_files(list_target)
+    entries = app.agent.skill_runtime.project.list_files(list_target)
     for entry in entries:
         target = (current / entry.rstrip("/")).as_posix()
         if entry.endswith("/"):
@@ -114,13 +105,13 @@ def attachment_picker_items(
     return items
 
 
-def open_attachment_picker(app: Any, relative_dir: str = ".", root_id: str = "workspace", accent_color: str = DEFAULT_ACCENT_COLOR) -> None:
+def open_attachment_picker(app: Any, relative_dir: str = ".", root_id: str = "project", accent_color: str = DEFAULT_ACCENT_COLOR) -> None:
     clean_dir = relative_dir or "."
     root_path = attachment_root_path(app, root_id)
     title = f"Attach File · {attachment_root_label(root_id)}"
     current_dir = root_relative_label(root_path / clean_dir, root_path)
     at_root = current_dir in {".", ""}
-    current_dir = ("~/" if at_root else f"~/{current_dir}") if root_id == "home" else ("workspace root" if at_root else f"./{current_dir}")
+    current_dir = ("~/" if at_root else f"~/{current_dir}") if root_id == "home" else ("project root" if at_root else f"./{current_dir}")
     subtitle = f"Current directory: {current_dir}"
     items = attachment_picker_items(app, clean_dir, root_id=root_id, accent_color=accent_color)
     app.push_screen(
@@ -138,7 +129,7 @@ def on_attachment_picker_close(app: Any, root_id: str, result: dict[str, str] | 
         return
     if selection.startswith("root:"):
         _, next_root, next_dir = selection.split(":", 2)
-        open_attachment_picker(app, next_dir or ".", root_id=next_root or "workspace", accent_color=accent_color)
+        open_attachment_picker(app, next_dir or ".", root_id=next_root or "project", accent_color=accent_color)
         return
     if selection.startswith("nav:"):
         open_attachment_picker(app, selection[4:] or ".", root_id=root_id, accent_color=accent_color)

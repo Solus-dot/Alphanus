@@ -427,8 +427,6 @@ def finish_turn_stream(app: Any, turn_id: str, result: AgentTurnResult) -> None:
 
     try:
         drain_events(app)
-        app._set_partial_renderable(None, visible=False)
-
         app._live_preview.close_all(
             lambda markup, _indent=0: app._write_assistant_bar_line(markup, content_indent=_indent),
             app._write_code_block,
@@ -441,20 +439,21 @@ def finish_turn_stream(app: Any, turn_id: str, result: AgentTurnResult) -> None:
             close_reasoning_section(app)
 
         flush_content_buffer(app, include_partial=True)
+        app._set_partial_renderable(None, visible=False)
 
         reply = result.content if result.content else app._reply_acc
-        workspace_root = None
-        workspace_root_fn = getattr(app, "_workspace_root", None)
-        if callable(workspace_root_fn):
+        project_root = None
+        project_root_fn = getattr(app, "_project_root", None)
+        if callable(project_root_fn):
             try:
-                value = workspace_root_fn()
+                value = project_root_fn()
                 if isinstance(value, str | Path):
-                    workspace_root = value
+                    project_root = value
             except Exception:
-                workspace_root = None
+                project_root = None
         write_file_audit(
             app,
-            build_file_audit_from_skill_exchanges(result.skill_exchanges, workspace_root=workspace_root),
+            build_file_audit_from_skill_exchanges(result.skill_exchanges, project_root=project_root),
         )
         if result.status == "done" and not app._content_open and reply.strip():
             app._render_static_markdown(reply)

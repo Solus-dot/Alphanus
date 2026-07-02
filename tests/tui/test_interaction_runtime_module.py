@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from types import SimpleNamespace
 
-from tui.interaction_runtime import action_handle_esc, begin_shell_confirm, on_input_submitted
+from tui.interaction_runtime import action_handle_esc, begin_action_approval, on_input_submitted
 
 
 class _ChatInput:
@@ -74,31 +74,39 @@ def test_on_input_submitted_expands_compacted_paste_before_send() -> None:
     assert chat_input.sync_calls == ["[Pasted 130 chars] tail"]
 
 
-def test_begin_shell_confirm_writes_prominent_transcript_prompt() -> None:
+def test_begin_action_approval_writes_prominent_transcript_prompt() -> None:
     writes: list[str] = []
     lines: list[str] = []
     event = threading.Event()
     holder = {"value": False}
     app = SimpleNamespace(
-        _await_shell_confirm=False,
-        _shell_confirm_command="",
-        _shell_confirm_event=None,
-        _shell_confirm_result=None,
+        _await_action_approval=False,
+        _action_approval_command="",
+        _action_approval_event=None,
+        _action_approval_result=None,
         _write=lambda markup="": writes.append(markup),
         _write_assistant_bar_line=lambda markup, **_kwargs: lines.append(markup),
         _theme_color=lambda _name, fallback=None: fallback or "#ffffff",
         _update_status2=lambda: None,
     )
 
-    begin_shell_confirm(app, "go version", event, holder, esc=lambda value: value)
+    begin_action_approval(
+        app,
+        {"kind": "shell_command", "command": "go version", "reason": "test approval", "cwd": "/tmp/project"},
+        event,
+        holder,
+        esc=lambda value: value,
+    )
 
-    assert app._await_shell_confirm is True
-    assert app._shell_confirm_command == "go version"
-    assert app._shell_confirm_event is event
-    assert app._shell_confirm_result is holder
+    assert app._await_action_approval is True
+    assert app._action_approval_command == "go version"
+    assert app._action_approval_event is event
+    assert app._action_approval_result is holder
     assert lines == [
-        "[bold #f59e0b]Shell Approval Required[/bold #f59e0b]",
-        "[bold #f59e0b]![/bold #f59e0b] command waiting for approval",
+        "[bold #f59e0b]Action Approval Required[/bold #f59e0b]",
+        "[bold #f59e0b]![/bold #f59e0b] action waiting for approval",
+        "[#a1a1aa]reason:[/#a1a1aa] test approval",
+        "[#a1a1aa]cwd:[/#a1a1aa] /tmp/project",
         "[#a1a1aa]command:[/#a1a1aa] go version",
         "[#a1a1aa]press[/#a1a1aa] [bold #22c55e]Y[/bold #22c55e] [#a1a1aa]to run, or[/#a1a1aa] [bold #ef4444]N[/bold #ef4444] [#a1a1aa]to reject[/#a1a1aa]",
     ]
@@ -109,7 +117,7 @@ def test_action_handle_esc_clears_chat_input_via_clear_draft() -> None:
     chat_input = _ChatInput(expanded_text="")
     chat_input.value = "[Pasted 130 chars]"
     app = SimpleNamespace(
-        _await_shell_confirm=False,
+        _await_action_approval=False,
         _command_popup_active=lambda: False,
         _hide_command_popup=lambda: None,
         streaming=False,
@@ -125,9 +133,10 @@ def test_action_handle_esc_clears_chat_input_via_clear_draft() -> None:
 def test_action_handle_esc_streaming_second_press_sets_stop_event_and_emits_info() -> None:
     chat_input = _ChatInput(expanded_text="")
     infos: list[str] = []
+    flushes: list[dict[str, object]] = []
     stop_event = threading.Event()
     app = SimpleNamespace(
-        _await_shell_confirm=False,
+        _await_action_approval=False,
         _command_popup_active=lambda: False,
         _hide_command_popup=lambda: None,
         streaming=True,
@@ -135,6 +144,7 @@ def test_action_handle_esc_streaming_second_press_sets_stop_event_and_emits_info
         _esc_ts=0.0,
         _stop_event=stop_event,
         _write_info=infos.append,
+        _flush_content_buffer=lambda **kwargs: flushes.append(kwargs),
         _update_status2=lambda: None,
         query_one=lambda _chat_input_cls: chat_input,
     )
@@ -143,16 +153,17 @@ def test_action_handle_esc_streaming_second_press_sets_stop_event_and_emits_info
 
     assert stop_event.is_set()
     assert app._esc_pending is False
+    assert flushes == [{"include_partial": True, "update_partial": True}]
     assert infos == ["Interrupt requested. Stopping current turn..."]
 
 
-def test_action_handle_esc_streaming_shell_confirm_first_press_only_arms_stop() -> None:
+def test_action_handle_esc_streaming_action_approval_first_press_only_arms_stop() -> None:
     chat_input = _ChatInput(expanded_text="")
     stop_event = threading.Event()
     finishes: list[bool] = []
     app = SimpleNamespace(
-        _await_shell_confirm=True,
-        _finish_shell_confirm=finishes.append,
+        _await_action_approval=True,
+        _finish_action_approval=finishes.append,
         _command_popup_active=lambda: False,
         _hide_command_popup=lambda: None,
         streaming=True,
@@ -171,14 +182,14 @@ def test_action_handle_esc_streaming_shell_confirm_first_press_only_arms_stop() 
     assert finishes == []
 
 
-def test_action_handle_esc_streaming_shell_confirm_second_press_stops_and_rejects() -> None:
+def test_action_handle_esc_streaming_action_approval_second_press_stops_and_rejects() -> None:
     chat_input = _ChatInput(expanded_text="")
     infos: list[str] = []
     finishes: list[bool] = []
     stop_event = threading.Event()
     app = SimpleNamespace(
-        _await_shell_confirm=True,
-        _finish_shell_confirm=finishes.append,
+        _await_action_approval=True,
+        _finish_action_approval=finishes.append,
         _command_popup_active=lambda: False,
         _hide_command_popup=lambda: None,
         streaming=True,

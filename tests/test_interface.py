@@ -14,7 +14,7 @@ from agent.policies import OutputSanitizer
 from core.conv_tree import ConvTree
 from core.sessions import ChatSession, SessionSearchResult
 from core.types import ModelStatus
-from core.workspace import WorkspaceManager
+from core.project import ProjectRuntime
 from tui.commands import active_command_query, active_command_span, command_entries_for_query, popup_command_query
 from tui.interface import AlphanusTUI, ChatInput
 from tui.live_tool_preview import LiveToolPreviewManager
@@ -43,13 +43,13 @@ def _assert_barred(renderable, *, width: int = 40) -> None:
 
 
 def _tui_agent_stub(tmp_path: Path) -> SimpleNamespace:
-    workspace_root = tmp_path / "ws"
-    workspace_root.mkdir()
+    project_root = tmp_path / "ws"
+    project_root.mkdir()
     state_root = (tmp_path / ".alphanus-state").resolve()
     return SimpleNamespace(
         config={"tui": {}, "runtime": {"state_root": str(state_root)}},
         skill_runtime=SimpleNamespace(
-            workspace=SimpleNamespace(workspace_root=workspace_root),
+            project=SimpleNamespace(project_root=project_root),
             skills_by_ids=lambda ids: [SimpleNamespace(id=item) for item in ids],
         ),
         connect_timeout_s=1.0,
@@ -757,7 +757,7 @@ def test_write_completed_turn_asst_renders_file_audit_before_reply(tmp_path: Pat
     tui._theme_color = lambda _name, fallback=None: fallback or "#ffffff"
     tui._write_assistant_bar_line = lambda markup, **_kwargs: events.append(f"audit:{markup}")
     tui._render_static_markdown = lambda text: events.append(f"reply:{text}")
-    tui._workspace_root = lambda: tmp_path
+    tui._project_root = lambda: tmp_path
 
     turn = SimpleNamespace(
         assistant_content="Done",
@@ -1587,12 +1587,12 @@ def test_take_pending_tool_detail_is_fifo_by_name() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._pending_tool_details = [
         ("web_search", "q=one"),
-        ("workspace_tree", "max_depth=5"),
+        ("project_tree", "max_depth=5"),
         ("web_search", "q=two"),
     ]
 
     assert tui._take_pending_tool_detail("web_search") == "q=one"
-    assert tui._take_pending_tool_detail("workspace_tree") == "max_depth=5"
+    assert tui._take_pending_tool_detail("project_tree") == "max_depth=5"
     assert tui._take_pending_tool_detail("web_search") == "q=two"
     assert tui._take_pending_tool_detail("web_search") == ""
 
@@ -1713,7 +1713,7 @@ def test_file_tool_success_lines_use_standard_tool_blocks() -> None:
 
     assert tui._show_tool_result_line("create_file", True) is True
     assert tui._show_tool_result_line("edit_file", True) is True
-    assert tui._show_tool_result_line("workspace_tree", True) is True
+    assert tui._show_tool_result_line("project_tree", True) is True
 
 
 def test_tool_call_delta_does_not_show_fallback_box_when_preview_not_ready() -> None:
@@ -2082,7 +2082,7 @@ def test_handle_audit_command_renders_current_turn_file_changes(tmp_path: Path) 
         },
     ]
     tui.conv_tree = tree
-    tui._workspace_root = lambda: tmp_path
+    tui._project_root = lambda: tmp_path
     tui._write_section_heading = headings.append
     tui._theme_color = lambda _name, fallback=None: fallback or "#ffffff"
     tui._write_assistant_bar_line = lambda markup, **_kwargs: lines.append(markup)
@@ -2133,7 +2133,7 @@ def test_action_open_global_palette_pushes_modal() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._id = "app"
     tui._reactive_streaming = False
-    tui._await_shell_confirm = False
+    tui._await_action_approval = False
     calls: list[str] = []
     captured: dict[str, object] = {}
     tui._hide_command_popup = lambda: calls.append("hide")
@@ -2165,11 +2165,11 @@ def test_on_global_palette_close_inserts_command() -> None:
     assert refreshed == ["/doctor"]
 
 
-def test_workspace_file_candidates_excludes_unsupported_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    supported = workspace / "notes.txt"
-    unsupported = workspace / "artifact.bin"
+def test_project_file_candidates_excludes_unsupported_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    project = tmp_path / "ws"
+    project.mkdir()
+    supported = project / "notes.txt"
+    unsupported = project / "artifact.bin"
     supported.write_text("hello", encoding="utf-8")
     unsupported.write_bytes(b"\x00\x01")
 
@@ -2179,9 +2179,9 @@ def test_workspace_file_candidates_excludes_unsupported_files(monkeypatch: pytes
     )
 
     tui = AlphanusTUI.__new__(AlphanusTUI)
-    tui._workspace_root = lambda: workspace
+    tui._project_root = lambda: project
 
-    candidates = tui._workspace_file_candidates(max_items=10)
+    candidates = tui._project_file_candidates(max_items=10)
 
     assert supported.resolve() in candidates
     assert unsupported.resolve() not in candidates
@@ -2210,8 +2210,8 @@ def test_global_palette_catalog_excludes_non_loadable_unloaded_skills() -> None:
     unavailable = skill_stub("unavailable-skill", enabled=True, available=False)
 
     tui = AlphanusTUI.__new__(AlphanusTUI)
-    tui._workspace_file_candidates = lambda max_items=60: []
-    tui._workspace_root = lambda: Path("/tmp")
+    tui._project_file_candidates = lambda max_items=60: []
+    tui._project_root = lambda: Path("/tmp")
     tui._root_relative_label = lambda path, root: path.name
     tui._session_store = SimpleNamespace(list_sessions=lambda: [])
     tui._loaded_skill_ids = ["loaded-skill"]
@@ -2339,10 +2339,12 @@ def test_health_report_markup_groups_readiness_statuses() -> None:
                 "endpoint_mode": "chat",
                 "backend_profile_selected": "openai",
                 "backend_model_integrity": "ok",
-                "runtime_profile": "standard",
-                "permission_profile": "full",
+                "permission_mode": "project-write",
+                "approvals": "on-boundary",
+                "network": False,
+                "sandbox_backend": "auto",
             },
-            "workspace": {"exists": True, "writable": True, "path": "/tmp/ws"},
+            "project": {"exists": True, "writable": True, "path": "/tmp/ws"},
             "search": {"ready": False, "provider": "searxng", "reason": "missing search.searxng_base_url"},
             "retrieval": {"ready": True},
             "memory": {"backend": "lexical", "count": 3},
@@ -2351,7 +2353,7 @@ def test_health_report_markup_groups_readiness_statuses() -> None:
     )
 
     plain = Text.from_markup(markup).plain
-    assert "Workspace Health" in plain
+    assert "Project Health" in plain
     assert "model endpoint" in plain
     assert "search" in plain
     assert "missing search.searxng_base_url" in plain
@@ -2361,7 +2363,7 @@ def test_health_report_markup_treats_on_and_off_skills_as_healthy() -> None:
     markup = health_report_markup(
         {
             "agent": {"ready": True, "backend_model_integrity": "ok"},
-            "workspace": {"exists": True, "writable": True},
+            "project": {"exists": True, "writable": True},
             "search": {"ready": True, "provider": "searxng"},
             "retrieval": {"ready": True},
             "memory": {"backend": "lexical", "count": 0},
@@ -2541,7 +2543,7 @@ def test_on_key_empty_backspace_removes_last_attachment() -> None:
     tui._id = "app"
     tui.pending = [("/tmp/one.txt", "text"), ("/tmp/two.txt", "text")]
     tui._reactive_streaming = False
-    tui._await_shell_confirm = False
+    tui._await_action_approval = False
     tui._command_popup_active = lambda: False
     infos: list[str] = []
     updates: list[str] = []
@@ -2573,13 +2575,13 @@ def test_on_key_empty_backspace_removes_last_attachment() -> None:
         ("escape", None, False),
     ],
 )
-def test_on_key_shell_confirmation_accepts_key_or_character(key: str, character: str | None, approved: bool) -> None:
+def test_on_key_action_approvalation_accepts_key_or_character(key: str, character: str | None, approved: bool) -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._id = "app"
     tui._reactive_streaming = True
-    tui._await_shell_confirm = True
+    tui._await_action_approval = True
     finished: list[bool] = []
-    tui._finish_shell_confirm = finished.append
+    tui._finish_action_approval = finished.append
 
     chat_input = SimpleNamespace(has_focus=False, value="")
     tui.query_one = lambda selector, _type=None: chat_input if selector is ChatInput else None
@@ -2597,7 +2599,7 @@ def test_action_remove_last_attachment_keeps_typed_draft_text() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._id = "app"
     tui._reactive_streaming = False
-    tui._await_shell_confirm = False
+    tui._await_action_approval = False
     tui.pending = [("/tmp/one.txt", "text"), ("/tmp/two.txt", "text")]
     updates: list[str] = []
     infos: list[str] = []
@@ -2620,7 +2622,7 @@ def test_action_clear_attachments_keeps_typed_draft_text() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._id = "app"
     tui._reactive_streaming = False
-    tui._await_shell_confirm = False
+    tui._await_action_approval = False
     tui.pending = [("/tmp/one.txt", "text"), ("/tmp/two.txt", "text")]
     updates: list[str] = []
     infos: list[str] = []
@@ -2639,16 +2641,16 @@ def test_action_clear_attachments_keeps_typed_draft_text() -> None:
     assert infos == ["Cleared 2 attachments."]
 
 
-def test_handle_file_resolves_workspace_relative_path(tmp_path: Path) -> None:
-    workspace_root = tmp_path / "workspace"
-    workspace_root.mkdir()
-    target = workspace_root / "notes.txt"
+def test_handle_file_resolves_project_relative_path(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    target = project_root / "notes.txt"
     target.write_text("hello", encoding="utf-8")
 
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui._id = "app"
     tui._reactive_streaming = False
-    tui.agent = SimpleNamespace(skill_runtime=SimpleNamespace(workspace=SimpleNamespace(workspace_root=str(workspace_root))))
+    tui.agent = SimpleNamespace(skill_runtime=SimpleNamespace(project=SimpleNamespace(project_root=str(project_root))))
     tui.pending = []
     tui._write_error = lambda *_args, **_kwargs: None
     tui._write_info = lambda *_args, **_kwargs: None
@@ -2660,22 +2662,22 @@ def test_handle_file_resolves_workspace_relative_path(tmp_path: Path) -> None:
     assert tui.pending == [(str(target.resolve()), "text")]
 
 
-def test_attachment_picker_items_include_home_source_and_home_files(tmp_path: Path) -> None:
-    home_root = tmp_path / "home"
-    workspace_root = home_root / "workspace"
-    downloads = home_root / "Downloads"
-    workspace_root.mkdir(parents=True)
+def test_attachment_picker_rejects_home_source(tmp_path: Path) -> None:
+    parent_root = tmp_path / "parent"
+    project_root = parent_root / "project"
+    downloads = parent_root / "Downloads"
+    project_root.mkdir(parents=True)
     downloads.mkdir(parents=True)
     (downloads / "notes.txt").write_text("hello", encoding="utf-8")
 
     tui = AlphanusTUI.__new__(AlphanusTUI)
-    tui.agent = SimpleNamespace(skill_runtime=SimpleNamespace(workspace=WorkspaceManager(str(workspace_root), home_root=str(home_root))))
+    tui.agent = SimpleNamespace(skill_runtime=SimpleNamespace(project=ProjectRuntime(str(project_root))))
 
-    workspace_items = tui._attachment_picker_items(".", root_id="workspace")
-    home_items = tui._attachment_picker_items("Downloads", root_id="home")
+    project_items = tui._attachment_picker_items(".", root_id="project")
 
-    assert any(item.id == "root:home:." for item in workspace_items)
-    assert any(item.id == "file:Downloads/notes.txt" for item in home_items)
+    assert not any(item.id.startswith("root:home:") for item in project_items)
+    with pytest.raises(PermissionError, match="project root"):
+        tui._attachment_picker_items("Downloads", root_id="home")
 
 
 def test_open_new_session_reuses_blank_current_session() -> None:
@@ -3392,7 +3394,7 @@ def test_cmd_skills_shows_validation_summary() -> None:
     runtime = SimpleNamespace(
         list_skills=lambda: [skill],
         skill_status_label=lambda _skill: ("blocked", "yellow"),
-        skill_source_label=lambda _skill: "home/.claude/skills/home-helper",
+        skill_source_label=lambda _skill: "external/.claude/skills/home-helper",
         skill_provenance_label=lambda _skill: "user/local",
         _reported_skill_tools=lambda _skill: [],
         _reported_skill_scripts=lambda _skill: [],
@@ -3417,7 +3419,7 @@ def test_cmd_skills_shows_validation_summary() -> None:
 def test_cmd_doctor_shows_skill_policy_details() -> None:
     report = {
         "agent": {"ready": True, "endpoint_policy_error": ""},
-        "workspace": {"path": "/tmp/ws", "writable": True},
+        "project": {"path": "/tmp/ws", "writable": True},
         "memory": {
             "mode": "lexical",
             "backend": "lexical",
@@ -3431,7 +3433,7 @@ def test_cmd_doctor_shows_skill_policy_details() -> None:
                 "id": "dup-skill",
                 "provenance": "user/skills",
                 "availability_code": "shadowed",
-                "availability_reason": "shadowed by dup-skill (workspace/.claude/skills/dup-skill)",
+                "availability_reason": "shadowed by dup-skill (project/.claude/skills/dup-skill)",
                 "status": "shadowed",
                 "execution_allowed": False,
                 "adapter": "agentskills",

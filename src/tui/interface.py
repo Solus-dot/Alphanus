@@ -46,7 +46,7 @@ from tui.attachment_runtime import (
     root_relative_label as tui_root_relative_label,
 )
 from tui.attachment_runtime import (
-    workspace_root as workspace_tui_root,
+    project_root as project_tui_root,
 )
 from tui.chat_input import ChatInput
 from tui.command_output_runtime import (
@@ -80,7 +80,7 @@ from tui.command_output_runtime import (
     cmd_tree as cmd_tui_tree,
 )
 from tui.command_output_runtime import (
-    cmd_workspace as cmd_tui_workspace,
+    cmd_project as cmd_tui_project,
 )
 from tui.command_output_runtime import (
     load_skill_into_session as load_tui_skill_into_session,
@@ -120,16 +120,16 @@ from tui.interaction_runtime import (
     action_handle_esc as action_tui_handle_esc,
 )
 from tui.interaction_runtime import (
-    begin_shell_confirm as begin_tui_shell_confirm,
+    begin_action_approval as begin_tui_action_approval,
 )
 from tui.interaction_runtime import (
-    confirm_shell_command as confirm_tui_shell_command,
+    request_approval_command as approve_tui_request_command,
 )
 from tui.interaction_runtime import (
-    expire_shell_confirm as expire_tui_shell_confirm,
+    expire_action_approval as expire_tui_action_approval,
 )
 from tui.interaction_runtime import (
-    finish_shell_confirm as finish_tui_shell_confirm,
+    finish_action_approval as finish_tui_action_approval,
 )
 from tui.interaction_runtime import (
     on_input_submitted as on_tui_input_submitted,
@@ -207,7 +207,7 @@ from tui.palette_theme_runtime import (
     persist_theme_preference as persist_tui_theme_preference,
 )
 from tui.palette_theme_runtime import (
-    workspace_file_candidates as workspace_tui_file_candidates,
+    project_file_candidates as project_tui_file_candidates,
 )
 from tui.popups import (
     CodeViewerModal,
@@ -545,10 +545,10 @@ class AlphanusTUI(App):
     _status_runtime: StatusRuntimeState
     _live_preview: Any
     _live_preview_partial_source: tuple[list[str], str | None] | None
-    _await_shell_confirm: bool
-    _shell_confirm_command: str
-    _shell_confirm_event: threading.Event | None
-    _shell_confirm_result: bool | None
+    _await_action_approval: bool
+    _action_approval_command: str
+    _action_approval_event: threading.Event | None
+    _action_approval_result: bool | None
     _command_matches: list[dict[str, str]]
     _global_palette_actions: dict[str, dict[str, str]]
     _code_blocks: list[tuple[str, str | None]]
@@ -852,7 +852,7 @@ class AlphanusTUI(App):
         self.action_toggle_thinking()
 
     def action_open_command_palette(self) -> None:
-        if self.streaming or self._await_shell_confirm:
+        if self.streaming or self._await_action_approval:
             return
         chat_input = self.query_one(ChatInput)
         self._set_focused_panel("input")
@@ -866,7 +866,7 @@ class AlphanusTUI(App):
         self._refresh_command_popup(chat_input.value)
 
     def action_open_global_palette(self) -> None:
-        if self.streaming or self._await_shell_confirm:
+        if self.streaming or self._await_action_approval:
             return
         self._hide_command_popup()
         self._set_focused_panel("input")
@@ -875,14 +875,14 @@ class AlphanusTUI(App):
         self.push_screen(CommandPaletteModal(items=items), self._on_global_palette_close)
 
     def action_open_file_picker(self) -> None:
-        if self.streaming or self._await_shell_confirm:
+        if self.streaming or self._await_action_approval:
             return
         self._hide_command_popup()
         self._set_focused_panel("input")
         self._open_attachment_picker(".")
 
     def action_remove_last_attachment(self) -> None:
-        if self.streaming or self._await_shell_confirm:
+        if self.streaming or self._await_action_approval:
             return
         if not self.pending:
             return
@@ -892,7 +892,7 @@ class AlphanusTUI(App):
         self._write_info(f"Removed attachment: {Path(removed_path).name}")
 
     def action_clear_attachments(self) -> None:
-        if self.streaming or self._await_shell_confirm:
+        if self.streaming or self._await_action_approval:
             return
         if not self.pending:
             return
@@ -1318,8 +1318,8 @@ class AlphanusTUI(App):
     def _pending_attachment_markup(self) -> str:
         return tui_pending_attachment_markup(self)
 
-    def _workspace_root(self) -> Path:
-        return workspace_tui_root(self)
+    def _project_root(self) -> Path:
+        return project_tui_root(self)
 
     def _root_relative_label(self, path: Path, root: Path) -> str:
         return tui_root_relative_label(path, root)
@@ -1330,16 +1330,16 @@ class AlphanusTUI(App):
     def _attach_file_path(self, path: str | Path) -> bool:
         return attach_tui_file_path(self, path)
 
-    def _attachment_picker_items(self, relative_dir: str = ".", *, root_id: str = "workspace") -> list[PickerItem]:
+    def _attachment_picker_items(self, relative_dir: str = ".", *, root_id: str = "project") -> list[PickerItem]:
         return attachment_tui_picker_items(
             self, relative_dir, root_id=root_id, accent_color=self._theme_color("accent", DEFAULT_ACCENT_COLOR)
         )
 
-    def _open_attachment_picker(self, relative_dir: str = ".", root_id: str = "workspace") -> None:
+    def _open_attachment_picker(self, relative_dir: str = ".", root_id: str = "project") -> None:
         open_tui_attachment_picker(self, relative_dir, root_id=root_id, accent_color=self._theme_color("accent", DEFAULT_ACCENT_COLOR))
 
-    def _workspace_file_candidates(self, *, max_items: int = 60) -> list[Path]:
-        return workspace_tui_file_candidates(self, max_items=max_items, classify_attachment_fn=classify_attachment)
+    def _project_file_candidates(self, *, max_items: int = 60) -> list[Path]:
+        return project_tui_file_candidates(self, max_items=max_items, classify_attachment_fn=classify_attachment)
 
     def _build_global_palette_catalog(self) -> tuple[list[CommandPaletteItem], dict[str, dict[str, str]]]:
         return build_tui_global_palette_catalog(self, command_palette_item_cls=CommandPaletteItem)
@@ -1458,7 +1458,7 @@ class AlphanusTUI(App):
             collaboration_mode=str(getattr(self, "_collaboration_mode", "execute")),
             stop_event=stop_event,
             on_event=on_event,
-            confirm_shell=self._confirm_shell_command,
+            request_approval=self._request_approval_command,
         )
         self.call_from_thread(self._drain_stream_event_queue)
         self.call_from_thread(self._on_stream_end, turn_id, result)
@@ -1490,17 +1490,17 @@ class AlphanusTUI(App):
     def _on_stream_end(self, turn_id: str, result: AgentTurnResult) -> None:
         finish_tui_turn_stream(self, turn_id, result)
 
-    def _confirm_shell_command(self, command: str) -> bool:
-        return confirm_tui_shell_command(self, command)
+    def _request_approval_command(self, request: dict[str, Any]) -> bool:
+        return approve_tui_request_command(self, request)
 
-    def _begin_shell_confirm(self, command: str, event: threading.Event, holder: dict[str, bool]) -> None:
-        begin_tui_shell_confirm(self, command, event, holder, esc=esc)
+    def _begin_action_approval(self, request: dict[str, Any], event: threading.Event, holder: dict[str, bool]) -> None:
+        begin_tui_action_approval(self, request, event, holder, esc=esc)
 
-    def _expire_shell_confirm(self, event: threading.Event) -> None:
-        expire_tui_shell_confirm(self, event)
+    def _expire_action_approval(self, event: threading.Event) -> None:
+        expire_tui_action_approval(self, event)
 
-    def _finish_shell_confirm(self, approved: bool) -> None:
-        finish_tui_shell_confirm(self, approved)
+    def _finish_action_approval(self, approved: bool) -> None:
+        finish_tui_action_approval(self, approved)
 
     def _send(self, text: str) -> None:
         attachments = list(self.pending)
@@ -1616,8 +1616,8 @@ class AlphanusTUI(App):
     def _cmd_report(self, arg: str) -> bool:
         return cmd_tui_report(self, arg)
 
-    def _cmd_workspace(self, arg: str) -> bool:
-        return cmd_tui_workspace(self, arg)
+    def _cmd_project(self, arg: str) -> bool:
+        return cmd_tui_project(self, arg)
 
     def _cmd_code(self, arg: str) -> bool:
         return cmd_tui_code(self, arg)
