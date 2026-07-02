@@ -6,7 +6,7 @@ from typing import cast
 from agent.core import Agent
 from core.memory import LexicalMemory
 from core.message_types import ChatMessage
-from core.workspace import WorkspaceManager
+from core.project import ProjectRuntime
 from skills.runtime import SkillContext, SkillRuntime
 
 
@@ -19,50 +19,50 @@ def _runtime(tmp_path: Path, config: dict) -> SkillRuntime:
     memory = LexicalMemory(storage_path=str(tmp_path / "mem.pkl"))
     return SkillRuntime(
         skills_dir=str(repo_root / "bundled-skills"),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=memory,
         config=config,
     )
 
 
-def _ctx(workspace_root: str) -> SkillContext:
+def _ctx(project_root: str) -> SkillContext:
     return SkillContext(
         user_input="run command",
         branch_labels=[],
         attachments=[],
-        workspace_root=workspace_root,
+        project_root=project_root,
         memory_hits=[],
     )
 
 
-def test_shell_command_requires_confirmation_callback(tmp_path: Path):
-    runtime = _runtime(tmp_path, {"capabilities": {"shell_require_confirmation": True}})
+def test_shell_command_requires_approval_callback_for_high_risk_command(tmp_path: Path):
+    runtime = _runtime(tmp_path, {"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": False}})
     shell_skill = runtime.get_skill("shell-ops")
     assert shell_skill is not None
 
     out = runtime.execute_tool_call(
         "shell_command",
-        {"command": "echo hi"},
+        {"command": "rm -rf build"},
         selected=[shell_skill],
-        ctx=_ctx(str(runtime.workspace.workspace_root)),
-        confirm_shell=None,
+        ctx=_ctx(str(runtime.project.project_root)),
+        request_approval=None,
     )
     assert out["ok"] is False
     assert out["error"]["code"] == "E_POLICY"
-    assert out["error"]["message"] == "Shell confirmation callback is required"
+    assert out["error"]["message"] == "Approval callback is required"
 
 
 def test_shell_command_rejected_by_user(tmp_path: Path):
-    runtime = _runtime(tmp_path, {"capabilities": {"shell_require_confirmation": True}})
+    runtime = _runtime(tmp_path, {"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": False}})
     shell_skill = runtime.get_skill("shell-ops")
     assert shell_skill is not None
 
     out = runtime.execute_tool_call(
         "shell_command",
-        {"command": "echo hi"},
+        {"command": "rm -rf build"},
         selected=[shell_skill],
-        ctx=_ctx(str(runtime.workspace.workspace_root)),
-        confirm_shell=lambda _: False,
+        ctx=_ctx(str(runtime.project.project_root)),
+        request_approval=lambda _: False,
     )
     assert out["ok"] is False
     assert out["error"]["code"] == "E_POLICY"
@@ -72,49 +72,20 @@ def test_shell_command_rejected_by_user(tmp_path: Path):
 def test_shell_command_skips_confirmation_when_dangerous_mode_enabled(tmp_path: Path):
     runtime = _runtime(
         tmp_path,
-        {
-            "capabilities": {
-                "shell_require_confirmation": True,
-                "dangerously_skip_permissions": True,
-            }
-        },
+        {"permissions": {"mode": "danger-full-access", "approvals": "on-boundary", "network": False}},
     )
     shell_skill = runtime.get_skill("shell-ops")
     assert shell_skill is not None
 
     def _must_not_be_called(_: str) -> bool:
-        raise AssertionError("confirm_shell should not be called when dangerous mode is enabled")
+        raise AssertionError("request_approval should not be called when dangerous mode is enabled")
 
     out = runtime.execute_tool_call(
         "shell_command",
         {"command": "echo hi"},
         selected=[shell_skill],
-        ctx=_ctx(str(runtime.workspace.workspace_root)),
-        confirm_shell=_must_not_be_called,
-    )
-    assert out["ok"] is True
-    assert out["data"]["returncode"] == 0
-    assert out["data"]["stdout"].strip() == "hi"
-
-
-def test_shell_command_recovers_from_raw_argument_payload(tmp_path: Path):
-    runtime = _runtime(
-        tmp_path,
-        {
-            "capabilities": {
-                "shell_require_confirmation": False,
-                "dangerously_skip_permissions": True,
-            }
-        },
-    )
-    shell_skill = runtime.get_skill("shell-ops")
-    assert shell_skill is not None
-
-    out = runtime.execute_tool_call(
-        "shell_command",
-        {"_raw": '{"command":"echo hi"}'},
-        selected=[shell_skill],
-        ctx=_ctx(str(runtime.workspace.workspace_root)),
+        ctx=_ctx(str(runtime.project.project_root)),
+        request_approval=_must_not_be_called,
     )
     assert out["ok"] is True
     assert out["data"]["returncode"] == 0
@@ -124,12 +95,7 @@ def test_shell_command_recovers_from_raw_argument_payload(tmp_path: Path):
 def test_shell_command_executes_with_selected_shell_skill(tmp_path: Path):
     runtime = _runtime(
         tmp_path,
-        {
-            "capabilities": {
-                "shell_require_confirmation": True,
-                "dangerously_skip_permissions": False,
-            }
-        },
+        {"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": False}},
     )
 
     shell_skill = runtime.get_skill("shell-ops")
@@ -139,8 +105,8 @@ def test_shell_command_executes_with_selected_shell_skill(tmp_path: Path):
         "shell_command",
         {"command": "echo hi"},
         selected=[shell_skill],
-        ctx=_ctx(str(runtime.workspace.workspace_root)),
-        confirm_shell=lambda _: True,
+        ctx=_ctx(str(runtime.project.project_root)),
+        request_approval=lambda _: True,
     )
 
     assert out["ok"] is True
@@ -151,17 +117,12 @@ def test_shell_command_executes_with_selected_shell_skill(tmp_path: Path):
 def test_shell_command_uses_longer_default_timeout(mocker, tmp_path: Path):
     runtime = _runtime(
         tmp_path,
-        {
-            "capabilities": {
-                "shell_require_confirmation": False,
-                "dangerously_skip_permissions": True,
-            }
-        },
+        {"permissions": {"mode": "danger-full-access", "approvals": "on-boundary", "network": False}},
     )
     shell_skill = runtime.get_skill("shell-ops")
     assert shell_skill is not None
     run = mocker.patch.object(
-        runtime.workspace,
+        runtime.project,
         "run_shell_command",
         return_value={"ok": True, "data": {"returncode": 0}, "error": None, "meta": {}},
     )
@@ -170,27 +131,22 @@ def test_shell_command_uses_longer_default_timeout(mocker, tmp_path: Path):
         "shell_command",
         {"command": "llama-update"},
         selected=[shell_skill],
-        ctx=_ctx(str(runtime.workspace.workspace_root)),
+        ctx=_ctx(str(runtime.project.project_root)),
     )
 
     assert out["ok"] is True
-    run.assert_called_once_with("llama-update", timeout_s=600)
+    run.assert_called_once_with("llama-update", timeout_s=600, cwd=None, allowed_cwd_roots=None, approved=False)
 
 
 def test_shell_command_allows_explicit_timeout_and_caps_it(mocker, tmp_path: Path):
     runtime = _runtime(
         tmp_path,
-        {
-            "capabilities": {
-                "shell_require_confirmation": False,
-                "dangerously_skip_permissions": True,
-            }
-        },
+        {"permissions": {"mode": "danger-full-access", "approvals": "on-boundary", "network": False}},
     )
     shell_skill = runtime.get_skill("shell-ops")
     assert shell_skill is not None
     run = mocker.patch.object(
-        runtime.workspace,
+        runtime.project,
         "run_shell_command",
         return_value={"ok": True, "data": {"returncode": 0}, "error": None, "meta": {}},
     )
@@ -199,30 +155,60 @@ def test_shell_command_allows_explicit_timeout_and_caps_it(mocker, tmp_path: Pat
         "shell_command",
         {"command": "make", "timeout_s": 1200},
         selected=[shell_skill],
-        ctx=_ctx(str(runtime.workspace.workspace_root)),
+        ctx=_ctx(str(runtime.project.project_root)),
     )
     runtime.execute_tool_call(
         "shell_command",
         {"command": "make world", "timeout_s": 99999},
         selected=[shell_skill],
-        ctx=_ctx(str(runtime.workspace.workspace_root)),
+        ctx=_ctx(str(runtime.project.project_root)),
     )
 
     assert run.call_args_list[0].args == ("make",)
-    assert run.call_args_list[0].kwargs == {"timeout_s": 1200}
+    assert run.call_args_list[0].kwargs == {"timeout_s": 1200, "cwd": None, "allowed_cwd_roots": None, "approved": False}
     assert run.call_args_list[1].args == ("make world",)
-    assert run.call_args_list[1].kwargs == {"timeout_s": 7200}
+    assert run.call_args_list[1].kwargs == {"timeout_s": 7200, "cwd": None, "allowed_cwd_roots": None, "approved": False}
+
+
+def test_shell_command_external_cwd_requests_approval_and_forwards_cwd(mocker, tmp_path: Path):
+    runtime = _runtime(
+        tmp_path,
+        {"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": False}},
+    )
+    shell_skill = runtime.get_skill("shell-ops")
+    assert shell_skill is not None
+    outside = runtime.project.project_root.parent / "outside"
+    outside.mkdir()
+    run = mocker.patch.object(
+        runtime.project,
+        "run_shell_command",
+        return_value={"ok": True, "data": {"returncode": 0}, "error": None, "meta": {}},
+    )
+    approvals: list[dict[str, object]] = []
+
+    out = runtime.execute_tool_call(
+        "shell_command",
+        {"command": "pwd", "cwd": str(outside)},
+        selected=[shell_skill],
+        ctx=_ctx(str(runtime.project.project_root)),
+        request_approval=lambda request: approvals.append(request) or True,
+    )
+
+    assert out["ok"] is True
+    assert approvals and approvals[0]["cwd"] == str(outside)
+    run.assert_called_once_with(
+        "pwd",
+        timeout_s=600,
+        cwd=str(outside),
+        allowed_cwd_roots=[str(outside)],
+        approved=True,
+    )
 
 
 def test_shell_command_nonzero_exit_bubbles_up_as_tool_failure(tmp_path: Path):
     runtime = _runtime(
         tmp_path,
-        {
-            "capabilities": {
-                "shell_require_confirmation": True,
-                "dangerously_skip_permissions": False,
-            }
-        },
+        {"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": False}},
     )
 
     shell_skill = runtime.get_skill("shell-ops")
@@ -232,8 +218,8 @@ def test_shell_command_nonzero_exit_bubbles_up_as_tool_failure(tmp_path: Path):
         "shell_command",
         {"command": 'python3 -c "raise SystemExit(3)"'},
         selected=[shell_skill],
-        ctx=_ctx(str(runtime.workspace.workspace_root)),
-        confirm_shell=lambda _: True,
+        ctx=_ctx(str(runtime.project.project_root)),
+        request_approval=lambda _: True,
     )
 
     assert out["ok"] is False
@@ -248,7 +234,7 @@ def test_runtime_select_skills_returns_loaded_shell_and_memory_skills(tmp_path: 
         user_input="check my go version",
         branch_labels=[],
         attachments=[],
-        workspace_root=str(runtime.workspace.workspace_root),
+        project_root=str(runtime.project.project_root),
         memory_hits=[],
         loaded_skill_ids=["shell-ops", "memory-rag"],
     )
@@ -258,7 +244,7 @@ def test_runtime_select_skills_returns_loaded_shell_and_memory_skills(tmp_path: 
     assert "memory-rag" in selected_ids
 
 
-def test_shell_confirmation_reuses_recent_assistant_action_context(mocker, tmp_path: Path):
+def test_action_approvalation_reuses_recent_assistant_action_context(mocker, tmp_path: Path):
     runtime = _runtime(tmp_path, {})
     agent = Agent({"agent": {}}, runtime)
     mocker.patch("agent.classifier.TurnClassifier._should_model_classify", return_value=True)
@@ -273,7 +259,7 @@ def test_shell_confirmation_reuses_recent_assistant_action_context(mocker, tmp_p
         list[ChatMessage],
         [
         {"role": "user", "content": "how do i check my go version"},
-        {"role": "assistant", "content": "I can run `go version` in the workspace if you want."},
+        {"role": "assistant", "content": "I can run `go version` in the project if you want."},
         ],
     )
 
@@ -294,7 +280,7 @@ def test_shell_command_tool_description_and_skill_block_delegate_confirmation_to
     shell_skill = runtime.get_skill("shell-ops")
     assert shell_skill is not None
 
-    ctx = _ctx(str(runtime.workspace.workspace_root))
+    ctx = _ctx(str(runtime.project.project_root))
     tools = runtime.tools_for_turn([shell_skill], ctx=ctx)
     shell_tool = next(tool["function"] for tool in tools if tool["function"]["name"] == "shell_command")
     assert "tool itself asks for confirmation" in shell_tool["description"]

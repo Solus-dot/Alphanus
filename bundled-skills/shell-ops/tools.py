@@ -11,15 +11,20 @@ TOOL_SPECS = {
         "mutates": True,
         "actions": ["run", "check", "read", "list"],
         "description": (
-            "Run a shell command in the workspace using the user's shell. Shell syntax such as &&, ;, pipes, redirects, "
-            "environment assignments, and globbing is allowed. The tool itself asks for confirmation when required, "
-            "so do not ask separately in assistant text. Use timeout_s for long builds, installs, updates, or tests. "
-            "Do not run malicious or unrelated destructive commands."
+            "Run a shell command using the user's shell. Commands run in the project by default; pass cwd only when "
+            "the user explicitly named another directory. Shell syntax such as &&, ;, pipes, redirects, environment "
+            "assignments, and globbing is allowed. The tool itself asks for confirmation when required, so do not ask "
+            "separately in assistant text. Use timeout_s for long builds, installs, updates, or tests. Do not run "
+            "malicious or unrelated destructive commands."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "command": {"type": "string"},
+                "cwd": {
+                    "type": "string",
+                    "description": "Optional working directory. Use an explicit absolute path when the user asked to run the command outside the project.",
+                },
                 "timeout_s": {
                     "type": "integer",
                     "description": "Maximum runtime in seconds. Defaults to 600; capped at 7200.",
@@ -49,15 +54,30 @@ def execute(tool_name: str, args: dict[str, object], env: ToolExecutionEnv):
         raise ValueError(f"Unsupported tool: {tool_name}")
 
     command = str(args["command"]).strip()
+    cwd = str(args["cwd"]).strip() if args.get("cwd") is not None else None
     timeout_s = _timeout_s(args)
-    caps = env.config.get("capabilities", {})
-    dangerously_skip_permissions = bool(caps.get("dangerously_skip_permissions", False))
-    shell_require_confirmation = bool(caps.get("shell_require_confirmation", True))
-
-    if shell_require_confirmation and not dangerously_skip_permissions:
-        if not env.confirm_shell:
-            raise PermissionError("Shell confirmation callback is required")
-        if not env.confirm_shell(command):
+    approved = False
+    needs_approval = env.project.shell_command_requires_approval(command) or env.project.shell_cwd_requires_approval(cwd)
+    if needs_approval and env.project.permission_mode != "danger-full-access":
+        if not env.request_approval:
+            raise PermissionError("Approval callback is required")
+        approved = bool(
+            env.request_approval(
+                {
+                    "kind": "shell_command",
+                    "command": command,
+                    "cwd": str(cwd or env.project.project_root),
+                    "reason": "Command crosses the project-write approval boundary.",
+                }
+            )
+        )
+        if not approved:
             raise PermissionError("Shell command rejected by user")
 
-    return env.workspace.run_shell_command(command, timeout_s=timeout_s)
+    return env.project.run_shell_command(
+        command,
+        timeout_s=timeout_s,
+        cwd=cwd,
+        allowed_cwd_roots=[cwd] if cwd else None,
+        approved=approved,
+    )
