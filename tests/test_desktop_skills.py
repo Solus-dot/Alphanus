@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 from core.memory import LexicalMemory
-from core.workspace import WorkspaceManager
+from core.project import ProjectRuntime
 from skills.runtime import SkillContext, SkillRuntime
 
 
@@ -20,7 +20,7 @@ def _runtime_with_config(tmp_path: Path, config: dict[str, object]) -> SkillRunt
     ws.mkdir()
     return SkillRuntime(
         skills_dir=str(repo_root / "bundled-skills"),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config=config,
     )
@@ -31,7 +31,7 @@ def _ctx(runtime: SkillRuntime, text: str = "desktop task") -> SkillContext:
         user_input=text,
         branch_labels=[],
         attachments=[],
-        workspace_root=str(runtime.workspace.workspace_root),
+        project_root=str(runtime.project.project_root),
         memory_hits=[],
     )
 
@@ -259,16 +259,16 @@ def test_browser_current_page_uses_linefeed_in_macos_applescript(mocker, tmp_pat
 
 def test_local_search_finds_filename_and_content_matches(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
-    workspace = Path(runtime.workspace.workspace_root)
-    (workspace / "notes").mkdir()
-    (workspace / "notes" / "release-notes.txt").write_text("alpha beta gamma\nsecond line\n", encoding="utf-8")
-    (workspace / "todo.txt").write_text("remember alpha release\n", encoding="utf-8")
+    project = Path(runtime.project.project_root)
+    (project / "notes").mkdir()
+    (project / "notes" / "release-notes.txt").write_text("alpha beta gamma\nsecond line\n", encoding="utf-8")
+    (project / "todo.txt").write_text("remember alpha release\n", encoding="utf-8")
 
     out = _execute(
         runtime,
         "local-search",
         "search_local_files",
-        {"query": "alpha", "root": str(workspace), "mode": "both", "max_results": 10},
+        {"query": "alpha", "root": str(project), "mode": "both", "max_results": 10},
     )
 
     assert out["ok"] is True
@@ -280,10 +280,10 @@ def test_local_search_finds_filename_and_content_matches(tmp_path: Path) -> None
 
 def test_local_search_skips_symlinked_files_outside_allowed_roots(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
-    workspace = Path(runtime.workspace.workspace_root)
+    project = Path(runtime.project.project_root)
     outside = tmp_path / "outside-secret.txt"
     outside.write_text("needle outside policy\n", encoding="utf-8")
-    link = workspace / "linked-secret.txt"
+    link = project / "linked-secret.txt"
 
     try:
         os.symlink(outside, link)
@@ -294,22 +294,22 @@ def test_local_search_skips_symlinked_files_outside_allowed_roots(tmp_path: Path
         runtime,
         "local-search",
         "search_local_files",
-        {"query": "needle", "root": str(workspace), "mode": "content", "max_results": 10},
+        {"query": "needle", "root": str(project), "mode": "content", "max_results": 10},
     )
 
     assert out["ok"] is True
     assert out["data"]["matches"] == []  # type: ignore[index]
 
 
-def test_local_search_skips_sensitive_home_and_workspace_paths(tmp_path: Path) -> None:
+def test_local_search_skips_sensitive_project_paths_and_ignores_home(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
-    home = Path(runtime.workspace.home_root)
-    workspace = Path(runtime.workspace.workspace_root)
+    project = Path(runtime.project.project_root)
+    home = project.parent
     ssh_dir = home / ".ssh"
     ssh_dir.mkdir()
     (ssh_dir / "notes.txt").write_text("needle from ssh\n", encoding="utf-8")
-    (workspace / ".env.json").write_text('{"token": "needle"}\n', encoding="utf-8")
-    (workspace / "safe.txt").write_text("needle from safe file\n", encoding="utf-8")
+    (project / ".env.json").write_text('{"token": "needle"}\n', encoding="utf-8")
+    (project / "safe.txt").write_text("needle from safe file\n", encoding="utf-8")
 
     content_out = _execute(runtime, "local-search", "search_local_files", {"query": "needle", "mode": "both", "max_results": 10})
     filename_out = _execute(runtime, "local-search", "search_local_files", {"query": "env", "mode": "filename", "max_results": 10})
@@ -323,14 +323,14 @@ def test_local_search_skips_sensitive_home_and_workspace_paths(tmp_path: Path) -
 
 def test_local_search_uses_configured_max_text_bytes(tmp_path: Path) -> None:
     runtime = _runtime_with_config(tmp_path, {"tools": {"local_search": {"max_text_bytes": 5}}})
-    workspace = Path(runtime.workspace.workspace_root)
-    (workspace / "small.txt").write_text("needle\n", encoding="utf-8")
+    project = Path(runtime.project.project_root)
+    (project / "small.txt").write_text("needle\n", encoding="utf-8")
 
     out = _execute(
         runtime,
         "local-search",
         "search_local_files",
-        {"query": "needle", "root": str(workspace), "mode": "content", "max_results": 10},
+        {"query": "needle", "root": str(project), "mode": "content", "max_results": 10},
     )
 
     assert out["ok"] is True
@@ -338,7 +338,7 @@ def test_local_search_uses_configured_max_text_bytes(tmp_path: Path) -> None:
     assert out["data"]["skipped_large"] == 1  # type: ignore[index]
 
 
-def test_local_search_rejects_roots_outside_home_and_workspace(tmp_path: Path) -> None:
+def test_local_search_rejects_roots_outside_project(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -351,9 +351,9 @@ def test_local_search_rejects_roots_outside_home_and_workspace(tmp_path: Path) -
 
 def test_document_tools_extract_text_and_csv_tables(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
-    workspace = Path(runtime.workspace.workspace_root)
-    text_path = workspace / "doc.txt"
-    csv_path = workspace / "data.csv"
+    project = Path(runtime.project.project_root)
+    text_path = project / "doc.txt"
+    csv_path = project / "data.csv"
     text_path.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
     csv_path.write_text("name,count\nalpha,2\nbeta,5\n", encoding="utf-8")
 
@@ -368,18 +368,18 @@ def test_document_tools_extract_text_and_csv_tables(tmp_path: Path) -> None:
     assert table_out["data"]["truncated"] is True  # type: ignore[index]
 
 
-def test_document_tools_reject_sensitive_home_and_workspace_paths(tmp_path: Path) -> None:
+def test_document_tools_reject_external_and_sensitive_project_paths(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
-    home = Path(runtime.workspace.home_root)
-    workspace = Path(runtime.workspace.workspace_root)
+    project = Path(runtime.project.project_root)
+    home = project.parent
     ssh_dir = home / ".ssh"
     ssh_dir.mkdir()
     home_secret = ssh_dir / "notes.txt"
-    workspace_secret = workspace / ".env.json"
+    project_secret = project / ".env.json"
     home_secret.write_text("secret\n", encoding="utf-8")
-    workspace_secret.write_text('{"secret": true}\n', encoding="utf-8")
+    project_secret.write_text('{"secret": true}\n', encoding="utf-8")
 
-    for path in (home_secret, workspace_secret):
+    for path in (home_secret, project_secret):
         out = _execute(runtime, "document-tools", "extract_document_text", {"path": str(path)})
 
         assert out["ok"] is False
@@ -389,7 +389,7 @@ def test_document_tools_reject_sensitive_home_and_workspace_paths(tmp_path: Path
 def test_document_tools_report_optional_dependency_for_pdf_when_missing(mocker, tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     module = _load_tool_module(runtime, "extract_document_text")
-    pdf_path = Path(runtime.workspace.workspace_root) / "sample.pdf"
+    pdf_path = Path(runtime.project.project_root) / "sample.pdf"
     pdf_path.write_bytes(b"%PDF-1.4\n")
     mocker.patch.object(module, "_read_pdf", return_value=module._err("E_DEPENDENCY", "PDF extraction requires pypdf", {}))
 
@@ -414,7 +414,7 @@ def test_screenshot_capture_requires_confirmation(tmp_path: Path) -> None:
 def test_screenshot_ocr_rejects_missing_image_path(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
 
-    out = _execute(runtime, "screenshot-ocr", "ocr_image", {"path": str(Path(runtime.workspace.workspace_root) / "missing.png")})
+    out = _execute(runtime, "screenshot-ocr", "ocr_image", {"path": str(Path(runtime.project.project_root) / "missing.png")})
 
     assert out["ok"] is False
     assert out["error"]["code"] == "E_NOT_FOUND"  # type: ignore[index]
@@ -422,13 +422,13 @@ def test_screenshot_ocr_rejects_missing_image_path(tmp_path: Path) -> None:
 
 def test_screenshot_ocr_rejects_sensitive_image_paths(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
-    home = Path(runtime.workspace.home_root)
-    workspace = Path(runtime.workspace.workspace_root)
+    project = Path(runtime.project.project_root)
+    home = project.parent
     ssh_dir = home / ".ssh"
-    protected_dir = workspace / ".alphanus"
+    protected_dir = project / ".alphanus"
     ssh_dir.mkdir()
     protected_dir.mkdir()
-    paths = [ssh_dir / "screen.png", workspace / ".env.png", protected_dir / "screen.png"]
+    paths = [ssh_dir / "screen.png", project / ".env.png", protected_dir / "screen.png"]
     for path in paths:
         path.write_bytes(b"not actually a png")
 
@@ -441,7 +441,7 @@ def test_screenshot_ocr_rejects_sensitive_image_paths(tmp_path: Path) -> None:
 
 def test_screenshot_capture_rejects_protected_output_path(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
-    protected_dir = Path(runtime.workspace.workspace_root) / ".alphanus"
+    protected_dir = Path(runtime.project.project_root) / ".alphanus"
     protected_dir.mkdir()
 
     out = _execute(
@@ -471,7 +471,7 @@ def test_screenshot_windows_capture_passes_output_path_through_environment(mocke
         return _Proc()
 
     mocker.patch.object(module.subprocess, "run", side_effect=_capture_run)
-    output = Path(runtime.workspace.workspace_root) / "x'$(Start-Process calc)'.png"
+    output = Path(runtime.project.project_root) / "x'$(Start-Process calc)'.png"
 
     out = _execute(
         runtime,

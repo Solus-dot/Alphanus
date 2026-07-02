@@ -48,10 +48,10 @@ def _err(code: str, message: str, data: dict[str, object] | None = None) -> dict
 def _resolve_path(raw: str, env: ToolExecutionEnv) -> Path:
     if not raw.strip():
         raise ValueError("path is required")
-    path = env.workspace._resolve_read_path(raw)  # noqa: SLF001
-    if env.workspace._is_secret_path(path):  # noqa: SLF001
+    path = env.project._resolve_read_path(raw)  # noqa: SLF001
+    if env.project._is_secret_path(path):  # noqa: SLF001
         raise PermissionError("Document path matches sensitive file policy")
-    if env.workspace._is_protected_state_path(path):  # noqa: SLF001
+    if env.project._is_protected_state_path(path):  # noqa: SLF001
         raise PermissionError("Document path targets protected internal state")
     if not path.exists() or not path.is_file():
         raise FileNotFoundError(f"Document not found: {raw}")

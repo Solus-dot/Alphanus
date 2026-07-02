@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from core.memory import LexicalMemory
-from core.workspace import WorkspaceManager
+from core.project import ProjectRuntime
 from skills.runtime import SkillContext, SkillRuntime
 
 
@@ -19,7 +19,7 @@ def _memory_runtime(tmp_path: Path) -> tuple[SkillRuntime, str]:
     ws.mkdir()
     runtime = SkillRuntime(
         skills_dir=str(repo_root / "bundled-skills"),
-        workspace=WorkspaceManager(str(ws), home_root=str(home)),
+        project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
     )
@@ -70,7 +70,7 @@ def test_store_memory_replace_query_replaces_user_name(tmp_path: Path):
     runtime, ws = _memory_runtime(tmp_path)
     skill = runtime.get_skill("memory-rag")
     assert skill is not None
-    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], project_root=ws, memory_hits=[])
 
     first = runtime.execute_tool_call("store_memory", {"text": "User's name is Sohom"}, selected=[skill], ctx=ctx)
     old_id = int(first["data"]["id"])
@@ -92,7 +92,7 @@ def test_store_memory_respects_disabled_retrieval(tmp_path: Path):
     runtime.config["retrieval"] = {"enabled": False, "store_path": str(db_path)}
     skill = runtime.get_skill("memory-rag")
     assert skill is not None
-    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], project_root=ws, memory_hits=[])
 
     result = runtime.execute_tool_call("store_memory", {"text": "User prefers concise release summaries"}, selected=[skill], ctx=ctx)
 
@@ -107,7 +107,7 @@ def test_store_memory_still_succeeds_when_retrieval_indexing_fails(tmp_path: Pat
     runtime.config["retrieval"] = {"enabled": True, "store_path": str(db_path)}
     skill = runtime.get_skill("memory-rag")
     assert skill is not None
-    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], project_root=ws, memory_hits=[])
 
     result = runtime.execute_tool_call("store_memory", {"text": "User prefers durable memory writes"}, selected=[skill], ctx=ctx)
 
@@ -121,7 +121,7 @@ def test_recall_memory_uses_token_matching_not_substrings(tmp_path: Path):
     runtime, ws = _memory_runtime(tmp_path)
     skill = runtime.get_skill("memory-rag")
     assert skill is not None
-    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], project_root=ws, memory_hits=[])
 
     runtime.execute_tool_call("store_memory", {"text": "Joanna likes tea"}, selected=[skill], ctx=ctx)
 
@@ -140,7 +140,7 @@ def test_recall_memory_finds_facts_by_tokens(tmp_path: Path):
     runtime, ws = _memory_runtime(tmp_path)
     skill = runtime.get_skill("memory-rag")
     assert skill is not None
-    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], project_root=ws, memory_hits=[])
 
     runtime.execute_tool_call("store_memory", {"text": "My favorite editor is Neovim"}, selected=[skill], ctx=ctx)
 
@@ -161,7 +161,7 @@ def test_memory_skill_lists_recent_memories(tmp_path: Path):
     runtime, ws = _memory_runtime(tmp_path)
     skill = runtime.get_skill("memory-rag")
     assert skill is not None
-    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], project_root=ws, memory_hits=[])
 
     runtime.execute_tool_call("store_memory", {"text": "First memory"}, selected=[skill], ctx=ctx)
     runtime.execute_tool_call("store_memory", {"text": "Second memory"}, selected=[skill], ctx=ctx)
@@ -178,7 +178,7 @@ def test_memory_skill_exports_memories(tmp_path: Path):
     runtime, ws = _memory_runtime(tmp_path)
     skill = runtime.get_skill("memory-rag")
     assert skill is not None
-    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], project_root=ws, memory_hits=[])
 
     runtime.execute_tool_call("store_memory", {"text": "Exported memory"}, selected=[skill], ctx=ctx)
     export_path = Path(ws) / "memory-export.txt"
@@ -194,7 +194,7 @@ def test_store_memory_rejects_empty_text(tmp_path: Path):
     runtime, ws = _memory_runtime(tmp_path)
     skill = runtime.get_skill("memory-rag")
     assert skill is not None
-    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], project_root=ws, memory_hits=[])
 
     result = runtime.execute_tool_call("store_memory", {"text": "   "}, selected=[skill], ctx=ctx)
 
@@ -206,7 +206,7 @@ def test_recall_memory_rejects_empty_query(tmp_path: Path):
     runtime, ws = _memory_runtime(tmp_path)
     skill = runtime.get_skill("memory-rag")
     assert skill is not None
-    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], workspace_root=ws, memory_hits=[])
+    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], project_root=ws, memory_hits=[])
 
     result = runtime.execute_tool_call("recall_memory", {"query": "   "}, selected=[skill], ctx=ctx)
 

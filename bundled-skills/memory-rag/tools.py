@@ -288,12 +288,12 @@ def _get_memory_stats(_args: dict[str, object], env: ToolExecutionEnv) -> dict[s
 
 
 def _export_memories(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
-    workspace_root = Path(env.workspace.workspace_root)
+    project_root = Path(env.project.project_root)
     requested = str(args.get("filepath") or "").strip()
     if requested:
-        path = str(env.workspace._resolve_write_path(requested))  # noqa: SLF001
+        path = str(env.project._resolve_write_path(requested))  # noqa: SLF001
     else:
-        path = str(workspace_root / "memories_export.txt")
+        path = str(project_root / "memories_export.txt")
     out = env.memory.export_txt(path)
     return {"filepath": out}
 

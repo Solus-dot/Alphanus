@@ -64,10 +64,10 @@ def _err(code: str, message: str, data: dict[str, object] | None = None) -> dict
 def _resolve_read_path(raw: str, env: ToolExecutionEnv) -> Path:
     if not raw.strip():
         raise ValueError("path is required")
-    path = env.workspace._resolve_read_path(raw)  # noqa: SLF001
-    if env.workspace._is_secret_path(path):  # noqa: SLF001
+    path = env.project._resolve_read_path(raw)  # noqa: SLF001
+    if env.project._is_secret_path(path):  # noqa: SLF001
         raise PermissionError("Image path matches sensitive file policy")
-    if env.workspace._is_protected_state_path(path):  # noqa: SLF001
+    if env.project._is_protected_state_path(path):  # noqa: SLF001
         raise PermissionError("Image path targets protected internal state")
     if not path.exists() or not path.is_file():
         raise FileNotFoundError(f"Image not found: {raw}")
@@ -75,11 +75,11 @@ def _resolve_read_path(raw: str, env: ToolExecutionEnv) -> Path:
 
 
 def _resolve_output(raw: str, env: ToolExecutionEnv) -> Path:
-    workspace = Path(env.workspace.workspace_root).expanduser().resolve()
+    project = Path(env.project.project_root).expanduser().resolve()
     if raw.strip():
-        path = env.workspace._resolve_write_path(raw)  # noqa: SLF001
+        path = env.project._resolve_write_path(raw)  # noqa: SLF001
     else:
-        path = env.workspace._resolve_write_path(str(workspace / _DEFAULT_SCREENSHOT_FILENAME))  # noqa: SLF001
+        path = env.project._resolve_write_path(str(project / _DEFAULT_SCREENSHOT_FILENAME))  # noqa: SLF001
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
