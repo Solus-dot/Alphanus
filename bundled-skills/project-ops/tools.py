@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import re
 from pathlib import Path
 
 from skills.runtime import ToolExecutionEnv
+
+WRITE_PREVIEW_CHARS = 1200
+WRITE_PREVIEW_HEAD_CHARS = 800
+WRITE_PREVIEW_TAIL_CHARS = 400
+READ_CONTENT_MAX_CHARS = 64000
+EDIT_DIFF_MAX_CHARS = 12000
 
 TOOL_SPECS = {
     "create_directory": {
@@ -190,6 +197,63 @@ def _changed_line_count(before: str, after: str) -> int:
     return changed
 
 
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _line_count_from_text(text: str) -> int:
+    return text.count("\n") + (1 if text else 0)
+
+
+def _middle_truncate(text: str, limit: int) -> tuple[str, bool, int]:
+    if limit <= 0 or len(text) <= limit:
+        return text, False, 0
+    if limit <= 32:
+        omitted = len(text) - limit
+        return text[:limit], True, omitted
+    head_len = max(1, limit // 2)
+    tail_len = max(1, limit - head_len)
+    omitted = len(text) - head_len - tail_len
+    marker = f"\n...[{omitted} chars truncated]...\n"
+    budget_for_text = max(2, limit - len(marker))
+    head_len = max(1, min(head_len, budget_for_text // 2))
+    tail_len = max(1, budget_for_text - head_len)
+    omitted = len(text) - head_len - tail_len
+    marker = f"\n...[{omitted} chars truncated]...\n"
+    return text[:head_len] + marker + text[-tail_len:], True, omitted
+
+
+def _bounded_write_preview(text: str) -> tuple[str, bool, int]:
+    if len(text) <= WRITE_PREVIEW_CHARS:
+        return text, False, 0
+    omitted = len(text) - WRITE_PREVIEW_HEAD_CHARS - WRITE_PREVIEW_TAIL_CHARS
+    marker = f"\n...[{omitted} chars omitted from write preview]...\n"
+    return text[:WRITE_PREVIEW_HEAD_CHARS] + marker + text[-WRITE_PREVIEW_TAIL_CHARS:], True, omitted
+
+
+def _bounded_diff(text: str) -> tuple[str, bool, int]:
+    return _middle_truncate(text, EDIT_DIFF_MAX_CHARS)
+
+
+def _content_payload(content: str, *, limit: int) -> dict[str, object]:
+    returned, truncated, omitted = _middle_truncate(content, limit)
+    total_chars = len(content)
+    payload: dict[str, object] = {
+        "content": returned,
+        "content_truncated": truncated,
+        "total_chars": total_chars,
+        "returned_chars": len(returned),
+        "omitted_chars": omitted,
+        "truncation": None,
+    }
+    if truncated:
+        payload["truncation"] = (
+            f"Warning: truncated output (original char count: {total_chars})\n"
+            f"Total output lines: {_line_count_from_text(content)}"
+        )
+    return payload
+
+
 def _path_info(path_str: str) -> dict[str, object]:
     path = Path(path_str)
     return {
@@ -284,15 +348,20 @@ def _create_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, ob
             },
         )
     path_str = env.project.create_file(filepath, content, approved=approved)
+    preview, preview_truncated, preview_omitted = _bounded_write_preview(content)
     data = _path_info(path_str)
     data.update(
         {
             "created": True,
             "write_verified": True,
-            "content_preview_truncated": False,
+            "sha256": _sha256_text(content),
+            "content_preview": preview,
+            "content_preview_truncated": preview_truncated,
+            "preview_chars": len(preview),
+            "preview_omitted_chars": preview_omitted,
             "bytes_written": len(content.encode("utf-8")),
             "chars_written": len(content),
-            "line_count": _line_count(content),
+            "line_count": _line_count_from_text(content),
         }
     )
     return data
@@ -405,15 +474,22 @@ def _edit_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, obje
             lineterm="",
         )
     )
+    diff_out, diff_truncated, diff_omitted = _bounded_diff(diff_text)
+    preview, preview_truncated, preview_omitted = _bounded_write_preview(after)
     data = _path_info(path_str)
     data.update(
         {
             "edited": True,
             "changed": before != after,
+            "sha256": _sha256_text(after),
+            "content_preview": preview,
+            "content_preview_truncated": preview_truncated,
+            "preview_chars": len(preview),
+            "preview_omitted_chars": preview_omitted,
             "bytes_before": len(before.encode("utf-8")),
             "bytes_after": len(after.encode("utf-8")),
-            "line_count_before": _line_count(before),
-            "line_count_after": _line_count(after),
+            "line_count_before": _line_count_from_text(before),
+            "line_count_after": _line_count_from_text(after),
             "changed_lines": _changed_line_count(before, after),
             "edit_mode": edit_mode,
             "replacements_applied": replacements_applied,
@@ -422,7 +498,9 @@ def _edit_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, obje
             "resolved_end_line": resolved_end_line,
             "total_line_count_before": total_line_count_before,
             "total_line_count_after": total_line_count_after,
-            "diff": diff_text,
+            "diff": diff_out,
+            "diff_truncated": diff_truncated,
+            "diff_omitted_chars": diff_omitted,
         }
     )
     return data
@@ -451,12 +529,13 @@ def _read_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, obje
         if include_line_numbers
         else selected_content
     )
+    content_payload = _content_payload(content_out, limit=READ_CONTENT_MAX_CHARS)
     data = _path_info(filepath)
     data.update(
         {
-            "content": content_out,
+            **content_payload,
             "size_bytes": len(content.encode("utf-8")),
-            "line_count": _line_count(content),
+            "line_count": _line_count_from_text(content),
             "section_scoped": bool(resolved["selectors_applied"]),
             "resolved_start_line": resolved_start_line,
             "resolved_end_line": resolved_end_line,
@@ -471,9 +550,21 @@ def _read_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, obje
 
 
 def _read_files(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
-    max_chars = int(args.get("max_chars_per_file", 20000))
+    max_chars = min(max(1, int(args.get("max_chars_per_file", 20000))), READ_CONTENT_MAX_CHARS)
     paths = [str(item) for item in args.get("paths") or []]
-    files = env.project.read_files(paths, max_chars_per_file=max_chars)
+    files = []
+    for path in paths:
+        content = env.project.read_file(path)
+        payload = _content_payload(content, limit=max_chars)
+        payload.update(
+            {
+                "filepath": path,
+                "size_bytes": len(content.encode("utf-8")),
+                "line_count": _line_count_from_text(content),
+                "truncated": bool(payload["content_truncated"]),
+            }
+        )
+        files.append(payload)
     return {"files": files, "count": len(files), "max_chars_per_file": max_chars}
 
 

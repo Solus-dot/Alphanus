@@ -3015,28 +3015,6 @@ def test_activate_session_state_restores_collaboration_mode_from_session() -> No
     assert tui._collaboration_mode == "plan"
 
 
-def test_activate_session_state_migrates_legacy_summary_to_active_branch() -> None:
-    tui = AlphanusTUI.__new__(AlphanusTUI)
-    tui.agent = SimpleNamespace(skill_runtime=SimpleNamespace(skills_by_ids=lambda ids: [SimpleNamespace(id=item) for item in ids]))
-    tui._apply_tree_compaction_policy = lambda current_tree: current_tree
-    tree = ConvTree()
-    turn = tree.add_turn("long branch")
-    tree.complete_turn(turn.id, "done")
-    session = ChatSession(
-        id="sess-legacy",
-        title="Legacy Summary",
-        created_at="2026-03-20T10:00:00+00:00",
-        updated_at="2026-03-20T10:05:00+00:00",
-        tree=tree,
-        context_summary="legacy branch summary",
-    )
-
-    tui._activate_session_state(session)
-
-    assert tui.conv_tree.context_summary(turn.id) == "legacy branch summary"
-    assert tui._context_summary == "legacy branch summary"
-
-
 def test_activate_session_state_preserves_root_when_pending_branch_is_armed() -> None:
     tui = AlphanusTUI.__new__(AlphanusTUI)
     tui.agent = SimpleNamespace(skill_runtime=SimpleNamespace(skills_by_ids=lambda ids: [SimpleNamespace(id=item) for item in ids]))

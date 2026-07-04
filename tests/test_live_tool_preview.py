@@ -235,24 +235,6 @@ def test_live_preview_can_leave_partial_visible_after_close():
     assert cleared == []
 
 
-def test_live_preview_accepts_namespaced_legacy_write_file_alias():
-    manager = LiveToolPreviewManager()
-    writes = []
-    previews = []
-
-    rendered = manager.update(
-        "s6",
-        "project-ops:write_file",
-        '{"filepath":"login.html","content":"<main>Login</main>"}',
-        writes.append,
-        lambda lines, language: previews.append((list(lines), language)),
-    )
-
-    assert rendered is True
-    assert writes == ["[dim]  · file draft: login.html[/dim]"]
-    assert previews == [(["<main>Login</main>"], "html")]
-
-
 def test_live_preview_streams_edit_file_content_mode():
     manager = LiveToolPreviewManager()
     writes = []

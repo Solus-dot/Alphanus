@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import subprocess
@@ -50,6 +51,8 @@ def test_project_ops_returns_rich_file_metadata(tmp_path: Path):
     assert created["data"]["created"] is True
     assert created["data"]["write_verified"] is True
     assert created["data"]["content_preview_truncated"] is False
+    assert created["data"]["content_preview"] == "alpha\nbeta\n"
+    assert created["data"]["sha256"] == hashlib.sha256("alpha\nbeta\n".encode("utf-8")).hexdigest()
     assert created["data"]["bytes_written"] > 0
     assert created["data"]["chars_written"] == len("alpha\nbeta\n")
     assert created["data"]["line_count"] == 3
@@ -79,8 +82,45 @@ def test_project_ops_returns_rich_file_metadata(tmp_path: Path):
     )
     assert read["ok"] is True
     assert read["data"]["content"] == "alpha\ngamma\n"
+    assert read["data"]["content_truncated"] is False
+    assert read["data"]["total_chars"] == len("alpha\ngamma\n")
     assert read["data"]["size_bytes"] > 0
     assert read["data"]["line_count"] == 3
+
+
+def test_project_ops_long_write_and_edit_return_bounded_evidence(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("project-ops")
+    assert skill is not None
+    ctx = _ctx(str(runtime.project.project_root))
+    content = "start\n" + ("x" * 5000) + "\nend\n"
+
+    created = runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "long.txt", "content": content},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    assert created["ok"] is True
+    assert created["data"]["sha256"] == hashlib.sha256(content.encode("utf-8")).hexdigest()
+    assert created["data"]["content_preview_truncated"] is True
+    assert len(created["data"]["content_preview"]) < len(content)
+    assert created["data"]["content_preview"].startswith("start\n")
+    assert created["data"]["content_preview"].endswith("\nend\n")
+
+    edited = runtime.execute_tool_call(
+        "edit_file",
+        {"filepath": "long.txt", "old_string": "end", "new_string": "finish"},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    assert edited["ok"] is True
+    assert edited["data"]["sha256"] == hashlib.sha256(content.replace("end", "finish").encode("utf-8")).hexdigest()
+    assert edited["data"]["content_preview_truncated"] is True
+    assert edited["data"]["diff_truncated"] is False
+    assert "+finish" in edited["data"]["diff"]
 
 
 def test_project_ops_create_file_allows_explicit_absolute_path_outside_project(tmp_path: Path):
@@ -595,7 +635,55 @@ def test_project_ops_read_files_and_search_code(tmp_path: Path):
     assert read_many["ok"] is True
     assert read_many["data"]["count"] == 2
     assert read_many["data"]["files"][0]["truncated"] is True
+    assert read_many["data"]["files"][0]["content_truncated"] is True
     assert read_many["data"]["files"][0]["returned_chars"] == 20
+
+
+def test_project_ops_read_file_returns_full_content_until_large_cap_then_middle_truncates(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("project-ops")
+    assert skill is not None
+    ctx = _ctx(str(runtime.project.project_root))
+
+    ordinary = "line 1\nline 2\n"
+    runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "ordinary.txt", "content": ordinary},
+        selected=[skill],
+        ctx=ctx,
+    )
+    ordinary_read = runtime.execute_tool_call(
+        "read_file",
+        {"filepath": "ordinary.txt"},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert ordinary_read["ok"] is True
+    assert ordinary_read["data"]["content"] == ordinary
+    assert ordinary_read["data"]["content_truncated"] is False
+
+    huge = "BEGIN\n" + ("x" * 70000) + "\nEND\n"
+    runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "huge.txt", "content": huge},
+        selected=[skill],
+        ctx=ctx,
+    )
+    huge_read = runtime.execute_tool_call(
+        "read_file",
+        {"filepath": "huge.txt"},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    assert huge_read["ok"] is True
+    assert huge_read["data"]["content_truncated"] is True
+    assert huge_read["data"]["total_chars"] == len(huge)
+    assert huge_read["data"]["returned_chars"] < len(huge)
+    assert huge_read["data"]["content"].startswith("BEGIN\n")
+    assert huge_read["data"]["content"].endswith("\nEND\n")
+    assert "chars truncated" in huge_read["data"]["content"]
+    assert "original char count" in huge_read["data"]["truncation"]
 
 def test_project_ops_read_file_supports_section_and_numbered_output(tmp_path: Path):
     runtime = _runtime(tmp_path)

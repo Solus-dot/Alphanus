@@ -2700,6 +2700,180 @@ def test_large_non_content_tool_call_args_still_use_generic_truncation(runtime: 
     assert len(compacted["query"]) < len(large)
 
 
+def test_tool_result_compaction_preserves_nested_scalars(runtime: SkillRuntime):
+    agent = Agent({"agent": {"max_tool_result_chars": 100}}, runtime)
+    result = {
+        "ok": True,
+        "data": {"a": {"b": {"c": {"d": {"value": "keep me"}}}}},
+        "error": None,
+        "meta": {},
+    }
+
+    compacted = agent.orchestrator.compact_tool_result(result)
+
+    assert compacted["data"]["a"]["b"]["c"]["d"]["value"] == "keep me"
+
+
+def test_tool_result_compaction_middle_truncates_long_strings(runtime: SkillRuntime):
+    agent = Agent({"agent": {"max_tool_result_chars": 120}}, runtime)
+    value = "BEGIN-" + ("x" * 500) + "-END"
+
+    compacted = agent.orchestrator.compact_tool_result(
+        {"ok": True, "data": {"content": value}, "error": None, "meta": {}}
+    )
+
+    content = compacted["data"]["content"]
+    assert content.startswith("BEGIN-")
+    assert content.endswith("-END")
+    assert "chars truncated" in content
+    assert len(content) < len(value)
+
+
+def test_memory_tool_history_compaction_keeps_recalled_text(runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    result = {
+        "ok": True,
+        "data": {
+            "hits": [
+                {
+                    "id": 42,
+                    "text": "The user's name is Sohom.",
+                    "type": "preference",
+                    "score": 0.91,
+                    "timestamp": 123.0,
+                    "metadata": {"source": "test", "nested": {"kept": "simple"}},
+                }
+            ]
+        },
+        "error": None,
+        "meta": {},
+    }
+
+    compacted = agent.orchestrator.tool_result_for_history("recall_memory", result)
+
+    hit = compacted["data"]["hits"][0]
+    assert hit["id"] == 42
+    assert hit["text"] == "The user's name is Sohom."
+    assert hit["text_truncated"] is False
+    assert hit["score"] == 0.91
+    assert hit["metadata"]["nested"]["kept"] == "simple"
+
+
+def test_memory_tool_history_compaction_uses_memory_cap_before_generic_cap(runtime: SkillRuntime):
+    agent = Agent({"agent": {"max_tool_result_chars": 100}}, runtime)
+    memory_text = "name: " + ("Sohom " * 200) + "done"
+    result = {
+        "ok": True,
+        "data": {"hits": [{"id": 7, "text": memory_text, "type": "fact", "timestamp": 123.0}]},
+        "error": None,
+        "meta": {},
+    }
+
+    compacted = agent.orchestrator.tool_result_for_history("recall_memory", result)
+
+    text = compacted["data"]["hits"][0]["text"]
+    assert text.startswith("name: ")
+    assert text.endswith("done")
+    assert len(text) > 100
+
+
+def test_memory_tool_history_compaction_clips_long_memory_text(runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    long_text = "name: " + ("Sohom " * 1000) + "done"
+    result = {
+        "ok": True,
+        "data": {"memories": [{"id": 1, "text": long_text, "type": "conversation", "timestamp": 123.0}]},
+        "error": None,
+        "meta": {},
+    }
+
+    compacted = agent.orchestrator.tool_result_for_history("list_memories", result)
+
+    memory = compacted["data"]["memories"][0]
+    assert memory["id"] == 1
+    assert memory["text"].startswith("name: ")
+    assert memory["text"].endswith("done")
+    assert memory["text_truncated"] is True
+    assert len(memory["text"]) < len(long_text)
+
+
+def test_read_tool_history_compaction_keeps_large_bounded_content(runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    content = "BEGIN\n" + ("x" * 70000) + "\nEND"
+    result = {
+        "ok": True,
+        "data": {"content": content, "line_count": 3, "content_truncated": False},
+        "error": None,
+        "meta": {},
+    }
+
+    compacted = agent.orchestrator.tool_result_for_history("read_file", result)
+
+    compacted_content = compacted["data"]["content"]
+    assert compacted_content.startswith("BEGIN\n")
+    assert compacted_content.endswith("\nEND")
+    assert "chars truncated" in compacted_content
+    assert compacted["data"]["content_truncated"] is True
+    assert compacted["data"]["content_omitted_chars"] > 0
+    assert result["data"]["content"] == content
+    assert "content_omitted_chars" not in result["data"]
+
+
+def test_read_files_history_compaction_uses_read_cap_before_generic_cap(runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    content = "BEGIN\n" + ("x" * 30000) + "\nEND"
+    result = {
+        "ok": True,
+        "data": {
+            "files": [
+                {
+                    "filepath": "large.txt",
+                    "content": content,
+                    "content_truncated": False,
+                    "line_count": 3,
+                }
+            ],
+            "count": 1,
+        },
+        "error": None,
+        "meta": {},
+    }
+
+    compacted = agent.orchestrator.tool_result_for_history("read_files", result)
+
+    file_result = compacted["data"]["files"][0]
+    assert file_result["content"] == content
+    assert file_result["content_truncated"] is False
+    assert result["data"]["files"][0]["content"] == content
+
+
+def test_write_tool_history_compaction_keeps_evidence_not_full_content(runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    result = {
+        "ok": True,
+        "data": {
+            "filepath": "big.py",
+            "created": True,
+            "write_verified": True,
+            "sha256": "abc123",
+            "bytes_written": 50000,
+            "line_count": 1000,
+            "content_preview": "start\n" + ("x" * 5000) + "\nend",
+            "content_preview_truncated": True,
+            "unexpected_full_content": "y" * 50000,
+        },
+        "error": None,
+        "meta": {},
+    }
+
+    compacted = agent.orchestrator.tool_result_for_history("create_file", result)
+
+    assert compacted["data"]["sha256"] == "abc123"
+    assert compacted["data"]["bytes_written"] == 50000
+    assert "unexpected_full_content" not in compacted["data"]
+    assert len(compacted["data"]["content_preview"]) < 5000
+
+
 def test_agent_transport_error_marks_error(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
@@ -2910,8 +3084,9 @@ def test_tool_result_history_compacted_by_default(mocker, runtime: SkillRuntime)
     second_payload = json.loads(chat_reqs[1].data.decode("utf-8"))
     tool_msgs = [msg for msg in second_payload["messages"] if msg.get("role") == "tool"]
     assert tool_msgs
-    assert huge_text not in tool_msgs[-1]["content"]
-    assert "truncated" in tool_msgs[-1]["content"]
+    tool_content = tool_msgs[-1]["content"]
+    assert huge_text not in tool_content
+    assert "blob" not in tool_content
 
 
 def test_tool_result_history_compaction_can_be_disabled(mocker, runtime: SkillRuntime):
@@ -3038,8 +3213,8 @@ def test_tool_result_history_compaction_can_be_gated_by_tool_name(mocker, runtim
     tool_msgs = [msg for msg in second_payload["messages"] if msg.get("role") == "tool"]
     assert tool_msgs
     tool_content = tool_msgs[-1]["content"]
-    assert "truncated" in tool_content
     assert huge_text not in tool_content
+    assert "blob" not in tool_content
 
 
 def test_agent_summarizes_history_when_prompt_exceeds_context_budget(mocker, runtime: SkillRuntime):

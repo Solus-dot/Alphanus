@@ -533,7 +533,7 @@ def test_doctor_json_output_is_machine_readable(monkeypatch, capsys, tmp_path) -
             state_root=tmp_path,
         ),
     )
-    monkeypatch.setattr(alphanus_cli, "_load_runtime_config", lambda _app_paths, _args: ({}, ["legacy warning"]))
+    monkeypatch.setattr(alphanus_cli, "_load_runtime_config", lambda _app_paths, _args: ({}, ["config warning"]))
 
     report = {
         "agent": {"ready": True, "endpoint_policy_error": ""},
@@ -563,7 +563,7 @@ def test_doctor_json_output_is_machine_readable(monkeypatch, capsys, tmp_path) -
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
     assert payload["ok"] is True
-    assert payload["config_warnings"] == ["legacy warning"]
+    assert payload["config_warnings"] == ["config warning"]
     assert payload["agent"]["ready"] is True
 
 

@@ -155,7 +155,7 @@ def test_attachment_image_mime_uses_standard_mimetype_registry(tmp_path: Path) -
 
 def test_classify_attachment_rejects_binary_and_invalid_utf8(tmp_path: Path) -> None:
     binary_path = tmp_path / "artifact.bin"
-    invalid_path = tmp_path / "legacy.data"
+    invalid_path = tmp_path / "invalid.data"
     binary_path.write_bytes(b"\x00\x01valid utf-8 around a nul byte")
     invalid_path.write_bytes(b"\xff\xfe\xfd")
 
