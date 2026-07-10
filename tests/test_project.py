@@ -253,7 +253,7 @@ def test_protected_internal_state_is_hidden_from_project_views(tmp_path: Path):
     mgr = ProjectRuntime(str(ws))
 
     assert mgr.list_files(".") == ["notes.txt"]
-    assert ".alphanus" not in mgr.project_tree()
+    assert ".alphanus" not in mgr.project_tree()["tree"]
 
 
 def test_symlink_alias_to_protected_state_is_hidden_from_project_views(tmp_path: Path):
@@ -268,7 +268,7 @@ def test_symlink_alias_to_protected_state_is_hidden_from_project_views(tmp_path:
     mgr = ProjectRuntime(str(ws))
 
     assert mgr.list_files(".") == ["notes.txt"]
-    assert "alias" not in mgr.project_tree()
+    assert "alias" not in mgr.project_tree()["tree"]
 
 
 def test_read_protected_internal_state_denied(tmp_path: Path):

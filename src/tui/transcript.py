@@ -73,6 +73,20 @@ class TranscriptView(Static):
         if refresh:
             self.refresh(layout=True)
 
+    def entry_count(self) -> int:
+        return len(self._entries)
+
+    def truncate_entries(self, count: int) -> None:
+        target = max(0, min(int(count), len(self._entries)))
+        if target == len(self._entries):
+            return
+        self._entries = self._entries[:target]
+        self._last_line_counts = self._last_line_counts[:target]
+        self._last_line_total = sum(self._last_line_counts)
+        if len(self._last_line_counts) != len(self._entries):
+            self._recalculate_line_cache(self._measurement_width())
+        self.refresh(layout=True)
+
     def clear_entries(self) -> None:
         self._entries = []
         self._last_line_counts = []

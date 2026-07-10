@@ -913,6 +913,25 @@ def test_contextual_followup_seed_reuses_immediate_prior_skill_context(runtime: 
     assert agent.skill_runtime.select_skills(ctx) == []
 
 
+def test_project_action_keeps_project_ops_visible_when_other_skill_loaded(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    mocker.patch.object(
+        agent.classifier,
+        "classify",
+        return_value=TurnClassification(requires_project_action=True, prefer_local_project_tools=True),
+    )
+
+    state = agent.orchestrator.prepare_turn(
+        history_messages=[],
+        user_input="write hello world rust code and save it to the desktop",
+        loaded_skill_ids=["memory-rag"],
+    )
+    system_content = agent.prompt_renderer.compose_system_content(state.selected, state.ctx)
+
+    assert "project-ops" in system_content
+    assert "load it with skill_view(name)" in system_content
+
+
 def test_confirmation_project_action_retries_instead_of_accepting_manual_terminal_advice(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
@@ -980,15 +999,18 @@ def test_confirmation_project_action_retries_instead_of_accepting_manual_termina
     mocker.patch.object(agent.llm_client, "call_with_retry", side_effect=fake_call_with_retry)
     mocker.patch.object(runtime, "execute_tool_call", side_effect=fake_execute_tool_call)
 
+    events = []
     result = agent.run_turn(
         history_messages=[{"role": "user", "content": "create notes.txt in the project"}],
         user_input="yes",
         thinking=True,
+        on_event=events.append,
     )
 
     assert result.status == "done"
     assert result.content == "Done with project tools."
     assert calls[-4:] == ["pass_1", "pass_1_project_action_outcome", "pass_2", "pass_3"]
+    assert {"type": "discard_pass_output", "pass_id": "pass_1", "reason": "forced_action_retry"} in events
 
 
 def test_confirmation_project_action_rejects_manual_terminal_advice_after_retry(mocker, runtime: SkillRuntime):

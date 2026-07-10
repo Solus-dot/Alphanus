@@ -545,7 +545,7 @@ class TurnOrchestrator:
             return self._compact_write_result(result)
         if tool_name == "shell_command":
             return self._compact_shell_result(result)
-        if tool_name in {"search_code", "web_search", "fetch_url", "search_local_files", "retrieve_knowledge"}:
+        if tool_name in {"find_files", "search_code", "web_search", "fetch_url", "search_local_files", "retrieve_knowledge"}:
             return self._compact_search_result(result)
         return self.compact_tool_result(result)
 
@@ -596,16 +596,17 @@ class TurnOrchestrator:
         call: ToolCall,
         pass_id: str,
         message: str,
+        code: str = "E_POLICY",
         on_event: Callable[[JsonObject], None] | None = None,
     ) -> None:
         result = {
             "ok": False,
             "data": None,
             "error": {
-                "code": "E_POLICY",
+                "code": code,
                 "message": message,
             },
-            "meta": {},
+            "meta": {"policy_blocked": True},
         }
         self.emit(on_event, {"type": "tool_result", "name": call.name, "id": call.id, "result": result})
         tool_message = {
@@ -871,7 +872,14 @@ class TurnOrchestrator:
         else:
             classification, selected = selection
         ctx.context_summary = str(context_summary or "").strip()
-        ctx.relevant_skill_ids = [getattr(skill, "id", "") for skill in selected if getattr(skill, "id", "")]
+        relevant_skill_ids = [getattr(skill, "id", "") for skill in selected if getattr(skill, "id", "")]
+        if (
+            (classification.requires_project_action or classification.prefer_local_project_tools)
+            and self.skill_runtime.get_skill("project-ops") is not None
+            and "project-ops" not in relevant_skill_ids
+        ):
+            relevant_skill_ids.append("project-ops")
+        ctx.relevant_skill_ids = relevant_skill_ids
         return self.build_turn_state(
             ctx,
             selected,
@@ -1062,6 +1070,7 @@ class TurnOrchestrator:
             "payload": payload,
         }
         self._trace_add(state, "passes", pass_trace)
+        self.emit(on_event, {"type": "pass_start", "pass_id": pass_id})
 
         try:
             stream_result = self.call_with_retry(payload, stop_event, on_event, pass_id=pass_id)

@@ -108,10 +108,28 @@ TOOL_SPECS = {
         "capability": "project_read",
         "mutates": False,
         "actions": ["list", "read"],
-        "description": "List files in a directory.",
+        "description": "List one directory level when the exact directory is already known. Use find_files to locate unknown files.",
         "parameters": {
             "type": "object",
             "properties": {"path": {"type": "string"}},
+            "required": [],
+        },
+    },
+    "find_files": {
+        "capability": "project_read",
+        "mutates": False,
+        "actions": ["list", "read", "check"],
+        "description": "Find project files by exact name, path fragment, or glob without walking directories one level at a time.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "glob": {"type": "string"},
+                "include_dirs": {"type": "boolean"},
+                "case_sensitive": {"type": "boolean"},
+                "max_results": {"type": "integer"},
+            },
             "required": [],
         },
     },
@@ -168,10 +186,14 @@ TOOL_SPECS = {
         "capability": "project_tree",
         "mutates": False,
         "actions": ["list", "read"],
-        "description": "Render the project tree.",
+        "description": "Render a bounded tree for the project or a specific allowed directory path.",
         "parameters": {
             "type": "object",
-            "properties": {"max_depth": {"type": "integer"}},
+            "properties": {
+                "path": {"type": "string"},
+                "max_depth": {"type": "integer"},
+                "max_entries": {"type": "integer"},
+            },
             "required": [],
         },
     },
@@ -574,6 +596,17 @@ def _list_files(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, obj
     return {"path": path, "files": names, "count": len(names)}
 
 
+def _find_files(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
+    return env.project.find_files(
+        path=str(args.get("path", ".")),
+        name=str(args.get("name", "")),
+        glob=str(args.get("glob", "")),
+        include_dirs=bool(args.get("include_dirs", False)),
+        case_sensitive=bool(args.get("case_sensitive", False)),
+        max_results=int(args.get("max_results", 50)),
+    )
+
+
 def _search_code(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     before_context = _optional_non_negative_int(args, "before_context", 0)
     after_context = _optional_non_negative_int(args, "after_context", 0)
@@ -654,8 +687,12 @@ def _move_path(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, obje
 
 def _project_tree(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     max_depth = max(1, int(args.get("max_depth", 3)))
-    tree = env.project.project_tree(max_depth=max_depth)
-    return {"tree": tree, "max_depth": max_depth}
+    max_entries = max(1, int(args.get("max_entries", 500)))
+    return env.project.project_tree(
+        path=str(args.get("path", ".")),
+        max_depth=max_depth,
+        max_entries=max_entries,
+    )
 
 
 def execute(tool_name: str, args: dict[str, object], env: ToolExecutionEnv):
@@ -671,6 +708,8 @@ def execute(tool_name: str, args: dict[str, object], env: ToolExecutionEnv):
         return _read_files(args, env)
     if tool_name == "list_files":
         return _list_files(args, env)
+    if tool_name == "find_files":
+        return _find_files(args, env)
     if tool_name == "search_code":
         return _search_code(args, env)
     if tool_name == "move_path":

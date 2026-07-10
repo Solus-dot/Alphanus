@@ -828,6 +828,217 @@ def test_orchestrator_counts_run_skill_project_changes_as_mutations(tmp_path: Pa
     assert "run_skill" in evidence["successful_mutating_tools"]
 
 
+def _patch_project_tool_runtime(mocker, runtime: SkillRuntime, *, read_ok: bool = True) -> None:
+    def registration(name: str):
+        capabilities = {
+            "read_file": "project_read",
+            "project_tree": "project_tree",
+            "find_files": "project_read",
+            "edit_file": "project_edit",
+        }
+        capability = capabilities.get(name, "")
+        return SimpleNamespace(capability=capability, actions=["edit"] if name == "edit_file" else ["read"])
+
+    def execute(name: str, args: dict[str, object], **_kwargs):
+        if name == "read_file":
+            return {
+                "ok": read_ok,
+                "data": {"filepath": str(args.get("filepath", "")), "content": "alpha\n"} if read_ok else None,
+                "error": None if read_ok else {"code": "E_NOT_FOUND", "message": "missing"},
+                "meta": {},
+            }
+        if name == "project_tree":
+            return {"ok": True, "data": {"tree": "root/\n└── file.txt"}, "error": None, "meta": {}}
+        if name == "edit_file":
+            return {"ok": True, "data": {"filepath": str(args.get("filepath", "")), "edited": True}, "error": None, "meta": {}}
+        return {"ok": False, "data": None, "error": {"code": "E_UNSUPPORTED", "message": name}, "meta": {}}
+
+    mocker.patch.object(runtime, "tool_registration", side_effect=registration)
+    mocker.patch.object(runtime, "tool_is_mutating", side_effect=lambda name: name == "edit_file")
+    mocker.patch.object(runtime, "execute_tool_call", side_effect=execute)
+
+
+def _stream_with_tool(call: ToolCall) -> SimpleNamespace:
+    return SimpleNamespace(tool_calls=[call])
+
+
+def test_tool_loop_repeated_successful_read_is_blocked_then_stopped(mocker, tmp_path: Path) -> None:
+    runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="read README",
+        time_sensitive=False,
+        project_action=False,
+    )
+    orchestrator.config["retrieval"] = {"enabled": False}
+    _patch_project_tool_runtime(mocker, runtime)
+    call = ToolCall(stream_id="s1", index=0, id="call_1", name="read_file", arguments={"filepath": "README.md"})
+
+    status, result = orchestrator.tool_loop.execute_tool_calls(
+        system_content="system",
+        state=state,
+        pass_id="pass_1",
+        stream_result=_stream_with_tool(call),
+    )
+    assert status == "continue"
+    assert result is None
+
+    repeat = ToolCall(stream_id="s2", index=0, id="call_2", name="read_file", arguments={"filepath": "README.md"})
+    status, result = orchestrator.tool_loop.execute_tool_calls(
+        system_content="system",
+        state=state,
+        pass_id="pass_2",
+        stream_result=_stream_with_tool(repeat),
+    )
+    assert status == "continue"
+    assert result is None
+    assert state.evidence[-1].policy_blocked is True
+    assert state.evidence[-1].result["error"]["code"] == "E_REPEATED_TOOL_CALL"
+
+    stuck = ToolCall(stream_id="s3", index=0, id="call_3", name="read_file", arguments={"filepath": "README.md"})
+    status, result = orchestrator.tool_loop.execute_tool_calls(
+        system_content="system",
+        state=state,
+        pass_id="pass_3",
+        stream_result=_stream_with_tool(stuck),
+    )
+    assert status == "result"
+    assert result is not None
+    assert result.status == "error"
+    assert result.error == "tool_loop_stuck"
+    assert state.skill_exchanges[-1]["role"] == "tool"
+    assert json.loads(state.skill_exchanges[-1]["content"])["error"]["code"] == "E_TOOL_LOOP_STUCK"
+
+
+def test_tool_loop_max_depth_adds_synthetic_tool_result(mocker, tmp_path: Path) -> None:
+    runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="read README",
+        time_sensitive=False,
+        project_action=False,
+    )
+    orchestrator.config["retrieval"] = {"enabled": False}
+    _patch_project_tool_runtime(mocker, runtime)
+    state.action_depth = orchestrator.max_action_depth
+    call = ToolCall(stream_id="s1", index=0, id="call_1", name="read_file", arguments={"filepath": "README.md"})
+
+    status, result = orchestrator.tool_loop.execute_tool_calls(
+        system_content="system",
+        state=state,
+        pass_id="pass_1",
+        stream_result=_stream_with_tool(call),
+    )
+
+    assert status == "result"
+    assert result is not None
+    assert result.status == "error"
+    assert state.skill_exchanges[-2]["role"] == "assistant"
+    assert state.skill_exchanges[-1]["role"] == "tool"
+    assert state.skill_exchanges[-1]["tool_call_id"] == "call_1"
+    assert json.loads(state.skill_exchanges[-1]["content"])["error"]["code"] == "E_TOOL_LOOP_BUDGET"
+
+
+def test_tool_loop_stalled_project_mutation_blocks_extra_inspection(mocker, tmp_path: Path) -> None:
+    runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="capitalize headings in README.md",
+        time_sensitive=False,
+        project_action=True,
+    )
+    orchestrator.config["retrieval"] = {"enabled": False}
+    _patch_project_tool_runtime(mocker, runtime)
+
+    for idx, args in enumerate(
+        [
+            {"filepath": "README.md"},
+            {"filepath": "README.md", "start_line": 1, "end_line": 10},
+            {"filepath": "README.md", "start_line": 11, "end_line": 20},
+        ],
+        start=1,
+    ):
+        status, result = orchestrator.tool_loop.execute_tool_calls(
+            system_content="system",
+            state=state,
+            pass_id=f"pass_{idx}",
+            stream_result=_stream_with_tool(ToolCall(stream_id=f"s{idx}", index=0, id=f"call_{idx}", name="read_file", arguments=args)),
+        )
+        assert status == "continue"
+        assert result is None
+
+    status, result = orchestrator.tool_loop.execute_tool_calls(
+        system_content="system",
+        state=state,
+        pass_id="pass_4",
+        stream_result=_stream_with_tool(
+            ToolCall(stream_id="s4", index=0, id="call_4", name="project_tree", arguments={"path": ".", "max_depth": 2})
+        ),
+    )
+
+    assert status == "continue"
+    assert result is None
+    assert state.evidence[-1].policy_blocked is True
+    assert state.evidence[-1].result["error"]["code"] == "E_PROJECT_ACTION_STALLED"
+
+    status, result = orchestrator.tool_loop.execute_tool_calls(
+        system_content="system",
+        state=state,
+        pass_id="pass_5",
+        stream_result=_stream_with_tool(
+            ToolCall(stream_id="s5", index=0, id="call_5", name="project_tree", arguments={"path": "src", "max_depth": 2})
+        ),
+    )
+    assert status == "result"
+    assert result is not None
+    assert result.error == "project_action_stuck"
+
+
+def test_tool_loop_stalled_inspection_does_not_skip_later_edit_in_same_pass(mocker, tmp_path: Path) -> None:
+    runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="capitalize headings in README.md",
+        time_sensitive=False,
+        project_action=True,
+    )
+    orchestrator.config["retrieval"] = {"enabled": False}
+    _patch_project_tool_runtime(mocker, runtime)
+
+    for idx, args in enumerate(
+        [
+            {"filepath": "README.md"},
+            {"filepath": "README.md", "start_line": 1, "end_line": 10},
+            {"filepath": "README.md", "start_line": 11, "end_line": 20},
+        ],
+        start=1,
+    ):
+        status, result = orchestrator.tool_loop.execute_tool_calls(
+            system_content="system",
+            state=state,
+            pass_id=f"pass_{idx}",
+            stream_result=_stream_with_tool(ToolCall(stream_id=f"s{idx}", index=0, id=f"call_{idx}", name="read_file", arguments=args)),
+        )
+        assert status == "continue"
+        assert result is None
+
+    stream_result = SimpleNamespace(
+        tool_calls=[
+            ToolCall(stream_id="s4", index=0, id="call_4", name="project_tree", arguments={"path": ".", "max_depth": 2}),
+            ToolCall(stream_id="s5", index=1, id="call_5", name="edit_file", arguments={"filepath": "README.md", "content": "# Title\n"}),
+        ]
+    )
+    status, result = orchestrator.tool_loop.execute_tool_calls(
+        system_content="system",
+        state=state,
+        pass_id="pass_4",
+        stream_result=stream_result,
+    )
+
+    assert status == "continue"
+    assert result is None
+    assert [record.name for record in state.evidence[-2:]] == ["project_tree", "edit_file"]
+    assert state.evidence[-2].result["error"]["code"] == "E_PROJECT_ACTION_STALLED"
+    assert state.evidence[-1].result["ok"] is True
+    assert orchestrator.project_mutation_count(state) == 1
+
+
 def test_project_action_outcome_accepts_successful_non_mutating_open_action(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": False}}

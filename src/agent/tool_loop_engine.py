@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 import urllib.parse
 from collections.abc import Callable
@@ -11,11 +12,158 @@ from core.types import AgentTurnResult, ApprovalRequestFn, TurnState, UserInputR
 
 
 class ToolLoopEngine:
+    INSPECTION_LOOP_TOOLS = {"read_file", "read_files", "list_files", "project_tree", "find_files", "search_code"}
+    MUTATION_INTENT_TERMS = {
+        "add",
+        "capitalize",
+        "change",
+        "create",
+        "delete",
+        "edit",
+        "fix",
+        "modify",
+        "move",
+        "remove",
+        "rename",
+        "replace",
+        "save",
+        "update",
+        "write",
+    }
+
     def __init__(self, orchestrator) -> None:
         self.orchestrator = orchestrator
 
     def __getattr__(self, name: str):
         return getattr(self.orchestrator, name)
+
+    @staticmethod
+    def _tool_signature(call) -> str:
+        try:
+            args = json.dumps(call.arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        except TypeError:
+            args = json.dumps({key: str(value) for key, value in call.arguments.items()}, sort_keys=True, separators=(",", ":"))
+        return f"{call.name}:{args}"
+
+    def _is_non_mutating_project_inspection(self, state: TurnState, tool_name: str) -> bool:
+        if tool_name not in self.INSPECTION_LOOP_TOOLS:
+            return False
+        reg = self.skill_runtime.tool_registration(tool_name)
+        capability = str(getattr(reg, "capability", "") or "").strip().lower()
+        return capability in {"project_read", "project_tree"} and not self.skill_runtime.tool_is_mutating(tool_name)
+
+    def _requires_project_mutation(self, state: TurnState) -> bool:
+        if not state.requires_project_action or self.project_mutation_count(state) > 0:
+            return False
+        user_text = str(getattr(state.ctx, "user_input", "") or "").lower()
+        return any(term in user_text for term in self.MUTATION_INTENT_TERMS)
+
+    def _loop_block_tool(
+        self,
+        *,
+        state: TurnState,
+        call,
+        pass_id: str,
+        code: str,
+        message: str,
+        on_event: Callable[[JsonObject], None] | None,
+    ) -> None:
+        self._policy_block_tool(state=state, call=call, pass_id=pass_id, code=code, message=message, on_event=on_event)
+
+    def _maybe_block_repeated_inspection(
+        self,
+        *,
+        state: TurnState,
+        call,
+        pass_id: str,
+        on_event: Callable[[JsonObject], None] | None,
+    ) -> tuple[bool, AgentTurnResult | None]:
+        if not self._is_non_mutating_project_inspection(state, call.name):
+            return False, None
+        signature = self._tool_signature(call)
+        if signature not in state.successful_inspection_tool_signatures:
+            return False, None
+        if signature in state.blocked_inspection_tool_signatures:
+            message = (
+                f"{call.name} already succeeded with the same arguments and was already blocked once. "
+                "The turn is stopped to avoid an inspection loop."
+            )
+            self._loop_block_tool(state=state, call=call, pass_id=pass_id, code="E_TOOL_LOOP_STUCK", message=message, on_event=on_event)
+            return (
+                True,
+                AgentTurnResult(
+                    status="error",
+                    content=f"[agent error] {message}",
+                    reasoning=state.full_reasoning,
+                    skill_exchanges=state.skill_exchanges,
+                    error="tool_loop_stuck",
+                ),
+            )
+        message = (
+            f"{call.name} already succeeded with the same arguments in this turn. Use the prior result; "
+            "choose a broader discovery tool, perform the requested mutation, or explain the blocker."
+        )
+        state.blocked_inspection_tool_signatures.add(signature)
+        self._loop_block_tool(state=state, call=call, pass_id=pass_id, code="E_REPEATED_TOOL_CALL", message=message, on_event=on_event)
+        return True, None
+
+    def _maybe_block_stalled_project_action(
+        self,
+        *,
+        state: TurnState,
+        call,
+        pass_id: str,
+        on_event: Callable[[JsonObject], None] | None,
+    ) -> tuple[bool, AgentTurnResult | None]:
+        if not self._requires_project_mutation(state) or not state.project_target_inspected:
+            return False, None
+        if not self._is_non_mutating_project_inspection(state, call.name):
+            return False, None
+        if state.post_target_inspection_calls < 2:
+            return False, None
+        state.project_action_stall_blocks += 1
+        if state.project_action_stall_blocks >= 2:
+            message = (
+                "The requested project mutation has enough inspection evidence, but the model kept requesting "
+                "non-mutating project inspection tools. The turn is stopped to avoid an inspection loop."
+            )
+            self._loop_block_tool(state=state, call=call, pass_id=pass_id, code="E_TOOL_LOOP_STUCK", message=message, on_event=on_event)
+            return (
+                True,
+                AgentTurnResult(
+                    status="error",
+                    content=f"[agent error] {message}",
+                    reasoning=state.full_reasoning,
+                    skill_exchanges=state.skill_exchanges,
+                    error="project_action_stuck",
+                ),
+            )
+        message = (
+            "The requested project mutation has enough inspection evidence. Do not inspect again; call the "
+            "appropriate mutating project tool now, or explain the exact blocker."
+        )
+        self._loop_block_tool(state=state, call=call, pass_id=pass_id, code="E_PROJECT_ACTION_STALLED", message=message, on_event=on_event)
+        return True, None
+
+    def _record_loop_progress_after_result(self, state: TurnState, call, result: dict[str, object]) -> None:
+        if not bool(result.get("ok")):
+            return
+        if self.project_mutation_count(state) > 0:
+            state.project_target_inspected = False
+            state.post_target_inspection_calls = 0
+            state.project_action_stall_blocks = 0
+            return
+        if not self._is_non_mutating_project_inspection(state, call.name):
+            return
+        state.successful_inspection_tool_signatures.add(self._tool_signature(call))
+        if not self._requires_project_mutation(state):
+            return
+        if state.project_target_inspected:
+            state.post_target_inspection_calls += 1
+            return
+        if call.name in {"read_file", "read_files", "find_files", "project_tree"}:
+            state.project_target_inspected = True
+            state.post_target_inspection_calls = 0
 
     def execute_tool_calls(
         self,
@@ -71,8 +219,20 @@ class ToolLoopEngine:
         state.skill_exchanges.append(assistant_chat_message)
 
         force_finalize_reason = ""
-        state.action_depth += 1
-        if state.action_depth > self.max_action_depth:
+        if state.action_depth >= self.max_action_depth:
+            for call in stream_result.tool_calls:
+                self.emit(
+                    on_event,
+                    {"type": "tool_call", "stream_id": call.stream_id, "name": call.name, "arguments": call.arguments, "id": call.id},
+                )
+                self._loop_block_tool(
+                    state=state,
+                    call=call,
+                    pass_id=pass_id,
+                    code="E_TOOL_LOOP_BUDGET",
+                    message=f"Max skill action depth ({self.max_action_depth}) exceeded before executing {call.name}.",
+                    on_event=on_event,
+                )
             if state.search_mode and state.completion.search_has_success:
                 return (
                     "finalized",
@@ -99,6 +259,7 @@ class ToolLoopEngine:
                     error=f"Max skill action depth ({self.max_action_depth}) exceeded",
                 ),
             )
+        state.action_depth += 1
 
         for call in stream_result.tool_calls:
             call_trace = {
@@ -122,6 +283,48 @@ class ToolLoopEngine:
             self.emit(
                 on_event, {"type": "tool_call", "stream_id": call.stream_id, "name": call.name, "arguments": call.arguments, "id": call.id}
             )
+
+            blocked_current_call, blocked_result = self._maybe_block_repeated_inspection(
+                state=state,
+                call=call,
+                pass_id=pass_id,
+                on_event=on_event,
+            )
+            if blocked_result is not None:
+                return "result", blocked_result
+            if blocked_current_call:
+                if self._is_stop_requested(stop_event):
+                    return (
+                        "result",
+                        AgentTurnResult(
+                            status="cancelled",
+                            content="",
+                            reasoning=state.full_reasoning,
+                            skill_exchanges=state.skill_exchanges,
+                        ),
+                    )
+                continue
+
+            stalled_current_call, stalled_result = self._maybe_block_stalled_project_action(
+                state=state,
+                call=call,
+                pass_id=pass_id,
+                on_event=on_event,
+            )
+            if stalled_result is not None:
+                return "result", stalled_result
+            if stalled_current_call:
+                if self._is_stop_requested(stop_event):
+                    return (
+                        "result",
+                        AgentTurnResult(
+                            status="cancelled",
+                            content="",
+                            reasoning=state.full_reasoning,
+                            skill_exchanges=state.skill_exchanges,
+                        ),
+                    )
+                continue
 
             force_finalize_reason = self.tool_budget_reason(state, call)
             if force_finalize_reason:
@@ -239,6 +442,7 @@ class ToolLoopEngine:
             state.dynamic_history.append(tool_chat_message)
             state.skill_exchanges.append(tool_chat_message)
             self.record_tool_effects(state, call, result)
+            self._record_loop_progress_after_result(state, call, result)
             self._trace_add(
                 state,
                 "tool_results",

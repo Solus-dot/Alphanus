@@ -22,6 +22,19 @@ class _Turn:
         self.id = turn_id
 
 
+class _Log:
+    def __init__(self) -> None:
+        self.entries = ["user", "old"]
+        self.truncated_to: int | None = None
+
+    def entry_count(self) -> int:
+        return len(self.entries)
+
+    def truncate_entries(self, count: int) -> None:
+        self.truncated_to = count
+        self.entries = self.entries[:count]
+
+
 class _App:
     _stream_runtime: StreamRuntimeState | None
     _stop_event: Any
@@ -45,6 +58,7 @@ class _App:
         self._last_stream_error_text = "stale"
         self._stream_runtime = StreamRuntimeState()
         self._activity_state = ActivityState()
+        self._active_pass_transcript_start = None
         self._stop_event = None
         self._loaded_skill_ids = ["a", "b"]
         self.thinking = True
@@ -57,7 +71,12 @@ class _App:
         self._scroll_interval = 999.0
         self._live_preview = SimpleNamespace(reset=lambda: None)
         self._reasoning_open = False
+        self._content_open = False
+        self._buf_r = ""
+        self._buf_c = ""
         self._show_tool_details = True
+        self._log_stub = _Log()
+        self._partial_updates = []
         self._handle_content_token = lambda *_args, **_kwargs: None
         self._write_assistant_bar_line = lambda *_args, **_kwargs: None
         self._write_code_block = lambda *_args, **_kwargs: None
@@ -74,6 +93,12 @@ class _App:
 
     def _reset_fence_state(self) -> None:
         return None
+
+    def _set_partial_renderable(self, renderable, visible=None) -> None:
+        self._partial_updates.append((renderable, visible))
+
+    def _log(self):
+        return self._log_stub
 
     def _stream_worker(self, *args):
         self._stream_worker_calls.append(args)
@@ -201,6 +226,34 @@ def test_drain_events_ignores_content_events_after_stop_requested() -> None:
     drain_events(app)
 
     assert handled == []
+
+
+def test_drain_events_discards_provisional_pass_output() -> None:
+    app = _App()
+    app._buf_r = "rejected reasoning"
+    app._buf_c = "rejected content"
+    app._reasoning_open = True
+    app._content_open = True
+    app._handle_content_token = lambda *_args, **_kwargs: (
+        setattr(app, "_reply_acc", "rejected answer"),
+        app._log_stub.entries.append("answer"),
+    )
+    assert app._stream_runtime is not None
+    app._stream_runtime.event_queue = queue.SimpleQueue()
+    app._stream_runtime.event_queue.put({"type": "pass_start", "pass_id": "pass_1"})
+    app._stream_runtime.event_queue.put({"type": "content_token", "text": "rejected"})
+    app._stream_runtime.event_queue.put({"type": "discard_pass_output", "pass_id": "pass_1"})
+
+    drain_events(app)
+
+    assert app._active_pass_transcript_start == 2
+    assert app._log_stub.entries == ["user", "old"]
+    assert app._log_stub.truncated_to == 2
+    assert app._reply_acc == ""
+    assert app._buf_r == ""
+    assert app._buf_c == ""
+    assert app._reasoning_open is False
+    assert app._content_open is False
 
 
 def test_drain_events_keeps_tool_result_events_after_stop_requested() -> None:

@@ -639,6 +639,112 @@ def test_project_ops_read_files_and_search_code(tmp_path: Path):
     assert read_many["data"]["files"][0]["returned_chars"] == 20
 
 
+def test_project_ops_find_files_locates_nested_paths(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("project-ops")
+    assert skill is not None
+
+    ctx = _ctx(str(runtime.project.project_root))
+    runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "docs/transports/cg-sm/README.md", "content": "# title\n"},
+        selected=[skill],
+        ctx=ctx,
+    )
+    runtime.execute_tool_call(
+        "create_file",
+        {"filepath": "docs/runtime/README.md", "content": "# runtime\n"},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    by_name = runtime.execute_tool_call(
+        "find_files",
+        {"path": "docs", "name": "README.md", "max_results": 10},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert by_name["ok"] is True
+    assert by_name["data"]["count"] == 2
+    assert {row["relative_path"] for row in by_name["data"]["results"]} == {
+        "docs/runtime/README.md",
+        "docs/transports/cg-sm/README.md",
+    }
+
+    by_glob = runtime.execute_tool_call(
+        "find_files",
+        {"glob": "**/cg-sm/README.md"},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert by_glob["ok"] is True
+    assert by_glob["data"]["count"] == 1
+    assert by_glob["data"]["results"][0]["relative_path"] == "docs/transports/cg-sm/README.md"
+
+
+def test_project_ops_project_tree_accepts_path_and_limits_entries(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("project-ops")
+    assert skill is not None
+
+    ctx = _ctx(str(runtime.project.project_root))
+    for idx in range(4):
+        runtime.execute_tool_call(
+            "create_file",
+            {"filepath": f"docs/pkg/file_{idx}.txt", "content": "x\n"},
+            selected=[skill],
+            ctx=ctx,
+        )
+    (runtime.project.project_root / "docs" / ".alphanus").mkdir()
+
+    tree = runtime.execute_tool_call(
+        "project_tree",
+        {"path": "docs", "max_depth": 2, "max_entries": 2},
+        selected=[skill],
+        ctx=ctx,
+    )
+    assert tree["ok"] is True
+    assert tree["data"]["path"].endswith("/docs")
+    assert tree["data"]["tree"].startswith("docs/")
+    assert "pkg/" in tree["data"]["tree"]
+    assert ".alphanus" not in tree["data"]["tree"]
+    assert tree["data"]["truncated"] is True
+    assert tree["data"]["omitted_entries"] >= 1
+
+
+def test_project_ops_project_tree_skips_external_secret_paths(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("project-ops")
+    assert skill is not None
+
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir()
+    (home / ".ssh" / "id_rsa").write_text("secret\n", encoding="utf-8")
+    (home / ".aws").mkdir()
+    (home / ".aws" / "credentials").write_text("secret\n", encoding="utf-8")
+    (home / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    (home / "docs").mkdir()
+    (home / "docs" / "README.md").write_text("# ok\n", encoding="utf-8")
+
+    ctx = _ctx(str(runtime.project.project_root))
+    tree = runtime.execute_tool_call(
+        "project_tree",
+        {"path": str(home), "max_depth": 3, "max_entries": 50},
+        selected=[skill],
+        ctx=ctx,
+    )
+
+    assert tree["ok"] is True
+    rendered = tree["data"]["tree"]
+    assert "docs/" in rendered
+    assert "README.md" in rendered
+    assert ".ssh" not in rendered
+    assert "id_rsa" not in rendered
+    assert ".aws" not in rendered
+    assert "credentials" not in rendered
+    assert ".env" not in rendered
+
+
 def test_project_ops_read_file_returns_full_content_until_large_cap_then_middle_truncates(tmp_path: Path):
     runtime = _runtime(tmp_path)
     skill = runtime.get_skill("project-ops")

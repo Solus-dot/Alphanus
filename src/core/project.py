@@ -748,32 +748,185 @@ class ProjectRuntime:
             results.append(child.name + suffix)
         return results
 
-    def project_tree(self, max_depth: int = 3) -> str:
-        lines: list[str] = [f"{self.project_root.name}/"]
+    def _display_path_label(self, path: Path) -> str:
+        try:
+            if self._is_relative_to(path, self.project_root):
+                rel = path.relative_to(self.project_root)
+                if str(rel) == ".":
+                    return f"{self.project_root.name}/"
+                return str(rel).rstrip("/") + ("/" if path.is_dir() and not path.is_symlink() else "")
+        except ValueError:
+            pass
+        return path.name + ("/" if path.is_dir() and not path.is_symlink() else "")
 
-        def walk(path: Path, prefix: str, depth: int) -> None:
+    def _is_project_tree_visible_path(self, path: Path) -> bool:
+        if self._is_protected_project_path(path):
+            return False
+        try:
+            resolved = path.resolve(strict=False)
+        except OSError:
+            return False
+        if self._is_relative_to(resolved, self.project_root):
+            return resolved.exists()
+        lexical = Path(os.path.abspath(str(path)))
+        return path.is_absolute() and not self._is_path_equal_or_descendant(lexical, self.project_root) and resolved.exists()
+
+    def project_tree(self, path: str = ".", max_depth: int = 3, max_entries: int = 500) -> dict[str, Any]:
+        target = self._resolve_read_path(path or ".")
+        if not target.exists():
+            raise FileNotFoundError(str(target))
+        if not target.is_dir():
+            raise NotADirectoryError(str(target))
+        max_depth = max(1, int(max_depth))
+        max_entries = max(1, int(max_entries))
+        lines: list[str] = [self._display_path_label(target)]
+        emitted = 0
+        omitted = 0
+        truncated = False
+
+        def walk(current: Path, prefix: str, depth: int) -> None:
+            nonlocal emitted, omitted, truncated
             if depth > max_depth:
+                return
+            if emitted >= max_entries:
+                truncated = True
                 return
             entries = sorted(
                 (
                     entry
-                    for entry in path.iterdir()
-                    if not self._is_protected_state_path(entry)
+                    for entry in current.iterdir()
+                    if self._is_project_tree_visible_path(entry)
                     and (not entry.is_dir() or entry.is_symlink() or entry.name not in HEAVY_WALK_DIRS)
                 ),
                 key=lambda p: (p.is_file(), p.name.lower()),
             )
             for idx, entry in enumerate(entries):
+                if emitted >= max_entries:
+                    truncated = True
+                    omitted += len(entries) - idx
+                    break
                 last = idx == len(entries) - 1
                 conn = "└── " if last else "├── "
                 is_walkable_dir = entry.is_dir() and not entry.is_symlink()
                 label = entry.name + ("/" if is_walkable_dir else "")
                 lines.append(prefix + conn + label)
+                emitted += 1
                 if is_walkable_dir:
                     walk(entry, prefix + ("    " if last else "│   "), depth + 1)
 
-        walk(self.project_root, "", 1)
-        return "\n".join(lines)
+        walk(target, "", 1)
+        return {
+            "path": str(target),
+            "tree": "\n".join(lines),
+            "max_depth": max_depth,
+            "max_entries": max_entries,
+            "truncated": truncated,
+            "omitted_entries": omitted,
+        }
+
+    def _project_relative_path(self, path: Path) -> str:
+        try:
+            return str(path.relative_to(self.project_root))
+        except ValueError:
+            return ""
+
+    def find_files(
+        self,
+        *,
+        path: str = ".",
+        name: str = "",
+        glob: str = "",
+        include_dirs: bool = False,
+        case_sensitive: bool = False,
+        max_results: int = 50,
+    ) -> dict[str, Any]:
+        if not str(name or "").strip() and not str(glob or "").strip():
+            raise ValueError("find_files requires name or glob")
+        target = self._resolve_read_path(path or ".")
+        if not target.exists():
+            raise FileNotFoundError(str(target))
+        limit = max(1, int(max_results))
+        name_query = str(name or "").strip()
+        glob_query = str(glob or "").strip()
+        glob_cmp = glob_query if case_sensitive else glob_query.lower()
+        cmp_name = name_query if case_sensitive else name_query.lower()
+        results: list[dict[str, Any]] = []
+        truncated = False
+
+        def matches(candidate: Path) -> bool:
+            rel = self._project_relative_path(candidate) or str(candidate)
+            rel_cmp = rel if case_sensitive else rel.lower()
+            basename = candidate.name if case_sensitive else candidate.name.lower()
+            if cmp_name and cmp_name not in {basename, rel_cmp} and cmp_name not in rel_cmp:
+                return False
+            glob_rel = rel if case_sensitive else rel.lower()
+            glob_name = candidate.name if case_sensitive else candidate.name.lower()
+            if glob_cmp and not fnmatch.fnmatch(glob_rel, glob_cmp) and not fnmatch.fnmatch(glob_name, glob_cmp):
+                return False
+            return True
+
+        def add_candidate(candidate: Path) -> bool:
+            nonlocal truncated
+            try:
+                if not self._is_searchable_path(candidate):
+                    return False
+            except OSError:
+                return False
+            is_dir = candidate.is_dir() and not candidate.is_symlink()
+            if is_dir and not include_dirs:
+                return False
+            if not matches(candidate):
+                return False
+            if len(results) >= limit:
+                truncated = True
+                return True
+            results.append(
+                {
+                    "filepath": str(candidate),
+                    "relative_path": self._project_relative_path(candidate),
+                    "basename": candidate.name,
+                    "parent": str(candidate.parent),
+                    "kind": "directory" if is_dir else "file",
+                }
+            )
+            return False
+
+        if target.is_file():
+            add_candidate(target)
+        else:
+            for root, dirnames, filenames in os.walk(target, topdown=True):
+                root_path = Path(root)
+                allowed_dirs = []
+                for dirname in dirnames:
+                    if dirname in HEAVY_WALK_DIRS:
+                        continue
+                    candidate_dir = root_path / dirname
+                    if not self._is_searchable_path(candidate_dir):
+                        continue
+                    if include_dirs and add_candidate(candidate_dir):
+                        break
+                    allowed_dirs.append(dirname)
+                else:
+                    dirnames[:] = allowed_dirs
+                    for filename in filenames:
+                        if add_candidate(root_path / filename):
+                            break
+                    if truncated:
+                        break
+                    continue
+                truncated = True
+                dirnames[:] = []
+                break
+        return {
+            "path": str(target),
+            "query": name_query,
+            "glob": glob_query or None,
+            "include_dirs": bool(include_dirs),
+            "case_sensitive": bool(case_sensitive),
+            "count": len(results),
+            "results": results,
+            "truncated": truncated,
+        }
 
     @staticmethod
     def _clip_text(text: str, max_bytes: int = MAX_TOOL_TEXT_BYTES) -> tuple[str, bool]:

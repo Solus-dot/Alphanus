@@ -574,6 +574,7 @@ class AlphanusTUI(App):
     _stream_drain_timer: Any
     _last_status_right: str
     _last_status_left: str
+    _active_pass_transcript_start: int | None
     _reply_acc_parts: list[str]
     _reply_acc_len: int
 

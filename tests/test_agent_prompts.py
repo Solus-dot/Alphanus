@@ -29,3 +29,11 @@ def test_system_prompt_guides_shell_safety_without_forbidding_shell_syntax(tmp_p
     assert "Do not run malicious" in prompt
     assert "system-destructive" in prompt
     assert "normal shell syntax is allowed" in prompt
+
+
+def test_system_prompt_requires_loading_matching_project_skill_before_declining_file_action(tmp_path):
+    prompt = build_system_prompt(str(tmp_path))
+
+    assert "matching project skill is listed" in prompt
+    assert "load that skill with `skill_view`" in prompt
+    assert "manual save/copy instructions" in prompt

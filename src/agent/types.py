@@ -148,6 +148,11 @@ class TurnState:
     forced_search_retry: bool = False
     forced_action_retry: bool = False
     tool_budgets: dict[str, int] = field(default_factory=dict)
+    successful_inspection_tool_signatures: set[str] = field(default_factory=set)
+    blocked_inspection_tool_signatures: set[str] = field(default_factory=set)
+    project_target_inspected: bool = False
+    post_target_inspection_calls: int = 0
+    project_action_stall_blocks: int = 0
     trace_data: dict[str, JSONValue] = field(default_factory=dict)
 
     @property

@@ -68,6 +68,7 @@ def initialize_shell_state(app: Any, *, agent: Any, debug: bool) -> None:
     app._last_partial_render_width = 1
     app._last_partial_line_count = 0
     app._partial_line_count_dirty = False
+    app._active_pass_transcript_start = None
 
     app._last_scroll = 0.0
     app._scroll_interval = app._ui_timing.scroll_interval_s

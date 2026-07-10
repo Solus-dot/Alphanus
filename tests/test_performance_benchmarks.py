@@ -42,7 +42,7 @@ def test_benchmark_project_tree(benchmark, tmp_path: Path) -> None:
 
     tree = benchmark(lambda: manager.project_tree(max_depth=3))
 
-    assert "pkg_0/" in tree
+    assert "pkg_0/" in tree["tree"]
 
 
 def test_benchmark_tool_schema_generation(benchmark, tmp_path: Path) -> None:

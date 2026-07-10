@@ -21,6 +21,9 @@ class ResponseFinalizer:
     def _is_plan_mode(self, state: TurnState) -> bool:
         return self.orchestrator._is_plan_mode(state)
 
+    def emit(self, on_event, event: JsonObject) -> None:
+        self.orchestrator.emit(on_event, event)
+
     def project_mutation_count(self, state: TurnState) -> int:
         return self.orchestrator.project_mutation_count(state)
 
@@ -77,6 +80,7 @@ class ResponseFinalizer:
         if state.search_mode and state.time_sensitive_query and state.completion.tool_counts.get("web_search", 0) == 0:
             if not state.forced_search_retry:
                 state.forced_search_retry = True
+                self.emit(on_event, {"type": "discard_pass_output", "pass_id": pass_id, "reason": "forced_search_retry"})
                 return "continue", None
             finalized = self.finalize_turn(
                 system_content,
@@ -96,10 +100,12 @@ class ResponseFinalizer:
             if not final.strip():
                 if not state.forced_action_retry:
                     state.forced_action_retry = True
+                    self.emit(on_event, {"type": "discard_pass_output", "pass_id": pass_id, "reason": "forced_action_retry"})
                     return "continue", None
             elif self.project_action_outcome(state, final, stop_event=stop_event, pass_id=pass_id) == "not_completed":
                 if not state.forced_action_retry:
                     state.forced_action_retry = True
+                    self.emit(on_event, {"type": "discard_pass_output", "pass_id": pass_id, "reason": "forced_action_retry"})
                     return "continue", None
                 finalized = self.finalize_turn(
                     system_content,
@@ -157,4 +163,3 @@ class ResponseFinalizer:
                 skill_exchanges=state.skill_exchanges,
             ),
         )
-

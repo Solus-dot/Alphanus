@@ -82,6 +82,7 @@ def start_turn_stream(app: Any, turn: Any, user_input: str, attachment_paths: li
     app._pending_tool_details = []
     app._last_stream_error_text = ""
     app._stream_runtime = StreamRuntimeState()
+    app._active_pass_transcript_start = None
     app._reasoning_open = False
     app._content_open = False
     app._buf_r = ""
@@ -108,6 +109,8 @@ def start_turn_stream(app: Any, turn: Any, user_input: str, attachment_paths: li
 def enqueue_event(app: Any, event: dict[str, Any]) -> None:
     _state(app).event_queue.put(event)
     if event.get("type") in {
+        "pass_start",
+        "discard_pass_output",
         "tool_phase_started",
         "tool_call",
         "tool_result",
@@ -127,6 +130,33 @@ def visible_reasoning_text(text: str) -> str:
     text = re.sub(r"</?function(?:=[^>]+)?>", "", text, flags=re.IGNORECASE)
     text = re.sub(r"</?parameter(?:=[^>]+)?>", "", text, flags=re.IGNORECASE)
     return text
+
+
+def transcript_entry_count(app: Any) -> int:
+    log = app._log()
+    entry_count = getattr(log, "entry_count", None)
+    if callable(entry_count):
+        return int(entry_count())
+    return len(getattr(log, "_entries", []) or [])
+
+
+def mark_pass_start(app: Any) -> None:
+    app._active_pass_transcript_start = transcript_entry_count(app)
+
+
+def discard_pass_output(app: Any) -> None:
+    start = getattr(app, "_active_pass_transcript_start", None)
+    if isinstance(start, int):
+        truncate_entries = getattr(app._log(), "truncate_entries", None)
+        if callable(truncate_entries):
+            truncate_entries(start)
+    app._buf_r = ""
+    app._buf_c = ""
+    app._reasoning_open = False
+    app._content_open = False
+    app._reply_acc = ""
+    app._reset_fence_state()
+    app._set_partial_renderable(None, visible=False)
 
 
 def flush_reasoning_buffer(app: Any) -> None:
@@ -370,6 +400,12 @@ def on_agent_event(app: Any, event: dict[str, Any]) -> None:
         if finish_reason in {"stop", "length"} and not has_content and not has_tool_calls:
             app._buf_r = ""
             app._set_partial_renderable(None)
+
+    elif etype == "pass_start":
+        mark_pass_start(app)
+
+    elif etype == "discard_pass_output":
+        discard_pass_output(app)
 
     elif etype == "usage":
         usage = event.get("usage") or {}

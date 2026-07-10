@@ -219,7 +219,7 @@ Bundled skills cover project work, shell execution, search, memory, and a small 
 
 Core project/runtime skills:
 
-- `project-ops`: read, create, edit, move, delete, tree, and code-search files inside the configured project
+- `project-ops`: read, create, edit, move, delete, find, tree, and code-search files inside the configured project
 - `shell-ops`: run confirmed shell commands from the project with visible stdout/stderr previews
 - `search-ops`: web search and page fetch through configured providers
 - `memory-rag`: recall and save stable local facts
@@ -251,8 +251,9 @@ Current capabilities include:
 
 - section-scoped read/edit by line bounds and anchors
 - regex-based edits
+- filename/path discovery with `find_files`
 - ripgrep-backed code search with optional context lines
-- project tree rendering
+- bounded project tree rendering from the root or a selected directory
 - path-safe move/delete operations inside the project
 - symlink-aware listing/tree rendering; directory symlinks are shown but not traversed by the tree
 - no command runner; use `shell-ops` only when shell output itself is required

@@ -342,7 +342,8 @@ def cmd_report(app: Any, arg: str) -> bool:
 def cmd_project(app: Any, arg: str) -> bool:
     sub = arg.strip().lower()
     if sub == "tree":
-        tree = app.agent.skill_runtime.project.project_tree()
+        tree_payload = app.agent.skill_runtime.project.project_tree()
+        tree = str(tree_payload.get("tree", "")) if isinstance(tree_payload, dict) else str(tree_payload)
         app._write_section_heading("Project Tree")
         app._write_muted_lines(tree.splitlines())
         app._write("")

@@ -34,6 +34,7 @@ _CORE_TOOL_NAMES = frozenset(
         "read_file",
         "read_files",
         "list_files",
+        "find_files",
         "search_code",
         "project_tree",
         "create_directory",
@@ -680,6 +681,8 @@ class SkillRuntime:
             f"{title}\n"
             "Before replying, scan the skills below. If one clearly matches the task, "
             "load it with skill_view(name) and follow its instructions.\n"
+            "If the user asks to create, edit, save, read, or manage local files and a listed skill matches that work, "
+            "load that skill before saying file tools are unavailable.\n"
             "Do not call namespaced skill tools like skill-name:tool_name. Skill tools are only usable after "
             "skill_view loads the skill and exposes their exact unqualified function names in the current tool list.\n"
             "If none match, proceed normally without loading a skill.\n\n"

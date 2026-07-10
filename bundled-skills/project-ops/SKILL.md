@@ -1,7 +1,7 @@
 ---
 name: project-ops
 description: Read, write, edit, inspect, move, and delete project files and folders safely.
-allowed-tools: create_directory create_file edit_file read_file read_files list_files search_code move_path delete_path project_tree
+allowed-tools: create_directory create_file edit_file read_file read_files list_files find_files search_code move_path delete_path project_tree
 metadata:
   version: "1.2.0"
   tags:
@@ -35,6 +35,7 @@ Rules:
 - For multi-file scaffolds or programs, prefer separate `create_file` calls so progress is visible file by file.
 - Use `read_file` before `edit_file` when patching existing files.
 - Use `read_files` when you need to inspect several local files together.
+- Use `find_files` to locate files by name, path fragment, or glob instead of walking directories one level at a time.
 - Prefer `edit_file` with `old_string` and `new_string` for small localized edits.
 - Use `edit_file` with full `content` only when replacing most or all of a file.
 - Use `create_file` only when the user explicitly wants a new file or a project change.
@@ -43,7 +44,8 @@ Rules:
 - Prefer `search_code` over `shell_command` for repo-wide text lookup.
 - Use `move_path` for project file or directory renames/moves instead of shell `mv`.
 - Use `delete_path` for file deletion, directory deletion, or recursive cleanup inside the project.
-- Use `project_tree` for directory summaries; directory symlinks are displayed but are not traversed.
+- Use `project_tree` with a `path` for directory summaries; directory symlinks are displayed but are not traversed.
+- Use `list_files` only when you already know the exact directory and need a single-level listing.
 - There is no project verification runner. If the user asks to run tests or commands, load `shell-ops` and use separate `shell_command` calls.
 - Do not use `shell_command` to create folders or inspect local project files when a project tool can do it.
 - Do not use network tools such as `web_search` or `fetch_url` for local project file inspection or scaffolding.

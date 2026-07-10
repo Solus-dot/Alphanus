@@ -57,6 +57,7 @@ def test_skill_index_warns_against_namespaced_skill_tool_calls(tmp_path: Path):
     index = runtime.compose_skill_index()
 
     assert "load it with skill_view(name)" in index
+    assert "before saying file tools are unavailable" in index
     assert "Do not call namespaced skill tools" in index
     assert "exact unqualified function names" in index
 
@@ -113,6 +114,7 @@ def test_read_only_mode_allows_read_only_project_tools(tmp_path: Path):
 
     assert "read_file" in names
     assert "list_files" in names
+    assert "find_files" in names
     assert "project_tree" in names
     assert "create_file" not in names
     assert "delete_path" not in names
