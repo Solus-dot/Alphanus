@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ast
 import importlib.util
-import json
 import logging
 import os
 import re
@@ -13,10 +12,10 @@ from pathlib import Path
 from typing import Any, cast
 
 from core.memory import LexicalMemory
-from core.message_types import JSONValue, ApprovalRequestFn, UserInputRequestFn
+from core.message_types import ApprovalRequestFn, JSONValue, UserInputRequestFn
+from core.project import ProjectRuntime
 from core.runtime_config import SkillsRuntimeConfig
 from core.tool_results import ToolResult, error_result, ok_result
-from core.project import ProjectRuntime
 from skills.skill_discovery import SkillDiscovery
 from skills.skill_executor import SkillExecutor
 from skills.skill_inventory import SkillInventoryLoader

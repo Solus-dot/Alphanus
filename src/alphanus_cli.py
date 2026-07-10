@@ -1,13 +1,14 @@
 import argparse
 import copy
-import getpass
 import json
 import os
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -17,15 +18,25 @@ from alphanus_paths import get_app_paths
 from core.backend_profiles import BACKEND_PROFILE_LABELS, VALID_BACKEND_PROFILES
 from core.configuration import (
     DEFAULT_CONFIG,
-    config_for_editor_view,
     deep_merge,
-    load_dotenv,
     load_global_config,
     normalize_config,
+    save_global_config,
     validate_endpoint_policy,
 )
 from core.endpoint_modes import ENDPOINT_MODE_AUTO, ENDPOINT_MODE_CHAT, ENDPOINT_MODE_RESPONSES, ENDPOINT_MODES
+from core.headless_protocol import (
+    EXIT_CANCELLED,
+    EXIT_INTERNAL,
+    EXIT_INVALID_INPUT,
+    EXIT_MODEL_FAILURE,
+    EXIT_POLICY_DENIED,
+    EXIT_SUCCESS,
+    JsonlEmitter,
+    parse_jsonl_request,
+)
 from core.memory import LexicalMemory
+from core.project import ProjectRuntime
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
 from core.search_providers import (
     DEFAULT_TAVILY_API_KEY_ENV,
@@ -35,7 +46,6 @@ from core.search_providers import (
     SEARCH_PROVIDERS,
 )
 from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
-from core.project import ProjectRuntime
 from skills.runtime import SkillRuntime
 from tui.interface import AlphanusTUI
 from tui.themes import available_theme_ids, theme_spec
@@ -132,6 +142,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("run", help="Launch the TUI", parents=[common])
 
+    exec_parser = subparsers.add_parser("exec", help="Run one turn using the versioned JSONL protocol", parents=[common])
+    exec_parser.add_argument("prompt", nargs="?", default="", help="Prompt text; reads stdin when omitted")
+    exec_parser.add_argument("--input", choices=("text", "jsonl"), default="text", help="Input framing")
+    exec_parser.add_argument(
+        "--approval-policy", choices=("deny", "allow-boundary"), default="deny",
+        help="How non-interactive boundary approvals are handled",
+    )
+    exec_parser.add_argument("--no-thinking", action="store_true", help="Disable model reasoning mode")
+
     init_parser = subparsers.add_parser("init", help="Initialize ~/.alphanus config and env", parents=[common])
     init_parser.add_argument(
         "section",
@@ -160,7 +179,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default="",
         help="Backend compatibility profile",
     )
-    init_parser.add_argument("--api-key", type=str, default="", help="Model API key (writes to ~/.alphanus/.env)")
+    init_parser.add_argument("--api-key", type=str, default="", help=argparse.SUPPRESS)
     init_parser.add_argument("--api-key-env", type=str, default="", help="Environment variable name for model API key")
     init_parser.add_argument(
         "--backend-api-key-env",
@@ -171,7 +190,7 @@ def _build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--search-provider", type=str, choices=list(SEARCH_PROVIDERS), default="", help="Search provider")
     init_parser.add_argument("--search-fallback-provider", type=str, choices=list(SEARCH_FALLBACK_PROVIDERS), default="", help="Search fallback provider")
     init_parser.add_argument("--searxng-base-url", type=str, default="", help="SearXNG base URL")
-    init_parser.add_argument("--tavily-api-key", type=str, default="", help="Tavily API key (writes to ~/.alphanus/.env)")
+    init_parser.add_argument("--tavily-api-key", type=str, default="", help=argparse.SUPPRESS)
     init_parser.add_argument("--tavily-api-key-env", type=str, default="", help="Environment variable name for Tavily API key")
     init_parser.add_argument(
         "--theme",
@@ -196,7 +215,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _load_runtime_config(app_paths: Any, args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
-    load_dotenv(app_paths.dotenv_path)
     config_path = app_paths.config_path
     if not config_path.exists():
         raise FileNotFoundError(f"Global config not found at {config_path}. Run `alphanus init` first.")
@@ -214,6 +232,12 @@ def _load_runtime_config(app_paths: Any, args: argparse.Namespace) -> tuple[dict
     runtime_cfg = config.setdefault("runtime", {})
     if isinstance(runtime_cfg, dict):
         runtime_cfg["state_root"] = str(Path(app_paths.state_root).resolve())
+    logging_cfg = config.setdefault("logging", {})
+    if isinstance(logging_cfg, dict):
+        configured_log = Path(str(logging_cfg.get("path") or "logs/runtime.jsonl")).expanduser()
+        if not configured_log.is_absolute():
+            configured_log = Path(app_paths.state_root).resolve() / configured_log
+        logging_cfg["path"] = str(configured_log.resolve())
     return config, config_warnings
 
 
@@ -458,6 +482,9 @@ def _run_init(args: Any) -> int:
         section = "all"
     reset_requested = bool(getattr(args, "reset", False))
     app_paths = get_app_paths()
+    if str(getattr(args, "api_key", "") or "").strip() or str(getattr(args, "tavily_api_key", "") or "").strip():
+        print(theme.error("init failed: secret values cannot be passed on the command line; export the configured environment variable instead"))
+        return 2
     state_root = Path(app_paths.state_root)
     state_root.mkdir(parents=True, exist_ok=True)
 
@@ -528,14 +555,11 @@ def _run_init(args: Any) -> int:
     backend_profile = backend_profile_default
     api_key_env = api_key_env_default
     api_key_ref = api_key_ref_default
-    api_key_value = ""
-    backend_api_key_env = ""
     search_provider = search_provider_default
     search_fallback_provider = search_fallback_default
     searxng_base_url_default = str(base.get("search", {}).get("searxng_base_url", DEFAULT_CONFIG["search"]["searxng_base_url"]))
     searxng_base_url = searxng_base_url_default
     tavily_api_key_env = tavily_api_key_env_default
-    tavily_api_key_value = ""
     ui_theme = theme_default
 
     if args.non_interactive:
@@ -550,8 +574,6 @@ def _run_init(args: Any) -> int:
             backend_profile = str(getattr(args, "backend_profile", "") or "").strip() or backend_profile_default
             api_key_env = str(getattr(args, "api_key_env", "") or "").strip() or api_key_env_default
             api_key_ref = f"env:{api_key_env}"
-            api_key_value = str(getattr(args, "api_key", "") or "").strip()
-            backend_api_key_env = str(getattr(args, "backend_api_key_env", "") or "").strip()
         if _section_selected(section, "search"):
             search_provider = str(getattr(args, "search_provider", "") or "").strip() or search_provider_default
             search_fallback_provider = (
@@ -559,7 +581,6 @@ def _run_init(args: Any) -> int:
             )
             searxng_base_url = str(getattr(args, "searxng_base_url", "") or "").strip() or searxng_base_url_default
             tavily_api_key_env = str(getattr(args, "tavily_api_key_env", "") or "").strip() or tavily_api_key_env_default
-            tavily_api_key_value = str(getattr(args, "tavily_api_key", "") or "").strip()
             if search_provider == SEARCH_PROVIDER_TAVILY:
                 search_fallback_provider = "none"
                 searxng_base_url = ""
@@ -643,14 +664,7 @@ def _run_init(args: Any) -> int:
                 hint=theme.muted("name only, not the key value; where Alphanus reads the key"),
             )
             api_key_ref = f"env:{api_key_env.strip() or 'ALPHANUS_API_KEY'}"
-            api_key_value = getpass.getpass("API key (stored in ~/.alphanus/.env; leave blank to keep current): ").strip()
-            if api_key_value:
-                backend_api_key_env = _prompt_env_name(
-                    theme,
-                    "Also write key to backend env var",
-                    "",
-                    hint=theme.muted("optional name only; use OPENAI_API_KEY if your local backend requires it"),
-                )
+            print(theme.muted(f"Export {api_key_env} in your shell before starting Alphanus."))
             step_index += 1
             print("")
         if _section_selected(section, "search"):
@@ -690,9 +704,7 @@ def _run_init(args: Any) -> int:
                     tavily_api_key_env_default or DEFAULT_TAVILY_API_KEY_ENV,
                     hint=theme.muted("name only, not the key value; where Alphanus reads the Tavily key"),
                 )
-                tavily_api_key_value = getpass.getpass(
-                    "Tavily API key (stored in ~/.alphanus/.env; leave blank to keep current): "
-                ).strip()
+                print(theme.muted(f"Export {tavily_api_key_env} in your shell before starting Alphanus."))
             step_index += 1
             print("")
         if _section_selected(section, "theme"):
@@ -771,39 +783,14 @@ def _run_init(args: Any) -> int:
             "Interface",
             [
                 ("Theme", str(normalized["tui"]["theme"])),
-                ("Secrets", str(app_paths.dotenv_path)),
+                ("Secrets", "environment variables only"),
             ],
         )
         if not _prompt_yes_no("Write these settings now?", default=True, theme=theme):
             print(theme.warn("Setup cancelled. No files were written."))
             return 1
 
-    cleaned = config_for_editor_view(normalized)
-    app_paths.config_path.parent.mkdir(parents=True, exist_ok=True)
-    app_paths.config_path.write_text(json.dumps(cleaned, indent=2) + "\n", encoding="utf-8")
-    app_paths.dotenv_path.parent.mkdir(parents=True, exist_ok=True)
-    if not app_paths.dotenv_path.exists():
-        app_paths.dotenv_path.write_text(
-            "\n".join(
-                [
-                    "# Alphanus environment variables",
-                    "# Uncomment and set values as needed.",
-                    "# ALPHANUS_API_KEY=",
-                    "# OPENAI_API_KEY=",
-                    "# TAVILY_API_KEY=",
-                    "# ALPHANUS_EMBEDDINGS_API_KEY=",
-                    "# ALPHANUS_AUTH_HEADER=Authorization: Bearer <token>",
-                    "",
-                ]
-            ),
-            encoding="utf-8",
-        )
-    if _section_selected(section, "model") and api_key_value:
-        _upsert_env_var(app_paths.dotenv_path, normalized["agent"]["api_key_env"], api_key_value)
-        if backend_api_key_env:
-            _upsert_env_var(app_paths.dotenv_path, backend_api_key_env, api_key_value)
-    if _section_selected(section, "search") and tavily_api_key_value:
-        _upsert_env_var(app_paths.dotenv_path, normalized["search"]["tavily_api_key_env"], tavily_api_key_value)
+    save_global_config(app_paths.config_path, normalized)
 
     for warning in existing_warnings + warnings:
         print(f"{theme.warn('config warning:')} {warning}")
@@ -812,7 +799,7 @@ def _run_init(args: Any) -> int:
     print("")
     print(theme.ok("Initialization complete."))
     print(f"  {theme.label('Config:')} {theme.path(str(app_paths.config_path))}")
-    print(f"  {theme.label('Env:')} {theme.path(str(app_paths.dotenv_path))}")
+    print(f"  {theme.label('Secrets:')} environment variables only")
     print(f"  {theme.label('Sessions:')} {theme.path(str((Path(app_paths.state_root) / 'sessions').resolve()))}")
     print(f"  {theme.label('Memory:')} {theme.path(str((Path(app_paths.state_root) / 'memory').resolve()))}")
     print("")
@@ -1002,7 +989,87 @@ def _run_tui(args: Any) -> int:
     return 0
 
 
+def _run_exec(args: Any) -> int:
+    emitter = JsonlEmitter(sys.stdout)
+    stop_event = threading.Event()
+    memory: Any = None
+    previous_handlers: dict[int, Any] = {}
+
+    def cancel(_signum: int, _frame: Any) -> None:
+        stop_event.set()
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        previous_handlers[signum] = signal.getsignal(signum)
+        signal.signal(signum, cancel)
+    try:
+        raw = str(getattr(args, "prompt", "") or "")
+        if not raw:
+            raw = sys.stdin.readline() if args.input == "jsonl" else sys.stdin.read()
+        if args.input == "jsonl":
+            request = parse_jsonl_request(raw.strip())
+            prompt = str(request["prompt"])
+        else:
+            prompt = raw.strip()
+            if not prompt:
+                raise ValueError("a non-empty prompt is required")
+
+        app_paths = get_app_paths()
+        config, warnings = _load_runtime_config(app_paths, args)
+        configure_logging(config)
+        for warning in warnings:
+            print(f"config warning: {warning}", file=sys.stderr)
+        _project, memory, _runtime, agent = _build_agent_runtime(app_paths, config, debug=args.debug)
+        emitter.emit("run.started", workspace=str(agent.skill_runtime.project.project_root))
+
+        def on_event(event: dict[str, Any]) -> None:
+            event_type = str(event.get("type") or "agent.event")
+            emitter.emit(event_type, **{str(k): v for k, v in event.items() if k != "type"})
+
+        def request_approval(request: dict[str, Any]) -> bool:
+            allowed = args.approval_policy == "allow-boundary"
+            emitter.emit("approval.requested", request=request, decision="approved" if allowed else "denied")
+            return allowed
+
+        result = agent.run_turn(
+            history_messages=[], user_input=prompt, thinking=not args.no_thinking,
+            stop_event=stop_event, on_event=on_event, request_approval=request_approval,
+        )
+        if stop_event.is_set() or result.status == "cancelled":
+            emitter.emit("run.completed", status="cancelled")
+            return EXIT_CANCELLED
+        if result.status not in {"ok", "done"}:
+            error = str(result.error or "model execution failed")
+            denied = "approval" in error.casefold() or "policy" in error.casefold() or "permission" in error.casefold()
+            emitter.emit("run.error", category="policy" if denied else "model", message=error)
+            emitter.emit("run.completed", status="error")
+            return EXIT_POLICY_DENIED if denied else EXIT_MODEL_FAILURE
+        emitter.emit("assistant.final", content=result.content)
+        emitter.emit("run.completed", status="success")
+        return EXIT_SUCCESS
+    except (FileNotFoundError, ValueError) as exc:
+        emitter.emit("run.error", category="input", message=str(exc))
+        emitter.emit("run.completed", status="error")
+        return EXIT_INVALID_INPUT
+    except Exception as exc:
+        emitter.emit("run.error", category="internal", message=f"{type(exc).__name__}: {exc}")
+        emitter.emit("run.completed", status="error")
+        return EXIT_INTERNAL
+    finally:
+        if memory is not None:
+            try:
+                memory.flush()
+                if hasattr(memory, "close"):
+                    memory.close()
+            except Exception:
+                pass
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+
+
 def main() -> int:
+    if platform.system().lower() not in {"darwin", "linux"}:
+        print("Alphanus v1 supports macOS and Linux only.", file=sys.stderr)
+        return 2
     parser = _build_parser()
     args = parser.parse_args()
 
@@ -1013,4 +1080,6 @@ def main() -> int:
         return _run_doctor(args)
     if command == "retrieval":
         return _run_retrieval(args)
+    if command == "exec":
+        return _run_exec(args)
     return _run_tui(args)

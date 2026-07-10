@@ -4,13 +4,14 @@ import os
 import platform
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
 
 MAX_SANDBOX_OUTPUT_BYTES = 20000
 MACOS_READ_ROOTS = (
@@ -147,16 +148,61 @@ def _is_single_git_command(command: str) -> bool:
 
 def _run_subprocess(argv: list[str], *, cwd: Path, timeout_s: int) -> dict[str, Any]:
     start = time.perf_counter()
-    proc = subprocess.run(
+    safe_env = {
+        key: value
+        for key, value in os.environ.items()
+        if key in {"HOME", "LANG", "LC_ALL", "PATH", "SHELL", "TERM", "TMPDIR", "TZ"}
+    }
+    proc = subprocess.Popen(
         argv,
         shell=False,
         cwd=str(cwd),
-        capture_output=True,
-        text=True,
-        timeout=timeout_s,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=safe_env,
+        start_new_session=True,
     )
-    stdout, stdout_truncated = _clip_text(proc.stdout)
-    stderr, stderr_truncated = _clip_text(proc.stderr)
+    captured = {"stdout": bytearray(), "stderr": bytearray()}
+    truncated = {"stdout": False, "stderr": False}
+
+    def drain(name: str, stream) -> None:
+        try:
+            while chunk := stream.read(65536):
+                remaining = MAX_SANDBOX_OUTPUT_BYTES - len(captured[name])
+                if remaining > 0:
+                    captured[name].extend(chunk[:remaining])
+                if len(chunk) > remaining:
+                    truncated[name] = True
+        finally:
+            stream.close()
+
+    readers = [
+        threading.Thread(target=drain, args=("stdout", proc.stdout), daemon=True),
+        threading.Thread(target=drain, args=("stderr", proc.stderr), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+    try:
+        proc.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=1)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            proc.wait()
+        raise
+    finally:
+        for reader in readers:
+            reader.join(timeout=2)
+    stdout = bytes(captured["stdout"]).decode("utf-8", errors="replace")
+    stderr = bytes(captured["stderr"]).decode("utf-8", errors="replace")
+    stdout_truncated = truncated["stdout"]
+    stderr_truncated = truncated["stderr"]
     return {
         "argv": argv,
         "stdout": stdout,

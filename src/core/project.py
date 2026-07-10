@@ -1409,9 +1409,6 @@ class ProjectRuntime:
                 raise PermissionError("Shell command outside the project requires approval before execution")
             if self.permission_mode != "danger-full-access" and self.shell_command_requires_approval(command_text) and not approved:
                 raise PermissionError("Shell command requires approval before execution")
-            snapshot_before = self._project_change_snapshot()
-            project_fingerprint_before = self.project_state_fingerprint() if snapshot_before[0] == "git" else None
-            git_fingerprint_before = self._git_metadata_fingerprint() if snapshot_before[0] == "git" else None
             extra_roots = [target_cwd] if external_cwd else []
             run = self._run_shell_string(command_text, timeout_s=timeout_s, cwd=target_cwd, extra_roots=extra_roots)
             sandbox_error = run.get("sandbox_error")
@@ -1425,12 +1422,13 @@ class ProjectRuntime:
                     },
                     "meta": {"duration_ms": int(run.get("duration_ms", 0)), "project_changed": False},
                 }
-            snapshot_after = self._project_change_snapshot()
-            project_changed = snapshot_before != snapshot_after
-            if not project_changed and snapshot_before[0] == "git" and project_fingerprint_before is not None:
-                project_changed = project_fingerprint_before != self.project_state_fingerprint()
-            if not project_changed and snapshot_before[0] == "git" and git_fingerprint_before is not None:
-                project_changed = git_fingerprint_before != self._git_metadata_fingerprint()
+            # Shell commands do not provide a reliable list of touched paths.
+            # Avoid O(repository-size) before/after fingerprints and report the
+            # conservative mutation classification to downstream auditing.
+            project_changed = (
+                ProjectCommandPolicy.classify_shell_command(shell_tokens(command_text)) == "mutating"
+                or shell_has_approval_boundary(command_text)
+            )
             if run["returncode"] != 0:
                 detail = (run["stderr"] or run["stdout"] or "").strip()
                 message = f"Command exited with code {run['returncode']}"

@@ -9,13 +9,10 @@ from core.memory import LexicalMemory
 from core.project import ProjectRuntime
 
 
-@pytest.fixture(autouse=True)
-def _disable_model_classification():
-    """Disable model-based classification unless a test opts in."""
-    with patch(
-        "agent.classifier.TurnClassifier._should_model_classify",
-        return_value=False,
-    ):
+@pytest.fixture
+def disable_model_classification():
+    """Explicit deterministic provider-boundary substitute for focused tests."""
+    with patch("agent.classifier.TurnClassifier._should_model_classify", return_value=False):
         yield
 
 

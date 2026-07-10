@@ -52,7 +52,7 @@ def test_project_ops_returns_rich_file_metadata(tmp_path: Path):
     assert created["data"]["write_verified"] is True
     assert created["data"]["content_preview_truncated"] is False
     assert created["data"]["content_preview"] == "alpha\nbeta\n"
-    assert created["data"]["sha256"] == hashlib.sha256("alpha\nbeta\n".encode("utf-8")).hexdigest()
+    assert created["data"]["sha256"] == hashlib.sha256(b"alpha\nbeta\n").hexdigest()
     assert created["data"]["bytes_written"] > 0
     assert created["data"]["chars_written"] == len("alpha\nbeta\n")
     assert created["data"]["line_count"] == 3

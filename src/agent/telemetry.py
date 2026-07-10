@@ -3,8 +3,15 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
+
+_SENSITIVE_KEYS = {
+    "arguments", "authorization", "content", "headers", "input", "payload",
+    "prompt", "reasoning", "request", "response", "secret", "text", "token",
+    "tool_calls",
+}
 
 
 def _compact(value: Any, depth: int = 0) -> Any:
@@ -26,7 +33,8 @@ def _compact(value: Any, depth: int = 0) -> Any:
         items = list(value.items())
         out: dict[str, Any] = {}
         for key, item in items[:80]:
-            out[str(key)] = _compact(item, depth + 1)
+            normalized_key = str(key).casefold()
+            out[str(key)] = "[redacted]" if normalized_key in _SENSITIVE_KEYS else _compact(item, depth + 1)
         if len(items) > 80:
             out["__truncated_keys__"] = len(items) - 80
         return out
@@ -72,7 +80,12 @@ def configure_logging(config: dict[str, Any]) -> logging.Logger:
     if path_text:
         path = Path(path_text)
         path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(path, encoding="utf-8")
+        file_handler = RotatingFileHandler(
+            path,
+            maxBytes=max(1024 * 1024, int(logging_cfg.get("max_bytes", 10 * 1024 * 1024))),
+            backupCount=max(1, int(logging_cfg.get("backup_count", 5))),
+            encoding="utf-8",
+        )
         file_handler.setLevel(level)
         file_handler.setFormatter(JsonLineFormatter())
         root.addHandler(file_handler)

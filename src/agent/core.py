@@ -22,7 +22,7 @@ from core.configuration import validate_endpoint_policy
 from core.message_types import ChatMessage, JsonObject
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
 from core.search_providers import DEFAULT_TAVILY_API_KEY_ENV, SEARCH_PROVIDER_SEARXNG, SEARCH_PROVIDER_TAVILY
-from core.types import AgentTurnResult, ModelStatus, ApprovalRequestFn
+from core.types import AgentTurnResult, ApprovalRequestFn, ModelStatus
 from skills.runtime import SkillRuntime
 
 
@@ -82,7 +82,6 @@ class Agent:
         self.config = config
         self.skill_runtime.reload_config(config)
         self.skill_runtime.refresh_process_env()
-        self.skill_runtime.load_skills()
         context_cfg = get_json_object(config, "context")
         self.context_mgr.context_limit = coerce_int(context_cfg.get("context_limit"), DEFAULT_CONTEXT_LIMIT, minimum=1)
         self.context_mgr.keep_last_n = coerce_int(context_cfg.get("keep_last_n"), DEFAULT_KEEP_LAST_N, minimum=1)

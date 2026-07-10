@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from typing import Any
@@ -8,7 +7,7 @@ from typing import Any
 from rich.markup import escape as esc
 
 from core.attachments import classify_attachment
-from core.configuration import load_global_config, normalize_config, validate_endpoint_policy
+from core.configuration import load_global_config, normalize_config, save_global_config, validate_endpoint_policy
 from core.runtime_config import UiRuntimeConfig
 from tui.commands import COMMAND_ENTRIES
 from tui.themes import available_theme_ids, fallback_color, theme_spec
@@ -242,9 +241,8 @@ def persist_theme_preference(app: Any, theme_id: str, *, config_path: Path) -> l
         app._write_error(f"Theme persisted only for this run: {exc}")
         return warnings
 
-    cleaned = app._config_for_editor(normalized)
     try:
-        config_path.write_text(json.dumps(cleaned, indent=2) + "\n", encoding="utf-8")
+        save_global_config(config_path, normalized)
     except OSError as exc:
         app._write_error(f"Theme persisted only for this run: {exc}")
         return warnings

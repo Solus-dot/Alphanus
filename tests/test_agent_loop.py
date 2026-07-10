@@ -15,9 +15,11 @@ from agent.core import Agent
 from agent.policies import PromptPolicyRenderer
 from agent.provider_metadata import ProviderMetadataExtractor
 from core.memory import LexicalMemory
-from core.types import ModelStatus, TurnClassification, TurnPolicySnapshot
 from core.project import ProjectRuntime
+from core.types import ModelStatus, TurnClassification, TurnPolicySnapshot
 from skills.runtime import SkillContext, SkillRuntime
+
+pytestmark = pytest.mark.usefixtures("disable_model_classification")
 
 TEST_BASE_URL = "http://127.0.0.1:8080"
 TEST_MODEL_ENDPOINT = f"{TEST_BASE_URL}/v1/chat/completions"

@@ -450,7 +450,7 @@ def test_shell_command_known_mutator_sets_project_changed_true(tmp_path: Path):
     assert (ws / "demo").is_dir()
 
 
-def test_shell_command_ambiguous_command_uses_git_snapshot_when_repo_present(tmp_path: Path):
+def test_shell_command_ambiguous_command_avoids_repository_snapshot(tmp_path: Path):
     git_path = _require_git()
 
     home = tmp_path / "home"
@@ -463,11 +463,11 @@ def test_shell_command_ambiguous_command_uses_git_snapshot_when_repo_present(tmp
     res = mgr.run_shell_command("python3 -c \"from pathlib import Path; Path('note.txt').write_text('x', encoding='utf-8')\"")
 
     assert res["ok"] is True
-    assert res["meta"]["project_changed"] is True
+    assert res["meta"]["project_changed"] is False
     assert (ws / "note.txt").read_text(encoding="utf-8") == "x"
 
 
-def test_shell_command_detects_changes_to_existing_untracked_file_in_git_repo(tmp_path: Path):
+def test_shell_command_does_not_scan_untracked_files_after_ambiguous_command(tmp_path: Path):
     git_path = _require_git()
 
     home = tmp_path / "home"
@@ -482,11 +482,11 @@ def test_shell_command_detects_changes_to_existing_untracked_file_in_git_repo(tm
     res = mgr.run_shell_command("python3 -c \"from pathlib import Path; Path('scratch.txt').write_text('after', encoding='utf-8')\"")
 
     assert res["ok"] is True
-    assert res["meta"]["project_changed"] is True
+    assert res["meta"]["project_changed"] is False
     assert scratch.read_text(encoding="utf-8") == "after"
 
 
-def test_shell_command_detects_git_branch_creation_in_git_repo(tmp_path: Path):
+def test_shell_command_does_not_fingerprint_git_metadata(tmp_path: Path):
     git_path = _require_git()
 
     home = tmp_path / "home"
@@ -518,10 +518,10 @@ def test_shell_command_detects_git_branch_creation_in_git_repo(tmp_path: Path):
     res = mgr.run_shell_command("git branch feature/test")
 
     assert res["ok"] is True
-    assert res["meta"]["project_changed"] is True
+    assert res["meta"]["project_changed"] is False
 
 
-def test_shell_command_detects_ignored_output_changes_in_git_repo(tmp_path: Path):
+def test_shell_command_does_not_scan_ignored_outputs(tmp_path: Path):
     git_path = _require_git()
 
     home = tmp_path / "home"
@@ -537,7 +537,7 @@ def test_shell_command_detects_ignored_output_changes_in_git_repo(tmp_path: Path
     )
 
     assert res["ok"] is True
-    assert res["meta"]["project_changed"] is True
+    assert res["meta"]["project_changed"] is False
     assert (ws / "dist" / "out.txt").read_text(encoding="utf-8") == "x"
 
 

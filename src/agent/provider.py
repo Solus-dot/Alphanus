@@ -561,7 +561,14 @@ class OpenAICompatibleProvider:
         stream_started_at = time.time()
         first_output_at: float | None = None
         endpoint = self.responses_endpoint if mode == ENDPOINT_MODE_RESPONSES else self.model_endpoint
-        self.telemetry.emit("chat_pass_start", pass_id=pass_id, endpoint=endpoint, payload=payload, mode=mode)
+        payload_messages = payload.get("messages")
+        self.telemetry.emit(
+            "chat_pass_start",
+            pass_id=pass_id,
+            endpoint=endpoint,
+            mode=mode,
+            message_count=len(payload_messages) if isinstance(payload_messages, list) else 0,
+        )
 
         stream_chunks = cast(
             Iterable[dict[str, object]],
@@ -648,9 +655,7 @@ class OpenAICompatibleProvider:
             content_chars=len("".join(content_parts)),
             reasoning_chars=len("".join(reasoning_parts)),
             tool_call_count=len(tool_calls),
-            content="".join(content_parts),
-            reasoning="".join(reasoning_parts),
-            tool_calls=[{"id": call.id, "name": call.name, "arguments": call.arguments} for call in tool_calls],
+            tool_names=[call.name for call in tool_calls],
         )
         first_token_latency_ms: int | None = None
         if first_output_at is not None:

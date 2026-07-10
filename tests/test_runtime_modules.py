@@ -13,10 +13,10 @@ from agent.orchestrator import TurnOrchestrator
 from agent.policies import PromptPolicyRenderer
 from agent.telemetry import TelemetryEmitter, configure_logging
 from core.memory import LexicalMemory
+from core.project import ProjectRuntime
 from core.retrieval import SQLiteRetrievalStore
 from core.streaming import StreamError
 from core.types import AgentTurnResult, ModelStatus, StreamPassResult, ToolCall, TurnClassification
-from core.project import ProjectRuntime
 from skills.runtime import SkillContext, SkillRuntime
 
 
@@ -905,8 +905,8 @@ def test_tool_loop_repeated_successful_read_is_blocked_then_stopped(mocker, tmp_
     assert result is not None
     assert result.status == "error"
     assert result.error == "tool_loop_stuck"
-    assert state.skill_exchanges[-1]["role"] == "tool"
-    assert json.loads(state.skill_exchanges[-1]["content"])["error"]["code"] == "E_TOOL_LOOP_STUCK"
+    assert state.skill_exchanges[-1].get("role") == "tool"
+    assert json.loads(str(state.skill_exchanges[-1].get("content")))["error"]["code"] == "E_TOOL_LOOP_STUCK"
 
 
 def test_tool_loop_max_depth_adds_synthetic_tool_result(mocker, tmp_path: Path) -> None:
@@ -931,10 +931,10 @@ def test_tool_loop_max_depth_adds_synthetic_tool_result(mocker, tmp_path: Path) 
     assert status == "result"
     assert result is not None
     assert result.status == "error"
-    assert state.skill_exchanges[-2]["role"] == "assistant"
-    assert state.skill_exchanges[-1]["role"] == "tool"
-    assert state.skill_exchanges[-1]["tool_call_id"] == "call_1"
-    assert json.loads(state.skill_exchanges[-1]["content"])["error"]["code"] == "E_TOOL_LOOP_BUDGET"
+    assert state.skill_exchanges[-2].get("role") == "assistant"
+    assert state.skill_exchanges[-1].get("role") == "tool"
+    assert state.skill_exchanges[-1].get("tool_call_id") == "call_1"
+    assert json.loads(str(state.skill_exchanges[-1].get("content")))["error"]["code"] == "E_TOOL_LOOP_BUDGET"
 
 
 def test_tool_loop_stalled_project_mutation_blocks_extra_inspection(mocker, tmp_path: Path) -> None:

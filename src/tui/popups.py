@@ -1,4 +1,4 @@
-import json
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -214,7 +214,7 @@ class ConfigEditorModal(ModalScreen[dict[str, Any] | None]):
             yield Static("Secrets are omitted here. Use environment variables for model and embedding API keys.", id="config-modal-note")
             yield TextArea(
                 self._initial_text,
-                language="json",
+                language="toml",
                 theme=self._syntax_theme,
                 read_only=False,
                 show_line_numbers=True,
@@ -249,17 +249,16 @@ class ConfigEditorModal(ModalScreen[dict[str, Any] | None]):
         editor = self.query_one("#config-modal-editor", TextArea)
         raw = editor.text
         try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            self.query_one("#config-modal-error", Static).update(f"Invalid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}")
+            parsed = tomllib.loads(raw)
+        except tomllib.TOMLDecodeError as exc:
+            self.query_one("#config-modal-error", Static).update(f"Invalid TOML: {exc}")
             return
 
         if not isinstance(parsed, dict):
-            self.query_one("#config-modal-error", Static).update("Global config must be a JSON object.")
+            self.query_one("#config-modal-error", Static).update("Global config must be a TOML document.")
             return
 
-        formatted = json.dumps(parsed, indent=2) + "\n"
-        self.dismiss({"config": parsed, "text": formatted})
+        self.dismiss({"config": parsed, "text": raw})
 
 
 def _health_status(ok: bool, *, warn: bool = False) -> str:

@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 
 from core.config_model import TypedConfigV2
 from core.configuration import (
-    ConfigMigrationError,
     DEFAULT_CONFIG,
-    load_dotenv,
+    ConfigMigrationError,
     load_global_config,
     normalize_config,
+    save_global_config,
     validate_endpoint_policy,
 )
 from core.retrieval import configured_store_path
@@ -73,7 +72,7 @@ def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
     assert normalized["context"]["safety_margin"] < normalized["context"]["context_limit"]
     assert normalized["skills"]["strict_capability_policy"] == DEFAULT_CONFIG["skills"]["strict_capability_policy"]
     assert normalized["search"]["provider"] == DEFAULT_CONFIG["search"]["provider"]
-    assert normalized["tui"]["chat_log_max_lines"] == 0
+    assert normalized["tui"]["chat_log_max_lines"] == 1000
 
 
 def test_normalize_config_accepts_search_architecture_knobs() -> None:
@@ -161,67 +160,40 @@ def test_normalize_config_rejects_removed_capabilities() -> None:
         normalize_config({"capabilities": {"permission_profile": "minimal"}})
 
 
-def test_load_global_config_reports_and_rejects_bad_json(tmp_path: Path) -> None:
-    cfg = tmp_path / "config" / "global_config.json"
+def test_load_global_config_reports_bad_toml(tmp_path: Path) -> None:
+    cfg = tmp_path / "config" / "config.toml"
     cfg.parent.mkdir(parents=True, exist_ok=True)
-    cfg.write_text("{broken-json", encoding="utf-8")
+    cfg.write_text("config_version = [", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="Invalid global config JSON"):
+    with pytest.raises(ValueError, match="Invalid global config TOML"):
         load_global_config(cfg)
 
 
-def test_load_global_config_scrubs_secret_fields_on_disk(tmp_path: Path) -> None:
-    cfg = tmp_path / "config" / "global_config.json"
+def test_load_global_config_rejects_secret_fields(tmp_path: Path) -> None:
+    cfg = tmp_path / "config" / "config.toml"
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text(
-        '{"search":{"provider":"searxng","tavily_api_key":"secret"}}',
+        'config_version = 1\n[search]\nprovider="searxng"\ntavily_api_key="secret"\n',
         encoding="utf-8",
     )
 
-    warnings: list[str] = []
-    loaded = load_global_config(cfg, warnings=warnings)
-    disk = cfg.read_text(encoding="utf-8")
-
-    assert "tavily_api_key" not in loaded["search"]
-    assert "tavily_api_key" not in disk
-    assert any("on disk" in warning for warning in warnings)
+    with pytest.raises(ValueError, match="Secret-like values are forbidden"):
+        load_global_config(cfg)
 
 
 def test_load_global_config_fails_for_missing_file(tmp_path: Path) -> None:
-    cfg = tmp_path / "config" / "global_config.json"
+    cfg = tmp_path / "config" / "config.toml"
 
     with pytest.raises(FileNotFoundError, match="Global config not found"):
         load_global_config(cfg)
 
 
-def test_load_dotenv_supports_export_and_ignores_invalid_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "EXISTING=from-file",
-                "export ALPHANUS_EMBEDDINGS_API_KEY='embed-test'",
-                "INVALID-NAME=bad",
-                "EMPTY_LINE_ONLY",
-                'QUOTED_VALUE="hello world"',
-                "NULLY=bad\x00value",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("EXISTING", "from-env")
-    monkeypatch.delenv("ALPHANUS_EMBEDDINGS_API_KEY", raising=False)
-    monkeypatch.delenv("INVALID-NAME", raising=False)
-    monkeypatch.delenv("QUOTED_VALUE", raising=False)
-    monkeypatch.delenv("NULLY", raising=False)
-
-    load_dotenv(env_file)
-
-    assert "from-env" == os.environ["EXISTING"]
-    assert "embed-test" == os.environ["ALPHANUS_EMBEDDINGS_API_KEY"]
-    assert "INVALID-NAME" not in os.environ
-    assert "hello world" == os.environ["QUOTED_VALUE"]
-    assert "NULLY" not in os.environ
+def test_save_global_config_roundtrips_versioned_toml(tmp_path: Path) -> None:
+    cfg = tmp_path / "config" / "config.toml"
+    normalized, _ = normalize_config({})
+    save_global_config(cfg, normalized)
+    assert load_global_config(cfg)["config_version"] == 1
+    assert cfg.stat().st_mode & 0o777 == 0o600
 
 
 def test_validate_endpoint_policy_allows_same_host_different_ports() -> None:
@@ -330,13 +302,13 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
     assert ui.timing.action_approval_timeout_s == 90.0
 
 
-def test_tui_chat_log_max_lines_zero_disables_pruning() -> None:
+def test_tui_chat_log_max_lines_zero_is_clamped_for_bounded_memory() -> None:
     normalized, _warnings = normalize_config({"tui": {"chat_log_max_lines": 0}})
 
     ui = UiRuntimeConfig.from_config(normalized)
 
-    assert normalized["tui"]["chat_log_max_lines"] == 0
-    assert ui.chat_log_max_lines is None
+    assert normalized["tui"]["chat_log_max_lines"] == 1000
+    assert ui.chat_log_max_lines == 1000
 
 
 def test_tui_stream_drain_default_is_terminal_friendly() -> None:

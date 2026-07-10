@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
-from core.configuration import normalize_config, validate_endpoint_policy
+from core.configuration import normalize_config, save_global_config, validate_endpoint_policy
 from core.runtime_config import UiRuntimeConfig
 
 KEYBOARD_SHORTCUT_SECTIONS = [
@@ -119,8 +118,7 @@ def on_config_editor_close(app: Any, result: dict[str, Any] | None, *, config_pa
         app._write_error(f"Config save failed: {exc}")
         return
 
-    cleaned = app._config_for_editor(normalized)
-    config_path.write_text(json.dumps(cleaned, indent=2) + "\n", encoding="utf-8")
+    save_global_config(config_path, normalized)
     merged = app._merge_live_config(app.agent.config, normalized)
     app.agent.reload_config(merged)
     app.thinking = bool(merged.get("agent", {}).get("enable_thinking", app.thinking))

@@ -27,11 +27,28 @@ dev = [
   "ruff>=0.12.9",
   "pyright>=1.1.402",
   "vulture>=2.11",
+  "pytest-cov>=6.2",
+  "pip-audit>=2.9",
+  "idna>=3.15",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+addopts = "--strict-markers"
+markers = [
+  "benchmark: performance benchmarks excluded from the default CI test job",
+  "integration: tests that exercise multiple runtime subsystems",
+  "security: policy, sandbox, and hostile-input tests",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["src"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
 
 [tool.ruff]
 line-length = 140
@@ -45,10 +62,14 @@ ignore = ["E501"]
 package-dir = {"" = "src", "alphanus_bundled" = "bundled-skills"}
 packages = ["agent", "core", "tui", "skills", "alphanus_bundled"]
 py-modules = ["alphanus_cli", "alphanus_paths"]
+include-package-data = false
 
 [tool.setuptools.package-data]
 alphanus_bundled = ["**/*"]
 tui = ["theme_specs/*.json"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["**/__pycache__/*", "**/*.pyc"]
 
 [tool.uv]
 package = true

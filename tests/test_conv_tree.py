@@ -235,15 +235,6 @@ def test_dict_roundtrip_preserves_context_summaries():
     assert loaded.context_summary(turn.id) == "summarized branch"
 
 
-def test_loads_tree_payload_without_version_gate():
-    tree = ConvTree()
-    payload = tree.to_dict()
-
-    loaded = ConvTree.from_dict(payload)
-
-    assert loaded.current_id == tree.current_id
-
-
 def test_user_text_strips_inline_attachment_blocks():
     tree = ConvTree()
     content = [

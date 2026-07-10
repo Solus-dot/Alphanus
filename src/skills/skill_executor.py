@@ -33,6 +33,21 @@ class SkillExecutor:
         self._err = err_fn
         self._protocol_error_cls = protocol_error_cls
 
+    def _require_bundled_executable_skill(self, skill) -> None:
+        """Reject executable code whose target is outside the reviewed bundle."""
+        runtime = self.runtime
+        if skill is None or not skill.path:
+            raise FileNotFoundError("Selected skill root is unavailable")
+        bundled_root = runtime.bundled_skills_dir
+        if bundled_root is None:
+            return
+        try:
+            skill.path.resolve().relative_to(bundled_root.resolve())
+        except ValueError as exc:
+            raise PermissionError(
+                f"Executable user skill '{skill.id}' is disabled; only reviewed bundled skills may execute"
+            ) from exc
+
     def execute_registered_tool(self, reg, args: dict[str, Any], env, ctx) -> Any:
         runtime = self.runtime
         if reg.name == self._skills_list_tool_name:
@@ -43,6 +58,9 @@ class SkillExecutor:
             if not env.request_user_input:
                 raise PermissionError("User input runtime is unavailable")
             return env.request_user_input(args)
+        skill = runtime.get_skill(str(getattr(reg, "skill_id", "")).strip())
+        if skill is not None:
+            self._require_bundled_executable_skill(skill)
         if reg.name == self._run_skill_tool_name:
             return self.execute_run_skill_tool(args, env)
         if str(getattr(reg, "command_template", "")).strip():
@@ -149,8 +167,7 @@ class SkillExecutor:
     def execute_skill_script_tool(self, args: dict[str, Any], _env) -> dict[str, Any]:
         runtime = self.runtime
         skill = runtime.get_skill(str(args.get("skill_id", "")).strip())
-        if skill is None or not skill.path:
-            raise FileNotFoundError("Selected skill root is unavailable")
+        self._require_bundled_executable_skill(skill)
 
         rel_script = str(args.get("script", "")).strip()
         script_path = (skill.path / rel_script).resolve()
@@ -271,8 +288,7 @@ class SkillExecutor:
     def execute_skill_entrypoint_tool(self, args: dict[str, Any], env) -> dict[str, Any]:
         runtime = self.runtime
         skill = runtime.get_skill(str(args.get("skill_id", "")).strip())
-        if skill is None or not skill.path:
-            raise FileNotFoundError("Selected skill root is unavailable")
+        self._require_bundled_executable_skill(skill)
         entrypoint_name = str(args.get("entrypoint", "")).strip()
         entrypoint = next((item for item in runtime._skill_entrypoints(skill) if item.name == entrypoint_name), None)
         if entrypoint is None:

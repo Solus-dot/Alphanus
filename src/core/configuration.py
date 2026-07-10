@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import re
+import tomllib
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -30,6 +30,7 @@ from core.search_providers import (
 from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
 
 MAX_CONFIG_BYTES = 512 * 1024
+CONFIG_VERSION = 1
 
 _SECRET_KEYS = {
     "auth_header",
@@ -53,6 +54,7 @@ SANDBOX_BACKENDS = {"auto", "macos-seatbelt", "linux-bubblewrap", "windows-nativ
 _VALID_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 DEFAULT_CONFIG: dict[str, Any] = {
+    "config_version": CONFIG_VERSION,
     "agent": {
         "provider": "openai-compatible",
         "base_url": "http://127.0.0.1:8080",
@@ -158,7 +160,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "tui": {
         "theme": DEFAULT_THEME_ID,
-        "chat_log_max_lines": 0,
+        "chat_log_max_lines": 10000,
         "timing": {
             "stream_drain_interval_s": 0.033,
             "scroll_interval_s": 0.05,
@@ -1168,7 +1170,7 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         int(DEFAULT_CONFIG["tui"]["chat_log_max_lines"]),
         path="tui.chat_log_max_lines",
         warnings=warnings,
-        minimum=0,
+        minimum=1000,
         maximum=200000,
     )
     timing_cfg = tui_cfg.get("timing", {})
@@ -1287,20 +1289,31 @@ def load_global_config(path: Path, *, warnings: list[str] | None = None) -> dict
     if size > MAX_CONFIG_BYTES:
         raise ValueError(f"Global config is too large ({size} bytes); limit is {MAX_CONFIG_BYTES} bytes")
 
+    if path.suffix.lower() != ".toml":
+        raise ValueError(
+            f"Unsupported legacy configuration at {path}. Alphanus v1 requires config/config.toml; "
+            "run `alphanus init --reset`."
+        )
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Invalid global config JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}") from exc
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"Invalid global config TOML: {exc}") from exc
 
     if not isinstance(raw, dict):
-        raise ValueError("Global config must be a JSON object")
+        raise ValueError("Global config must be a TOML document")
+
+    version = raw.get("config_version")
+    if version != CONFIG_VERSION:
+        raise ValueError(f"Unsupported config_version {version!r}; expected {CONFIG_VERSION}")
+    unknown = sorted(set(raw) - set(DEFAULT_CONFIG))
+    if unknown:
+        raise ValueError(f"Unknown top-level configuration keys: {', '.join(unknown)}")
 
     sanitized_raw, stripped = strip_secret_fields(raw)
     if stripped:
-        path.write_text(json.dumps(sanitized_raw, indent=2) + "\n", encoding="utf-8")
-        raw = sanitized_raw
-        if warnings is not None:
-            warnings.append("Removed secret-like fields from config/global_config.json on disk.")
+        raise ValueError(
+            "Secret-like values are forbidden in config.toml. Remove them and provide credentials through environment variables."
+        )
 
     normalized, local_warnings = normalize_config(raw)
     if warnings is not None:
@@ -1308,26 +1321,52 @@ def load_global_config(path: Path, *, warnings: list[str] | None = None) -> dict
     return normalized
 
 
-def load_dotenv(path: Path) -> None:
-    if not path.exists():
-        return
+def _toml_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
+    raise TypeError(f"Unsupported TOML value: {type(value).__name__}")
 
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[7:].strip()
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        if not _VALID_ENV_NAME_RE.match(key):
-            continue
-        value = value.strip()
-        if value and ((value[0] == value[-1]) and value[0] in {"'", '"'}):
-            value = value[1:-1]
-        if "\x00" in value:
-            continue
-        if key not in os.environ:
-            os.environ[key] = value
+
+def config_to_toml(config: dict[str, Any]) -> str:
+    """Serialize the normalized, JSON-shaped configuration used by Alphanus."""
+    lines = [f"config_version = {CONFIG_VERSION}", ""]
+
+    def emit_table(prefix: tuple[str, ...], table: dict[str, Any]) -> None:
+        scalar_items = [(key, value) for key, value in table.items() if not isinstance(value, dict)]
+        nested_items = [(key, value) for key, value in table.items() if isinstance(value, dict)]
+        if prefix:
+            lines.append("[" + ".".join(prefix) + "]")
+        for key, value in scalar_items:
+            if key == "config_version" or value is None:
+                continue
+            lines.append(f"{key} = {_toml_value(value)}")
+        if prefix or scalar_items:
+            lines.append("")
+        for key, value in nested_items:
+            emit_table((*prefix, key), value)
+
+    emit_table((), config)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def save_global_config(path: Path, config: dict[str, Any]) -> None:
+    from core.secure_io import atomic_write_text
+
+    cleaned = config_for_editor_view(config)
+    cleaned["config_version"] = CONFIG_VERSION
+    sanitized, stripped = strip_secret_fields(cleaned)
+    if stripped:
+        raise ValueError("Refusing to persist secret-like configuration fields")
+    atomic_write_text(path, config_to_toml(sanitized), mode=0o600)
+
+
+def load_dotenv(path: Path) -> None:
+    # Retained as a compatibility symbol for callers; v1 intentionally does
+    # not import secrets from files in the application state directory.
+    return

@@ -1,710 +1,115 @@
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import alphanus_cli
+from agent.types import AgentTurnResult
+from core.configuration import load_global_config
+from core.headless_protocol import EXIT_INVALID_INPUT, EXIT_POLICY_DENIED, EXIT_SUCCESS
 
-TEST_BASE_URL = "http://127.0.0.1:8080"
-TEST_MODEL_ENDPOINT = f"{TEST_BASE_URL}/v1/chat/completions"
-TEST_MODELS_ENDPOINT = f"{TEST_BASE_URL}/v1/models"
 
-
-def test_main_does_not_block_on_model_readiness_before_launching_tui(monkeypatch, tmp_path) -> None:
-    config_path = tmp_path / "config.json"
-    dotenv_path = tmp_path / ".env"
-    bundled_skills_dir = tmp_path / "skills"
-    bundled_skills_dir.mkdir()
-    config_path.write_text("{}", encoding="utf-8")
-
-    monkeypatch.setattr(
-        alphanus_cli,
-        "get_app_paths",
-        lambda: SimpleNamespace(
-            app_root=tmp_path,
-            state_root=tmp_path,
-            config_path=config_path,
-            dotenv_path=dotenv_path,
-            bundled_skills_dir=bundled_skills_dir,
-            repo_root=tmp_path,
-        ),
-    )
-    monkeypatch.setattr(alphanus_cli, "load_dotenv", lambda _path: None)
-    monkeypatch.setattr(
-        alphanus_cli,
-        "load_global_config",
-        lambda _path, warnings=None: {
-            "project": {"root_strategy": "git-or-cwd"},
-            "memory": {"backup_revisions": 2},
-            "agent": {},
-        },
-    )
-    monkeypatch.setattr(alphanus_cli, "normalize_config", lambda config: (config, []))
-    monkeypatch.setattr(alphanus_cli, "validate_endpoint_policy", lambda config: None)
-    monkeypatch.setattr(alphanus_cli, "resolve_project_root", lambda config, override="", cwd=None: tmp_path / "ws")
-    monkeypatch.setattr(alphanus_cli, "ProjectRuntime", lambda **kwargs: SimpleNamespace(project_root=kwargs["project_root"]))
-    memory_calls: list[dict[str, object]] = []
-
-    def _memory_stub(**kwargs):
-        memory_calls.append(kwargs)
-        return SimpleNamespace(
-            stats=lambda **_kw: {"mode_label": "lexical", "min_score_default": 0.3},
-        )
-
-    monkeypatch.setattr(alphanus_cli, "LexicalMemory", _memory_stub)
-    runtime_calls: list[dict[str, object]] = []
-
-    def _skill_runtime_stub(**kwargs):
-        runtime_calls.append(kwargs)
-        return SimpleNamespace()
-
-    monkeypatch.setattr(alphanus_cli, "SkillRuntime", _skill_runtime_stub)
-
-    class LoggerStub:
-        def info(self, *_args, **_kwargs):
-            return None
-
-        def warning(self, *_args, **_kwargs):
-            return None
-
-    monkeypatch.setattr(alphanus_cli, "configure_logging", lambda _config: LoggerStub())
-
-    agent_calls: list[str] = []
-
-    class AgentStub:
-        models_endpoint = TEST_MODELS_ENDPOINT
-
-        def __init__(self, **_kwargs):
-            agent_calls.append("init")
-
-        def ensure_ready(self, *_args, **_kwargs):
-            agent_calls.append("ensure_ready")
-            raise AssertionError("startup should not block on model readiness")
-
-    monkeypatch.setattr(alphanus_cli, "Agent", AgentStub)
-
-    app_calls: list[str] = []
-
-    class AppStub:
-        def __init__(self, *, agent, debug):
-            assert isinstance(agent, AgentStub)
-            assert debug is False
-            app_calls.append("init")
-
-        def run(self):
-            app_calls.append("run")
-
-    monkeypatch.setattr(alphanus_cli, "AlphanusTUI", AppStub)
-    monkeypatch.setattr(
-        alphanus_cli.argparse.ArgumentParser, "parse_args", lambda self: SimpleNamespace(debug=False, project_root="")
+def _paths(tmp_path: Path) -> SimpleNamespace:
+    root = tmp_path / ".alphanus"
+    return SimpleNamespace(
+        app_root=tmp_path,
+        state_root=root,
+        config_path=root / "config" / "config.toml",
+        dotenv_path=root / ".env",
+        bundled_skills_dir=tmp_path / "bundled-skills",
+        user_skills_dir=root / "skills",
+        repo_root=tmp_path,
     )
 
-    exit_code = alphanus_cli.main()
 
-    assert exit_code == 0
-    assert agent_calls == ["init"]
-    assert app_calls == ["init", "run"]
-    assert runtime_calls
-    assert runtime_calls[0]["skills_dir"] == str(tmp_path / "skills")
-    assert memory_calls
-    assert memory_calls[0]["storage_path"] == str((tmp_path / "memory" / "events.jsonl").resolve())
-
-
-def test_main_fails_fast_when_global_config_missing(monkeypatch, tmp_path) -> None:
-    config_path = tmp_path / "config" / "global_config.json"
-    dotenv_path = tmp_path / ".env"
-
-    monkeypatch.setattr(
-        alphanus_cli,
-        "get_app_paths",
-        lambda: SimpleNamespace(
-            app_root=tmp_path,
-            state_root=tmp_path,
-            config_path=config_path,
-            dotenv_path=dotenv_path,
-            bundled_skills_dir=tmp_path / "skills",
-            repo_root=tmp_path,
-        ),
-    )
-    monkeypatch.setattr(
-        alphanus_cli.argparse.ArgumentParser,
-        "parse_args",
-        lambda self: SimpleNamespace(command="", debug=False, project_root=""),
-    )
-
-    exit_code = alphanus_cli.main()
-
-    assert exit_code == 2
-
-
-def test_main_reports_missing_project_root_without_traceback(monkeypatch, capsys) -> None:
-    monkeypatch.setattr(alphanus_cli, "_load_runtime_config", lambda _app_paths, _args: ({"agent": {}}, []))
-    monkeypatch.setattr(alphanus_cli, "get_app_paths", lambda: SimpleNamespace())
-
-    class LoggerStub:
-        def warning(self, *_args, **_kwargs):
-            return None
-
-    monkeypatch.setattr(alphanus_cli, "configure_logging", lambda _config: LoggerStub())
-
-    def _raise_missing_root(*_args, **_kwargs):
-        raise FileNotFoundError("Project root does not exist: /missing")
-
-    monkeypatch.setattr(alphanus_cli, "_build_agent_runtime", _raise_missing_root)
-    monkeypatch.setattr(
-        alphanus_cli.argparse.ArgumentParser,
-        "parse_args",
-        lambda self: SimpleNamespace(command="", debug=False, project_root=""),
-    )
-
-    exit_code = alphanus_cli.main()
-
-    assert exit_code == 2
-    assert "startup failed: Project root does not exist: /missing" in capsys.readouterr().out
-
-
-def test_init_non_interactive_writes_global_config_and_env_template(monkeypatch, tmp_path) -> None:
-    state_root = tmp_path / ".alphanus"
-    config_path = state_root / "config" / "global_config.json"
-    dotenv_path = state_root / ".env"
-
-    monkeypatch.setattr(
-        alphanus_cli,
-        "get_app_paths",
-        lambda: SimpleNamespace(
-            app_root=tmp_path,
-            state_root=state_root,
-            config_path=config_path,
-            dotenv_path=dotenv_path,
-            bundled_skills_dir=tmp_path / "skills",
-            repo_root=tmp_path,
-        ),
-    )
-    monkeypatch.setattr(
-        alphanus_cli.argparse.ArgumentParser,
-        "parse_args",
-        lambda self: SimpleNamespace(
-            command="init",
-            non_interactive=True,
-            project_root="",
-            model_endpoint=TEST_MODEL_ENDPOINT,
-            models_endpoint=TEST_MODELS_ENDPOINT,
-            search_provider="searxng",
-            search_fallback_provider="tavily",
-            searxng_base_url="http://127.0.0.1:8888",
-            tavily_api_key="",
-            tavily_api_key_env="",
-            theme="catppuccin-macchiato",
-            debug=False,
-        ),
-    )
-
-    exit_code = alphanus_cli.main()
-
-    assert exit_code == 0
-    assert config_path.exists()
-    assert dotenv_path.exists()
-    stored = json.loads(config_path.read_text(encoding="utf-8"))
-    assert stored["project"]["root_strategy"] == "git-or-cwd"
-    assert stored["search"]["fallback_provider"] == "tavily"
-    assert stored["tui"]["theme"] == "catppuccin-macchiato"
-
-
-def test_init_search_section_writes_tavily_key_to_env(monkeypatch, tmp_path) -> None:
-    state_root = tmp_path / ".alphanus"
-    config_path = state_root / "config" / "global_config.json"
-    dotenv_path = state_root / ".env"
-
-    monkeypatch.setattr(
-        alphanus_cli,
-        "get_app_paths",
-        lambda: SimpleNamespace(
-            app_root=tmp_path,
-            state_root=state_root,
-            config_path=config_path,
-            dotenv_path=dotenv_path,
-            bundled_skills_dir=tmp_path / "skills",
-            repo_root=tmp_path,
-        ),
-    )
-
-    exit_code = alphanus_cli._run_init(
-        SimpleNamespace(
-            section="search",
-            non_interactive=True,
-            reset=False,
-            project_root="",
-            model_endpoint="",
-            models_endpoint="",
-            search_provider="searxng",
-            search_fallback_provider="tavily",
-            searxng_base_url="",
-            tavily_api_key="tvly-demo",
-            tavily_api_key_env="CUSTOM_TAVILY_KEY",
-            theme="",
-        )
-    )
-
-    assert exit_code == 0
-    stored = json.loads(config_path.read_text(encoding="utf-8"))
-    assert stored["search"]["provider"] == "searxng"
-    assert stored["search"]["fallback_provider"] == "tavily"
-    assert stored["search"]["tavily_api_key_env"] == "CUSTOM_TAVILY_KEY"
-    dotenv = dotenv_path.read_text(encoding="utf-8")
-    assert "CUSTOM_TAVILY_KEY=tvly-demo" in dotenv
-
-
-def test_init_non_interactive_model_section_writes_api_key_to_env(monkeypatch, tmp_path) -> None:
-    state_root = tmp_path / ".alphanus"
-    config_path = state_root / "config" / "global_config.json"
-    dotenv_path = state_root / ".env"
-
-    monkeypatch.setattr(
-        alphanus_cli,
-        "get_app_paths",
-        lambda: SimpleNamespace(
-            app_root=tmp_path,
-            state_root=state_root,
-            config_path=config_path,
-            dotenv_path=dotenv_path,
-            bundled_skills_dir=tmp_path / "skills",
-            repo_root=tmp_path,
-        ),
-    )
-
-    exit_code = alphanus_cli._run_init(
-        SimpleNamespace(
-            section="model",
-            non_interactive=True,
-            reset=False,
-            project_root="",
-            base_url="https://example.com",
-            responses_endpoint="https://example.com/v1/responses",
-            model_endpoint="https://example.com/v1/chat/completions",
-            models_endpoint="https://example.com/v1/models",
-            endpoint_mode="auto",
-            api_key="sk-demo",
-            api_key_env="ALPHANUS_API_KEY",
-            backend_api_key_env="",
-            search_provider="",
-            theme="",
-        )
-    )
-
-    assert exit_code == 0
-    stored = json.loads(config_path.read_text(encoding="utf-8"))
-    assert stored["agent"]["base_url"] == "https://example.com"
-    assert stored["agent"]["endpoint_mode"] == "auto"
-    assert stored["agent"]["api_key"] == "env:ALPHANUS_API_KEY"
-    dotenv = dotenv_path.read_text(encoding="utf-8")
-    assert "ALPHANUS_API_KEY=sk-demo" in dotenv
-
-
-def test_init_non_interactive_model_section_can_mirror_api_key_for_backend(monkeypatch, tmp_path) -> None:
-    state_root = tmp_path / ".alphanus"
-    config_path = state_root / "config" / "global_config.json"
-    dotenv_path = state_root / ".env"
-
-    monkeypatch.setattr(
-        alphanus_cli,
-        "get_app_paths",
-        lambda: SimpleNamespace(
-            app_root=tmp_path,
-            state_root=state_root,
-            config_path=config_path,
-            dotenv_path=dotenv_path,
-            bundled_skills_dir=tmp_path / "skills",
-            repo_root=tmp_path,
-        ),
-    )
-
-    exit_code = alphanus_cli._run_init(
-        SimpleNamespace(
-            section="model",
-            non_interactive=True,
-            reset=False,
-            project_root="",
-            base_url="http://127.0.0.1:8080",
-            responses_endpoint="http://127.0.0.1:8080/v1/responses",
-            model_endpoint="http://127.0.0.1:8080/v1/chat/completions",
-            models_endpoint="http://127.0.0.1:8080/v1/models",
-            endpoint_mode="auto",
-            backend_profile="auto",
-            api_key="sk-demo",
-            api_key_env="ALPHANUS_API_KEY",
-            backend_api_key_env="OPENAI_API_KEY",
-            search_provider="",
-            theme="",
-        )
-    )
-
-    assert exit_code == 0
-    dotenv = dotenv_path.read_text(encoding="utf-8")
-    assert "ALPHANUS_API_KEY=sk-demo" in dotenv
-    assert "OPENAI_API_KEY=sk-demo" in dotenv
-
-
-def test_init_non_interactive_tavily_primary_skips_searxng_and_fallback(monkeypatch, tmp_path) -> None:
-    state_root = tmp_path / ".alphanus"
-    config_path = state_root / "config" / "global_config.json"
-    dotenv_path = state_root / ".env"
-
-    monkeypatch.setattr(
-        alphanus_cli,
-        "get_app_paths",
-        lambda: SimpleNamespace(
-            app_root=tmp_path,
-            state_root=state_root,
-            config_path=config_path,
-            dotenv_path=dotenv_path,
-            bundled_skills_dir=tmp_path / "skills",
-            repo_root=tmp_path,
-        ),
-    )
-
-    exit_code = alphanus_cli._run_init(
-        SimpleNamespace(
-            section="search",
-            non_interactive=True,
-            reset=False,
-            project_root="",
-            model_endpoint="",
-            models_endpoint="",
-            search_provider="tavily",
-            search_fallback_provider="tavily",
-            searxng_base_url="http://127.0.0.1:8888",
-            tavily_api_key="tvly-demo",
-            tavily_api_key_env="TAVILY_API_KEY",
-            theme="",
-        )
-    )
-
-    assert exit_code == 0
-    stored = json.loads(config_path.read_text(encoding="utf-8"))
-    assert stored["search"]["provider"] == "tavily"
-    assert stored["search"]["fallback_provider"] == ""
-    assert stored["search"]["searxng_base_url"] == ""
-    assert "TAVILY_API_KEY=tvly-demo" in dotenv_path.read_text(encoding="utf-8")
-
-
-def test_parser_accepts_global_flags_after_subcommand() -> None:
-    parser = alphanus_cli._build_parser()
-
-    args = parser.parse_args(["doctor", "--json", "--debug"])
-
-    assert args.command == "doctor"
-    assert args.json is True
-    assert args.debug is True
-
-
-def test_parser_accepts_init_theme_section_and_alias() -> None:
-    parser = alphanus_cli._build_parser()
-
-    args = parser.parse_args(["init", "theme", "--non-interactive", "--theme", "catppuccin"])
-
-    assert args.command == "init"
-    assert args.section == "theme"
-    assert args.theme == "catppuccin"
-
-
-def test_parser_accepts_init_permissions_section() -> None:
-    parser = alphanus_cli._build_parser()
-
-    args = parser.parse_args(["init", "permissions", "--non-interactive"])
-
-    assert args.command == "init"
-    assert args.section == "permissions"
-    assert args.non_interactive is True
-
-
-def test_screen_capture_setup_reports_macos_privacy_pane(monkeypatch) -> None:
-    opened: list[list[str]] = []
-    monkeypatch.setattr(alphanus_cli.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(alphanus_cli.subprocess, "run", lambda cmd, **_kwargs: opened.append(cmd))
-
-    lines = alphanus_cli._screen_capture_setup_lines(open_settings=True)
-
-    assert opened == [["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"]]
-    assert ("macOS Screen Recording", "required for screenshot capture") in lines
-    assert any("Privacy & Security" in detail for _label, detail in lines)
-
-
-def test_screen_capture_setup_reports_linux_dependency(monkeypatch) -> None:
-    monkeypatch.setattr(alphanus_cli.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(alphanus_cli.shutil, "which", lambda _name: None)
-    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
-
-    lines = alphanus_cli._screen_capture_setup_lines()
-
-    assert lines == [
-        (
-            "Linux screenshot helper",
-            "install gnome-screenshot or scrot; compositor/portal permission prompts may still be required",
-        )
-    ]
-
-
-def test_screen_capture_setup_reports_windows_powershell(monkeypatch) -> None:
-    monkeypatch.setattr(alphanus_cli.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(alphanus_cli.shutil, "which", lambda name: "C:/Windows/System32/powershell.exe" if name == "powershell" else None)
-
-    lines = alphanus_cli._screen_capture_setup_lines()
-
-    assert lines == [("Windows screenshot helper", "found powershell.exe")]
-
-
-def test_parser_accepts_custom_theme_id() -> None:
-    parser = alphanus_cli._build_parser()
-
-    args = parser.parse_args(["init", "theme", "--non-interactive", "--theme", "custom-oxide"])
-
-    assert args.theme == "custom-oxide"
-
-
-def test_parser_accepts_backend_profile_flag() -> None:
-    parser = alphanus_cli._build_parser()
-
-    args = parser.parse_args(["init", "model", "--non-interactive", "--backend-profile", "mlx_vlm"])
-
-    assert args.command == "init"
-    assert args.section == "model"
-    assert args.backend_profile == "mlx_vlm"
-
-
-def test_parser_accepts_tavily_key_flags() -> None:
-    parser = alphanus_cli._build_parser()
-
-    args = parser.parse_args(
-        [
-            "init",
-            "search",
-            "--non-interactive",
-            "--search-fallback-provider",
-            "tavily",
-            "--tavily-api-key-env",
-            "CUSTOM_TAVILY_KEY",
-            "--tavily-api-key",
-            "tvly-demo",
-        ]
-    )
-
-    assert args.command == "init"
-    assert args.section == "search"
-    assert args.tavily_api_key_env == "CUSTOM_TAVILY_KEY"
-    assert args.tavily_api_key == "tvly-demo"
-
-
-def test_parser_accepts_backend_api_key_env_flag() -> None:
-    parser = alphanus_cli._build_parser()
-
-    args = parser.parse_args(["init", "model", "--non-interactive", "--backend-api-key-env", "OPENAI_API_KEY"])
-
-    assert args.backend_api_key_env == "OPENAI_API_KEY"
-
-
-def test_prompt_env_name_rejects_secret_like_values(monkeypatch, capsys) -> None:
-    values = iter(["sk-demo-1234567890abcdef", "OPENAI_API_KEY"])
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(values))
-
-    result = alphanus_cli._prompt_env_name(alphanus_cli._CliTheme(), "Env var", "ALPHANUS_API_KEY")
-
-    assert result == "OPENAI_API_KEY"
-    assert "not the API key value" in capsys.readouterr().out
-
-
-def test_prompt_env_name_rejects_lowercase_key_like_value(monkeypatch, capsys) -> None:
-    values = iter(["abcd", "ALPHANUS_API_KEY"])
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(values))
-
-    result = alphanus_cli._prompt_env_name(alphanus_cli._CliTheme(), "Env var", "ALPHANUS_API_KEY")
-
-    assert result == "ALPHANUS_API_KEY"
-    assert "uppercase environment variable name" in capsys.readouterr().out
-
-
-def test_doctor_json_output_is_machine_readable(monkeypatch, capsys, tmp_path) -> None:
-    monkeypatch.setattr(
-        alphanus_cli,
-        "get_app_paths",
-        lambda: SimpleNamespace(
-            config_path=tmp_path / "config.json",
-            dotenv_path=tmp_path / ".env",
-            state_root=tmp_path,
-        ),
-    )
-    monkeypatch.setattr(alphanus_cli, "_load_runtime_config", lambda _app_paths, _args: ({}, ["config warning"]))
-
-    report = {
-        "agent": {"ready": True, "endpoint_policy_error": ""},
-        "project": {"exists": True, "writable": True},
-        "search": {"ready": True},
-        "retrieval": {"ready": True},
+def _init_args(**updates: object) -> SimpleNamespace:
+    values = {
+        "section": "all", "non_interactive": True, "reset": False, "project_root": "", "debug": False,
+        "base_url": "http://127.0.0.1:8080", "responses_endpoint": "", "model_endpoint": "",
+        "models_endpoint": "", "endpoint_mode": "chat", "backend_profile": "auto", "api_key": "",
+        "api_key_env": "ALPHANUS_API_KEY", "backend_api_key_env": "", "search_provider": "searxng",
+        "search_fallback_provider": "none", "searxng_base_url": "", "tavily_api_key": "",
+        "tavily_api_key_env": "TAVILY_API_KEY", "theme": "classic",
     }
-    monkeypatch.setattr(
-        alphanus_cli,
-        "_build_agent_runtime",
-        lambda *_args, **_kwargs: (
-            SimpleNamespace(project_root=Path("/tmp/ws")),
-            SimpleNamespace(storage_path=Path("/tmp/memory/events.jsonl")),
-            SimpleNamespace(),
-            SimpleNamespace(doctor_report=lambda: report),
-        ),
-    )
-
-    exit_code = alphanus_cli._run_doctor(
-        SimpleNamespace(
-            json=True,
-            debug=False,
-            project_root="",
-        )
-    )
-
-    payload = json.loads(capsys.readouterr().out)
-    assert exit_code == 0
-    assert payload["ok"] is True
-    assert payload["config_warnings"] == ["config warning"]
-    assert payload["agent"]["ready"] is True
+    values.update(updates)
+    return SimpleNamespace(**values)
 
 
-def test_init_partial_reset_preserves_unselected_sections(monkeypatch, tmp_path) -> None:
-    state_root = tmp_path / ".alphanus"
-    config_path = state_root / "config" / "global_config.json"
-    dotenv_path = state_root / ".env"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text("{}", encoding="utf-8")
-
-    existing_config = {
-        "project": {"root_strategy": "git-or-cwd"},
-        "agent": {
-            "model_endpoint": "http://custom-host/v1/chat/completions",
-            "models_endpoint": "http://custom-host/v1/models",
-            "tls_verify": False,
-        },
-        "search": {"provider": "searxng", "searxng_base_url": "http://127.0.0.1:8888"},
-    }
-
-    monkeypatch.setattr(
-        alphanus_cli,
-        "get_app_paths",
-        lambda: SimpleNamespace(
-            app_root=tmp_path,
-            state_root=state_root,
-            config_path=config_path,
-            dotenv_path=dotenv_path,
-            bundled_skills_dir=tmp_path / "skills",
-            repo_root=tmp_path,
-        ),
-    )
-    monkeypatch.setattr(alphanus_cli, "load_global_config", lambda _path, warnings=None: existing_config)
-
-    exit_code = alphanus_cli._run_init(
-        SimpleNamespace(
-            section="model",
-            non_interactive=True,
-            reset=True,
-            project_root="",
-            model_endpoint="",
-            models_endpoint="",
-            search_provider="",
-            theme="",
-        )
-    )
-
-    assert exit_code == 0
-    stored = json.loads(config_path.read_text(encoding="utf-8"))
-    assert stored["project"]["root_strategy"] == "git-or-cwd"
-    assert stored["search"]["provider"] == "searxng"
-    assert stored["agent"]["tls_verify"] is False
-    assert stored["agent"]["model_endpoint"] == alphanus_cli.DEFAULT_CONFIG["agent"]["model_endpoint"]
-    assert stored["agent"]["models_endpoint"] == alphanus_cli.DEFAULT_CONFIG["agent"]["models_endpoint"]
+def test_init_writes_owner_only_versioned_toml_and_no_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    paths = _paths(tmp_path)
+    monkeypatch.setattr(alphanus_cli, "get_app_paths", lambda: paths)
+    assert alphanus_cli._run_init(_init_args()) == 0
+    assert paths.config_path.stat().st_mode & 0o777 == 0o600
+    assert not paths.dotenv_path.exists()
+    assert load_global_config(paths.config_path)["config_version"] == 1
 
 
-def test_init_non_interactive_theme_only_updates_theme(monkeypatch, tmp_path) -> None:
-    state_root = tmp_path / ".alphanus"
-    config_path = state_root / "config" / "global_config.json"
-    dotenv_path = state_root / ".env"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text("{}", encoding="utf-8")
-
-    existing_config = {
-        "project": {"root_strategy": "git-or-cwd"},
-        "search": {"provider": "searxng", "searxng_base_url": "http://127.0.0.1:8888"},
-        "tui": {"theme": "classic"},
-    }
-
-    monkeypatch.setattr(
-        alphanus_cli,
-        "get_app_paths",
-        lambda: SimpleNamespace(
-            app_root=tmp_path,
-            state_root=state_root,
-            config_path=config_path,
-            dotenv_path=dotenv_path,
-            bundled_skills_dir=tmp_path / "skills",
-            repo_root=tmp_path,
-        ),
-    )
-    monkeypatch.setattr(alphanus_cli, "load_global_config", lambda _path, warnings=None: existing_config)
-
-    exit_code = alphanus_cli._run_init(
-        SimpleNamespace(
-            section="theme",
-            non_interactive=True,
-            reset=False,
-            project_root="",
-            model_endpoint="",
-            models_endpoint="",
-            search_provider="",
-            theme="gruvbox-dark-soft",
-        )
-    )
-
-    assert exit_code == 0
-    stored = json.loads(config_path.read_text(encoding="utf-8"))
-    assert stored["project"]["root_strategy"] == "git-or-cwd"
-    assert stored["search"]["provider"] == "searxng"
-    assert stored["tui"]["theme"] == "gruvbox-dark-soft"
+def test_init_rejects_secret_command_line_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(alphanus_cli, "get_app_paths", lambda: _paths(tmp_path))
+    assert alphanus_cli._run_init(_init_args(api_key="sk-secret")) == 2
 
 
-def test_retrieval_stats_prints_store_counts(monkeypatch, capsys, tmp_path) -> None:
-    db_path = tmp_path / "retrieval.sqlite"
-    monkeypatch.setattr(
-        alphanus_cli,
-        "get_app_paths",
-        lambda: SimpleNamespace(config_path=tmp_path / "config.json", dotenv_path=tmp_path / ".env", state_root=tmp_path),
-    )
-    monkeypatch.setattr(
-        alphanus_cli,
-        "_load_runtime_config",
-        lambda _app_paths, _args: ({"retrieval": {"store_path": str(db_path)}}, []),
-    )
-
-    exit_code = alphanus_cli._run_retrieval(SimpleNamespace(retrieval_command="stats", debug=False))
-
-    out = capsys.readouterr().out
-    assert exit_code == 0
-    assert "ALPHANUS RETRIEVAL" in out
-    assert "Records:" in out
-    assert str(db_path) in out
+def test_resolve_project_root_uses_override(tmp_path: Path) -> None:
+    target = tmp_path / "workspace"
+    target.mkdir()
+    assert alphanus_cli.resolve_project_root({}, override=str(target)) == target.resolve()
 
 
-def test_retrieval_reset_recreates_store(monkeypatch, capsys, tmp_path) -> None:
-    db_path = tmp_path / "retrieval.sqlite"
-    db_path.write_text("stale", encoding="utf-8")
-    monkeypatch.setattr(
-        alphanus_cli,
-        "get_app_paths",
-        lambda: SimpleNamespace(config_path=tmp_path / "config.json", dotenv_path=tmp_path / ".env", state_root=tmp_path),
-    )
-    monkeypatch.setattr(
-        alphanus_cli,
-        "_load_runtime_config",
-        lambda _app_paths, _args: ({"retrieval": {"store_path": str(db_path)}}, []),
-    )
+class _FakeMemory:
+    def flush(self) -> None:
+        return
 
-    exit_code = alphanus_cli._run_retrieval(SimpleNamespace(retrieval_command="reset", yes=True, debug=False))
 
-    assert exit_code == 0
-    assert "Retrieval store reset." in capsys.readouterr().out
-    assert db_path.exists()
+class _FakeAgent:
+    def __init__(self, result: AgentTurnResult, root: Path) -> None:
+        self.result = result
+        self.skill_runtime = SimpleNamespace(project=SimpleNamespace(project_root=root))
+
+    def run_turn(self, **kwargs):
+        callback = kwargs["on_event"]
+        callback({"type": "content_token", "text": "hello"})
+        if self.result.error == "approval denied":
+            kwargs["request_approval"]({"kind": "shell_command"})
+        return self.result
+
+
+def _exec_args(prompt: str = "hello") -> SimpleNamespace:
+    return SimpleNamespace(prompt=prompt, input="text", approval_policy="deny", no_thinking=False,
+                           project_root="", debug=False)
+
+
+def test_exec_emits_versioned_jsonl_and_success_exit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    output = io.StringIO()
+    paths = _paths(tmp_path)
+    result = AgentTurnResult(status="done", content="final", reasoning="", skill_exchanges=[])
+    monkeypatch.setattr(alphanus_cli, "get_app_paths", lambda: paths)
+    monkeypatch.setattr(alphanus_cli, "_load_runtime_config", lambda _paths, _args: ({"logging": {}}, []))
+    monkeypatch.setattr(alphanus_cli, "_build_agent_runtime", lambda *_args, **_kwargs: (None, _FakeMemory(), None, _FakeAgent(result, tmp_path)))
+    monkeypatch.setattr(alphanus_cli.sys, "stdout", output)
+    assert alphanus_cli._run_exec(_exec_args()) == EXIT_SUCCESS
+    records = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert all(record["schema_version"] == 1 for record in records)
+    assert records[-1]["type"] == "run.completed"
+    assert records[-1]["data"]["status"] == "success"
+
+
+def test_exec_policy_denial_has_stable_exit_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    output = io.StringIO()
+    result = AgentTurnResult(status="error", content="", reasoning="", skill_exchanges=[], error="approval denied")
+    monkeypatch.setattr(alphanus_cli, "get_app_paths", lambda: _paths(tmp_path))
+    monkeypatch.setattr(alphanus_cli, "_load_runtime_config", lambda _paths, _args: ({"logging": {}}, []))
+    monkeypatch.setattr(alphanus_cli, "_build_agent_runtime", lambda *_args, **_kwargs: (None, _FakeMemory(), None, _FakeAgent(result, tmp_path)))
+    monkeypatch.setattr(alphanus_cli.sys, "stdout", output)
+    assert alphanus_cli._run_exec(_exec_args()) == EXIT_POLICY_DENIED
+
+
+def test_exec_rejects_empty_input_with_final_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    output = io.StringIO()
+    monkeypatch.setattr(alphanus_cli.sys, "stdout", output)
+    monkeypatch.setattr(alphanus_cli.sys, "stdin", io.StringIO(""))
+    assert alphanus_cli._run_exec(_exec_args("")) == EXIT_INVALID_INPUT
+    assert json.loads(output.getvalue().splitlines()[-1])["type"] == "run.completed"

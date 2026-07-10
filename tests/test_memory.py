@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import json
-import os
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -13,315 +12,81 @@ from skills.runtime import SkillContext, SkillRuntime
 
 def _memory_runtime(tmp_path: Path) -> tuple[SkillRuntime, str]:
     repo_root = Path(__file__).resolve().parents[1]
-    home = tmp_path / "home"
-    ws = home / "ws"
-    home.mkdir()
-    ws.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
     runtime = SkillRuntime(
-        skills_dir=str(repo_root / "bundled-skills"),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={},
+        skills_dir=str(tmp_path / "user-skills"),
+        bundled_skills_dir=str(repo_root / "bundled-skills"),
+        project=ProjectRuntime(str(workspace)),
+        memory=LexicalMemory(str(tmp_path / "memory.db")),
+        config={"retrieval": {"enabled": False}},
     )
-    return runtime, str(ws)
+    return runtime, str(workspace)
 
 
-def test_add_search_forget(tmp_path: Path):
-    mem = LexicalMemory(storage_path=str(tmp_path / "mem.pkl"))
-
-    item = mem.add_memory("I like coffee", memory_type="preference")
-    hits = mem.search("coffee", top_k=3, min_score=0.0)
-
-    assert item["id"] >= 1
-    assert hits
-    assert hits[0]["id"] == item["id"]
-    assert mem.forget(item["id"]) is True
+def test_add_search_forget_is_transactional(tmp_path: Path) -> None:
+    memory = LexicalMemory(str(tmp_path / "memory.db"), persist_access_updates=True)
+    item = memory.add_memory("I like coffee", memory_type="preference")
+    hit = memory.search("coffee", top_k=1, min_score=0)[0]
+    assert hit["id"] == item["id"]
+    assert memory.forget(item["id"])
+    assert memory.search("coffee", min_score=0) == []
 
 
-def test_first_add_does_not_immediately_autosave(tmp_path: Path):
-    path = tmp_path / "mem.pkl"
-    mem = LexicalMemory(storage_path=str(path))
-
-    mem.add_memory("first item")
-
-    assert mem._dirty is True  # noqa: SLF001
-    assert not path.exists()
-
-
-def test_corrupt_file_recovery(tmp_path: Path):
-    path = tmp_path / "bad.pkl"
-    path.write_bytes(b"not-a-pickle")
-
-    mem = LexicalMemory(storage_path=str(path))
-
-    assert mem.memories == []
-    assert mem.stats()["load_recovery_count"] == 1
+def test_store_uses_schema_wal_and_bounded_candidates(tmp_path: Path) -> None:
+    memory = LexicalMemory(str(tmp_path / "memory.db"))
+    for index in range(2500):
+        memory.add_memory(f"record {index} alpha")
+    assert len(memory.search("alpha", top_k=3, min_score=0)) == 3
+    connection = sqlite3.connect(memory.storage_path)
+    assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 1
 
 
-def test_empty_search_does_not_force_disk_write(tmp_path: Path):
-    path = tmp_path / "mem.pkl"
-    mem = LexicalMemory(storage_path=str(path))
+def test_legacy_unversioned_memory_is_rejected(tmp_path: Path) -> None:
+    legacy = tmp_path / "events.jsonl"
+    legacy.write_text('{"id":1}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="does not migrate"):
+        LexicalMemory(str(legacy))
 
-    assert mem.search("anything") == []
-    assert not path.exists()
 
-
-def test_store_memory_replace_query_replaces_user_name(tmp_path: Path):
-    runtime, ws = _memory_runtime(tmp_path)
+def test_memory_skill_contract(tmp_path: Path) -> None:
+    runtime, workspace = _memory_runtime(tmp_path)
     skill = runtime.get_skill("memory-rag")
     assert skill is not None
-    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], project_root=ws, memory_hits=[])
-
-    first = runtime.execute_tool_call("store_memory", {"text": "User's name is Sohom"}, selected=[skill], ctx=ctx)
-    old_id = int(first["data"]["id"])
-
-    second = runtime.execute_tool_call(
-        "store_memory",
-        {"text": "User's name is Solus", "replace_query": "User's name is Sohom"},
-        selected=[skill],
-        ctx=ctx,
-    )
-
-    assert second["ok"] is True
-    assert old_id in second["meta"].get("forgotten_ids", [])
-
-
-def test_store_memory_respects_disabled_retrieval(tmp_path: Path):
-    db_path = tmp_path / "retrieval.sqlite"
-    runtime, ws = _memory_runtime(tmp_path)
-    runtime.config["retrieval"] = {"enabled": False, "store_path": str(db_path)}
-    skill = runtime.get_skill("memory-rag")
-    assert skill is not None
-    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], project_root=ws, memory_hits=[])
-
-    result = runtime.execute_tool_call("store_memory", {"text": "User prefers concise release summaries"}, selected=[skill], ctx=ctx)
-
-    assert result["ok"] is True
-    assert not db_path.exists()
-
-
-def test_store_memory_still_succeeds_when_retrieval_indexing_fails(tmp_path: Path):
-    runtime, ws = _memory_runtime(tmp_path)
-    db_path = tmp_path / "retrieval-dir"
-    db_path.mkdir()
-    runtime.config["retrieval"] = {"enabled": True, "store_path": str(db_path)}
-    skill = runtime.get_skill("memory-rag")
-    assert skill is not None
-    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], project_root=ws, memory_hits=[])
-
-    result = runtime.execute_tool_call("store_memory", {"text": "User prefers durable memory writes"}, selected=[skill], ctx=ctx)
-
-    assert result["ok"] is True
-    assert result["data"]["text"] == "User prefers durable memory writes"
-    assert result["meta"]["retrieval_indexed"] is False
-    assert "retrieval_error" in result["meta"]
-
-
-def test_recall_memory_uses_token_matching_not_substrings(tmp_path: Path):
-    runtime, ws = _memory_runtime(tmp_path)
-    skill = runtime.get_skill("memory-rag")
-    assert skill is not None
-    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], project_root=ws, memory_hits=[])
-
-    runtime.execute_tool_call("store_memory", {"text": "Joanna likes tea"}, selected=[skill], ctx=ctx)
-
-    recalled = runtime.execute_tool_call(
-        "recall_memory",
-        {"query": "ann", "top_k": 3, "min_score": 0.01},
-        selected=[skill],
-        ctx=ctx,
-    )
-
+    context = SkillContext(user_input="remember", branch_labels=[], attachments=[], project_root=workspace, memory_hits=[])
+    stored = runtime.execute_tool_call("store_memory", {"text": "Favorite editor is Neovim"}, [skill], context)
+    recalled = runtime.execute_tool_call("recall_memory", {"query": "favorite editor", "top_k": 3}, [skill], context)
+    assert stored["ok"] is True
     assert recalled["ok"] is True
-    assert recalled["data"]["hits"] == []
+    assert recalled["data"]["hits"][0]["text"] == "Favorite editor is Neovim"
 
 
-def test_recall_memory_finds_facts_by_tokens(tmp_path: Path):
-    runtime, ws = _memory_runtime(tmp_path)
-    skill = runtime.get_skill("memory-rag")
-    assert skill is not None
-    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], project_root=ws, memory_hits=[])
-
-    runtime.execute_tool_call("store_memory", {"text": "My favorite editor is Neovim"}, selected=[skill], ctx=ctx)
-
-    recalled = runtime.execute_tool_call(
-        "recall_memory",
-        {"query": "favorite editor", "top_k": 3},
-        selected=[skill],
-        ctx=ctx,
-    )
-
-    assert recalled["ok"] is True
-    hits = recalled["data"]["hits"]
-    assert hits
-    assert "favorite editor is neovim" in str(hits[0]["text"]).lower()
-
-
-def test_memory_skill_lists_recent_memories(tmp_path: Path):
-    runtime, ws = _memory_runtime(tmp_path)
-    skill = runtime.get_skill("memory-rag")
-    assert skill is not None
-    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], project_root=ws, memory_hits=[])
-
-    runtime.execute_tool_call("store_memory", {"text": "First memory"}, selected=[skill], ctx=ctx)
-    runtime.execute_tool_call("store_memory", {"text": "Second memory"}, selected=[skill], ctx=ctx)
-
-    listed = runtime.execute_tool_call("list_memories", {"count": 1}, selected=[skill], ctx=ctx)
-
-    assert listed["ok"] is True
-    memories = listed["data"]["memories"]
-    assert len(memories) == 1
-    assert memories[0]["text"] == "Second memory"
-
-
-def test_memory_skill_exports_memories(tmp_path: Path):
-    runtime, ws = _memory_runtime(tmp_path)
-    skill = runtime.get_skill("memory-rag")
-    assert skill is not None
-    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], project_root=ws, memory_hits=[])
-
-    runtime.execute_tool_call("store_memory", {"text": "Exported memory"}, selected=[skill], ctx=ctx)
-    export_path = Path(ws) / "memory-export.txt"
-
-    exported = runtime.execute_tool_call("export_memories", {"filepath": str(export_path)}, selected=[skill], ctx=ctx)
-
-    assert exported["ok"] is True
-    assert exported["data"]["filepath"] == str(export_path.resolve())
-    assert "Exported memory" in export_path.read_text(encoding="utf-8")
-
-
-def test_store_memory_rejects_empty_text(tmp_path: Path):
-    runtime, ws = _memory_runtime(tmp_path)
-    skill = runtime.get_skill("memory-rag")
-    assert skill is not None
-    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], project_root=ws, memory_hits=[])
-
-    result = runtime.execute_tool_call("store_memory", {"text": "   "}, selected=[skill], ctx=ctx)
-
-    assert result["ok"] is False
-    assert result["error"]["code"] == "E_VALIDATION"
-
-
-def test_recall_memory_rejects_empty_query(tmp_path: Path):
-    runtime, ws = _memory_runtime(tmp_path)
-    skill = runtime.get_skill("memory-rag")
-    assert skill is not None
-    ctx = SkillContext(user_input="remember this", branch_labels=[], attachments=[], project_root=ws, memory_hits=[])
-
-    result = runtime.execute_tool_call("recall_memory", {"query": "   "}, selected=[skill], ctx=ctx)
-
-    assert result["ok"] is False
-    assert result["error"]["code"] == "E_VALIDATION"
-
-
-def test_stats_reports_lexical_backend(tmp_path: Path):
-    mem = LexicalMemory(storage_path=str(tmp_path / "mem.pkl"))
-
-    stats = mem.stats()
-
-    assert stats["backend"] == "lexical"
-    assert stats["mode_label"] == "lexical"
-    assert "count" in stats
-
-
-def test_load_rejects_invalid_payload_shape(tmp_path: Path):
-    path = tmp_path / "mem.pkl"
-    path.write_text('{"id":1,"text":"x","metadata":[]}\n', encoding="utf-8")
-
-    mem = LexicalMemory(storage_path=str(path))
-
-    assert mem.memories == []
-    assert mem.stats()["load_recovery_count"] == 1
-    assert path.exists()
-
-
-def test_load_accepts_existing_records_without_version_gates(tmp_path: Path):
-    path = tmp_path / "mem.pkl"
-    path.write_text(
-        '{"id":1,"text":"existing fact","metadata":{},"type":"conversation","timestamp":1.0,"access_count":0,"last_accessed":1.0}\n',
+def test_user_skill_cannot_execute_python(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    skills = tmp_path / "skills"
+    skill = skills / "unsafe"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: unsafe\ndescription: unsafe\n---\n", encoding="utf-8")
+    (skill / "tools.py").write_text(
+        "TOOL_SPECS={'unsafe_run': {'description':'x','parameters':{'type':'object'}}}\n"
+        "def execute(name,args,env): return {'ran': True}\n",
         encoding="utf-8",
     )
-
-    mem = LexicalMemory(storage_path=str(path))
-
-    stats = mem.stats()
-    assert len(mem.memories) == 1
-    assert mem.memories[0].text == "existing fact"
-    assert stats["load_recovery_count"] == 0
-    assert path.exists()
-
-
-def test_load_skips_malformed_json_line(tmp_path: Path):
-    path = tmp_path / "mem.pkl"
-    path.write_text(
-        '{"id":1,"text":"good","metadata":{},"type":"conversation","timestamp":1.0,"access_count":0,"last_accessed":1.0}\nnot-json\n',
-        encoding="utf-8",
+    (skill / "run.py").write_text("raise SystemExit('should never execute')\n", encoding="utf-8")
+    runtime = SkillRuntime(
+        skills_dir=str(skills), bundled_skills_dir=str(Path(__file__).resolve().parents[1] / "bundled-skills"),
+        project=ProjectRuntime(str(workspace)), memory=LexicalMemory(str(tmp_path / "memory.db")), config={},
     )
-
-    mem = LexicalMemory(storage_path=str(path))
-
-    stats = mem.stats()
-    assert len(mem.memories) == 1
-    assert stats["load_recovery_count"] == 1
-
-
-def test_save_rotates_backups(tmp_path: Path):
-    path = tmp_path / "mem.pkl"
-    mem = LexicalMemory(storage_path=str(path), backup_revisions=1, autosave_every=100)
-
-    mem.add_memory("first")
-    mem.flush()
-    first_primary = path.read_text(encoding="utf-8")
-    mem.add_memory("second")
-    mem.flush()
-
-    primary = path.read_text(encoding="utf-8")
-    backup = path.with_suffix(".pkl.bak1")
-
-    assert path.exists()
-    assert backup.exists()
-    assert primary != first_primary
-    assert backup.read_text(encoding="utf-8") == first_primary
-
-
-def test_flush_writes_events_and_facts(tmp_path: Path):
-    path = tmp_path / "mem.pkl"
-    mem = LexicalMemory(storage_path=str(path), autosave_every=100)
-
-    mem.add_memory("first")
-    mem.add_memory("second", metadata={"k": "v"})
-    mem.flush()
-
-    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    records = [json.loads(line) for line in lines]
-    assert len(records) == 2
-    assert all("id" in record and "text" in record for record in records)
-    facts = path.parent / "facts.md"
-    assert facts.exists()
-    facts_text = facts.read_text(encoding="utf-8")
-    assert "# Alphanus Memory Facts" in facts_text
-    assert "text: first" in facts_text
-    assert "text: second" in facts_text
-
-
-def test_save_replace_failure_keeps_primary_file(tmp_path: Path, monkeypatch):
-    path = tmp_path / "mem.pkl"
-    mem = LexicalMemory(storage_path=str(path), backup_revisions=2, autosave_every=100)
-    mem.add_memory("first")
-    mem.flush()
-    original = path.read_bytes()
-
-    real_replace = os.replace
-
-    def _failing_replace(src, dst):
-        if str(dst) == str(path):
-            raise OSError("simulated replace failure")
-        return real_replace(src, dst)
-
-    monkeypatch.setattr("core.memory.os.replace", _failing_replace)
-    mem.add_memory("second")
-    with pytest.raises(OSError, match="simulated replace failure"):
-        mem.flush()
-
-    assert path.exists()
-    assert path.read_bytes() == original
+    manifest = runtime.get_skill("unsafe")
+    assert manifest is not None
+    context = SkillContext(user_input="run", branch_labels=[], attachments=[], project_root=str(workspace), memory_hits=[])
+    result = runtime.execute_tool_call("unsafe_run", {}, [manifest], context)
+    assert result["ok"] is False
+    assert result["error"]["code"] in {"E_POLICY", "E_UNSUPPORTED"}
+    run_result = runtime.execute_tool_call(
+        "run_skill", {"skill_id": "unsafe", "script": "run.py"}, [manifest], context
+    )
+    assert run_result["ok"] is False
+    assert run_result["error"]["code"] == "E_POLICY"

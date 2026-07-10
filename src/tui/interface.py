@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import threading
 import time
 from pathlib import Path
@@ -22,6 +21,7 @@ from alphanus_paths import get_app_paths
 from core.attachments import build_content, classify_attachment
 from core.configuration import (
     config_for_editor_view,
+    config_to_toml,
     load_global_config,
 )
 from core.conv_tree import ConvTree, Turn
@@ -40,13 +40,13 @@ from tui.attachment_runtime import (
     open_attachment_picker as open_tui_attachment_picker,
 )
 from tui.attachment_runtime import (
+    project_root as project_tui_root,
+)
+from tui.attachment_runtime import (
     resolve_attachment_path as resolve_tui_attachment_path,
 )
 from tui.attachment_runtime import (
     root_relative_label as tui_root_relative_label,
-)
-from tui.attachment_runtime import (
-    project_root as project_tui_root,
 )
 from tui.chat_input import ChatInput
 from tui.command_output_runtime import (
@@ -68,6 +68,9 @@ from tui.command_output_runtime import (
     cmd_memory as cmd_tui_memory,
 )
 from tui.command_output_runtime import (
+    cmd_project as cmd_tui_project,
+)
+from tui.command_output_runtime import (
     cmd_report as cmd_tui_report,
 )
 from tui.command_output_runtime import (
@@ -78,9 +81,6 @@ from tui.command_output_runtime import (
 )
 from tui.command_output_runtime import (
     cmd_tree as cmd_tui_tree,
-)
-from tui.command_output_runtime import (
-    cmd_project as cmd_tui_project,
 )
 from tui.command_output_runtime import (
     load_skill_into_session as load_tui_skill_into_session,
@@ -123,9 +123,6 @@ from tui.interaction_runtime import (
     begin_action_approval as begin_tui_action_approval,
 )
 from tui.interaction_runtime import (
-    request_approval_command as approve_tui_request_command,
-)
-from tui.interaction_runtime import (
     expire_action_approval as expire_tui_action_approval,
 )
 from tui.interaction_runtime import (
@@ -139,6 +136,9 @@ from tui.interaction_runtime import (
 )
 from tui.interaction_runtime import (
     on_session_name_close as on_tui_session_name_close,
+)
+from tui.interaction_runtime import (
+    request_approval_command as approve_tui_request_command,
 )
 from tui.interaction_runtime import (
     show_keyboard_shortcuts as show_tui_keyboard_shortcuts,
@@ -649,6 +649,17 @@ class AlphanusTUI(App):
         self._maybe_start_startup_readiness_poll()
         self.query_one(ChatInput).focus()
         self.call_after_refresh(self._open_startup_session_manager)
+
+    def on_unmount(self) -> None:
+        stop_event = getattr(self, "_stop_event", None)
+        if stop_event is not None:
+            stop_event.set()
+        session_store = getattr(self, "_session_store", None)
+        if session_store is not None:
+            session_store.close()
+        memory = getattr(getattr(self.agent, "skill_runtime", None), "memory", None)
+        if memory is not None and hasattr(memory, "close"):
+            memory.close()
 
     def on_resize(self, event) -> None:
         self._apply_sidebar_layout(event.size.width)
@@ -1379,7 +1390,7 @@ class AlphanusTUI(App):
             self._write_error(f"Config load failed: {exc}")
             return
         safe = self._config_for_editor(raw if isinstance(raw, dict) else {})
-        text = json.dumps(safe, indent=2) + "\n"
+        text = config_to_toml(safe)
         self.push_screen(
             ConfigEditorModal(_global_config_path(), text, syntax_theme=self._theme_spec().text_area_theme), self._on_config_editor_close
         )

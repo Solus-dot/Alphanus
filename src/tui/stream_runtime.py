@@ -17,6 +17,8 @@ from tui.markdown_utils import render_md
 from tui.themes import fallback_color
 
 DEFAULT_ASSISTANT_BAR_COLOR = fallback_color("assistant_bar")
+MAX_STREAM_EVENTS = 2048
+MAX_EVENTS_PER_DRAIN = 256
 
 
 def _assistant_color(app: Any) -> str:
@@ -42,7 +44,9 @@ class StreamTextState:
 
 @dataclass(slots=True)
 class StreamRuntimeState:
-    event_queue: queue.SimpleQueue[dict[str, object]] = field(default_factory=queue.SimpleQueue)
+    event_queue: Any = field(
+        default_factory=lambda: queue.Queue(maxsize=MAX_STREAM_EVENTS)
+    )
     drain_active: bool = False
     partial_dirty: bool = False
     deferred_live_preview: tuple[list[str], str | None] | None = None
@@ -107,7 +111,16 @@ def start_turn_stream(app: Any, turn: Any, user_input: str, attachment_paths: li
 
 
 def enqueue_event(app: Any, event: dict[str, Any]) -> None:
-    _state(app).event_queue.put(event)
+    # A bounded queue transfers backpressure to the model worker instead of
+    # allowing a fast stream to consume unbounded UI memory.
+    while True:
+        try:
+            _state(app).event_queue.put(event, timeout=0.1)
+            break
+        except queue.Full:
+            stop_event = getattr(app, "_stop_event", None)
+            if stop_event is not None and stop_event.is_set():
+                return
     if event.get("type") in {
         "pass_start",
         "discard_pass_output",
@@ -136,7 +149,8 @@ def transcript_entry_count(app: Any) -> int:
     log = app._log()
     entry_count = getattr(log, "entry_count", None)
     if callable(entry_count):
-        return int(entry_count())
+        raw_count = entry_count()
+        return int(raw_count) if isinstance(raw_count, (str, int, float)) else 0
     return len(getattr(log, "_entries", []) or [])
 
 
@@ -427,7 +441,7 @@ def drain_events(app: Any) -> None:
         return
 
     queued: list[dict[str, Any]] = []
-    while True:
+    while len(queued) < MAX_EVENTS_PER_DRAIN:
         try:
             queued.append(stream_state.event_queue.get_nowait())
         except queue.Empty:

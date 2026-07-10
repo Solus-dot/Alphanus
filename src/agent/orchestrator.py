@@ -24,9 +24,10 @@ from core.message_types import ChatMessage, JSONValue
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
 from core.types import (
     AgentTurnResult,
-    JsonObject,
     ApprovalRequestFn,
+    JsonObject,
     ToolCall,
+    TurnClassification,
     TurnPolicySnapshot,
     TurnState,
     UserInputRequestFn,
@@ -288,7 +289,7 @@ class TurnOrchestrator:
             marker = f"\n...[{omitted} chars truncated]...\n"
         return text[:head_len] + marker + text[-tail_len:], True, omitted
 
-    def compact_jsonish(self, value: object, depth: int = 0, *, max_string_chars: int | None = None) -> object:
+    def compact_jsonish(self, value: object, depth: int = 0, *, max_string_chars: int | None = None) -> JSONValue:
         string_limit = self.max_tool_result_chars if max_string_chars is None else max(0, int(max_string_chars))
         if isinstance(value, str):
             return self.truncate_middle_text(value, string_limit)[0]
@@ -299,34 +300,36 @@ class TurnOrchestrator:
                 return {"__omitted_nested__": True, "type": "list", "item_count": len(value)}
             if isinstance(value, dict):
                 keys = [str(key) for key in list(value.keys())[:20]]
-                return {"__omitted_nested__": True, "type": "dict", "key_count": len(value), "keys": keys}
+                return cast(JSONValue, {"__omitted_nested__": True, "type": "dict", "key_count": len(value), "keys": keys})
             return str(value)
         if isinstance(value, list):
-            list_out: list[object] = [self.compact_jsonish(item, depth + 1, max_string_chars=max_string_chars) for item in value[:GENERIC_MAX_LIST_ITEMS]]
+            list_out: list[JSONValue] = [self.compact_jsonish(item, depth + 1, max_string_chars=max_string_chars) for item in value[:GENERIC_MAX_LIST_ITEMS]]
             if len(value) > GENERIC_MAX_LIST_ITEMS:
                 list_out.append(f"... [{len(value) - GENERIC_MAX_LIST_ITEMS} more items truncated]")
             return list_out
         if isinstance(value, dict):
-            dict_out: dict[str, object] = {}
+            dict_out: JsonObject = {}
             items = list(value.items())
             for key, item in items[:GENERIC_MAX_DICT_KEYS]:
                 dict_out[str(key)] = self.compact_jsonish(item, depth + 1, max_string_chars=max_string_chars)
             if len(items) > GENERIC_MAX_DICT_KEYS:
                 dict_out["__truncated_keys__"] = len(items) - GENERIC_MAX_DICT_KEYS
             return dict_out
-        return value
+        return str(value)
 
-    def clone_jsonish(self, value: object) -> object:
+    def clone_jsonish(self, value: object) -> JSONValue:
         if isinstance(value, list):
             return [self.clone_jsonish(item) for item in value]
         if isinstance(value, dict):
             return {str(key): self.clone_jsonish(item) for key, item in value.items()}
-        return value
+        if value is None or isinstance(value, (str, bool, int, float)):
+            return value
+        return str(value)
 
-    def _compact_simple_metadata(self, value: object) -> object:
+    def _compact_simple_metadata(self, value: object) -> JSONValue:
         if not isinstance(value, dict):
             return self.compact_jsonish(value, max_string_chars=MEMORY_METADATA_HISTORY_CHARS)
-        out: dict[str, object] = {}
+        out: JsonObject = {}
         for key, item in list(value.items())[:40]:
             if isinstance(item, (str, int, float, bool)) or item is None:
                 out[str(key)] = self.compact_jsonish(item, max_string_chars=MEMORY_METADATA_HISTORY_CHARS)
@@ -348,7 +351,7 @@ class TurnOrchestrator:
             out["__truncated_keys__"] = len(value) - 40
         return out
 
-    def _compact_memory_item(self, item: object) -> object:
+    def _compact_memory_item(self, item: object) -> JSONValue:
         if not isinstance(item, dict):
             return self.compact_jsonish(item, max_string_chars=MEMORY_TEXT_HISTORY_CHARS)
         keep = {
@@ -364,7 +367,7 @@ class TurnOrchestrator:
             "access_count",
             "metadata",
         }
-        out: dict[str, object] = {}
+        out: JsonObject = {}
         for key in keep:
             if key not in item:
                 continue
@@ -411,7 +414,7 @@ class TurnOrchestrator:
                 out[key] = cast(JSONValue, self.compact_jsonish(value, max_string_chars=GENERIC_HISTORY_STRING_CHARS))
         return out
 
-    def _compact_text_field(self, data: dict[str, object], key: str, limit: int, prefix: str) -> None:
+    def _compact_text_field(self, data: JsonObject, key: str, limit: int, prefix: str) -> None:
         value = data.get(key)
         if not isinstance(value, str):
             return
@@ -871,6 +874,9 @@ class TurnOrchestrator:
             selected = self.skill_runtime.select_skills(ctx)
         else:
             classification, selected = selection
+        if classification is None:
+            classification = self.classify_context(ctx, stop_event=stop_event)
+        classification = cast(TurnClassification, classification)
         ctx.context_summary = str(context_summary or "").strip()
         relevant_skill_ids = [getattr(skill, "id", "") for skill in selected if getattr(skill, "id", "")]
         if (

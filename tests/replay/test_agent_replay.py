@@ -9,6 +9,7 @@ in the path, but replaces network model calls with deterministic
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -20,8 +21,8 @@ from agent.runtime_hooks import TurnRuntimeHooks
 from agent.types import ModelStatus, StreamPassResult, ToolCall, TurnClassification
 from core.memory import LexicalMemory
 from core.message_types import ChatMessage
-from core.types import JsonObject
 from core.project import ProjectRuntime
+from core.types import JsonObject
 from skills.runtime import SkillContext, SkillRuntime
 
 FIXTURE_DIR = Path(__file__).with_name("fixtures")
@@ -131,6 +132,7 @@ def _build_agent(tmp_path: Path, fixture: dict[str, Any]) -> Agent:
     home.mkdir()
     project_root.mkdir()
     skills_root.mkdir()
+    shutil.copytree(REPO_ROOT / "bundled-skills", skills_root, dirs_exist_ok=True)
     _write_fixture_skills(skills_root, fixture)
     config = _deep_merge(
         {
@@ -151,8 +153,8 @@ def _build_agent(tmp_path: Path, fixture: dict[str, Any]) -> Agent:
         dict(fixture.get("config", {})),
     )
     runtime = SkillRuntime(
-        skills_dir=str(skills_root),
-        bundled_skills_dir=str(REPO_ROOT / "bundled-skills"),
+        skills_dir=str(home / "user-skills"),
+        bundled_skills_dir=str(skills_root),
         project=ProjectRuntime(str(project_root)),
         memory=LexicalMemory(storage_path=str(tmp_path / "memory.jsonl")),
         config=config,

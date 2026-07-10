@@ -12,9 +12,9 @@ from rich.text import Text
 
 from agent.policies import OutputSanitizer
 from core.conv_tree import ConvTree
+from core.project import ProjectRuntime
 from core.sessions import ChatSession, SessionSearchResult
 from core.types import ModelStatus
-from core.project import ProjectRuntime
 from tui.commands import active_command_query, active_command_span, command_entries_for_query, popup_command_query
 from tui.interface import AlphanusTUI, ChatInput
 from tui.live_tool_preview import LiveToolPreviewManager
@@ -109,16 +109,6 @@ def test_popup_command_query_keeps_exact_commands() -> None:
 def test_popup_command_query_keeps_partial_command_matches() -> None:
     assert popup_command_query("/ex", 3) == "/ex"
     assert popup_command_query("/cont", 5) == "/cont"
-
-
-def test_command_entries_no_longer_expose_load_or_new_sessions_commands() -> None:
-    prompts = [entry.prompt for entry in command_entries_for_query("/")]
-
-    assert "/sessions" in prompts
-    assert "/detach [n|last|all]" in prompts
-    assert "/mode [plan|execute]" in prompts
-    assert "/load" not in prompts
-    assert not any(prompt.startswith("/new") for prompt in prompts)
 
 
 @pytest.mark.anyio

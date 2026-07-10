@@ -77,7 +77,7 @@ def test_shell_command_skips_confirmation_when_dangerous_mode_enabled(tmp_path: 
     shell_skill = runtime.get_skill("shell-ops")
     assert shell_skill is not None
 
-    def _must_not_be_called(_: str) -> bool:
+    def _must_not_be_called(_: dict) -> bool:
         raise AssertionError("request_approval should not be called when dangerous mode is enabled")
 
     out = runtime.execute_tool_call(
@@ -184,7 +184,7 @@ def test_shell_command_external_cwd_requests_approval_and_forwards_cwd(mocker, t
         "run_shell_command",
         return_value={"ok": True, "data": {"returncode": 0}, "error": None, "meta": {}},
     )
-    approvals: list[dict[str, object]] = []
+    approvals: list[dict] = []
 
     out = runtime.execute_tool_call(
         "shell_command",

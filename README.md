@@ -1,13 +1,13 @@
 <p align="center">
   <h1 align="center">Alphanus</h1>
   <p align="center">
-    Local-first coding assistant with a Textual TUI, persistent memory, session-aware skills, and a branchable conversation tree.
+    Production-oriented coding assistant with a Textual TUI, a JSONL automation interface, transactional state, and workspace-guarded tools.
   </p>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
-  <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: alpha">
+    <img src="https://img.shields.io/badge/status-alpha-orange" alt="Status: alpha">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/platform-local--first-lightgrey" alt="Local first">
 </p>
@@ -64,6 +64,7 @@ The system is designed to be inspectable and controllable at runtime rather than
 ### Requirements
 
 - Python `>=3.11`
+- macOS or Linux (Windows is intentionally unsupported in v1)
 - [`uv`](https://docs.astral.sh/uv/)
 - An OpenAI-compatible endpoint exposing:
   - `GET /v1/models`
@@ -117,23 +118,22 @@ Non-interactive setup example:
 
 ```bash
 uv run alphanus init --non-interactive \
-  --project-path ~/Desktop/Alphanus-Project \
+  --project-root ~/Desktop/Alphanus-Project \
   --base-url https://api.openai.com \
   --endpoint-mode auto \
-  --api-key "$ALPHANUS_API_KEY" \
   --model-endpoint https://api.openai.com/v1/chat/completions \
   --responses-endpoint https://api.openai.com/v1/responses \
   --models-endpoint https://api.openai.com/v1/models \
   --search-provider searxng \
   --search-fallback-provider tavily \
-  --tavily-api-key "$TAVILY_API_KEY" \
   --searxng-base-url http://127.0.0.1:8888 \
   --theme catppuccin-mocha
 ```
 
 Notes:
 
-- `init` writes API key secrets to `~/.alphanus/.env`
+- `init` writes an owner-only, versioned `~/.alphanus/config/config.toml`
+- credentials are read from environment variables only; CLI flags, TOML secrets, and `.env` loading are rejected
 - config stores API key references (for example `env:ALPHANUS_API_KEY`) instead of plaintext keys
 - local backends that do not require auth can run with no API key set
 - model status prefers loaded-model metadata from local `/slots` or `/props` endpoints when available; `/v1/models` is used as the general fallback
@@ -143,6 +143,17 @@ Notes:
 ---
 
 ## Major Features
+
+### Headless automation
+
+`alphanus exec` is a public, versioned JSONL interface. Protocol records are written only to stdout and diagnostics only to stderr.
+
+```bash
+printf '%s\n' '{"schema_version":1,"prompt":"summarize this repository"}' \
+  | uv run alphanus exec --input jsonl --approval-policy deny
+```
+
+Exit codes distinguish model failure, policy denial, invalid input/configuration, cancellation, and internal failure. Boundary approvals are denied by default in non-interactive mode.
 
 ### Sessions and Branching
 
@@ -280,7 +291,7 @@ Search is intended for time-sensitive queries and feeds the local retrieval inde
 - primary provider: `searxng`
 - fallback provider: optional `tavily` using `TAVILY_API_KEY`
 - `search.searxng_base_url` is required for SearXNG; if it is missing or unreachable, Alphanus can use Tavily when `search.fallback_provider = "tavily"`
-- `uv run alphanus init search --tavily-api-key ...` stores the key in `~/.alphanus/.env`
+- export the configured Tavily environment variable before launching Alphanus; secrets are never persisted by `init`
 - retrieval store: SQLite FTS under the Alphanus state root, usually `~/.alphanus/retrieval/index.sqlite` unless `ALPHANUS_APP_ROOT` is set
 - fetched pages are indexed; search result snippets alone are not persisted
 - optional dense retrieval uses an OpenAI-compatible embeddings endpoint when `retrieval.embeddings.enabled` is true
@@ -425,7 +436,7 @@ Per-turn journal includes:
 
 Global config path:
 
-- `~/.alphanus/config/global_config.json`
+- `~/.alphanus/config/config.toml`
 
 Config behavior:
 
@@ -488,8 +499,9 @@ Trimmed config example:
 
 Alphanus keeps runtime state separate from your project files.
 
-- `~/.alphanus/config/global_config.json` (config)
-- `~/.alphanus/.env` (secrets)
+- `~/.alphanus/config/config.toml` (versioned, owner-only config)
+- environment variables or OS credential injection (secrets; never stored by Alphanus)
+- `~/.alphanus/sessions/sessions.db` and `~/.alphanus/memory/memory.db` (WAL-enabled SQLite state)
 - `~/.alphanus/sessions/` (sessions)
 - `~/.alphanus/memory/` (memory)
 

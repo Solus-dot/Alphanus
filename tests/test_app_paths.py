@@ -13,7 +13,7 @@ def test_get_app_paths_uses_repo_root_inside_checkout(monkeypatch) -> None:
     assert paths.repo_root is not None
     assert paths.app_root == paths.repo_root
     assert paths.state_root == Path.home().resolve() / DEFAULT_APP_DIRNAME
-    assert paths.config_path == paths.state_root / "config" / "global_config.json"
+    assert paths.config_path == paths.state_root / "config" / "config.toml"
     assert paths.user_skills_dir == paths.repo_root / "skills"
     assert paths.bundled_skills_dir == paths.repo_root / "bundled-skills"
     assert (paths.bundled_skills_dir / "utilities" / "SKILL.md").exists()
@@ -41,6 +41,6 @@ def test_get_app_paths_falls_back_to_user_dir_outside_checkout(tmp_path: Path, m
     assert paths.repo_root is None
     assert paths.app_root == home / DEFAULT_APP_DIRNAME
     assert paths.state_root == home / DEFAULT_APP_DIRNAME
-    assert paths.config_path == home / DEFAULT_APP_DIRNAME / "config" / "global_config.json"
+    assert paths.config_path == home / DEFAULT_APP_DIRNAME / "config" / "config.toml"
     assert paths.user_skills_dir == home / DEFAULT_APP_DIRNAME / "skills"
     assert (paths.bundled_skills_dir / "utilities" / "SKILL.md").exists()
