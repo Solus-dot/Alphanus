@@ -1,2 +1,8 @@
 global-exclude __pycache__ *.py[cod]
 prune tests
+include Cargo.toml
+include Cargo.lock
+include deny.toml
+include setup.cfg
+recursive-include src-rust *.rs
+recursive-include .cargo *.toml

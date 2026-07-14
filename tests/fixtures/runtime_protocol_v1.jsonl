@@ -1,0 +1,5 @@
+{"protocol_version":1,"type":"hello","request_id":"hello-1","data":{"frontend_version":"0.2.0","min_protocol":1,"max_protocol":1}}
+{"protocol_version":1,"type":"state.get","request_id":"state-1","data":{"transcript_offset":0,"tree_offset":0}}
+{"protocol_version":1,"type":"turn.start","request_id":"turn-1","data":{"prompt":"hello","thinking":true}}
+{"protocol_version":1,"type":"turn.cancel","request_id":"cancel-1","data":{}}
+{"protocol_version":1,"type":"shutdown","request_id":"shutdown-1","data":{}}

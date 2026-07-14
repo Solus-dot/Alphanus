@@ -110,7 +110,7 @@ class UiRuntimeConfig:
         theme_raw = _coerce_string(tui_cfg.get("theme"), str(default_tui["theme"]))
         available_themes = None
         try:
-            from tui.themes import available_theme_ids
+            from core.themes import available_theme_ids
 
             available_themes = available_theme_ids()
         except ImportError:

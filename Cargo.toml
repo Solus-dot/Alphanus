@@ -1,0 +1,40 @@
+[package]
+name = "alphanus-tui"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+publish = false
+
+[features]
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]
+
+[lib]
+name = "_alphanus_tui"
+path = "src-rust/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+base64 = "0.22"
+crossbeam-channel = "0.5"
+crossterm = { version = "0.29", features = ["event-stream"] }
+libc = "0.2"
+pulldown-cmark = "0.13"
+pyo3 = { version = "0.29", features = ["abi3-py311"] }
+ratatui = { version = "0.30", features = ["crossterm"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
+unicode-width = "0.2"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+insta = "1"
+pretty_assertions = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

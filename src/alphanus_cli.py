@@ -1,5 +1,6 @@
 import argparse
 import copy
+import importlib.util
 import json
 import os
 import platform
@@ -46,9 +47,8 @@ from core.search_providers import (
     SEARCH_PROVIDERS,
 )
 from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
+from core.themes import available_theme_ids, theme_payload
 from skills.runtime import SkillRuntime
-from tui.interface import AlphanusTUI
-from tui.themes import available_theme_ids, theme_spec
 
 INIT_SECTIONS = ("all", "model", "search", "theme", "permissions")
 _VALID_CLI_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -138,9 +138,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Project root for this run (defaults to enclosing git root, then cwd)",
     )
     parser = argparse.ArgumentParser(description="Alphanus", parents=[common])
-    subparsers = parser.add_subparsers(dest="command")
+    subparsers = parser.add_subparsers(dest="command", metavar="{run,exec,init,doctor,retrieval}")
 
     subparsers.add_parser("run", help="Launch the TUI", parents=[common])
+
+    runtime_parser = subparsers.add_parser("_runtime", help=argparse.SUPPRESS, parents=[common])
+    runtime_parser.add_argument("--stdio", action="store_true", default=True, help=argparse.SUPPRESS)
+    choices = getattr(subparsers, "_choices_actions", [])
+    choices[:] = [choice for choice in choices if getattr(choice, "dest", "") != "_runtime"]
 
     exec_parser = subparsers.add_parser("exec", help="Run one turn using the versioned JSONL protocol", parents=[common])
     exec_parser.add_argument("prompt", nargs="?", default="", help="Prompt text; reads stdin when omitted")
@@ -372,31 +377,6 @@ def _prompt_choice(theme: _CliTheme, label: str, options: list[tuple[str, str]],
 
 def _section_selected(section: str, name: str) -> bool:
     return section == "all" or section == name
-
-
-def _upsert_env_var(dotenv_path: Path, key: str, value: str) -> None:
-    key = key.strip()
-    if not key or not _VALID_CLI_ENV_NAME_RE.match(key):
-        return
-    dotenv_path.parent.mkdir(parents=True, exist_ok=True)
-    lines: list[str] = []
-    if dotenv_path.exists():
-        lines = dotenv_path.read_text(encoding="utf-8").splitlines()
-    prefix = f"{key}="
-    replaced = False
-    updated: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith(prefix) or stripped.startswith(f"export {prefix}"):
-            updated.append(f"{key}={value}")
-            replaced = True
-            continue
-        updated.append(line)
-    if not replaced:
-        if updated and updated[-1].strip():
-            updated.append("")
-        updated.append(f"{key}={value}")
-    dotenv_path.write_text("\n".join(updated).rstrip() + "\n", encoding="utf-8")
 
 
 def _screen_capture_setup_lines(*, open_settings: bool = False) -> list[tuple[str, str]]:
@@ -709,7 +689,7 @@ def _run_init(args: Any) -> int:
             print("")
         if _section_selected(section, "theme"):
             _print_init_step(theme, step_index, total_steps, "Theme")
-            theme_options = [(name, theme_spec(name).description) for name in theme_ids]
+            theme_options = [(name, str(theme_payload(name).get("description") or "")) for name in theme_ids]
             selected_theme = _prompt_choice(
                 theme,
                 "Choose a UI theme:",
@@ -955,38 +935,70 @@ def _run_retrieval(args: Any) -> int:
 
 
 def _run_tui(args: Any) -> int:
+    try:
+        import _alphanus_tui
+    except ImportError as exc:
+        _alphanus_tui = None
+        for candidate in sorted(Path(__file__).resolve().parent.glob("_alphanus_tui*.so")):
+            spec = importlib.util.spec_from_file_location("_alphanus_tui", candidate)
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            sys.modules["_alphanus_tui"] = module
+            spec.loader.exec_module(module)
+            _alphanus_tui = module
+            break
+        if _alphanus_tui is None:
+            print(
+                "Ratatui frontend is unavailable for this installation. "
+                "Install a supported Alphanus wheel or rebuild from source with Rust/Cargo.",
+                file=sys.stderr,
+            )
+            if bool(getattr(args, "debug", False)):
+                print(f"frontend import failed: {exc}", file=sys.stderr)
+            return 2
+    project_root = str(getattr(args, "project_root", "") or "").strip() or None
+    try:
+        return int(_alphanus_tui.run(sys.executable, project_root, bool(getattr(args, "debug", False))))
+    except Exception as exc:
+        print(f"Ratatui frontend failed: {exc}", file=sys.stderr)
+        return 2
+
+
+def _run_runtime(args: Any) -> int:
+    """Run the private bidirectional backend used by the bundled Ratatui UI."""
     app_paths = get_app_paths()
+    memory: Any = None
     try:
-        config, config_warnings = _load_runtime_config(app_paths, args)
-    except (FileNotFoundError, OSError, ValueError) as exc:
-        print(f"startup failed: {exc}")
-        return 2
+        config, warnings = _load_runtime_config(app_paths, args)
+        logger = configure_logging(config)
+        for warning in warnings:
+            logger.warning(f"config: {warning}")
+        _project, memory, _skill_runtime, agent = _build_agent_runtime(app_paths, config, debug=args.debug)
+        from core.runtime_server import RuntimeServer
 
-    logger = configure_logging(config)
-    for warning in config_warnings:
-        logger.warning(f"config: {warning}")
-
-    try:
-        _project, memory, _runtime, agent = _build_agent_runtime(app_paths, config, debug=args.debug)
-    except (FileNotFoundError, NotADirectoryError, OSError, ValueError) as exc:
-        print(f"startup failed: {exc}")
-        return 2
-    if args.debug:
-        logger.info(f"debug HTTP log: {config['agent']['debug_log_path']}")
-
-    agent_cfg = _as_object(config.get("agent"))
-    if not bool(agent_cfg.get("tls_verify", True)):
-        logger.warning("TLS verification is disabled (agent.tls_verify=false)")
-    memory_stats = memory.stats()
-    logger.info(f"[info] memory mode: {memory_stats.get('mode_label', 'lexical')}")
-    logger.info(f"[info] memory min_score_default: {memory_stats.get('min_score_default', 0.3)}")
-    logger.info("use /doctor inside the TUI for readiness and health diagnostics.")
-
-    logger.info("startup skips blocking model handshake; TUI status will refresh asynchronously.")
-
-    app = AlphanusTUI(agent=agent, debug=args.debug)
-    app.run()
-    return 0
+        server = RuntimeServer(
+            agent=agent,
+            memory=memory,
+            state_root=Path(app_paths.state_root).resolve(),
+            config_path=app_paths.config_path,
+            input_stream=sys.stdin,
+            output_stream=sys.stdout,
+        )
+        memory = None  # RuntimeServer owns orderly cleanup after construction.
+        return server.serve()
+    except Exception as exc:
+        print(f"runtime startup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return EXIT_INTERNAL
+    finally:
+        if memory is not None:
+            try:
+                memory.flush()
+                close = getattr(memory, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                pass
 
 
 def _run_exec(args: Any) -> int:
@@ -1082,4 +1094,10 @@ def main() -> int:
         return _run_retrieval(args)
     if command == "exec":
         return _run_exec(args)
+    if command == "_runtime":
+        return _run_runtime(args)
     return _run_tui(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

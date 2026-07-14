@@ -398,14 +398,14 @@ def test_normalize_config_accepts_loadable_custom_theme(tmp_path: Path, monkeypa
         encoding="utf-8",
     )
     monkeypatch.setenv("ALPHANUS_THEME_PATHS", str(theme_dir))
-    from tui import themes
+    from core import themes
 
-    themes.reload_theme_specs()
+    themes.reload_themes()
     try:
         normalized, warnings = normalize_config({"tui": {"theme": "custom-oxide"}})
         ui = UiRuntimeConfig.from_config(normalized)
     finally:
-        themes.reload_theme_specs()
+        themes.reload_themes()
 
     assert normalized["tui"]["theme"] == "custom-oxide"
     assert ui.theme == "custom-oxide"

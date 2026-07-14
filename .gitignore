@@ -14,6 +14,7 @@ venv/
 # Tool caches
 .uv-cache/
 .pytest_cache/
+.coverage
 .mypy_cache/
 .ruff_cache/
 
@@ -27,6 +28,8 @@ llamachat_tree.json
 benchmark-fixtures/
 build/
 *.egg-info/
+target/
+src/_alphanus_tui*.so
 
 # Optional local memory/workspace data
 memories/*.pkl

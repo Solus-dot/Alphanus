@@ -1153,7 +1153,7 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         allow_empty=False,
     )
     try:
-        from tui.themes import available_theme_ids
+        from core.themes import available_theme_ids
 
         theme_ids = available_theme_ids()
     except Exception:

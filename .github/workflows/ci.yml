@@ -21,12 +21,28 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           enable-cache: true
+      - uses: dtolnay/rust-toolchain@1.85.0
       - run: uv sync --all-extras
       - run: uv run ruff check .
       - run: uv run pyright
       - run: uv run pytest -m "not benchmark" --cov --cov-branch --cov-report=term-missing
       - run: uv build
       - run: uv run pip-audit
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test --no-default-features
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses
 
   secrets:
     runs-on: ubuntu-latest
@@ -45,6 +61,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@1.85.0
       - run: uv sync --all-extras
       - run: uv run pytest -m benchmark --benchmark-only --benchmark-json=benchmark.json
       - uses: actions/upload-artifact@v4

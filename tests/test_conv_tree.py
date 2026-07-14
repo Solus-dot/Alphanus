@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # pyright: reportTypedDictNotRequiredAccess=false, reportArgumentType=false, reportOperatorIssue=false
 from core.conv_tree import ConvTree
-from tui.tree_render import render_tree_rows
+from core.tree_render import render_tree_rows
 
 
 def test_add_complete_and_cancel_turn():

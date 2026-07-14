@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">Alphanus</h1>
   <p align="center">
-    Production-oriented coding assistant with a Textual TUI, a JSONL automation interface, transactional state, and workspace-guarded tools.
+    Alpha coding assistant with a Rust/Ratatui TUI, a JSONL automation interface, transactional state, and workspace-guarded tools.
   </p>
 </p>
 
@@ -48,7 +48,7 @@ Alphanus is an experimental local-first coding assistant.
 
 It combines:
 
-- a Textual terminal UI
+- a Rust/Ratatui terminal UI
 - a streaming model loop
 - explicit tool execution
 - session-loaded skills
@@ -64,8 +64,9 @@ The system is designed to be inspectable and controllable at runtime rather than
 ### Requirements
 
 - Python `>=3.11`
-- macOS or Linux (Windows is intentionally unsupported in v1)
+- macOS or Linux (Windows is intentionally unsupported in 0.2.0)
 - [`uv`](https://docs.astral.sh/uv/)
+- Rust `1.85+` and Cargo when installing from source (release-wheel users do not need Rust)
 - An OpenAI-compatible endpoint exposing:
   - `GET /v1/models`
   - optional `GET /slots` or `GET /props` for loaded-model/context metadata on local backends
@@ -174,11 +175,15 @@ Branching commands:
 
 The TUI keeps the primary view focused on the transcript and composer.
 
+The Python agent runtime and Rust frontend communicate over a private, versioned JSONL protocol. The public `alphanus exec` JSONL protocol is unchanged.
+
 - Bottom metadata shows model, thinking state, session, branch, endpoint, LLM state, and context usage
 - Keyboard hints sit beside the input instead of a persistent top header
 - The conversation tree and inspector live in a hidden split that opens only when requested
 - Saved sessions can be searched by title, messages, branch labels, and tool names from `/sessions`
 - Tool execution details, reasoning text, streamed file previews, and themes remain available in the transcript flow
+- Keyboard and mouse navigation cover panels, trees, palettes, sessions, themes, approvals, file selection, modal actions, scrolling, and focus changes
+- Transcript, code, and config views support explicit OSC 52 copy actions; native terminal selection remains available with Shift-drag
 
 Useful controls:
 
@@ -252,7 +257,9 @@ Skill discovery is intentionally explicit. `/skills` shows the installed catalog
 - Built-in themes are JSON files under `src/tui/theme_specs/`
 - Custom themes can be added as `~/.alphanus/themes/<theme-id>.json`
 - Extra theme directories can be supplied with `ALPHANUS_THEME_PATHS` using the platform path separator
-- A theme JSON file contains `id`, `title`, `description`, Textual `theme` colors, UI `colors`, and optional `syntax_theme` / `text_area_theme`
+- Existing theme JSON is interpreted without modification: `theme` and `colors` provide semantic Ratatui colors, while legacy syntax-theme fields remain accepted
+- An optional `ratatui` object can set `border_set` (`plain`, `rounded`, `double`, or `thick`), `syntax_theme`, and semantic `styles` with foreground/background colors and modifiers
+- Invalid Ratatui overrides produce a warning and fall back to the theme's semantic colors; unknown fields are ignored for forward compatibility
 
 ### Project Operations
 
@@ -338,7 +345,7 @@ Runtime safety knobs:
 - protected internal state such as `.alphanus` is blocked before execution, including common shell expansion paths
 - direct `.git` writes and project root deletion are blocked by policy
 - desktop actions such as app launch, browser open, and screenshot capture require explicit tool-level confirmation when they can affect the local machine
-- macOS requires Screen Recording permission for the terminal app or launcher that runs Alphanus; Linux requires `gnome-screenshot` or `scrot`; Windows uses PowerShell screen APIs when available
+- macOS requires Screen Recording permission for the terminal app or launcher that runs Alphanus; Linux requires `gnome-screenshot` or `scrot`; Windows is not supported
 
 ### Turn Trace and Diagnostics
 
@@ -517,6 +524,9 @@ Run the required local quality gate:
 uv run pytest
 uv run ruff check src tests bundled-skills tools
 uv run pyright
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --no-default-features
 ```
 
 Performance benchmarks are part of the test suite and can be run directly:
