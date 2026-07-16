@@ -103,28 +103,19 @@ struct ToolActivity {
     preview_truncated: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct ActivityItem {
-    kind: String,
-    text: String,
-    tool: ToolActivity,
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ActivityItem {
+    Reasoning(String),
+    Tool(ToolActivity),
 }
 
 impl ActivityItem {
     fn reasoning(text: String) -> Self {
-        Self {
-            kind: "reasoning".into(),
-            text,
-            tool: ToolActivity::default(),
-        }
+        Self::Reasoning(text)
     }
 
     fn tool(tool: ToolActivity) -> Self {
-        Self {
-            kind: "tool".into(),
-            text: String::new(),
-            tool,
-        }
+        Self::Tool(tool)
     }
 
     fn from_value(value: &Value) -> Option<Self> {
@@ -2276,53 +2267,51 @@ fn draw_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
         lines.push(Line::default());
         let mut assistant_lines = Vec::new();
         for activity in &turn.activity {
-            if activity.kind == "reasoning" && app.show_details && !activity.text.trim().is_empty()
-            {
-                push_spaced_message_block(
-                    &mut assistant_lines,
-                    dim_message_lines(markdown_lines(
-                        &activity.text,
-                        app.theme.muted,
-                        app.theme.subtle,
-                        &app.theme.syntax_theme,
-                    )),
-                );
-            } else if activity.kind == "tool" {
+            if let ActivityItem::Reasoning(text) = activity {
+                if app.show_details && !text.trim().is_empty() {
+                    push_spaced_message_block(
+                        &mut assistant_lines,
+                        dim_message_lines(markdown_lines(
+                            text,
+                            app.theme.muted,
+                            app.theme.subtle,
+                            &app.theme.syntax_theme,
+                        )),
+                    );
+                }
+            } else if let ActivityItem::Tool(tool) = activity {
                 let mut tool_lines = Vec::new();
-                let (marker, color) = if activity.tool.failed {
+                let (marker, color) = if tool.failed {
                     ("✗", app.theme.error)
-                } else if activity.tool.completed {
+                } else if tool.completed {
                     ("✓", app.theme.success)
                 } else {
                     ("▶", app.theme.warning)
                 };
                 tool_lines.push(Line::from(vec![
                     Span::styled(format!("{marker} "), Style::default().fg(color)),
-                    Span::styled(
-                        activity.tool.name.clone(),
-                        Style::default().fg(app.theme.muted),
-                    ),
+                    Span::styled(tool.name.clone(), Style::default().fg(app.theme.muted)),
                 ]));
-                if app.show_details && !activity.tool.preview.is_empty() {
-                    let preview_label = if activity.tool.filepath.is_empty() {
+                if app.show_details && !tool.preview.is_empty() {
+                    let preview_label = if tool.filepath.is_empty() {
                         "file preview".to_owned()
-                    } else if activity.tool.language == "diff" {
-                        format!("edit diff: {}", activity.tool.filepath)
+                    } else if tool.language == "diff" {
+                        format!("edit diff: {}", tool.filepath)
                     } else {
-                        format!("file draft: {}", activity.tool.filepath)
+                        format!("file draft: {}", tool.filepath)
                     };
                     tool_lines.push(Line::from(Span::styled(
                         format!("  · {preview_label}"),
                         Style::default().fg(app.theme.subtle),
                     )));
-                    let language = if activity.tool.language.is_empty() {
-                        tool_preview::language_for_filepath(&activity.tool.filepath)
+                    let language = if tool.language.is_empty() {
+                        tool_preview::language_for_filepath(&tool.filepath)
                     } else {
-                        activity.tool.language.as_str()
+                        tool.language.as_str()
                     };
                     tool_lines.extend(preview_box_lines(
                         highlighted_code_lines(
-                            &activity.tool.preview,
+                            &tool.preview,
                             language,
                             &app.theme.syntax_theme,
                             app.theme.text,
@@ -2331,7 +2320,7 @@ fn draw_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
                         app.theme.border,
                         app.theme.panel,
                     ));
-                    if activity.tool.preview_truncated {
+                    if tool.preview_truncated {
                         tool_lines.push(Line::from(Span::styled(
                             "    … preview clipped; the complete content was still written",
                             Style::default()
@@ -3380,12 +3369,8 @@ fn append_reasoning(turns: &mut [TurnView], turn_id: &str, reasoning: &str) {
         return;
     }
     if let Some(turn) = turns.iter_mut().find(|turn| turn.id == turn_id) {
-        if let Some(activity) = turn
-            .activity
-            .last_mut()
-            .filter(|item| item.kind == "reasoning")
-        {
-            append_bounded(&mut activity.text, reasoning, MAX_STREAM_CHARS);
+        if let Some(ActivityItem::Reasoning(text)) = turn.activity.last_mut() {
+            append_bounded(text, reasoning, MAX_STREAM_CHARS);
         } else {
             if turn.activity.len() >= MAX_ACTIVITY_ITEMS {
                 turn.activity.remove(0);
@@ -3444,20 +3429,17 @@ fn append_tool_activity(
         preview_truncated: false,
     };
     merge_tool_preview(&mut tool, &preview);
-    if let Some(existing) = turn
-        .activity
-        .iter_mut()
-        .rev()
-        .find(|item| item.kind == "tool" && matches_tool(&item.tool, id, stream_id, name))
-    {
+    if let Some(ActivityItem::Tool(existing)) = turn.activity.iter_mut().rev().find(
+        |item| matches!(item, ActivityItem::Tool(tool) if matches_tool(tool, id, stream_id, name)),
+    ) {
         if !id.is_empty() {
-            existing.tool.id = id.to_owned();
+            existing.id = id.to_owned();
         }
         if !stream_id.is_empty() {
-            existing.tool.stream_id = stream_id.to_owned();
+            existing.stream_id = stream_id.to_owned();
         }
-        existing.tool.name = name.to_owned();
-        merge_tool_preview(&mut existing.tool, &preview);
+        existing.name = name.to_owned();
+        merge_tool_preview(existing, &preview);
     } else {
         if turn.activity.len() >= MAX_ACTIVITY_ITEMS {
             turn.activity.remove(0);
@@ -3477,15 +3459,13 @@ fn complete_tool_activity(
     let Some(turn) = turns.iter_mut().find(|turn| turn.id == turn_id) else {
         return;
     };
-    if let Some(activity) = turn.activity.iter_mut().rev().find(|activity| {
-        activity.kind == "tool"
-            && !activity.tool.completed
-            && ((!id.is_empty() && activity.tool.id == id)
-                || (id.is_empty() && activity.tool.name == name))
+    if let Some(ActivityItem::Tool(tool)) = turn.activity.iter_mut().rev().find(|activity| {
+        matches!(activity, ActivityItem::Tool(tool) if !tool.completed
+            && ((!id.is_empty() && tool.id == id) || (id.is_empty() && tool.name == name)))
     }) {
-        activity.tool.completed = true;
-        activity.tool.failed = failed;
-        merge_tool_preview(&mut activity.tool, &preview);
+        tool.completed = true;
+        tool.failed = failed;
+        merge_tool_preview(tool, &preview);
     } else {
         if turn.activity.len() >= MAX_ACTIVITY_ITEMS {
             turn.activity.remove(0);
@@ -3706,6 +3686,20 @@ fn catalog_text(rows: &[Value], label_field: &str) -> String {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+
+    fn reasoning(item: &ActivityItem) -> &str {
+        let ActivityItem::Reasoning(text) = item else {
+            panic!("expected reasoning activity")
+        };
+        text
+    }
+
+    fn tool(item: &ActivityItem) -> &ToolActivity {
+        let ActivityItem::Tool(tool) = item else {
+            panic!("expected tool activity")
+        };
+        tool
+    }
 
     fn command_fixture() -> Vec<Value> {
         vec![
@@ -3974,7 +3968,7 @@ mod tests {
         }];
         append_reasoning(&mut streaming, "turn-1", "first ");
         append_reasoning(&mut streaming, "turn-1", "second");
-        assert_eq!(streaming[0].activity[0].text, "first second");
+        assert_eq!(reasoning(&streaming[0].activity[0]), "first second");
 
         let mut reloaded = vec![TurnView {
             id: "turn-1".into(),
@@ -3982,7 +3976,7 @@ mod tests {
             ..TurnView::default()
         }];
         set_activity(&mut reloaded, "turn-1", streaming[0].activity.clone());
-        assert_eq!(reloaded[0].activity[0].text, "first second");
+        assert_eq!(reasoning(&reloaded[0].activity[0]), "first second");
         assert_eq!(reloaded[0].assistant, "final answer");
     }
 
@@ -4010,8 +4004,8 @@ mod tests {
         );
 
         assert_eq!(turns[0].activity.len(), 1);
-        assert_eq!(turns[0].activity[0].tool.name, "recall_memory");
-        assert!(turns[0].activity[0].tool.completed);
+        assert_eq!(tool(&turns[0].activity[0]).name, "recall_memory");
+        assert!(tool(&turns[0].activity[0]).completed);
     }
 
     #[test]
@@ -4037,8 +4031,8 @@ mod tests {
             true,
         );
 
-        assert!(turns[0].activity[0].tool.completed);
-        assert!(turns[0].activity[0].tool.failed);
+        assert!(tool(&turns[0].activity[0]).completed);
+        assert!(tool(&turns[0].activity[0]).failed);
     }
 
     #[test]
@@ -4069,9 +4063,9 @@ mod tests {
         );
 
         assert_eq!(turns[0].activity.len(), 1);
-        assert_eq!(turns[0].activity[0].tool.filepath, "demo.py");
-        assert_eq!(turns[0].activity[0].tool.preview, "print('hello')");
-        assert_eq!(turns[0].activity[0].tool.stream_id, "stream-one");
+        assert_eq!(tool(&turns[0].activity[0]).filepath, "demo.py");
+        assert_eq!(tool(&turns[0].activity[0]).preview, "print('hello')");
+        assert_eq!(tool(&turns[0].activity[0]).stream_id, "stream-one");
     }
 
     #[test]
@@ -4145,11 +4139,10 @@ mod tests {
             turns[0]
                 .activity
                 .iter()
-                .map(|item| (
-                    item.kind.as_str(),
-                    item.text.as_str(),
-                    item.tool.name.as_str()
-                ))
+                .map(|item| match item {
+                    ActivityItem::Reasoning(text) => ("reasoning", text.as_str(), ""),
+                    ActivityItem::Tool(tool) => ("tool", "", tool.name.as_str()),
+                })
                 .collect::<Vec<_>>(),
             vec![
                 ("reasoning", "inspect", ""),
@@ -4162,8 +4155,11 @@ mod tests {
         assert!(turns[0]
             .activity
             .iter()
-            .filter(|item| item.kind == "tool")
-            .all(|item| item.tool.completed));
+            .filter_map(|item| match item {
+                ActivityItem::Tool(tool) => Some(tool),
+                ActivityItem::Reasoning(_) => None,
+            })
+            .all(|tool| tool.completed));
     }
 
     #[test]
@@ -4180,7 +4176,7 @@ mod tests {
 
         assert_eq!(turn.assistant, "complete response");
         assert_eq!(turn.activity.len(), 3);
-        assert_eq!(turn.activity[2].text, "after");
+        assert_eq!(reasoning(&turn.activity[2]), "after");
     }
 
     #[test]
