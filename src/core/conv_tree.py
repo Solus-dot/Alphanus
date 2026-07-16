@@ -232,22 +232,6 @@ class ConvTree:
         self._invalidate_active_path_cache()
         self._mark_history_changed()
 
-    def set_compaction_policy(
-        self,
-        *,
-        enabled: bool,
-        inactive_assistant_char_limit: int,
-        inactive_tool_argument_char_limit: int,
-        inactive_tool_content_char_limit: int,
-    ) -> None:
-        self._compact_inactive_branches = bool(enabled)
-        self._inactive_assistant_char_limit = max(0, int(inactive_assistant_char_limit))
-        self._inactive_tool_argument_char_limit = max(0, int(inactive_tool_argument_char_limit))
-        self._inactive_tool_content_char_limit = max(0, int(inactive_tool_content_char_limit))
-        self.compact_inactive_branches()
-        self._invalidate_active_path_cache()
-        self._invalidate_history_cache()
-
     @property
     def current(self) -> Turn:
         return self.nodes[self.current_id]

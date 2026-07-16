@@ -7,7 +7,6 @@ from typing import Any, TextIO
 
 RUNTIME_PROTOCOL_VERSION = 1
 MAX_RUNTIME_FRAME_BYTES = 1024 * 1024
-MAX_RUNTIME_EVENTS = 2048
 
 
 class RuntimeProtocolError(ValueError):

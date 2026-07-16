@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import fnmatch
 import glob as globlib
-import hashlib
 import json
 import os
 import re
@@ -287,126 +286,6 @@ class ProjectRuntime:
             return False
         return self._command_touches_protected_project_path(argv, cwd)
 
-    def project_state_fingerprint(self) -> str:
-        digest = hashlib.sha256()
-        for root, dirnames, filenames in os.walk(self.project_root, topdown=True, followlinks=False):
-            root_path = Path(root)
-            dirnames[:] = sorted(dirname for dirname in dirnames if dirname not in {".alphanus", ".git"})
-            rel_root = root_path.relative_to(self.project_root)
-            for dirname in dirnames:
-                candidate = root_path / dirname
-                try:
-                    stat = candidate.lstat()
-                except OSError:
-                    continue
-                rel_path = (rel_root / dirname).as_posix()
-                digest.update(f"d:{rel_path}:{stat.st_mode}:{stat.st_mtime_ns}\n".encode())
-            for filename in sorted(filenames):
-                candidate = root_path / filename
-                try:
-                    stat = candidate.lstat()
-                except OSError:
-                    continue
-                rel_path = (rel_root / filename).as_posix()
-                digest.update(f"f:{rel_path}:{stat.st_mode}:{stat.st_size}:{stat.st_mtime_ns}\n".encode())
-        return digest.hexdigest()
-
-    def _git_metadata_fingerprint(self) -> str | None:
-        git_dir = self.project_root / ".git"
-        if git_dir.is_file():
-            try:
-                text = git_dir.read_text(encoding="utf-8", errors="ignore").strip()
-            except OSError:
-                return None
-            if text.startswith("gitdir:"):
-                raw_git_dir = Path(text.split(":", 1)[1].strip())
-                git_dir = raw_git_dir if raw_git_dir.is_absolute() else (self.project_root / raw_git_dir)
-        if not git_dir.is_dir():
-            return None
-
-        digest = hashlib.sha256()
-
-        def update_file(path: Path, label: str) -> None:
-            try:
-                stat = path.lstat()
-                content = path.read_bytes() if path.is_file() else b""
-            except OSError:
-                return
-            digest.update(f"{label}:{stat.st_mode}:{stat.st_size}:".encode())
-            digest.update(hashlib.sha256(content).hexdigest().encode())
-            digest.update(b"\n")
-
-        for name in ("HEAD", "packed-refs"):
-            update_file(git_dir / name, name)
-
-        refs_dir = git_dir / "refs"
-        if refs_dir.is_dir():
-            for root, dirnames, filenames in os.walk(refs_dir, topdown=True, followlinks=False):
-                dirnames[:] = sorted(dirnames)
-                root_path = Path(root)
-                rel_root = root_path.relative_to(git_dir)
-                for filename in sorted(filenames):
-                    update_file(root_path / filename, (rel_root / filename).as_posix())
-
-        return digest.hexdigest()
-
-    def _git_status_snapshot(self) -> tuple[str, tuple[tuple[str, str, int, int], ...]] | None:
-        git_path = shutil.which("git")
-        if not git_path:
-            return None
-        base_argv = [git_path, "-C", str(self.project_root)]
-        repo_probe = subprocess.run(
-            base_argv + ["rev-parse", "--is-inside-work-tree"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if repo_probe.returncode != 0 or repo_probe.stdout.strip().lower() != "true":
-            return None
-        status = subprocess.run(
-            base_argv + ["status", "--porcelain=v1", "--untracked-files=normal"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if status.returncode != 0:
-            return None
-        untracked = subprocess.run(
-            base_argv + ["ls-files", "--others", "--exclude-standard", "-z"],
-            capture_output=True,
-            text=False,
-            timeout=5,
-        )
-        if untracked.returncode != 0:
-            return None
-        untracked_meta: list[tuple[str, str, int, int]] = []
-        for raw_path in untracked.stdout.decode("utf-8", errors="ignore").split("\x00"):
-            path_text = raw_path.strip()
-            if not path_text:
-                continue
-            candidate = (self.project_root / path_text).resolve()
-            if not self._is_relative_to(candidate, self.project_root):
-                continue
-            try:
-                stat = candidate.lstat()
-            except OSError:
-                continue
-            if candidate.is_dir():
-                entry_type = "dir"
-            elif candidate.is_symlink():
-                entry_type = "symlink"
-            else:
-                entry_type = "file"
-            untracked_meta.append((path_text, entry_type, int(stat.st_size), int(stat.st_mtime_ns)))
-        untracked_meta.sort()
-        return (status.stdout, tuple(untracked_meta))
-
-    def _project_change_snapshot(self) -> tuple[str, Any]:
-        git_snapshot = self._git_status_snapshot()
-        if git_snapshot is not None:
-            return ("git", git_snapshot)
-        return ("fingerprint", self.project_state_fingerprint())
-
     def _normalize_project_relative(self, path: str) -> Path:
         raw = Path(os.path.expanduser(path))
         if raw.is_absolute():
@@ -678,25 +557,6 @@ class ProjectRuntime:
             "after_anchor_line": after_anchor_line,
             "selectors_applied": selectors_applied,
         }
-
-    def read_files(self, paths: Iterable[str], max_chars_per_file: int = MAX_TOOL_TEXT_BYTES) -> list[dict[str, Any]]:
-        limit = max(1, int(max_chars_per_file))
-        files: list[dict[str, Any]] = []
-        for raw_path in paths:
-            path = str(raw_path)
-            content = self.read_file(path)
-            truncated = content[:limit]
-            files.append(
-                {
-                    "filepath": path,
-                    "content": truncated,
-                    "size_bytes": len(content.encode("utf-8")),
-                    "line_count": content.count("\n") + (1 if content else 0),
-                    "truncated": truncated != content,
-                    "returned_chars": len(truncated),
-                }
-            )
-        return files
 
     def create_file(self, filepath: str, content: str, *, approved: bool = False) -> str:
         target = self._resolve_write_path(filepath)
@@ -1012,37 +872,6 @@ class ProjectRuntime:
         clipped = encoded[:max_bytes].decode("utf-8", errors="ignore")
         return clipped, True
 
-    def _run_argv(
-        self,
-        argv: list[str],
-        *,
-        timeout_s: int = 30,
-        cwd: Path | None = None,
-        max_output_bytes: int = MAX_TOOL_TEXT_BYTES,
-    ) -> dict[str, Any]:
-        start = time.perf_counter()
-        proc = subprocess.run(
-            argv,
-            shell=False,
-            cwd=str(cwd or self.project_root),
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
-        stdout, stdout_truncated = self._clip_text(proc.stdout, max_output_bytes)
-        stderr, stderr_truncated = self._clip_text(proc.stderr, max_output_bytes)
-        return {
-            "command": argv[0] if argv else "",
-            "argv": argv,
-            "stdout": stdout,
-            "stderr": stderr,
-            "stdout_truncated": stdout_truncated,
-            "stderr_truncated": stderr_truncated,
-            "returncode": proc.returncode,
-            "cwd": str(cwd or self.project_root),
-            "duration_ms": int((time.perf_counter() - start) * 1000),
-        }
-
     def _run_shell_string(
         self,
         command: str,
@@ -1050,7 +879,6 @@ class ProjectRuntime:
         timeout_s: int = 30,
         cwd: Path | None = None,
         extra_roots: Iterable[Path] | None = None,
-        max_output_bytes: int = MAX_TOOL_TEXT_BYTES,
     ) -> dict[str, Any]:
         return self.sandbox_runner.run(
             SandboxCommand(

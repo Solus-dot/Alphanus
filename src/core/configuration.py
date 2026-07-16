@@ -1364,9 +1364,3 @@ def save_global_config(path: Path, config: dict[str, Any]) -> None:
     if stripped:
         raise ValueError("Refusing to persist secret-like configuration fields")
     atomic_write_text(path, config_to_toml(sanitized), mode=0o600)
-
-
-def load_dotenv(path: Path) -> None:
-    # Retained as a compatibility symbol for callers; v1 intentionally does
-    # not import secrets from files in the application state directory.
-    return

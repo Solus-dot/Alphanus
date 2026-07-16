@@ -516,18 +516,6 @@ class OpenAICompatibleProvider:
     def _should_retry_exception(self, exc: Exception) -> bool:
         return should_retry_provider_exception(exc, model_endpoint=self.model_endpoint)
 
-    def complete(self, payload: dict[str, object], timeout_s: float | None = None) -> dict[str, object]:
-        request = urllib.request.Request(
-            self.model_endpoint,
-            headers={"Content-Type": "application/json", **self.headers()},
-            method="POST",
-            data=json.dumps(payload).encode("utf-8"),
-        )
-        timeout = self.request_timeout_s if timeout_s is None else max(0.1, float(timeout_s))
-        with urllib.request.urlopen(request, timeout=timeout, context=self.ssl_context) as response:
-            raw = response.read().decode("utf-8")
-            return json.loads(raw) if raw.strip() else {}
-
     def stream_completion(
         self,
         payload: dict[str, object],
