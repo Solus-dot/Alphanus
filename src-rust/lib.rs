@@ -1,5 +1,6 @@
 mod app;
 mod backend;
+mod input;
 mod protocol;
 mod theme;
 mod tool_preview;

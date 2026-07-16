@@ -8,203 +8,39 @@ from typing import Any
 
 from skills.runtime import ToolExecutionEnv
 
-TOOL_SPECS = {
-    "git_status": {
-        "capability": "project_read",
-        "mutates": False,
-        "actions": ["check", "read"],
-        "description": "Return structured Git status for a repository inside the project.",
-        "parameters": {
-            "type": "object",
-            "properties": {"path": {"type": "string"}},
-            "additionalProperties": False,
-        },
-    },
-    "git_log": {
-        "capability": "project_read",
-        "mutates": False,
-        "actions": ["read", "list"],
-        "description": "Return recent Git commits for a repository inside the project.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "max_count": {"type": "integer"},
-                "ref": {"type": "string"},
-            },
-            "additionalProperties": False,
-        },
-    },
-    "git_diff": {
-        "capability": "project_read",
-        "mutates": False,
-        "actions": ["read", "check"],
-        "description": "Return Git diff output for a repository inside the project.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "staged": {"type": "boolean"},
-                "ref": {"type": "string"},
-                "paths": {"type": "array", "items": {"type": "string"}},
-            },
-            "additionalProperties": False,
-        },
-    },
-    "git_show": {
-        "capability": "project_read",
-        "mutates": False,
-        "actions": ["read"],
-        "description": "Show a Git object or revision inside a project repository.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "rev": {"type": "string"},
-            },
-            "required": ["rev"],
-            "additionalProperties": False,
-        },
-    },
-    "git_branch_list": {
-        "capability": "project_read",
-        "mutates": False,
-        "actions": ["list", "read"],
-        "description": "List local and optional remote Git branches.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "all": {"type": "boolean"},
-            },
-            "additionalProperties": False,
-        },
-    },
-    "git_branch_create": {
-        "capability": "project_write",
-        "mutates": True,
-        "actions": ["create"],
-        "description": "Create a Git branch in a project repository.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "name": {"type": "string"},
-                "start_point": {"type": "string"},
-            },
-            "required": ["name"],
-            "additionalProperties": False,
-        },
-    },
-    "git_branch_switch": {
-        "capability": "project_write",
-        "mutates": True,
-        "actions": ["update"],
-        "description": "Switch Git branches when the working tree is clean.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "name": {"type": "string"},
-            },
-            "required": ["name"],
-            "additionalProperties": False,
-        },
-    },
-    "git_add": {
-        "capability": "project_write",
-        "mutates": True,
-        "actions": ["update"],
-        "description": "Stage explicit paths in a project Git repository.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "paths": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["paths"],
-            "additionalProperties": False,
-        },
-    },
-    "git_commit": {
-        "capability": "project_write",
-        "mutates": True,
-        "actions": ["save", "write"],
-        "description": "Commit currently staged changes with a non-empty message.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "message": {"type": "string"},
-            },
-            "required": ["message"],
-            "additionalProperties": False,
-        },
-    },
-    "git_fetch": {
-        "capability": "project_write",
-        "mutates": True,
-        "actions": ["update"],
-        "description": "Fetch from a Git remote in a project repository.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "remote": {"type": "string"},
-            },
-            "additionalProperties": False,
-        },
-    },
-    "git_pull": {
-        "capability": "project_write",
-        "mutates": True,
-        "actions": ["update"],
-        "description": "Pull from a Git remote, defaulting to rebase.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "remote": {"type": "string"},
-                "branch": {"type": "string"},
-                "rebase": {"type": "boolean"},
-            },
-            "additionalProperties": False,
-        },
-    },
-    "git_push": {
-        "capability": "project_write",
-        "mutates": True,
-        "actions": ["update"],
-        "description": "Push to a Git remote after explicit confirmation. Force push modes are rejected.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "remote": {"type": "string"},
-                "branch": {"type": "string"},
-                "confirm_push": {"type": "boolean"},
-                "force": {"type": "boolean"},
-            },
-            "required": ["confirm_push"],
-            "additionalProperties": False,
-        },
-    },
-    "git_init": {
-        "capability": "project_write",
-        "mutates": True,
-        "actions": ["create"],
-        "description": "Initialize a Git repository in an explicit descendant folder inside the project, never at project root.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "create_if_missing": {"type": "boolean"},
-            },
-            "required": ["path"],
-            "additionalProperties": False,
-        },
-    },
+
+def _specs(rows: dict[str, tuple]) -> dict[str, dict[str, Any]]:
+    specs = {}
+    for name, (capability, mutates, actions, description, properties, required) in rows.items():
+        parameters = {"type": "object", "properties": properties, "additionalProperties": False}
+        if required:
+            parameters["required"] = list(required)
+        specs[name] = dict(
+            capability=capability,
+            mutates=mutates,
+            actions=list(actions),
+            description=description,
+            parameters=parameters,
+        )
+    return specs
+
+
+TOOL_SPEC_ROWS = {  # fmt: skip
+    "git_status": ("project_read", False, ("check", "read"), "Return structured Git status for a repository inside the project.", {"path": {"type": "string"}}, ()),
+    "git_log": ("project_read", False, ("read", "list"), "Return recent Git commits for a repository inside the project.", {"path": {"type": "string"}, "max_count": {"type": "integer"}, "ref": {"type": "string"}}, ()),
+    "git_diff": ("project_read", False, ("read", "check"), "Return Git diff output for a repository inside the project.", {"path": {"type": "string"}, "staged": {"type": "boolean"}, "ref": {"type": "string"}, "paths": {"type": "array", "items": {"type": "string"}}}, ()),
+    "git_show": ("project_read", False, ("read",), "Show a Git object or revision inside a project repository.", {"path": {"type": "string"}, "rev": {"type": "string"}}, ("rev",)),
+    "git_branch_list": ("project_read", False, ("list", "read"), "List local and optional remote Git branches.", {"path": {"type": "string"}, "all": {"type": "boolean"}}, ()),
+    "git_branch_create": ("project_write", True, ("create",), "Create a Git branch in a project repository.", {"path": {"type": "string"}, "name": {"type": "string"}, "start_point": {"type": "string"}}, ("name",)),
+    "git_branch_switch": ("project_write", True, ("update",), "Switch Git branches when the working tree is clean.", {"path": {"type": "string"}, "name": {"type": "string"}}, ("name",)),
+    "git_add": ("project_write", True, ("update",), "Stage explicit paths in a project Git repository.", {"path": {"type": "string"}, "paths": {"type": "array", "items": {"type": "string"}}}, ("paths",)),
+    "git_commit": ("project_write", True, ("save", "write"), "Commit currently staged changes with a non-empty message.", {"path": {"type": "string"}, "message": {"type": "string"}}, ("message",)),
+    "git_fetch": ("project_write", True, ("update",), "Fetch from a Git remote in a project repository.", {"path": {"type": "string"}, "remote": {"type": "string"}}, ()),
+    "git_pull": ("project_write", True, ("update",), "Pull from a Git remote, defaulting to rebase.", {"path": {"type": "string"}, "remote": {"type": "string"}, "branch": {"type": "string"}, "rebase": {"type": "boolean"}}, ()),
+    "git_push": ("project_write", True, ("update",), "Push to a Git remote after explicit confirmation. Force push modes are rejected.", {"path": {"type": "string"}, "remote": {"type": "string"}, "branch": {"type": "string"}, "confirm_push": {"type": "boolean"}, "force": {"type": "boolean"}}, ("confirm_push",)),
+    "git_init": ("project_write", True, ("create",), "Initialize a Git repository in an explicit descendant folder inside the project, never at project root.", {"path": {"type": "string"}, "create_if_missing": {"type": "boolean"}}, ("path",)),
 }
+TOOL_SPECS = _specs(TOOL_SPEC_ROWS)
 
 MAX_OUTPUT_BYTES = 20000
 

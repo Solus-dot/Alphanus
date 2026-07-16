@@ -4,6 +4,7 @@ import difflib
 import hashlib
 import re
 from pathlib import Path
+from typing import Any
 
 from skills.runtime import ToolExecutionEnv
 
@@ -13,191 +14,53 @@ WRITE_PREVIEW_TAIL_CHARS = 400
 READ_CONTENT_MAX_CHARS = 64000
 EDIT_DIFF_MAX_CHARS = 12000
 
-TOOL_SPECS = {
-    "create_directory": {
-        "capability": "project_write",
-        "mutates": True,
-        "actions": ["create"],
-        "description": "Create a directory in the project, or at an explicit absolute path when policy allows it.",
-        "parameters": {
-            "type": "object",
-            "properties": {"path": {"type": "string"}},
-            "required": ["path"],
-        },
-    },
-    "create_file": {
-        "capability": "project_write",
-        "mutates": True,
-        "actions": ["create", "write", "save"],
-        "description": "Create or overwrite a file in the project, or at an explicit absolute path when policy allows it.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "filepath": {"type": "string"},
-                "content": {"type": "string"},
-            },
-            "required": ["filepath", "content"],
-        },
-    },
-    "edit_file": {
-        "capability": "project_edit",
-        "mutates": True,
-        "actions": ["edit", "update", "write"],
-        "description": (
-            "Edit an existing project file, or an explicit absolute file when policy allows it. Supports exactly one mode per call: full content replace, "
-            "localized old_string/new_string, or regex replacement. Optional line-range and anchor selectors "
-            "can scope non-content edits."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "filepath": {"type": "string"},
-                "content": {"type": "string"},
-                "old_string": {"type": "string"},
-                "new_string": {"type": "string"},
-                "replace_all": {"type": "boolean"},
-                "regex_pattern": {"type": "string"},
-                "regex_replacement": {"type": "string"},
-                "regex_flags": {"type": "string"},
-                "regex_replace_all": {"type": "boolean"},
-                "start_line": {"type": "integer"},
-                "end_line": {"type": "integer"},
-                "before_anchor": {"type": "string"},
-                "after_anchor": {"type": "string"},
-            },
-            "required": ["filepath"],
-            "additionalProperties": False,
-        },
-    },
-    "read_file": {
-        "capability": "project_read",
-        "mutates": False,
-        "actions": ["read"],
-        "description": "Read a project file, or an explicit absolute file when policy allows it. Optional line-range and anchor selectors can return a specific section.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "filepath": {"type": "string"},
-                "start_line": {"type": "integer"},
-                "end_line": {"type": "integer"},
-                "before_anchor": {"type": "string"},
-                "after_anchor": {"type": "string"},
-                "include_line_numbers": {"type": "boolean"},
-            },
-            "required": ["filepath"],
-        },
-    },
-    "read_files": {
-        "capability": "project_read",
-        "mutates": False,
-        "actions": ["read"],
-        "description": "Read multiple project or explicit absolute files with per-file truncation metadata.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "paths": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                },
-                "max_chars_per_file": {"type": "integer"},
-            },
-            "required": ["paths"],
-        },
-    },
-    "list_files": {
-        "capability": "project_read",
-        "mutates": False,
-        "actions": ["list", "read"],
-        "description": "List one directory level when the exact directory is already known. Use find_files to locate unknown files.",
-        "parameters": {
-            "type": "object",
-            "properties": {"path": {"type": "string"}},
-            "required": [],
-        },
-    },
-    "find_files": {
-        "capability": "project_read",
-        "mutates": False,
-        "actions": ["list", "read", "check"],
-        "description": "Find project files by exact name, path fragment, or glob without walking directories one level at a time.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "name": {"type": "string"},
-                "glob": {"type": "string"},
-                "include_dirs": {"type": "boolean"},
-                "case_sensitive": {"type": "boolean"},
-                "max_results": {"type": "integer"},
-            },
-            "required": [],
-        },
-    },
-    "search_code": {
-        "capability": "project_read",
-        "mutates": False,
-        "actions": ["read", "check"],
-        "description": "Search the project codebase with ripgrep when available. Optional context lines can be returned per match.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "path": {"type": "string"},
-                "glob": {"type": "string"},
-                "max_results": {"type": "integer"},
-                "case_sensitive": {"type": "boolean"},
-                "fixed_strings": {"type": "boolean"},
-                "before_context": {"type": "integer"},
-                "after_context": {"type": "integer"},
-            },
-            "required": ["query"],
-        },
-    },
-    "move_path": {
-        "capability": "project_write",
-        "mutates": True,
-        "actions": ["move", "rename"],
-        "description": "Move or rename a project path, or an explicit absolute path when policy allows it.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "source_path": {"type": "string"},
-                "destination_path": {"type": "string"},
-                "overwrite": {"type": "boolean"},
-            },
-            "required": ["source_path", "destination_path"],
-        },
-    },
-    "delete_path": {
-        "capability": "project_delete",
-        "mutates": True,
-        "actions": ["delete", "remove"],
-        "description": "Delete a project path, or an explicit absolute path when policy allows it.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "recursive": {"type": "boolean"},
-            },
-            "required": ["path"],
-        },
-    },
-    "project_tree": {
-        "capability": "project_tree",
-        "mutates": False,
-        "actions": ["list", "read"],
-        "description": "Render a bounded tree for the project or a specific allowed directory path.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "max_depth": {"type": "integer"},
-                "max_entries": {"type": "integer"},
-            },
-            "required": [],
-        },
-    },
+
+def _specs(rows: dict[str, tuple]) -> dict[str, dict[str, Any]]:
+    specs = {}
+    for name, (capability, mutates, actions, description, properties, required, closed) in rows.items():
+        parameters = {"type": "object", "properties": properties}
+        if required is not None:
+            parameters["required"] = list(required)
+        if closed:
+            parameters["additionalProperties"] = False
+        specs[name] = dict(capability=capability, mutates=mutates, actions=list(actions), description=description, parameters=parameters)
+    return specs
+
+
+TOOL_SPEC_ROWS = {  # fmt: skip
+    "create_directory": ("project_write", True, ("create",), "Create a directory in the project, or at an explicit absolute path when policy allows it.", {"path": {"type": "string"}}, ("path",), False),
+    "create_file": ("project_write", True, ("create", "write", "save"), "Create or overwrite a file in the project, or at an explicit absolute path when policy allows it.", {"filepath": {"type": "string"}, "content": {"type": "string"}}, ("filepath", "content"), False),
+    "edit_file": (
+        "project_edit", True, ("edit", "update", "write"),
+        "Edit an existing project file, or an explicit absolute file when policy allows it. Supports exactly one mode per call: full content replace, localized old_string/new_string, or regex replacement. Optional line-range and anchor selectors can scope non-content edits.",
+        {"filepath": {"type": "string"}, "content": {"type": "string"}, "old_string": {"type": "string"}, "new_string": {"type": "string"}, "replace_all": {"type": "boolean"}, "regex_pattern": {"type": "string"}, "regex_replacement": {"type": "string"}, "regex_flags": {"type": "string"}, "regex_replace_all": {"type": "boolean"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}, "before_anchor": {"type": "string"}, "after_anchor": {"type": "string"}},
+        ("filepath",), True,
+    ),
+    "read_file": (
+        "project_read", False, ("read",),
+        "Read a project file, or an explicit absolute file when policy allows it. Optional line-range and anchor selectors can return a specific section.",
+        {"filepath": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}, "before_anchor": {"type": "string"}, "after_anchor": {"type": "string"}, "include_line_numbers": {"type": "boolean"}},
+        ("filepath",), False,
+    ),
+    "read_files": ("project_read", False, ("read",), "Read multiple project or explicit absolute files with per-file truncation metadata.", {"paths": {"type": "array", "items": {"type": "string"}}, "max_chars_per_file": {"type": "integer"}}, ("paths",), False),
+    "list_files": ("project_read", False, ("list", "read"), "List one directory level when the exact directory is already known. Use find_files to locate unknown files.", {"path": {"type": "string"}}, (), False),
+    "find_files": (
+        "project_read", False, ("list", "read", "check"),
+        "Find project files by exact name, path fragment, or glob without walking directories one level at a time.",
+        {"path": {"type": "string"}, "name": {"type": "string"}, "glob": {"type": "string"}, "include_dirs": {"type": "boolean"}, "case_sensitive": {"type": "boolean"}, "max_results": {"type": "integer"}},
+        (), False,
+    ),
+    "search_code": (
+        "project_read", False, ("read", "check"),
+        "Search the project codebase with ripgrep when available. Optional context lines can be returned per match.",
+        {"query": {"type": "string"}, "path": {"type": "string"}, "glob": {"type": "string"}, "max_results": {"type": "integer"}, "case_sensitive": {"type": "boolean"}, "fixed_strings": {"type": "boolean"}, "before_context": {"type": "integer"}, "after_context": {"type": "integer"}},
+        ("query",), False,
+    ),
+    "move_path": ("project_write", True, ("move", "rename"), "Move or rename a project path, or an explicit absolute path when policy allows it.", {"source_path": {"type": "string"}, "destination_path": {"type": "string"}, "overwrite": {"type": "boolean"}}, ("source_path", "destination_path"), False),
+    "delete_path": ("project_delete", True, ("delete", "remove"), "Delete a project path, or an explicit absolute path when policy allows it.", {"path": {"type": "string"}, "recursive": {"type": "boolean"}}, ("path",), False),
+    "project_tree": ("project_tree", False, ("list", "read"), "Render a bounded tree for the project or a specific allowed directory path.", {"path": {"type": "string"}, "max_depth": {"type": "integer"}, "max_entries": {"type": "integer"}}, (), False),
 }
+TOOL_SPECS = _specs(TOOL_SPEC_ROWS)
 
 
 def _line_count(text: str) -> int:

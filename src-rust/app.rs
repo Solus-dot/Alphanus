@@ -35,6 +35,7 @@ use syntect::util::LinesWithEndings;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::backend::Backend;
+use crate::input;
 use crate::protocol::{BackendEvent, EventFrame, Request};
 use crate::theme::Theme;
 use crate::tool_preview::{self, ToolPreview};
@@ -82,10 +83,7 @@ impl TurnView {
             activity,
             state: field(value, "assistant_state"),
             label: field(value, "label"),
-            branch_root: value
-                .get("branch_root")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
+            branch_root: flag(value, "branch_root"),
             parent: field(value, "parent"),
             local: false,
         }
@@ -135,21 +133,12 @@ impl ActivityItem {
                 id: field(value, "id"),
                 stream_id: field(value, "stream_id"),
                 name: field(value, "name"),
-                completed: value
-                    .get("completed")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                failed: value
-                    .get("failed")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
+                completed: flag(value, "completed"),
+                failed: flag(value, "failed"),
                 filepath: field(value, "filepath"),
                 preview: field(value, "preview"),
                 language: field(value, "language"),
-                preview_truncated: value
-                    .get("preview_truncated")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
+                preview_truncated: flag(value, "preview_truncated"),
             })),
             _ => None,
         }
@@ -418,18 +407,8 @@ impl App {
             "runtime.ready" => {
                 self.connected = true;
                 self.status = "Ready".into();
-                self.command_catalog = frame
-                    .data
-                    .get("commands")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                self.shortcut_catalog = frame
-                    .data
-                    .get("shortcuts")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
+                self.command_catalog = values(&frame.data, "commands");
+                self.shortcut_catalog = values(&frame.data, "shortcuts");
                 if let Some(snapshot) = frame.data.get("snapshot") {
                     self.apply_snapshot(snapshot);
                 }
@@ -577,12 +556,7 @@ impl App {
             }
             "turn.cancellation_acknowledged" => self.status = "Stopping current turn…".into(),
             "session.list" | "session.search" => {
-                let items = frame
-                    .data
-                    .get("items")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
+                let items = values(&frame.data, "items");
                 let query = match &self.popup {
                     Some(Popup::Sessions { query, .. }) => query.clone(),
                     _ => String::new(),
@@ -594,12 +568,7 @@ impl App {
                 });
             }
             "attachments.changed" => {
-                self.pending_attachments = frame
-                    .data
-                    .get("items")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
+                self.pending_attachments = values(&frame.data, "items");
             }
             "status.changed" => {
                 self.model_state = field(&frame.data, "state");
@@ -622,12 +591,7 @@ impl App {
                 self.popup = Some(Popup::Config { value, cursor });
             }
             "theme.list" => {
-                self.themes = frame
-                    .data
-                    .get("items")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
+                self.themes = values(&frame.data, "items");
                 if let Some(active) = frame.data.get("active") {
                     self.theme = Theme::from_value(active);
                 }
@@ -639,12 +603,7 @@ impl App {
                 self.popup = None;
             }
             "palette.items" => {
-                self.command_catalog = frame
-                    .data
-                    .get("items")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
+                self.command_catalog = values(&frame.data, "items");
             }
             "skill.changed" => self.send("palette.get", json!({})),
             "command.result" => self.apply_command_result(&frame.data),
@@ -774,11 +733,7 @@ impl App {
     }
 
     fn apply_command_result(&mut self, value: &Value) {
-        let lines = value
-            .get("lines")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let lines = values(value, "lines");
         let mut message = lines
             .iter()
             .filter_map(Value::as_str)
@@ -1151,48 +1106,11 @@ impl App {
     }
 
     fn edit_input(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Char(character) => {
-                self.input.insert(self.cursor, character);
-                self.cursor += character.len_utf8();
-            }
-            KeyCode::Backspace if self.cursor > 0 => {
-                let previous = self.input[..self.cursor]
-                    .char_indices()
-                    .next_back()
-                    .map(|(index, _)| index)
-                    .unwrap_or(0);
-                self.input.drain(previous..self.cursor);
-                self.cursor = previous;
-            }
-            KeyCode::Delete if self.cursor < self.input.len() => {
-                let next = self.input[self.cursor..]
-                    .char_indices()
-                    .nth(1)
-                    .map(|(index, _)| self.cursor + index)
-                    .unwrap_or(self.input.len());
-                self.input.drain(self.cursor..next);
-            }
-            KeyCode::Left => {
-                self.cursor = self.input[..self.cursor]
-                    .char_indices()
-                    .next_back()
-                    .map(|(index, _)| index)
-                    .unwrap_or(0)
-            }
-            KeyCode::Right => {
-                self.cursor = self.input[self.cursor..]
-                    .char_indices()
-                    .nth(1)
-                    .map(|(index, _)| self.cursor + index)
-                    .unwrap_or(self.input.len())
-            }
-            KeyCode::Home => self.cursor = 0,
-            KeyCode::End => self.cursor = self.input.len(),
-            KeyCode::Backspace if self.input.is_empty() => {
-                self.send("attachment.remove", json!({"index":"last"}));
-            }
-            _ => {}
+        if !input::edit(&mut self.input, &mut self.cursor, key, false)
+            && key.code == KeyCode::Backspace
+            && self.input.is_empty()
+        {
+            self.send("attachment.remove", json!({"index":"last"}));
         }
     }
 
@@ -1342,38 +1260,9 @@ impl App {
                 KeyCode::Char('y') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     clipboard = Some(value.clone())
                 }
-                KeyCode::Char(character) => {
-                    value.insert(*cursor, character);
-                    *cursor += character.len_utf8();
+                _ => {
+                    input::edit(value, cursor, key, true);
                 }
-                KeyCode::Enter => {
-                    value.insert(*cursor, '\n');
-                    *cursor += 1;
-                }
-                KeyCode::Backspace if *cursor > 0 => {
-                    let previous = value[..*cursor]
-                        .char_indices()
-                        .next_back()
-                        .map(|(index, _)| index)
-                        .unwrap_or(0);
-                    value.drain(previous..*cursor);
-                    *cursor = previous;
-                }
-                KeyCode::Left => {
-                    *cursor = value[..*cursor]
-                        .char_indices()
-                        .next_back()
-                        .map(|(index, _)| index)
-                        .unwrap_or(0)
-                }
-                KeyCode::Right => {
-                    *cursor = value[*cursor..]
-                        .char_indices()
-                        .nth(1)
-                        .map(|(index, _)| *cursor + index)
-                        .unwrap_or(value.len())
-                }
-                _ => {}
             },
             Some(Popup::Code { content }) => {
                 if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('c')) {
@@ -2551,30 +2440,20 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         ]
     } else {
         match app.focus {
-            Focus::Input if area.width < 110 => vec![
-                Span::styled("Esc", Style::default().fg(app.theme.secondary)),
-                Span::styled(" clear    ", Style::default().fg(app.theme.muted)),
-            ],
-            Focus::Input => vec![
-                Span::styled("Esc", Style::default().fg(app.theme.secondary)),
-                Span::styled(" clear    ", Style::default().fg(app.theme.muted)),
-                Span::styled("Tab", Style::default().fg(app.theme.secondary)),
-                Span::styled(" panel", Style::default().fg(app.theme.muted)),
-            ],
-            Focus::Transcript => vec![
-                Span::styled("PgUp/PgDn", Style::default().fg(app.theme.secondary)),
-                Span::styled(" scroll    ", Style::default().fg(app.theme.muted)),
-                Span::styled("Tab", Style::default().fg(app.theme.secondary)),
-                Span::styled(" panel", Style::default().fg(app.theme.muted)),
-            ],
-            Focus::Tree => vec![
-                Span::styled("↑↓", Style::default().fg(app.theme.secondary)),
-                Span::styled(" navigate    ", Style::default().fg(app.theme.muted)),
-                Span::styled("Enter", Style::default().fg(app.theme.secondary)),
-                Span::styled(" open    ", Style::default().fg(app.theme.muted)),
-                Span::styled("[ ]", Style::default().fg(app.theme.secondary)),
-                Span::styled(" siblings", Style::default().fg(app.theme.muted)),
-            ],
+            Focus::Input if area.width < 110 => key_hints(&app.theme, &[("Esc", " clear    ")]),
+            Focus::Input => key_hints(&app.theme, &[("Esc", " clear    "), ("Tab", " panel")]),
+            Focus::Transcript => key_hints(
+                &app.theme,
+                &[("PgUp/PgDn", " scroll    "), ("Tab", " panel")],
+            ),
+            Focus::Tree => key_hints(
+                &app.theme,
+                &[
+                    ("↑↓", " navigate    "),
+                    ("Enter", " open    "),
+                    ("[ ]", " siblings"),
+                ],
+            ),
         }
     };
     if notice.is_none() && !matches!(app.status.as_str(), "" | "Ready") && !app.streaming {
@@ -2644,6 +2523,18 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         .style(Style::default().bg(app.theme.panel)),
         bottom[1],
     );
+}
+
+fn key_hints(theme: &Theme, items: &[(&str, &str)]) -> Vec<Span<'static>> {
+    items
+        .iter()
+        .flat_map(|(key, action)| {
+            [
+                Span::styled((*key).to_owned(), Style::default().fg(theme.secondary)),
+                Span::styled((*action).to_owned(), Style::default().fg(theme.muted)),
+            ]
+        })
+        .collect()
 }
 
 fn short_endpoint(endpoint: &str) -> String {
@@ -3303,6 +3194,18 @@ fn field(value: &Value, key: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned()
+}
+
+fn values(value: &Value, key: &str) -> Vec<Value> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn flag(value: &Value, key: &str) -> bool {
+    value.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
 
 fn ellipsis(value: &str, max: usize) -> String {

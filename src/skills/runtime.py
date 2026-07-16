@@ -253,13 +253,35 @@ class SkillRuntime:
             if not isinstance(node, ast.Assign):
                 continue
             for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == "TOOL_SPECS":
+                if isinstance(target, ast.Name) and target.id in {"TOOL_SPECS", "TOOL_SPEC_ROWS"}:
                     try:
                         value = ast.literal_eval(node.value)
                     except Exception as exc:
-                        logging.debug("Failed to evaluate TOOL_SPECS literal at %s: %s", path, exc)
-                        return None
-                    return value if isinstance(value, dict) else None
+                        if target.id == "TOOL_SPECS":
+                            logging.debug("Failed to evaluate TOOL_SPECS literal at %s: %s", path, exc)
+                        continue
+                    if target.id == "TOOL_SPECS":
+                        return value if isinstance(value, dict) else None
+                    if isinstance(value, dict):
+                        specs: dict[str, Any] = {}
+                        for name, row in value.items():
+                            if not isinstance(row, tuple) or len(row) not in {6, 7}:
+                                return None
+                            capability, mutates, actions, description, properties, required, *options = row
+                            parameters = {"type": "object", "properties": properties}
+                            include_required = bool(required) if not options else required is not None
+                            if include_required:
+                                parameters["required"] = list(required)
+                            if not options or options[0]:
+                                parameters["additionalProperties"] = False
+                            specs[str(name)] = {
+                                "capability": capability,
+                                "mutates": mutates,
+                                "actions": list(actions),
+                                "description": description,
+                                "parameters": parameters,
+                            }
+                        return specs
         return None
 
     @staticmethod

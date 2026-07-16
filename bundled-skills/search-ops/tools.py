@@ -19,83 +19,37 @@ from core.search_providers import DEFAULT_TAVILY_API_KEY_ENV, SEARCH_PROVIDER_SE
 from core.streaming import should_retry
 from skills.runtime import ToolExecutionEnv
 
-TOOL_SPECS = {
-    "web_search": {
-        "capability": "web_search",
-        "mutates": False,
-        "actions": ["read", "check"],
-        "description": "Search the public web and return structured results with titles, URLs, snippets, and source metadata.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "limit": {"type": "integer"},
-            },
-            "required": ["query"],
-        },
-    },
-    "fetch_url": {
-        "capability": "web_fetch",
-        "mutates": False,
-        "actions": ["read"],
-        "description": "Fetch a URL and extract readable text content plus source metadata.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "url": {"type": "string"},
-                "max_chars": {"type": "integer"},
-            },
-            "required": ["url"],
-        },
-    },
-    "retrieve_knowledge": {
-        "capability": "knowledge_retrieve",
-        "mutates": False,
-        "actions": ["read", "check"],
-        "description": "Search the local SQLite retrieval index for web, memory, project, and tool outcome records.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "top_k": {"type": "integer"},
-                "sources": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["query"],
-        },
-    },
-    "index_project": {
-        "capability": "project_index",
-        "mutates": True,
-        "actions": ["update"],
-        "description": "Index explicitly selected project files into the local retrieval store.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "paths": {"type": "array", "items": {"type": "string"}},
-                "max_chars_per_file": {"type": "integer"},
-            },
-            "required": ["paths"],
-        },
-    },
-    "retrieval_stats": {
-        "capability": "retrieval_stats",
-        "mutates": False,
-        "actions": ["check", "read"],
-        "description": "Return local retrieval database statistics and embedding availability.",
-        "parameters": {"type": "object", "properties": {}, "required": []},
-    },
-    "forget_retrieval_record": {
-        "capability": "retrieval_forget",
-        "mutates": True,
-        "actions": ["delete", "remove"],
-        "description": "Delete a retrieval record by id.",
-        "parameters": {
-            "type": "object",
-            "properties": {"record_id": {"type": "integer"}},
-            "required": ["record_id"],
-        },
-    },
+
+def _specs(rows: dict[str, tuple]) -> dict[str, dict[str, Any]]:
+    specs = {}
+    for name, (capability, mutates, actions, description, properties, required, closed) in rows.items():
+        parameters = {"type": "object", "properties": properties, "required": list(required)}
+        if closed:
+            parameters["additionalProperties"] = False
+        specs[name] = dict(
+            capability=capability,
+            mutates=mutates,
+            actions=list(actions),
+            description=description,
+            parameters=parameters,
+        )
+    return specs
+
+
+TOOL_SPEC_ROWS = {  # fmt: skip
+    "web_search": ("web_search", False, ("read", "check"), "Search the public web and return structured results with titles, URLs, snippets, and source metadata.", {"query": {"type": "string"}, "limit": {"type": "integer"}}, ("query",), False),
+    "fetch_url": ("web_fetch", False, ("read",), "Fetch a URL and extract readable text content plus source metadata.", {"url": {"type": "string"}, "max_chars": {"type": "integer"}}, ("url",), False),
+    "retrieve_knowledge": (
+        "knowledge_retrieve", False, ("read", "check"),
+        "Search the local SQLite retrieval index for web, memory, project, and tool outcome records.",
+        {"query": {"type": "string"}, "top_k": {"type": "integer"}, "sources": {"type": "array", "items": {"type": "string"}}},
+        ("query",), False,
+    ),
+    "index_project": ("project_index", True, ("update",), "Index explicitly selected project files into the local retrieval store.", {"paths": {"type": "array", "items": {"type": "string"}}, "max_chars_per_file": {"type": "integer"}}, ("paths",), False),
+    "retrieval_stats": ("retrieval_stats", False, ("check", "read"), "Return local retrieval database statistics and embedding availability.", {}, (), False),
+    "forget_retrieval_record": ("retrieval_forget", True, ("delete", "remove"), "Delete a retrieval record by id.", {"record_id": {"type": "integer"}}, ("record_id",), False),
 }
+TOOL_SPECS = _specs(TOOL_SPEC_ROWS)
 
 _USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 _BLOCK_TAG_RE = re.compile(r"</?(?:p|div|section|article|li|ul|ol|h[1-6]|br|tr|td|th|blockquote)[^>]*>", re.IGNORECASE)

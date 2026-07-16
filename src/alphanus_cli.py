@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import importlib.machinery
 import importlib.util
 import json
 import os
@@ -275,9 +276,7 @@ def resolve_project_root(config: dict[str, Any], *, override: str = "", cwd: Pat
     return start
 
 
-def _build_agent_runtime(
-    app_paths: Any, config: dict[str, Any], *, debug: bool
-) -> tuple[Any, Any, Any, Any]:
+def _build_agent_runtime(app_paths: Any, config: dict[str, Any], *, debug: bool) -> tuple[Any, Any, Any, Any]:
     from agent.core import Agent
     from core.memory import LexicalMemory
     from core.project import ProjectRuntime
@@ -315,6 +314,16 @@ def _build_agent_runtime(
     )
     agent = Agent(config=config, skill_runtime=runtime, debug=debug)
     return project, memory, runtime, agent
+
+
+def _close_memory(memory: Any) -> None:
+    if memory is None:
+        return
+    try:
+        memory.flush()
+        memory.close()
+    except Exception:
+        pass
 
 
 def _prompt_with_default(label: str, default: str, *, hint: str = "", theme: _CliTheme | None = None) -> str:
@@ -941,17 +950,11 @@ def _run_tui(args: Any) -> int:
     try:
         import _alphanus_tui
     except ImportError as exc:
-        _alphanus_tui = None
-        for candidate in sorted(Path(__file__).resolve().parent.glob("_alphanus_tui*.so")):
-            spec = importlib.util.spec_from_file_location("_alphanus_tui", candidate)
-            if spec is None or spec.loader is None:
-                continue
-            module = importlib.util.module_from_spec(spec)
-            sys.modules["_alphanus_tui"] = module
-            spec.loader.exec_module(module)
-            _alphanus_tui = module
-            break
-        if _alphanus_tui is None:
+        spec = importlib.machinery.PathFinder.find_spec("_alphanus_tui", [str(Path(__file__).resolve().parent)])
+        if spec is not None and spec.loader is not None:
+            _alphanus_tui = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(_alphanus_tui)
+        else:
             print(
                 "Ratatui frontend is unavailable for this installation. "
                 "Install a supported Alphanus wheel or rebuild from source with Rust/Cargo.",
@@ -996,14 +999,7 @@ def _run_runtime(args: Any) -> int:
         print(f"runtime startup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return EXIT_INTERNAL
     finally:
-        if memory is not None:
-            try:
-                memory.flush()
-                close = getattr(memory, "close", None)
-                if callable(close):
-                    close()
-            except Exception:
-                pass
+        _close_memory(memory)
 
 
 def _run_exec(args: Any) -> int:
@@ -1078,13 +1074,7 @@ def _run_exec(args: Any) -> int:
         emitter.emit("run.completed", status="error")
         return EXIT_INTERNAL
     finally:
-        if memory is not None:
-            try:
-                memory.flush()
-                if hasattr(memory, "close"):
-                    memory.close()
-            except Exception:
-                pass
+        _close_memory(memory)
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
 
