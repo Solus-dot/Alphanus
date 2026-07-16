@@ -36,15 +36,15 @@ _AUTO_MEMORY_PATTERNS = (
     re.compile(r"\b(?:this|the)\s+project\s+(?:uses|is|runs on|depends on)\s+([^.\n]{3,180})", re.IGNORECASE),
 )
 _AUTO_MEMORY_SECRET_RE = re.compile(r"\b(?:password|secret|token|api[_ -]?key|credential|private key)\b", re.IGNORECASE)
-_TOOL_OUTCOME_SKIP = {
-    "web_search",
-    "fetch_url",
-    "retrieve_knowledge",
-    "retrieval_stats",
-    "forget_retrieval_record",
-    "recall_memory",
-    "list_memories",
-}
+_TOOL_OUTCOME_SKIP = frozenset(
+    "web_search fetch_url retrieve_knowledge retrieval_stats forget_retrieval_record recall_memory list_memories".split()
+)
+_WRITE_HISTORY_FIELDS = frozenset(
+    "filepath basename created edited changed write_verified sha256 bytes_written chars_written bytes_before bytes_after line_count "
+    "line_count_before line_count_after changed_lines edit_mode replacements_applied section_scoped resolved_start_line resolved_end_line "
+    "total_line_count_before total_line_count_after content_preview content_preview_truncated preview_chars preview_omitted_chars diff "
+    "diff_truncated diff_omitted_chars".split()
+)
 GENERIC_HISTORY_STRING_CHARS = 12000
 MEMORY_TEXT_HISTORY_CHARS = 4000
 MEMORY_METADATA_HISTORY_CHARS = 1000
@@ -418,38 +418,7 @@ class TurnOrchestrator:
         out = self._compact_result_envelope(result, compact_data=False)
         data = out.get("data")
         if isinstance(data, dict):
-            allowed = {
-                "filepath",
-                "basename",
-                "created",
-                "edited",
-                "changed",
-                "write_verified",
-                "sha256",
-                "bytes_written",
-                "chars_written",
-                "bytes_before",
-                "bytes_after",
-                "line_count",
-                "line_count_before",
-                "line_count_after",
-                "changed_lines",
-                "edit_mode",
-                "replacements_applied",
-                "section_scoped",
-                "resolved_start_line",
-                "resolved_end_line",
-                "total_line_count_before",
-                "total_line_count_after",
-                "content_preview",
-                "content_preview_truncated",
-                "preview_chars",
-                "preview_omitted_chars",
-                "diff",
-                "diff_truncated",
-                "diff_omitted_chars",
-            }
-            trimmed = {key: value for key, value in data.items() if key in allowed}
+            trimmed = {key: value for key, value in data.items() if key in _WRITE_HISTORY_FIELDS}
             self._compact_text_field(trimmed, "content_preview", 1200, "content_preview")
             self._compact_text_field(trimmed, "diff", 12000, "diff")
             out["data"] = cast(JSONValue, trimmed)
@@ -692,7 +661,11 @@ class TurnOrchestrator:
     def coerce_project_action_failure(self, state: TurnState, result: AgentTurnResult, *, stop_event, pass_id: str) -> AgentTurnResult:
         if self._is_plan_mode(state):
             return result
-        if result.status != "done" or not state.classification.requires_project_action or self.evidence_guard.project_mutation_count(state) > 0:
+        if (
+            result.status != "done"
+            or not state.classification.requires_project_action
+            or self.evidence_guard.project_mutation_count(state) > 0
+        ):
             return result
         outcome = self.project_action_outcome(state, result.content, stop_event=stop_event, pass_id=pass_id)
         if outcome in {"completed_with_evidence", "declined_or_blocked", "needs_clarification"}:

@@ -233,47 +233,31 @@ class TurnClassifier:
     @classmethod
     def _draft_requests_clarification(cls, assistant_reply: str) -> bool:
         lowered = cls._normalized_text(assistant_reply)
-        if not lowered:
-            return False
-        if "?" in assistant_reply:
-            return True
-        return bool(_DRAFT_CLARIFICATION_RE.search(lowered))
+        return bool(lowered and ("?" in assistant_reply or _DRAFT_CLARIFICATION_RE.search(lowered)))
 
     @classmethod
     def _draft_defers_project_action_to_user(cls, assistant_reply: str) -> bool:
         lowered = cls._normalized_text(assistant_reply)
-        if not lowered:
-            return False
-        if "yourself" in lowered or "manually" in lowered:
-            return True
-        return bool(_DRAFT_DEFER_RE.search(lowered))
+        return bool(lowered and ("yourself" in lowered or "manually" in lowered or _DRAFT_DEFER_RE.search(lowered)))
 
     @classmethod
     def _draft_claims_project_completion_without_evidence(cls, assistant_reply: str) -> bool:
         lowered = cls._normalized_text(assistant_reply)
-        if not lowered:
-            return False
-        if _DRAFT_COMPLETION_RE.search(lowered):
-            return True
-        return bool(_DRAFT_PROJECT_DONE_RE.search(lowered))
+        return bool(lowered and (_DRAFT_COMPLETION_RE.search(lowered) or _DRAFT_PROJECT_DONE_RE.search(lowered)))
 
     @classmethod
     def _draft_reports_supported_limitation(cls, assistant_reply: str) -> bool:
         lowered = cls._normalized_text(assistant_reply)
-        if not lowered:
-            return False
-        if "no project tool actually ran" in lowered:
-            return True
-        return bool(_DRAFT_LIMITATION_RE.search(lowered))
+        return bool(lowered and ("no project tool actually ran" in lowered or _DRAFT_LIMITATION_RE.search(lowered)))
+
+    @staticmethod
+    def _recent_tool_rows(evidence: dict[str, JSONValue]) -> list[dict[str, JSONValue]]:
+        rows = evidence.get("recent_tools")
+        return [item for item in rows if isinstance(item, dict)] if isinstance(rows, list) else []
 
     @staticmethod
     def _evidence_shows_blocked_or_unavailable_tool(evidence: dict[str, JSONValue]) -> bool:
-        recent_tools = evidence.get("recent_tools")
-        if not isinstance(recent_tools, list):
-            return False
-        for item in recent_tools:
-            if not isinstance(item, dict):
-                continue
+        for item in TurnClassifier._recent_tool_rows(evidence):
             if bool(item.get("policy_blocked")):
                 return True
             error_code = str(item.get("error_code", "")).strip().upper()
@@ -324,14 +308,12 @@ class TurnClassifier:
                 name = cls._canonical_evidence_tool_name(item)
                 if name:
                     names.add(name)
-        recent_tools = evidence.get("recent_tools")
-        if isinstance(recent_tools, list):
-            for item in recent_tools:
-                if not isinstance(item, dict) or not bool(item.get("ok")) or bool(item.get("policy_blocked")):
-                    continue
-                name = cls._canonical_evidence_tool_name(item.get("name"))
-                if name:
-                    names.add(name)
+        for item in cls._recent_tool_rows(evidence):
+            if not bool(item.get("ok")) or bool(item.get("policy_blocked")):
+                continue
+            name = cls._canonical_evidence_tool_name(item.get("name"))
+            if name:
+                names.add(name)
         names.discard("skill_view")
         return names
 
@@ -339,15 +321,10 @@ class TurnClassifier:
     def _evidence_has_successful_non_mutating_tool(evidence: dict[str, JSONValue]) -> bool:
         if bool(evidence.get("has_successful_non_mutating_tool")):
             return True
-        recent_tools = evidence.get("recent_tools")
-        if not isinstance(recent_tools, list):
-            return False
-        for item in recent_tools:
-            if not isinstance(item, dict):
-                continue
-            if bool(item.get("ok")) and not bool(item.get("policy_blocked")) and not bool(item.get("mutating")):
-                return True
-        return False
+        return any(
+            bool(item.get("ok")) and not bool(item.get("policy_blocked")) and not bool(item.get("mutating"))
+            for item in TurnClassifier._recent_tool_rows(evidence)
+        )
 
     @staticmethod
     def _successful_action_labels(evidence: dict[str, JSONValue]) -> set[str]:
@@ -355,16 +332,12 @@ class TurnClassifier:
         raw_labels = evidence.get("successful_action_labels")
         if isinstance(raw_labels, list):
             labels.update(str(item).strip().lower() for item in raw_labels if str(item).strip())
-        recent_tools = evidence.get("recent_tools")
-        if isinstance(recent_tools, list):
-            for item in recent_tools:
-                if not isinstance(item, dict):
-                    continue
-                if not bool(item.get("ok")) or bool(item.get("policy_blocked")):
-                    continue
-                actions = item.get("actions")
-                if isinstance(actions, list):
-                    labels.update(str(action).strip().lower() for action in actions if str(action).strip())
+        for item in TurnClassifier._recent_tool_rows(evidence):
+            if not bool(item.get("ok")) or bool(item.get("policy_blocked")):
+                continue
+            actions = item.get("actions")
+            if isinstance(actions, list):
+                labels.update(str(action).strip().lower() for action in actions if str(action).strip())
         return labels
 
     @classmethod
@@ -428,6 +401,30 @@ class TurnClassifier:
             return True
         return False
 
+    def _structured_classification(
+        self,
+        prompt: str,
+        user_lines: list[str],
+        *,
+        max_tokens: int,
+        pass_id: str,
+        failure_event: str,
+        stop_event: Any,
+    ) -> dict[str, JSONValue]:
+        payload = self.llm_client.build_payload(
+            [{"role": "system", "content": prompt}, {"role": "user", "content": "\n\n".join(user_lines)}],
+            thinking=False,
+            tools=None,
+            max_tokens_override=max_tokens,
+            model_override=self.llm_client.classifier_model if not self.llm_client.classifier_use_primary_model else "",
+        )
+        try:
+            result = self.llm_client.call_with_retry(payload, stop_event, None, pass_id=pass_id)
+        except Exception as exc:
+            self.telemetry.emit(failure_event, error=str(exc))
+            return {}
+        return self._parse_json_object(result.content) if result is not None else {}
+
     def classify_project_action_outcome(
         self,
         *,
@@ -467,21 +464,14 @@ class TurnClassifier:
         ]
         if recent_routing_hint:
             user_lines.insert(1, f"Immediate prior exchange:\n{recent_routing_hint}")
-        payload = self.llm_client.build_payload(
-            [{"role": "system", "content": prompt}, {"role": "user", "content": "\n\n".join(user_lines)}],
-            thinking=False,
-            tools=None,
-            max_tokens_override=min(self.llm_client.max_classifier_tokens, 120),
-            model_override=self.llm_client.classifier_model if not self.llm_client.classifier_use_primary_model else "",
+        parsed = self._structured_classification(
+            prompt,
+            user_lines,
+            max_tokens=min(self.llm_client.max_classifier_tokens, 120),
+            pass_id=f"{pass_id}_project_action_outcome",
+            failure_event="project_action_outcome_classification_failed",
+            stop_event=stop_event,
         )
-        try:
-            result = self.llm_client.call_with_retry(payload, stop_event, None, pass_id=f"{pass_id}_project_action_outcome")
-        except Exception as exc:
-            self.telemetry.emit("project_action_outcome_classification_failed", error=str(exc))
-            return rules_outcome
-        if result is None:
-            return rules_outcome
-        parsed = self._parse_json_object(result.content)
         outcome = str(parsed.get("outcome", "")).strip().lower()
         if outcome in {"completed_with_evidence", "declined_or_blocked", "needs_clarification", "not_completed"}:
             if (
@@ -567,21 +557,14 @@ class TurnClassifier:
         user_lines = [f"User request:\n{ctx.user_input}"]
         if ctx.recent_routing_hint:
             user_lines.append(f"Immediate prior exchange:\n{ctx.recent_routing_hint}")
-        payload = self.llm_client.build_payload(
-            [{"role": "system", "content": prompt}, {"role": "user", "content": "\n\n".join(user_lines)}],
-            thinking=False,
-            tools=None,
-            max_tokens_override=self.llm_client.max_classifier_tokens,
-            model_override=self.llm_client.classifier_model if not self.llm_client.classifier_use_primary_model else "",
+        parsed = self._structured_classification(
+            prompt,
+            user_lines,
+            max_tokens=self.llm_client.max_classifier_tokens,
+            pass_id="turn_classify",
+            failure_event="turn_classification_failed",
+            stop_event=stop_event,
         )
-        try:
-            result = self.llm_client.call_with_retry(payload, stop_event, None, pass_id="turn_classify")
-        except Exception as exc:
-            self.telemetry.emit("turn_classification_failed", error=str(exc))
-            return seed
-        if result is None:
-            return seed
-        parsed = self._parse_json_object(result.content)
         if not parsed:
             return seed
         followup_kind = str(parsed.get("followup_kind", seed.followup_kind)).strip().lower() or seed.followup_kind

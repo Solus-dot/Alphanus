@@ -17,35 +17,15 @@ from typing import Any
 from core.project_command_policy import ProjectCommandPolicy, shell_has_boundary, unwrap_shell_command
 from core.sandbox import SandboxCommand, SandboxConfig, SandboxRunner, shell_tokens
 
-DEFAULT_BLOCKED_PATTERNS = [
-    ".alphanus",
-    ".ssh",
-    ".aws",
-    ".gnupg",
-    "id_rsa",
-    "id_ed25519",
-    ".env",
-    ".bash_history",
-    ".zsh_history",
-]
+DEFAULT_BLOCKED_PATTERNS = ".alphanus .ssh .aws .gnupg id_rsa id_ed25519 .env .bash_history .zsh_history".split()
 
 MAX_TOOL_TEXT_BYTES = 20000
 PROTECTED_STATE_TOKEN_RE = re.compile(r"(^|[^A-Za-z0-9._-])\.alphanus(?=$|[/\\\\]|[^A-Za-z0-9._-])", re.IGNORECASE)
 NESTED_SHELL_EXECUTABLES = {"sh", "bash", "zsh", "fish", "dash", "ksh", "pwsh", "powershell", "cmd"}
 SHELL_WRAPPER_EXECUTABLES = {"env", "command", "builtin", "exec", "time", "nice", "nohup", "sudo"}
-HEAVY_WALK_DIRS = {
-    ".alphanus",
-    ".git",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".tox",
-    ".venv",
-    "__pycache__",
-    "build",
-    "dist",
-    "node_modules",
-}
+HEAVY_WALK_DIRS = frozenset(".alphanus .git .mypy_cache .pytest_cache .ruff_cache .tox .venv __pycache__ build dist node_modules".split())
+RESTRICTED_SYSTEM_ROOTS = tuple(map(Path, ("/etc", "/var", "/System", "/bin", "/usr")))
+TRUSTED_RUNTIME_ROOTS = tuple(map(Path, ("/bin", "/sbin", "/usr", "/System", "/Library", "/opt", "/lib")))
 
 
 shell_has_approval_boundary = shell_has_boundary
@@ -249,7 +229,7 @@ class ProjectRuntime:
         lexical_candidate = Path(os.path.abspath(str(candidate)))
         resolved = candidate.resolve()
         explicit_external = raw.is_absolute() and not self._is_path_equal_or_descendant(lexical_candidate, self.project_root)
-        if not self._is_relative_to(resolved, self.project_root) and not explicit_external:
+        if not resolved.is_relative_to(self.project_root) and not explicit_external:
             raise PermissionError("Write path escapes project root")
         if self._is_protected_project_path(resolved):
             raise PermissionError("Writing protected internal state or project paths is not allowed")
@@ -285,7 +265,6 @@ class ProjectRuntime:
         grants. Non-existent targets are retained so approved redirections and
         creation commands can receive a grant for their nearest existing parent.
         """
-        trusted_runtime_roots = tuple(Path(root) for root in ("/bin", "/sbin", "/usr", "/System", "/Library", "/opt", "/lib"))
         external_paths: list[Path] = []
         seen: set[str] = set()
         try:
@@ -305,18 +284,17 @@ class ProjectRuntime:
             if not candidate.is_absolute():
                 continue
             resolved = candidate.resolve(strict=False)
-            if self._is_relative_to(resolved, self.project_root):
+            if resolved.is_relative_to(self.project_root):
                 continue
-            if any(self._is_relative_to(resolved, root) for root in trusted_runtime_roots):
+            if any(resolved.is_relative_to(root) for root in TRUSTED_RUNTIME_ROOTS):
                 continue
             if resolved.exists():
                 # Reuse normal read validation so protected and restricted paths
                 # do not become accessible merely because they appeared in a command.
                 resolved = self._resolve_read_path(str(resolved), extra_allowed_roots=[str(resolved)])
             else:
-                for blocked_root in (Path("/etc"), Path("/var"), Path("/System"), Path("/bin"), Path("/usr")):
-                    if self._is_relative_to(resolved, blocked_root):
-                        raise PermissionError("Shell command path is in restricted system location")
+                if any(resolved.is_relative_to(root) for root in RESTRICTED_SYSTEM_ROOTS):
+                    raise PermissionError("Shell command path is in restricted system location")
                 if self._is_protected_project_path(resolved):
                     raise PermissionError("Shell command path targets protected internal state or project paths")
             key = str(resolved)
@@ -355,11 +333,10 @@ class ProjectRuntime:
         resolved = candidate.resolve()
 
         # Block core system trees.
-        for blocked_root in (Path("/etc"), Path("/var"), Path("/System"), Path("/bin"), Path("/usr")):
-            if self._is_relative_to(resolved, blocked_root):
-                raise PermissionError("Read path is in restricted system location")
+        if any(resolved.is_relative_to(root) for root in RESTRICTED_SYSTEM_ROOTS):
+            raise PermissionError("Read path is in restricted system location")
 
-        if self._is_relative_to(resolved, self.project_root):
+        if resolved.is_relative_to(self.project_root):
             if self._is_protected_project_path(resolved):
                 raise PermissionError("Read path targets protected internal state or project paths")
             return resolved
@@ -373,7 +350,7 @@ class ProjectRuntime:
                 allowed_root = Path(os.path.expanduser(str(root_text))).resolve()
             except Exception:
                 continue
-            if self._is_relative_to(resolved, allowed_root):
+            if resolved.is_relative_to(allowed_root):
                 return resolved
         raise PermissionError("Read path escapes project root")
 
@@ -388,14 +365,6 @@ class ProjectRuntime:
         if norm.endswith(".pem") or norm.endswith(".key"):
             return True
         return False
-
-    @staticmethod
-    def _is_relative_to(path: Path, root: Path) -> bool:
-        try:
-            path.relative_to(root)
-            return True
-        except ValueError:
-            return False
 
     def read_file(self, path: str) -> str:
         target = self._resolve_read_path(path)
@@ -630,7 +599,7 @@ class ProjectRuntime:
 
     def _display_path_label(self, path: Path) -> str:
         try:
-            if self._is_relative_to(path, self.project_root):
+            if path.is_relative_to(self.project_root):
                 rel = path.relative_to(self.project_root)
                 if str(rel) == ".":
                     return f"{self.project_root.name}/"
@@ -646,7 +615,7 @@ class ProjectRuntime:
             resolved = path.resolve(strict=False)
         except OSError:
             return False
-        if self._is_relative_to(resolved, self.project_root):
+        if resolved.is_relative_to(self.project_root):
             return resolved.exists()
         lexical = Path(os.path.abspath(str(path)))
         return path.is_absolute() and not self._is_path_equal_or_descendant(lexical, self.project_root) and resolved.exists()
@@ -949,7 +918,7 @@ class ProjectRuntime:
         before_context: int,
         after_context: int,
     ) -> dict[str, Any] | None:
-        if not self._is_relative_to(target, self.project_root):
+        if not target.is_relative_to(self.project_root):
             return None
         if not target.exists() or (target.is_file() and glob and not fnmatch.fnmatch(target.name, glob)):
             return self._search_response(needle, target, glob, [], False, "rg", before_context, after_context)
