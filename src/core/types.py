@@ -12,6 +12,7 @@ from agent.types import (
     TurnPolicySnapshot,
     TurnState,
     TurnTelemetry,
+    cancelled_turn_result,
 )
 from core.message_types import ApprovalRequestFn, ChatMessage, JsonObject, UserInputRequestFn
 
@@ -31,4 +32,5 @@ __all__ = [
     "TurnState",
     "TurnTelemetry",
     "UserInputRequestFn",
+    "cancelled_turn_result",
 ]

@@ -13,7 +13,6 @@ from agent.evidence_guard import EvidenceGuard
 from agent.finalization_engine import FinalizationEngine
 from agent.llm_client import LLMClient
 from agent.policies import OutputSanitizer, PromptPolicyRenderer
-from agent.response_finalizer import ResponseFinalizer
 from agent.runtime_hooks import TurnRuntimeHooks
 from agent.telemetry import TelemetryEmitter
 from agent.tool_execution_engine import ToolExecutionEngine
@@ -28,9 +27,9 @@ from core.types import (
     JsonObject,
     ToolCall,
     TurnClassification,
-    TurnPolicySnapshot,
     TurnState,
     UserInputRequestFn,
+    cancelled_turn_result,
 )
 from skills.runtime import SkillRuntime
 from skills.skill_parser import SkillManifest
@@ -149,7 +148,6 @@ class TurnOrchestrator:
         self.tool_loop = ToolLoopEngine(self)
         self.turn_journal = TurnJournalBuilder()
         self.finalization_engine = FinalizationEngine(self)
-        self.response_finalizer = ResponseFinalizer(self)
 
     def inject_policy_retrieval_context(self, state: TurnState, on_event: Callable[[JsonObject], None] | None = None) -> None:
         retrieval_cfg = get_json_object(self.config, "retrieval")
@@ -654,8 +652,6 @@ class TurnOrchestrator:
             context_summary=context_summary,
         )
 
-    def refresh_search_tools_enabled(self, state: TurnState) -> None:
-        self.policy_engine.refresh_search_tools_enabled(state)
 
     @staticmethod
     def _message_contains_vision_content(message: ChatMessage) -> bool:
@@ -738,42 +734,27 @@ class TurnOrchestrator:
             )
         return raw
 
-    def project_materialization_count(self, state: TurnState) -> int:
-        return self.evidence_guard.project_materialization_count(state)
 
-    def project_mutation_count(self, state: TurnState) -> int:
-        return self.evidence_guard.project_mutation_count(state)
 
-    def project_readback_count(self, state: TurnState) -> int:
-        return self.evidence_guard.project_readback_count(state)
 
-    @staticmethod
-    def tool_result_paths(name: str, payload: dict[str, object]) -> list[str]:
-        return ToolExecutionEngine.tool_result_paths(name, payload)
 
-    def tool_budget_reason(self, state: TurnState, call: ToolCall) -> str:
-        return self.policy_engine.tool_budget_reason(state, call) or ""
 
     def record_tool_effects(self, state: TurnState, call: ToolCall, result: dict[str, object], *, policy_blocked: bool = False) -> None:
         self.tool_execution_engine.record_tool_effects(state, call, result, policy_blocked=policy_blocked)
         if not policy_blocked:
             self.maybe_index_tool_outcome(state, call, result)
 
-    def needs_fetch_evidence(self, state: TurnState) -> bool:
-        return self.evidence_guard.needs_fetch_evidence(state)
 
-    def project_action_evidence(self, state: TurnState) -> JsonObject:
-        return self.evidence_guard.project_action_evidence(state)
 
     def project_action_outcome(self, state: TurnState, text: str, *, stop_event, pass_id: str) -> str:
-        if self.project_mutation_count(state) > 0:
+        if self.evidence_guard.project_mutation_count(state) > 0:
             return "completed_with_evidence"
         cleaned = self.sanitizer.sanitize_final_content(text)
         return self.classifier.classify_project_action_outcome(
             current_user_input=state.ctx.user_input,
             recent_routing_hint=getattr(state.ctx, "recent_routing_hint", ""),
             assistant_reply=cleaned,
-            evidence=self.project_action_evidence(state),
+            evidence=self.evidence_guard.project_action_evidence(state),
             pass_id=pass_id,
             stop_event=stop_event,
         )
@@ -781,7 +762,7 @@ class TurnOrchestrator:
     def coerce_project_action_failure(self, state: TurnState, result: AgentTurnResult, *, stop_event, pass_id: str) -> AgentTurnResult:
         if self._is_plan_mode(state):
             return result
-        if result.status != "done" or not state.requires_project_action or self.project_mutation_count(state) > 0:
+        if result.status != "done" or not state.requires_project_action or self.evidence_guard.project_mutation_count(state) > 0:
             return result
         outcome = self.project_action_outcome(state, result.content, stop_event=stop_event, pass_id=pass_id)
         if outcome in {"completed_with_evidence", "declined_or_blocked", "needs_clarification"}:
@@ -826,20 +807,7 @@ class TurnOrchestrator:
             finalization_repair_failed=state.telemetry.finalization_repair_failed,
         )
 
-    def build_policy_snapshot(self, state: TurnState) -> TurnPolicySnapshot:
-        return self.policy_engine.build_policy_snapshot(state)
 
-    def finalize_turn(
-        self, system_content: str, state: TurnState, stop_event, on_event, pass_id: str, extra_rules: str = ""
-    ) -> AgentTurnResult:
-        return self.finalization_engine.finalize_turn(
-            system_content=system_content,
-            state=state,
-            stop_event=stop_event,
-            on_event=on_event,
-            pass_id=pass_id,
-            extra_rules=extra_rules,
-        )
 
     def prepare_turn(
         self,
@@ -1001,18 +969,13 @@ class TurnOrchestrator:
         stop_event=None,
         on_event: Callable[[JsonObject], None] | None = None,
     ) -> AgentTurnResult | tuple[str, str, Any]:
-        self.refresh_search_tools_enabled(state)
+        self.policy_engine.refresh_search_tools_enabled(state)
         state.pass_index += 1
         state.telemetry.pass_index = state.pass_index
         pass_id = f"pass_{state.pass_index}"
 
         if stop_event is not None and stop_event.is_set():
-            return AgentTurnResult(
-                status="cancelled",
-                content="",
-                reasoning=state.full_reasoning,
-                skill_exchanges=state.skill_exchanges,
-            )
+            return cancelled_turn_result(state)
 
         tools = self.skill_runtime.tools_for_turn(state.selected, ctx=state.ctx)
         if self._normalize_collaboration_mode(getattr(state, "collaboration_mode", "execute")) == "plan":
@@ -1023,7 +986,7 @@ class TurnOrchestrator:
                 and isinstance(item.get("function"), dict)
                 and self._tool_allowed_in_plan_mode(str(item["function"].get("name", "")).strip())
             ]
-        policy_snapshot = self.build_policy_snapshot(state)
+        policy_snapshot = self.policy_engine.build_policy_snapshot(state)
         system_content = self.prompt_renderer.compose_system_content(state.selected, state.ctx)
         policy_rules = self.prompt_renderer.render_policy_rules(policy_snapshot)
         if policy_rules:
@@ -1031,7 +994,7 @@ class TurnOrchestrator:
         system_messages: list[ChatMessage] = [cast(ChatMessage, {"role": "system", "content": system_content})]
         summary_status = self._maybe_summarize_history(state, system_messages, tools, stop_event)
         if summary_status in {"model", "fallback"}:
-            policy_snapshot = self.build_policy_snapshot(state)
+            policy_snapshot = self.policy_engine.build_policy_snapshot(state)
             system_content = self.prompt_renderer.compose_system_content(state.selected, state.ctx)
             policy_rules = self.prompt_renderer.render_policy_rules(policy_snapshot)
             if policy_rules:
@@ -1124,12 +1087,7 @@ class TurnOrchestrator:
                 )
 
         if stream_result is None:
-            return AgentTurnResult(
-                status="cancelled",
-                content="",
-                reasoning=state.full_reasoning,
-                skill_exchanges=state.skill_exchanges,
-            )
+            return cancelled_turn_result(state)
 
         pass_trace["completed_at"] = time.time()
         completed_at_raw = pass_trace.get("completed_at")
@@ -1142,12 +1100,7 @@ class TurnOrchestrator:
         pass_trace["first_token_latency_ms"] = getattr(stream_result, "first_token_latency_ms", None)
 
         if stream_result.finish_reason == "cancelled":
-            return AgentTurnResult(
-                status="cancelled",
-                content=stream_result.content,
-                reasoning=self.sanitizer.append_reasoning(state.full_reasoning, stream_result.reasoning),
-                skill_exchanges=state.skill_exchanges,
-            )
+            return cancelled_turn_result(state)
 
         state.full_reasoning = self.sanitizer.append_reasoning(state.full_reasoning, stream_result.reasoning)
         stream_usage = getattr(stream_result, "usage", {}) or {}
@@ -1165,47 +1118,7 @@ class TurnOrchestrator:
         )
         return pass_id, system_content, stream_result
 
-    def execute_tool_calls(
-        self,
-        *,
-        system_content: str,
-        state: TurnState,
-        pass_id: str,
-        stream_result,
-        stop_event=None,
-        on_event: Callable[[JsonObject], None] | None = None,
-        request_approval: ApprovalRequestFn | None = None,
-        request_user_input: UserInputRequestFn | None = None,
-    ) -> tuple[str, AgentTurnResult | None]:
-        return self.tool_loop.execute_tool_calls(
-            system_content=system_content,
-            state=state,
-            pass_id=pass_id,
-            stream_result=stream_result,
-            stop_event=stop_event,
-            on_event=on_event,
-            request_approval=request_approval,
-            request_user_input=request_user_input,
-        )
 
-    def finalize_response(
-        self,
-        *,
-        system_content: str,
-        state: TurnState,
-        pass_id: str,
-        stream_result,
-        stop_event=None,
-        on_event: Callable[[JsonObject], None] | None = None,
-    ) -> tuple[str, AgentTurnResult | None]:
-        return self.response_finalizer.finalize_response(
-            system_content=system_content,
-            state=state,
-            pass_id=pass_id,
-            stream_result=stream_result,
-            stop_event=stop_event,
-            on_event=on_event,
-        )
 
     def run_turn(
         self,
@@ -1247,12 +1160,7 @@ class TurnOrchestrator:
         while True:
             if self._is_stop_requested(stop_event):
                 return finish(
-                    AgentTurnResult(
-                        status="cancelled",
-                        content="",
-                        reasoning=state.full_reasoning,
-                        skill_exchanges=state.skill_exchanges,
-                    )
+                    cancelled_turn_result(state)
                 )
             model_phase = self.run_model_pass(state, thinking, stop_event=stop_event, on_event=on_event)
             if isinstance(model_phase, AgentTurnResult):
@@ -1261,7 +1169,7 @@ class TurnOrchestrator:
             pass_id, system_content, stream_result = model_phase
 
             if stream_result.finish_reason == "tool_calls":
-                action, tool_phase_result = self.execute_tool_calls(
+                action, tool_phase_result = self.tool_loop.execute_tool_calls(
                     system_content=system_content,
                     state=state,
                     pass_id=pass_id,
@@ -1279,7 +1187,7 @@ class TurnOrchestrator:
                     return finish_finalized(tool_phase_result)
                 return finish(tool_phase_result)
 
-            action, final_phase_result = self.finalize_response(
+            action, final_phase_result = self.finalization_engine.finalize_response(
                 system_content=system_content,
                 state=state,
                 pass_id=pass_id,

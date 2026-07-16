@@ -733,7 +733,7 @@ def test_orchestrator_policy_snapshot_captures_forced_flags_and_shell_exposure(m
         return_value=["shell_command", "web_search", "request_user_input"],
     )
 
-    snapshot = orchestrator.build_policy_snapshot(state)
+    snapshot = orchestrator.policy_engine.build_policy_snapshot(state)
 
     assert snapshot.search_mode is True
     assert snapshot.time_sensitive_query is True
@@ -789,7 +789,7 @@ def test_orchestrator_records_project_evidence_and_policy_blocks(tmp_path: Path)
         policy_blocked=True,
     )
 
-    evidence = orchestrator.project_action_evidence(state)
+    evidence = orchestrator.evidence_guard.project_action_evidence(state)
 
     assert state.completion.tool_counts["shell_command"] == 2
     assert evidence["has_successful_tool"] is True
@@ -825,9 +825,9 @@ def test_orchestrator_counts_run_skill_project_changes_as_mutations(tmp_path: Pa
         },
     )
 
-    evidence = orchestrator.project_action_evidence(state)
+    evidence = orchestrator.evidence_guard.project_action_evidence(state)
 
-    assert orchestrator.project_mutation_count(state) == 1
+    assert orchestrator.evidence_guard.project_mutation_count(state) == 1
     assert evidence["has_successful_mutation"] is True
     assert "run_skill" in evidence["successful_mutating_tools"]
 
@@ -1040,7 +1040,7 @@ def test_tool_loop_stalled_inspection_does_not_skip_later_edit_in_same_pass(mock
     assert [record.name for record in state.evidence[-2:]] == ["project_tree", "edit_file"]
     assert state.evidence[-2].result["error"]["code"] == "E_PROJECT_ACTION_STALLED"
     assert state.evidence[-1].result["ok"] is True
-    assert orchestrator.project_mutation_count(state) == 1
+    assert orchestrator.evidence_guard.project_mutation_count(state) == 1
 
 
 def test_project_action_outcome_accepts_successful_non_mutating_open_action(tmp_path: Path) -> None:
@@ -1369,7 +1369,7 @@ def test_orchestrator_search_budget_reason_is_explicit_for_time_sensitive_turns(
         arguments={"query": "latest status"},
     )
 
-    reason = orchestrator.tool_budget_reason(state, web_search_call)
+    reason = orchestrator.policy_engine.tool_budget_reason(state, web_search_call)
 
     assert reason is not None
     assert "search-attempt budget is exhausted" in reason
@@ -1715,7 +1715,7 @@ def test_plan_mode_blocks_mutating_tool_calls(mocker, tmp_path: Path) -> None:
         },
     )()
 
-    action, result = orchestrator.execute_tool_calls(
+    action, result = orchestrator.tool_loop.execute_tool_calls(
         system_content="system",
         state=state,
         pass_id="pass_1",
@@ -1757,7 +1757,7 @@ def test_finalize_response_skips_project_action_enforcement_in_plan_mode(tmp_pat
         },
     )()
 
-    action, result = orchestrator.finalize_response(
+    action, result = orchestrator.finalization_engine.finalize_response(
         system_content="system",
         state=state,
         pass_id="pass_1",
@@ -1807,7 +1807,7 @@ def test_finalize_response_accepts_read_only_shell_version_evidence(tmp_path: Pa
         },
     )()
 
-    action, result = orchestrator.finalize_response(
+    action, result = orchestrator.finalization_engine.finalize_response(
         system_content="system",
         state=state,
         pass_id="pass_1",
@@ -1850,7 +1850,7 @@ def test_finalize_response_preserves_shell_rejection_explanation(tmp_path: Path)
         },
     )()
 
-    action, result = orchestrator.finalize_response(
+    action, result = orchestrator.finalization_engine.finalize_response(
         system_content="system",
         state=state,
         pass_id="pass_1",

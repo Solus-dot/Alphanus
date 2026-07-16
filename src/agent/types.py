@@ -200,6 +200,15 @@ class TurnState:
         self.completion.search_has_fetch_content = bool(value)
 
 
+def cancelled_turn_result(state: TurnState) -> AgentTurnResult:
+    return AgentTurnResult(
+        status="cancelled",
+        content="",
+        reasoning=state.full_reasoning,
+        skill_exchanges=state.skill_exchanges,
+    )
+
+
 @dataclass(slots=True)
 class _ToolCallState:
     stream_id: str

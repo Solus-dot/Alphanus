@@ -8,7 +8,7 @@ from typing import cast
 
 from agent.policies import search_rule
 from core.message_types import ChatMessage, JsonObject
-from core.types import AgentTurnResult, ApprovalRequestFn, TurnState, UserInputRequestFn
+from core.types import AgentTurnResult, ApprovalRequestFn, TurnState, UserInputRequestFn, cancelled_turn_result
 
 
 class ToolLoopEngine:
@@ -34,9 +34,6 @@ class ToolLoopEngine:
     def __init__(self, orchestrator) -> None:
         self.orchestrator = orchestrator
 
-    def __getattr__(self, name: str):
-        return getattr(self.orchestrator, name)
-
     @staticmethod
     def _tool_signature(call) -> str:
         try:
@@ -48,12 +45,12 @@ class ToolLoopEngine:
     def _is_non_mutating_project_inspection(self, state: TurnState, tool_name: str) -> bool:
         if tool_name not in self.INSPECTION_LOOP_TOOLS:
             return False
-        reg = self.skill_runtime.tool_registration(tool_name)
+        reg = self.orchestrator.skill_runtime.tool_registration(tool_name)
         capability = str(getattr(reg, "capability", "") or "").strip().lower()
-        return capability in {"project_read", "project_tree"} and not self.skill_runtime.tool_is_mutating(tool_name)
+        return capability in {"project_read", "project_tree"} and not self.orchestrator.skill_runtime.tool_is_mutating(tool_name)
 
     def _requires_project_mutation(self, state: TurnState) -> bool:
-        if not state.requires_project_action or self.project_mutation_count(state) > 0:
+        if not state.requires_project_action or self.orchestrator.evidence_guard.project_mutation_count(state) > 0:
             return False
         user_text = str(getattr(state.ctx, "user_input", "") or "").lower()
         return any(term in user_text for term in self.MUTATION_INTENT_TERMS)
@@ -68,7 +65,7 @@ class ToolLoopEngine:
         message: str,
         on_event: Callable[[JsonObject], None] | None,
     ) -> None:
-        self._policy_block_tool(state=state, call=call, pass_id=pass_id, code=code, message=message, on_event=on_event)
+        self.orchestrator._policy_block_tool(state=state, call=call, pass_id=pass_id, code=code, message=message, on_event=on_event)
 
     def _maybe_block_repeated_inspection(
         self,
@@ -148,7 +145,7 @@ class ToolLoopEngine:
     def _record_loop_progress_after_result(self, state: TurnState, call, result: dict[str, object]) -> None:
         if not bool(result.get("ok")):
             return
-        if self.project_mutation_count(state) > 0:
+        if self.orchestrator.evidence_guard.project_mutation_count(state) > 0:
             state.project_target_inspected = False
             state.post_target_inspection_calls = 0
             state.project_action_stall_blocks = 0
@@ -177,15 +174,10 @@ class ToolLoopEngine:
         request_approval: ApprovalRequestFn | None = None,
         request_user_input: UserInputRequestFn | None = None,
     ) -> tuple[str, AgentTurnResult | None]:
-        if self._is_stop_requested(stop_event):
+        if self.orchestrator._is_stop_requested(stop_event):
             return (
                 "result",
-                AgentTurnResult(
-                    status="cancelled",
-                    content="",
-                    reasoning=state.full_reasoning,
-                    skill_exchanges=state.skill_exchanges,
-                ),
+                cancelled_turn_result(state),
             )
         if not stream_result.tool_calls:
             return (
@@ -208,7 +200,7 @@ class ToolLoopEngine:
                     "type": "function",
                     "function": {
                         "name": call.name,
-                        "arguments": self.safe_json_dumps(self.tool_call_args_for_history(call.arguments)),
+                        "arguments": self.orchestrator.safe_json_dumps(self.orchestrator.tool_call_args_for_history(call.arguments)),
                     },
                 }
                 for call in stream_result.tool_calls
@@ -219,9 +211,9 @@ class ToolLoopEngine:
         state.skill_exchanges.append(assistant_chat_message)
 
         force_finalize_reason = ""
-        if state.action_depth >= self.max_action_depth:
+        if state.action_depth >= self.orchestrator.max_action_depth:
             for call in stream_result.tool_calls:
-                self.emit(
+                self.orchestrator.emit(
                     on_event,
                     {"type": "tool_call", "stream_id": call.stream_id, "name": call.name, "arguments": call.arguments, "id": call.id},
                 )
@@ -230,13 +222,13 @@ class ToolLoopEngine:
                     call=call,
                     pass_id=pass_id,
                     code="E_TOOL_LOOP_BUDGET",
-                    message=f"Max skill action depth ({self.max_action_depth}) exceeded before executing {call.name}.",
+                    message=f"Max skill action depth ({self.orchestrator.max_action_depth}) exceeded before executing {call.name}.",
                     on_event=on_event,
                 )
             if state.search_mode and state.completion.search_has_success:
                 return (
                     "finalized",
-                    self.finalize_turn(
+                    self.orchestrator.finalization_engine.finalize_turn(
                         system_content,
                         state,
                         stop_event,
@@ -256,7 +248,7 @@ class ToolLoopEngine:
                     content="",
                     reasoning=state.full_reasoning,
                     skill_exchanges=state.skill_exchanges,
-                    error=f"Max skill action depth ({self.max_action_depth}) exceeded",
+                    error=f"Max skill action depth ({self.orchestrator.max_action_depth}) exceeded",
                 ),
             )
         state.action_depth += 1
@@ -269,18 +261,13 @@ class ToolLoopEngine:
                 "arguments": dict(call.arguments),
                 "started_at": time.time(),
             }
-            self._trace_add(state, "tool_calls", call_trace)
-            if self._is_stop_requested(stop_event):
+            self.orchestrator._trace_add(state, "tool_calls", call_trace)
+            if self.orchestrator._is_stop_requested(stop_event):
                 return (
                     "result",
-                    AgentTurnResult(
-                        status="cancelled",
-                        content="",
-                        reasoning=state.full_reasoning,
-                        skill_exchanges=state.skill_exchanges,
-                    ),
+                    cancelled_turn_result(state),
                 )
-            self.emit(
+            self.orchestrator.emit(
                 on_event, {"type": "tool_call", "stream_id": call.stream_id, "name": call.name, "arguments": call.arguments, "id": call.id}
             )
 
@@ -293,15 +280,10 @@ class ToolLoopEngine:
             if blocked_result is not None:
                 return "result", blocked_result
             if blocked_current_call:
-                if self._is_stop_requested(stop_event):
+                if self.orchestrator._is_stop_requested(stop_event):
                     return (
                         "result",
-                        AgentTurnResult(
-                            status="cancelled",
-                            content="",
-                            reasoning=state.full_reasoning,
-                            skill_exchanges=state.skill_exchanges,
-                        ),
+                        cancelled_turn_result(state),
                     )
                 continue
 
@@ -314,19 +296,14 @@ class ToolLoopEngine:
             if stalled_result is not None:
                 return "result", stalled_result
             if stalled_current_call:
-                if self._is_stop_requested(stop_event):
+                if self.orchestrator._is_stop_requested(stop_event):
                     return (
                         "result",
-                        AgentTurnResult(
-                            status="cancelled",
-                            content="",
-                            reasoning=state.full_reasoning,
-                            skill_exchanges=state.skill_exchanges,
-                        ),
+                        cancelled_turn_result(state),
                     )
                 continue
 
-            force_finalize_reason = self.tool_budget_reason(state, call)
+            force_finalize_reason = self.orchestrator.policy_engine.tool_budget_reason(state, call) or ""
             if force_finalize_reason:
                 if not state.search_mode:
                     return (
@@ -341,18 +318,18 @@ class ToolLoopEngine:
                     )
                 break
 
-            if self._normalize_collaboration_mode(
+            if self.orchestrator._normalize_collaboration_mode(
                 getattr(state, "collaboration_mode", "execute")
-            ) == "plan" and not self._tool_allowed_in_plan_mode(call.name):
-                self._policy_block_tool(
+            ) == "plan" and not self.orchestrator._tool_allowed_in_plan_mode(call.name):
+                self.orchestrator._policy_block_tool(
                     state=state,
                     call=call,
                     pass_id=pass_id,
                     message=(f"{call.name} is not allowed in plan mode; use non-mutating inspection tools or switch to execute mode."),
                     on_event=on_event,
                 )
-                if self._is_stop_requested(stop_event):
-                    self.emit(
+                if self.orchestrator._is_stop_requested(stop_event):
+                    self.orchestrator.emit(
                         on_event,
                         {
                             "type": "info",
@@ -361,16 +338,11 @@ class ToolLoopEngine:
                     )
                     return (
                         "result",
-                        AgentTurnResult(
-                            status="cancelled",
-                            content="",
-                            reasoning=state.full_reasoning,
-                            skill_exchanges=state.skill_exchanges,
-                        ),
+                        cancelled_turn_result(state),
                     )
                 continue
 
-            if state.prefer_local_project_tools and self.skill_runtime.tool_is_blocked_for_local_project(call.name):
+            if state.prefer_local_project_tools and self.orchestrator.skill_runtime.tool_is_blocked_for_local_project(call.name):
                 if ":" in call.name or "." in call.name:
                     message = (
                         f"{call.name} is not exposed in this turn. Load the matching skill with skill_view(name), "
@@ -378,15 +350,15 @@ class ToolLoopEngine:
                     )
                 else:
                     message = f"{call.name} is not allowed for local project file tasks; use project tools instead."
-                self._policy_block_tool(
+                self.orchestrator._policy_block_tool(
                     state=state,
                     call=call,
                     pass_id=pass_id,
                     message=message,
                     on_event=on_event,
                 )
-                if self._is_stop_requested(stop_event):
-                    self.emit(
+                if self.orchestrator._is_stop_requested(stop_event):
+                    self.orchestrator.emit(
                         on_event,
                         {
                             "type": "info",
@@ -395,12 +367,7 @@ class ToolLoopEngine:
                     )
                     return (
                         "result",
-                        AgentTurnResult(
-                            status="cancelled",
-                            content="",
-                            reasoning=state.full_reasoning,
-                            skill_exchanges=state.skill_exchanges,
-                        ),
+                        cancelled_turn_result(state),
                     )
                 continue
 
@@ -423,7 +390,7 @@ class ToolLoopEngine:
                         )
                         break
 
-            result = self.skill_runtime.execute_tool_call(
+            result = self.orchestrator.skill_runtime.execute_tool_call(
                 call.name,
                 call.arguments,
                 selected=state.selected,
@@ -431,19 +398,19 @@ class ToolLoopEngine:
                 request_approval=request_approval,
                 request_user_input=request_user_input,
             )
-            self.emit(on_event, {"type": "tool_result", "name": call.name, "id": call.id, "result": result})
+            self.orchestrator.emit(on_event, {"type": "tool_result", "name": call.name, "id": call.id, "result": result})
             tool_message = {
                 "role": "tool",
                 "tool_call_id": call.id,
                 "name": call.name,
-                "content": self.safe_json_dumps(self.tool_result_for_history(call.name, result)),
+                "content": self.orchestrator.safe_json_dumps(self.orchestrator.tool_result_for_history(call.name, result)),
             }
             tool_chat_message = cast(ChatMessage, tool_message)
             state.dynamic_history.append(tool_chat_message)
             state.skill_exchanges.append(tool_chat_message)
-            self.record_tool_effects(state, call, result)
+            self.orchestrator.record_tool_effects(state, call, result)
             self._record_loop_progress_after_result(state, call, result)
-            self._trace_add(
+            self.orchestrator._trace_add(
                 state,
                 "tool_results",
                 {
@@ -455,8 +422,8 @@ class ToolLoopEngine:
                     "finished_at": time.time(),
                 },
             )
-            if self._is_stop_requested(stop_event):
-                self.emit(
+            if self.orchestrator._is_stop_requested(stop_event):
+                self.orchestrator.emit(
                     on_event,
                     {
                         "type": "info",
@@ -465,16 +432,11 @@ class ToolLoopEngine:
                 )
                 return (
                     "result",
-                    AgentTurnResult(
-                        status="cancelled",
-                        content="",
-                        reasoning=state.full_reasoning,
-                        skill_exchanges=state.skill_exchanges,
-                    ),
+                    cancelled_turn_result(state),
                 )
             if call.name == "skill_view" and result.get("ok"):
-                state.selected = self.skill_runtime.select_skills(state.ctx)
-                self.refresh_search_tools_enabled(state)
+                state.selected = self.orchestrator.skill_runtime.select_skills(state.ctx)
+                self.orchestrator.policy_engine.refresh_search_tools_enabled(state)
 
             if (
                 call.name == "request_user_input"
@@ -521,7 +483,7 @@ class ToolLoopEngine:
                 and state.completion.search_failure_count >= 2
                 and not state.completion.search_has_success
             ):
-                finalized = self.finalize_turn(
+                finalized = self.orchestrator.finalization_engine.finalize_turn(
                     system_content,
                     state,
                     stop_event,
@@ -567,6 +529,6 @@ class ToolLoopEngine:
         if force_finalize_reason:
             return (
                 "finalized",
-                self.finalize_turn(system_content, state, stop_event, on_event, pass_id, force_finalize_reason),
+                self.orchestrator.finalization_engine.finalize_turn(system_content, state, stop_event, on_event, pass_id, force_finalize_reason),
             )
         return "continue", None

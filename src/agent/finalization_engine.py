@@ -1,57 +1,23 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import cast
 
+from agent.policies import search_rule
 from core.message_types import JsonObject
-from core.types import AgentTurnResult, TurnState
+from core.types import AgentTurnResult, TurnState, cancelled_turn_result
 
 
 class FinalizationEngine:
     def __init__(self, orchestrator) -> None:
         self.orchestrator = orchestrator
 
-    @property
-    def context_mgr(self):
-        return self.orchestrator.context_mgr
-
-    @property
-    def context_budget_max_tokens(self) -> int:
-        return self.orchestrator.context_budget_max_tokens
-
-    @property
-    def llm_client(self):
-        return self.orchestrator.llm_client
-
-    @property
-    def sanitizer(self):
-        return self.orchestrator.sanitizer
-
-    def emit(self, on_event, event: JsonObject) -> None:
-        self.orchestrator.emit(on_event, event)
-
-    def call_with_retry(self, payload: JsonObject, stop_event, on_event, pass_id: str):
-        return self.orchestrator.call_with_retry(payload, stop_event, on_event, pass_id)
-
-    def _is_stop_requested(self, stop_event) -> bool:
-        return self.orchestrator._is_stop_requested(stop_event)
-
-    def _is_plan_mode(self, state) -> bool:
-        return self.orchestrator._is_plan_mode(state)
-
-    def project_mutation_count(self, state) -> int:
-        return self.orchestrator.project_mutation_count(state)
-
     def finalize_turn(
         self, system_content: str, state: TurnState, stop_event, on_event, pass_id: str, extra_rules: str = ""
     ) -> AgentTurnResult:
         def finalize_once(extra: str, suffix: str):
-            if self._is_stop_requested(stop_event):
-                return AgentTurnResult(
-                    status="cancelled",
-                    content="",
-                    reasoning=state.full_reasoning,
-                    skill_exchanges=state.skill_exchanges,
-                )
+            if self.orchestrator._is_stop_requested(stop_event):
+                return cancelled_turn_result(state)
             # Finalization attempts are provisional until their output passes
             # sanitization. Do not stream their tokens or repair progress into
             # the user transcript; finish_turn_stream renders the accepted
@@ -68,15 +34,15 @@ class FinalizationEngine:
             if extra:
                 finalize_system += "\n" + extra.strip()
             finalize_messages = [{"role": "system", "content": finalize_system}] + state.dynamic_history
-            finalize_messages = self.context_mgr.prune(finalize_messages, self.context_budget_max_tokens)
-            finalize_payload = self.llm_client.build_payload(finalize_messages, thinking=False, tools=None)
+            finalize_messages = self.orchestrator.context_mgr.prune(finalize_messages, self.orchestrator.context_budget_max_tokens)
+            finalize_payload = self.orchestrator.llm_client.build_payload(finalize_messages, thinking=False, tools=None)
 
             def forward_finalization_usage(event: JsonObject) -> None:
                 if event.get("type") == "usage":
-                    self.emit(on_event, event)
+                    self.orchestrator.emit(on_event, event)
 
             try:
-                return self.call_with_retry(
+                return self.orchestrator.call_with_retry(
                     finalize_payload,
                     stop_event,
                     forward_finalization_usage,
@@ -84,32 +50,27 @@ class FinalizationEngine:
                 )
             except Exception as exc:
                 message = str(exc)
-                self.emit(on_event, {"type": "error", "text": message})
+                self.orchestrator.emit(on_event, {"type": "error", "text": message})
                 return AgentTurnResult(
                     status="error", content="", reasoning=state.full_reasoning, skill_exchanges=state.skill_exchanges, error=message
                 )
 
         def coerce_result(stream_result, current_reasoning: str) -> AgentTurnResult:
             if stream_result.finish_reason == "cancelled":
-                return AgentTurnResult(
-                    status="cancelled",
-                    content="",
-                    reasoning=self.sanitizer.append_reasoning(current_reasoning, stream_result.reasoning),
-                    skill_exchanges=state.skill_exchanges,
-                )
+                return cancelled_turn_result(state)
             if stream_result.finish_reason == "tool_calls":
                 return AgentTurnResult(
                     status="error",
                     content="",
-                    reasoning=self.sanitizer.append_reasoning(current_reasoning, stream_result.reasoning),
+                    reasoning=self.orchestrator.sanitizer.append_reasoning(current_reasoning, stream_result.reasoning),
                     skill_exchanges=state.skill_exchanges,
                     error="Finalization pass unexpectedly returned tool calls",
                 )
-            cleaned = self.sanitizer.sanitize_final_content(stream_result.content)
+            cleaned = self.orchestrator.sanitizer.sanitize_final_content(stream_result.content)
             return AgentTurnResult(
                 status="done",
                 content=cleaned,
-                reasoning=self.sanitizer.append_reasoning(current_reasoning, stream_result.reasoning),
+                reasoning=self.orchestrator.sanitizer.append_reasoning(current_reasoning, stream_result.reasoning),
                 skill_exchanges=state.skill_exchanges,
             )
 
@@ -165,7 +126,7 @@ class FinalizationEngine:
                         "- If a search/fetch tool failed, explicitly say the web lookup failed in this turn and ask for a retry or alternate source.",
                     ]
                 )
-            if state.requires_project_action and not self._is_plan_mode(state):
+            if state.requires_project_action and not self.orchestrator._is_plan_mode(state):
                 lines.extend(
                     [
                         "- If the requested project action was not completed with tools, say that plainly.",
@@ -194,7 +155,7 @@ class FinalizationEngine:
                 causes.append("tool_failure")
             if state.search_mode:
                 causes.append("search_evidence=insufficient")
-            if state.requires_project_action and not self._is_plan_mode(state) and self.project_mutation_count(state) == 0:
+            if state.requires_project_action and not self.orchestrator._is_plan_mode(state) and self.orchestrator.evidence_guard.project_mutation_count(state) == 0:
                 causes.append("project_action=not_completed")
             if state.completion.tool_counts:
                 causes.append("finalization=blocked_markup_after_tools")
@@ -213,7 +174,7 @@ class FinalizationEngine:
                         "tool_counts": dict(state.completion.tool_counts),
                         "search_mode": state.search_mode,
                         "requires_project_action": state.requires_project_action,
-                        "project_mutation_count": self.project_mutation_count(state),
+                        "project_mutation_count": self.orchestrator.evidence_guard.project_mutation_count(state),
                     }
                 },
             )
@@ -233,7 +194,7 @@ class FinalizationEngine:
         first_result = coerce_result(first, state.full_reasoning)
         if first_result.status != "done":
             return first_result
-        leaked_markup = self.sanitizer.contains_tool_markup(first_result.content)
+        leaked_markup = self.orchestrator.sanitizer.contains_tool_markup(first_result.content)
         if first_result.content.strip() and not leaked_markup:
             return first_result
         state.telemetry.finalization_attempts += 1
@@ -251,7 +212,7 @@ class FinalizationEngine:
         second_result = coerce_result(second, first_result.reasoning)
         if second_result.status != "done":
             return second_result
-        if second_result.content.strip() and not self.sanitizer.contains_tool_markup(second_result.content):
+        if second_result.content.strip() and not self.orchestrator.sanitizer.contains_tool_markup(second_result.content):
             return second_result
 
         state.telemetry.finalization_attempts += 1
@@ -267,8 +228,126 @@ class FinalizationEngine:
         third_result = coerce_result(third, second_result.reasoning)
         if third_result.status != "done":
             return third_result
-        if third_result.content.strip() and not self.sanitizer.contains_tool_markup(third_result.content):
+        if third_result.content.strip() and not self.orchestrator.sanitizer.contains_tool_markup(third_result.content):
             return third_result
 
         state.telemetry.finalization_repair_failed = True
         return failed_finalization_result(third_result.reasoning)
+
+    def finalize_response(
+        self,
+        *,
+        system_content: str,
+        state: TurnState,
+        pass_id: str,
+        stream_result,
+        stop_event=None,
+        on_event: Callable[[JsonObject], None] | None = None,
+    ) -> tuple[str, AgentTurnResult | None]:
+        if self.orchestrator._is_stop_requested(stop_event):
+            return (
+                "result",
+                cancelled_turn_result(state),
+            )
+        raw_final = stream_result.content
+        final = self.orchestrator.sanitizer.sanitize_final_content(raw_final)
+        if self.orchestrator.sanitizer.contains_tool_markup(raw_final):
+            finalized = self.finalize_turn(
+                system_content,
+                state,
+                stop_event,
+                on_event,
+                pass_id,
+                "Output correction rule:\n- The previous reply emitted raw tool markup instead of a user-facing answer.\n- Rewrite it as a normal assistant response.\n- Do not emit tool markup, XML-like tags, or pseudo-function calls.",
+            )
+            if finalized.status != "done":
+                return "result", finalized
+            state.full_reasoning = finalized.reasoning
+            final = finalized.content
+
+        if state.search_mode and state.time_sensitive_query and state.completion.tool_counts.get("web_search", 0) == 0:
+            if not state.forced_search_retry:
+                state.forced_search_retry = True
+                self.orchestrator.emit(on_event, {"type": "discard_pass_output", "pass_id": pass_id, "reason": "forced_search_retry"})
+                return "continue", None
+            finalized = self.finalize_turn(
+                system_content,
+                state,
+                stop_event,
+                on_event,
+                pass_id,
+                search_rule(
+                    "This time-sensitive request never performed web_search.",
+                    "State plainly that you could not verify the answer from reliable web results in this turn.",
+                    "Do not answer from prior knowledge.",
+                ),
+            )
+            return "finalized", finalized
+
+        if not self.orchestrator._is_plan_mode(state) and state.requires_project_action and self.orchestrator.evidence_guard.project_mutation_count(state) == 0:
+            if not final.strip():
+                if not state.forced_action_retry:
+                    state.forced_action_retry = True
+                    self.orchestrator.emit(on_event, {"type": "discard_pass_output", "pass_id": pass_id, "reason": "forced_action_retry"})
+                    return "continue", None
+            elif self.orchestrator.project_action_outcome(state, final, stop_event=stop_event, pass_id=pass_id) == "not_completed":
+                if not state.forced_action_retry:
+                    state.forced_action_retry = True
+                    self.orchestrator.emit(on_event, {"type": "discard_pass_output", "pass_id": pass_id, "reason": "forced_action_retry"})
+                    return "continue", None
+                finalized = self.finalize_turn(
+                    system_content,
+                    state,
+                    stop_event,
+                    on_event,
+                    pass_id,
+                    "Project tool usage rule:\n- No project tool was used to complete the requested action.\n- Say plainly that the action was not completed.\n- Do not provide manual shell deletion advice.\n- Do not claim success.",
+                )
+                finalized = self.orchestrator.coerce_project_action_failure(state, finalized, stop_event=stop_event, pass_id=pass_id)
+                return "finalized", finalized
+
+        if self.orchestrator.evidence_guard.needs_fetch_evidence(state):
+            finalized = self.finalize_turn(
+                system_content,
+                state,
+                stop_event,
+                on_event,
+                pass_id,
+                search_rule(
+                    "This time-sensitive request does not yet have fetched source content.",
+                    "State plainly that you could not verify the answer from reliable fetched evidence in this turn.",
+                    "Do not speculate or answer from prior knowledge.",
+                ),
+            )
+            return "finalized", finalized
+
+        if not final.strip():
+            finalized = self.finalize_turn(system_content, state, stop_event, on_event, pass_id)
+            if finalized.status != "done":
+                return "result", finalized
+            state.full_reasoning = finalized.reasoning
+            final = finalized.content
+            if self.orchestrator.evidence_guard.needs_fetch_evidence(state):
+                finalized = self.finalize_turn(
+                    system_content,
+                    state,
+                    stop_event,
+                    on_event,
+                    pass_id,
+                    search_rule(
+                        "The prior finalization still lacked fetched source evidence.",
+                        "State plainly that you could not verify the answer from reliable fetched evidence in this turn.",
+                        "Do not speculate or answer from prior knowledge.",
+                    ),
+                )
+                return "finalized", finalized
+
+        return (
+            "result",
+            AgentTurnResult(
+                status="done",
+                content=final,
+                reasoning=state.full_reasoning,
+                skill_exchanges=state.skill_exchanges,
+            ),
+        )
