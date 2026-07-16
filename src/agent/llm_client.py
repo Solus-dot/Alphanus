@@ -92,9 +92,6 @@ class LLMClient:
         self.auth_source = "none"
         return None
 
-    def headers(self) -> dict[str, str]:
-        return self.provider.headers()
-
     def compatibility_profile(self) -> dict[str, object]:
         return self.provider.compatibility_profile()
 
@@ -108,13 +105,6 @@ class LLMClient:
     def stop_requested(stop_event) -> bool:
         return OpenAICompatibleProvider.stop_requested(stop_event)
 
-    @staticmethod
-    def sleep_with_stop(duration_s: float, stop_event) -> bool:
-        return OpenAICompatibleProvider.sleep_with_stop(duration_s, stop_event)
-
-    def fetch_json(self, url: str, timeout_s: float | None = None) -> object:
-        return self.provider.fetch_json(url, timeout_s=timeout_s)
-
     def get_model_status(self) -> ModelStatus:
         return self.provider.get_model_status()
 
@@ -123,13 +113,6 @@ class LLMClient:
 
     def refresh_model_status(self, timeout_s: float | None = None, force: bool = False) -> ModelStatus:
         return self.provider.refresh_model_status(timeout_s=timeout_s, force=force)
-
-    def mark_model_transport_failure(self, exc: Exception) -> None:
-        self.provider.mark_model_transport_failure(exc)
-
-    def fetch_model_metadata(self, timeout_s: float | None = None) -> tuple[str | None, int | None]:
-        status = self.refresh_model_status(timeout_s=timeout_s, force=True)
-        return status.model_name, status.context_window
 
     def ensure_ready(
         self,

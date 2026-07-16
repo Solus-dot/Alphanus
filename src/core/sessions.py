@@ -7,7 +7,6 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from core.conv_tree import ConvTree
 
@@ -28,33 +27,6 @@ class ChatSession:
     loaded_skill_ids: list[str] = field(default_factory=list)
     collaboration_mode: str = "execute"
     context_summary: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "title": self.title,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "tree": self.tree.to_dict(),
-            "loaded_skill_ids": list(self.loaded_skill_ids),
-            "collaboration_mode": str(self.collaboration_mode or "execute").strip().lower() or "execute",
-            "context_summary": str(self.context_summary or ""),
-        }
-
-    @staticmethod
-    def from_dict(data: dict[str, Any]) -> ChatSession:
-        return ChatSession(
-            id=str(data["id"]),
-            title=str(data.get("title") or "Untitled Session"),
-            created_at=str(data.get("created_at") or _utc_now_iso()),
-            updated_at=str(data.get("updated_at") or data.get("created_at") or _utc_now_iso()),
-            tree=ConvTree.from_dict(data["tree"]),
-            loaded_skill_ids=[str(item).strip() for item in (data.get("loaded_skill_ids") or []) if str(item).strip()],
-            collaboration_mode=(
-                "plan" if str(data.get("collaboration_mode", "execute") or "execute").strip().lower() == "plan" else "execute"
-            ),
-            context_summary=str(data.get("context_summary") or ""),
-        )
 
 
 @dataclass(frozen=True)
@@ -162,8 +134,7 @@ class SessionStore:
 
     def _activate(self, session_id: str) -> None:
         self._connection.execute(
-            "INSERT INTO app_state(key, value) VALUES ('active_session_id', ?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            "INSERT INTO app_state(key, value) VALUES ('active_session_id', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (session_id,),
         )
 
@@ -190,8 +161,13 @@ class SessionStore:
         ).fetchall()
         return [
             SessionSummary(
-                id=row["id"], title=row["title"], created_at=row["created_at"], updated_at=row["updated_at"],
-                turn_count=row["turn_count"], branch_count=row["branch_count"], is_active=row["id"] == active_id,
+                id=row["id"],
+                title=row["title"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                turn_count=row["turn_count"],
+                branch_count=row["branch_count"],
+                is_active=row["id"] == active_id,
             )
             for row in rows
         ]
@@ -217,9 +193,7 @@ class SessionStore:
             }
             if tool_names:
                 docs.append((session.id, turn.id, "tool", " ".join(sorted(tool_names)).casefold(), 4))
-        self._connection.executemany(
-            "INSERT INTO session_search(session_id,turn_id,kind,body,rank) VALUES (?,?,?,?,?)", docs
-        )
+        self._connection.executemany("INSERT INTO session_search(session_id,turn_id,kind,body,rank) VALUES (?,?,?,?,?)", docs)
 
     def search_sessions(self, query: str, *, limit: int = 80) -> list[SessionSearchResult]:
         needle = " ".join(str(query or "").casefold().split())
@@ -237,10 +211,17 @@ class SessionStore:
         active_id = self._active_id()
         return [
             SessionSearchResult(
-                id=f"{row['session_id']}:{row['turn_id']}:{row['kind']}:{idx}", session_id=row["session_id"],
-                turn_id=row["turn_id"], title=row["title"], kind=row["kind"], preview=row["body"][:96],
-                score=row["rank"] * 100, updated_at=row["updated_at"], turn_count=row["turn_count"],
-                branch_count=row["branch_count"], is_active=row["session_id"] == active_id,
+                id=f"{row['session_id']}:{row['turn_id']}:{row['kind']}:{idx}",
+                session_id=row["session_id"],
+                turn_id=row["turn_id"],
+                title=row["title"],
+                kind=row["kind"],
+                preview=row["body"][:96],
+                score=row["rank"] * 100,
+                updated_at=row["updated_at"],
+                turn_count=row["turn_count"],
+                branch_count=row["branch_count"],
+                is_active=row["session_id"] == active_id,
             )
             for idx, row in enumerate(rows)
         ]
@@ -263,23 +244,45 @@ class SessionStore:
                 "VALUES (?,?,?,?,?,?,?,?,?,?,NULL) ON CONFLICT(id) DO UPDATE SET title=excluded.title,updated_at=excluded.updated_at,"
                 "tree_json=excluded.tree_json,loaded_skill_ids_json=excluded.loaded_skill_ids_json,collaboration_mode=excluded.collaboration_mode,"
                 "context_summary=excluded.context_summary,turn_count=excluded.turn_count,branch_count=excluded.branch_count,deleted_at=NULL",
-                (session.id, session.title, session.created_at, session.updated_at, json.dumps(session.tree.to_dict(), ensure_ascii=False),
-                 json.dumps(session.loaded_skill_ids), session.collaboration_mode, session.context_summary, turn_count, branch_count),
+                (
+                    session.id,
+                    session.title,
+                    session.created_at,
+                    session.updated_at,
+                    json.dumps(session.tree.to_dict(), ensure_ascii=False),
+                    json.dumps(session.loaded_skill_ids),
+                    session.collaboration_mode,
+                    session.context_summary,
+                    turn_count,
+                    branch_count,
+                ),
             )
             self._index_session(session)
             if activate:
                 self._activate(session.id)
 
-    def save_tree(self, session_id: str, title: str, tree: ConvTree, loaded_skill_ids: list[str] | None = None,
-                  collaboration_mode: str | None = None, context_summary: str | None = None, *,
-                  created_at: str | None = None, activate: bool = True) -> ChatSession:
+    def save_tree(
+        self,
+        session_id: str,
+        title: str,
+        tree: ConvTree,
+        loaded_skill_ids: list[str] | None = None,
+        collaboration_mode: str | None = None,
+        context_summary: str | None = None,
+        *,
+        created_at: str | None = None,
+        activate: bool = True,
+    ) -> ChatSession:
         try:
             previous = self.load_session(session_id, activate=False)
         except (FileNotFoundError, ValueError):
             previous = None
         session = ChatSession(
-            session_id, title.strip() or (previous.title if previous else "Untitled Session"),
-            created_at or (previous.created_at if previous else _utc_now_iso()), _utc_now_iso(), tree,
+            session_id,
+            title.strip() or (previous.title if previous else "Untitled Session"),
+            created_at or (previous.created_at if previous else _utc_now_iso()),
+            _utc_now_iso(),
+            tree,
             list(loaded_skill_ids if loaded_skill_ids is not None else (previous.loaded_skill_ids if previous else [])),
             "plan" if str(collaboration_mode or (previous.collaboration_mode if previous else "execute")).lower() == "plan" else "execute",
             context_summary if context_summary is not None else (previous.context_summary if previous else ""),
@@ -293,8 +296,14 @@ class SessionStore:
         if row is None:
             raise FileNotFoundError(session_id)
         session = ChatSession(
-            row["id"], row["title"], row["created_at"], row["updated_at"], ConvTree.from_dict(json.loads(row["tree_json"])),
-            json.loads(row["loaded_skill_ids_json"]), row["collaboration_mode"], row["context_summary"],
+            row["id"],
+            row["title"],
+            row["created_at"],
+            row["updated_at"],
+            ConvTree.from_dict(json.loads(row["tree_json"])),
+            json.loads(row["loaded_skill_ids_json"]),
+            row["collaboration_mode"],
+            row["context_summary"],
         )
         if activate:
             with self._connection:

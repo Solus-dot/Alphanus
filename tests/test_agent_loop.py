@@ -3509,7 +3509,7 @@ def test_doctor_report_supports_searxng_provider(mocker, runtime: SkillRuntime):
     assert report["agent"]["backend_profile_selected"] in {"unknown", "auto", "mlx_vlm", "llamacpp", "ollama", "vllm", "lmstudio"}
 
 
-def test_fetch_model_name_reads_first_model_id(mocker, runtime: SkillRuntime):
+def test_refresh_model_status_reads_first_model_id(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
             "model_endpoint": TEST_MODEL_ENDPOINT,
@@ -3531,10 +3531,10 @@ def test_fetch_model_name_reads_first_model_id(mocker, runtime: SkillRuntime):
 
     mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
 
-    assert agent.fetch_model_name() == "llama-3.2-3b-instruct"
+    assert agent.refresh_model_status(force=True).model_name == "llama-3.2-3b-instruct"
 
 
-def test_fetch_model_metadata_reads_model_id_and_context_window(mocker, runtime: SkillRuntime):
+def test_refresh_model_status_reads_model_id_and_context_window(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
             "model_endpoint": TEST_MODEL_ENDPOINT,
@@ -3559,7 +3559,8 @@ def test_fetch_model_metadata_reads_model_id_and_context_window(mocker, runtime:
 
     mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
 
-    assert agent.fetch_model_metadata() == ("llama-3.2-3b-instruct", 24576)
+    status = agent.refresh_model_status(force=True)
+    assert (status.model_name, status.context_window) == ("llama-3.2-3b-instruct", 24576)
     assert seen_urls == [
         TEST_SLOTS_ENDPOINT,
         TEST_MODELS_ENDPOINT,
@@ -3579,7 +3580,7 @@ def test_select_skills_returns_only_explicitly_loaded_skills(runtime: SkillRunti
     assert agent.skill_runtime.select_skills(ctx) == []
 
 
-def test_fetch_model_metadata_falls_back_to_slots_for_context_window(mocker, runtime: SkillRuntime):
+def test_refresh_model_status_falls_back_to_slots_for_context_window(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
             "model_endpoint": TEST_MODEL_ENDPOINT,
@@ -3604,14 +3605,15 @@ def test_fetch_model_metadata_falls_back_to_slots_for_context_window(mocker, run
 
     mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
 
-    assert agent.fetch_model_metadata() == ("llama-3.2-3b-instruct", 40960)
+    status = agent.refresh_model_status(force=True)
+    assert (status.model_name, status.context_window) == ("llama-3.2-3b-instruct", 40960)
     assert seen_urls == [
         TEST_SLOTS_ENDPOINT,
         TEST_MODELS_ENDPOINT,
     ]
 
 
-def test_fetch_model_metadata_falls_back_to_props_after_slots_miss(mocker, runtime: SkillRuntime):
+def test_refresh_model_status_falls_back_to_props_after_slots_miss(mocker, runtime: SkillRuntime):
     cfg = {
         "agent": {
             "model_endpoint": TEST_MODEL_ENDPOINT,
@@ -3638,7 +3640,8 @@ def test_fetch_model_metadata_falls_back_to_props_after_slots_miss(mocker, runti
 
     mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
 
-    assert agent.fetch_model_metadata() == ("llama-3.2-3b-instruct", 40960)
+    status = agent.refresh_model_status(force=True)
+    assert (status.model_name, status.context_window) == ("llama-3.2-3b-instruct", 40960)
     assert seen_urls == [
         TEST_SLOTS_ENDPOINT,
         TEST_MODELS_ENDPOINT,

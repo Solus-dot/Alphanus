@@ -275,7 +275,7 @@ class SkillRuntime:
         manifest = parse_agentskill_manifest(child, skill_doc, include_prompt=False)
         manifest.bundled_files = self._bundled_files_for_path(child)
         manifest.execution_allowed = True
-        manifest.adapter = str(manifest.adapter or manifest.format or "agentskills")
+        manifest.adapter = str(manifest.adapter or "agentskills")
         return manifest
 
     def _ensure_skill_prompt(self, manifest: SkillManifest) -> str:
@@ -316,7 +316,7 @@ class SkillRuntime:
         for skill in self.list_skills():
             aliases = {
                 str(skill.id).strip(),
-                str(skill.name).strip(),
+                str(skill.id).strip(),
                 *(str(item).strip() for item in (getattr(skill, "aliases", []) or [])),
             }
             for alias in aliases:
@@ -371,75 +371,68 @@ class SkillRuntime:
         )
 
     def _register_runtime_tools(self) -> None:
-        self._tool_registry[_SKILLS_LIST_TOOL_NAME] = RegisteredTool(
-            name=_SKILLS_LIST_TOOL_NAME,
-            skill_id="__runtime__",
-            tool_scope="core",
-            capability="skill_catalog_reader",
-            description="List available skills with minimal metadata. Use this to discover a relevant skill before loading it.",
-            mutates=False,
-            actions=("list", "read"),
-            parameters={
-                "type": "object",
-                "properties": {},
-            },
+        def register(name: str, scope: str, capability: str, description: str, mutates: bool, actions, properties, **schema) -> None:
+            self._tool_registry[name] = RegisteredTool(
+                name=name,
+                skill_id="__runtime__",
+                tool_scope=scope,
+                capability=capability,
+                description=description,
+                mutates=mutates,
+                actions=actions,
+                parameters={"type": "object", "properties": properties, **schema},
+            )
+
+        register(
+            _SKILLS_LIST_TOOL_NAME,
+            "core",
+            "skill_catalog_reader",
+            "List available skills with minimal metadata. Use this to discover a relevant skill before loading it.",
+            False,
+            ("list", "read"),
+            {},
         )
-        self._tool_registry[_SKILL_VIEW_TOOL_NAME] = RegisteredTool(
-            name=_SKILL_VIEW_TOOL_NAME,
-            skill_id="__runtime__",
-            tool_scope="core",
-            capability="skill_loader",
-            description="Load a skill's full SKILL.md content or read one linked file inside the skill.",
-            mutates=False,
-            actions=("read",),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "file_path": {"type": "string"},
-                },
-                "required": ["name"],
-            },
+        register(
+            _SKILL_VIEW_TOOL_NAME,
+            "core",
+            "skill_loader",
+            "Load a skill's full SKILL.md content or read one linked file inside the skill.",
+            False,
+            ("read",),
+            {"name": {"type": "string"}, "file_path": {"type": "string"}},
+            required=["name"],
         )
-        self._tool_registry[_REQUEST_USER_INPUT_TOOL_NAME] = RegisteredTool(
-            name=_REQUEST_USER_INPUT_TOOL_NAME,
-            skill_id="__runtime__",
-            tool_scope="skill",
-            capability="user_input_requester",
-            description="Ask the user a structured follow-up question and pause the current workflow.",
-            mutates=False,
-            actions=(),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "question": {"type": "string"},
-                    "options": {"type": "array", "items": {"type": "string"}},
-                    "header": {"type": "string"},
-                },
-                "required": ["question"],
+        register(
+            _REQUEST_USER_INPUT_TOOL_NAME,
+            "skill",
+            "user_input_requester",
+            "Ask the user a structured follow-up question and pause the current workflow.",
+            False,
+            (),
+            {
+                "question": {"type": "string"},
+                "options": {"type": "array", "items": {"type": "string"}},
+                "header": {"type": "string"},
             },
+            required=["question"],
         )
-        self._tool_registry[_RUN_SKILL_TOOL_NAME] = RegisteredTool(
-            name=_RUN_SKILL_TOOL_NAME,
-            skill_id="__runtime__",
-            tool_scope="skill",
-            capability="skill_executor",
-            description="Run the selected skill's single declared executable path. Use either an entrypoint or a bundled script, not both.",
-            mutates=True,
-            actions=("run",),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "skill_id": {"type": "string"},
-                    "entrypoint": {"type": "string"},
-                    "script": {"type": "string"},
-                    "params": {"type": "object"},
-                    "argv": {"type": "array", "items": {"type": "string"}},
-                    "stdin": {"type": "string"},
-                    "timeout_s": {"type": "integer"},
-                },
-                "additionalProperties": False,
+        register(
+            _RUN_SKILL_TOOL_NAME,
+            "skill",
+            "skill_executor",
+            "Run the selected skill's single declared executable path. Use either an entrypoint or a bundled script, not both.",
+            True,
+            ("run",),
+            {
+                "skill_id": {"type": "string"},
+                "entrypoint": {"type": "string"},
+                "script": {"type": "string"},
+                "params": {"type": "object"},
+                "argv": {"type": "array", "items": {"type": "string"}},
+                "stdin": {"type": "string"},
+                "timeout_s": {"type": "integer"},
             },
+            additionalProperties=False,
         )
 
     def load_skills(self) -> None:
@@ -720,7 +713,7 @@ class SkillRuntime:
         return [
             {
                 "id": skill.id,
-                "name": skill.name,
+                "name": skill.id,
                 "enabled": bool(skill.enabled),
                 "available": bool(skill.available),
                 "provenance": self.skill_provenance_label(skill),
@@ -899,7 +892,7 @@ class SkillRuntime:
         sections: list[str] = []
         for skill in selected:
             body = self._ensure_skill_prompt(skill).strip()
-            sections.append(f"### Skill: {skill.name} ({skill.id})\n{body}")
+            sections.append(f"### Skill: {skill.id}\n{body}")
 
         budget = max(200, int(context_limit * ratio * 4))
         out: list[str] = []

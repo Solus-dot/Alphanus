@@ -91,7 +91,6 @@ class SkillEntrypointDef:
 @dataclass(slots=True)
 class SkillManifest:
     id: str
-    name: str
     version: str
     description: str
     enabled: bool
@@ -108,7 +107,6 @@ class SkillManifest:
     entrypoints: list[SkillEntrypointDef] = field(default_factory=list)
     disable_model_invocation: bool = False
     user_invocable: bool = True
-    format: str = "agentskills"
     available: bool = True
     availability_code: str = "ready"
     availability_reason: str = ""
@@ -370,7 +368,6 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
 
     return SkillManifest(
         id=skill_id,
-        name=skill_id,
         version=version,
         description=description,
         enabled=enabled,
@@ -387,7 +384,6 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         entrypoints=entrypoints,
         disable_model_invocation=disable_model_invocation,
         user_invocable=user_invocable,
-        format=adapter,
         adapter=adapter,
         validation_warnings=warnings,
         frontmatter=dict(frontmatter),

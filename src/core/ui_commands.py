@@ -277,7 +277,7 @@ def execute_ui_command(server: Any, raw: str) -> dict[str, Any]:
             return _result(f"Unloaded skill {arg}", state_changed=True)
         if action == "info":
             return _result(
-                skill.name,
+                skill.id,
                 skill.description,
                 f"id: {skill.id}",
                 f"version: {skill.version}",

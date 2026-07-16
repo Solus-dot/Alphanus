@@ -105,24 +105,14 @@ class Agent:
     ) -> bool | None:
         return self.llm_client.ensure_ready(stop_event=stop_event, on_event=on_event, timeout_s=timeout_s)
 
-    def fetch_model_metadata(self, timeout_s: float | None = None) -> tuple[str | None, int | None]:
-        return self.llm_client.fetch_model_metadata(timeout_s=timeout_s)
-
     def get_model_status(self) -> ModelStatus:
         return self.llm_client.get_model_status()
 
     def refresh_model_status(self, timeout_s: float | None = None, force: bool = False) -> ModelStatus:
         return self.llm_client.refresh_model_status(timeout_s=timeout_s, force=force)
 
-    def mark_model_transport_failure(self, exc: Exception) -> None:
-        self.llm_client.mark_model_transport_failure(exc)
-
     def _offline_status_detail(self, status: ModelStatus) -> str:
         return f": {self.llm_client.friendly_endpoint_error(status.last_error)}" if status.last_error else ""
-
-    def fetch_model_name(self, timeout_s: float | None = None) -> str | None:
-        model_name, _context_window = self.fetch_model_metadata(timeout_s=timeout_s)
-        return model_name
 
     def _validate_endpoints(self) -> str | None:
         try:

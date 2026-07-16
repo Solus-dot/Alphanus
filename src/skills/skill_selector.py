@@ -42,7 +42,7 @@ class SkillSelector:
         recent_tokens = self.selection_tokens(getattr(ctx, "recent_routing_hint", ""))
         skill_tokens = self.selection_tokens(
             skill.id,
-            skill.name,
+            skill.id,
             skill.description,
             skill.tags,
             skill.categories,
