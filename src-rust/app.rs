@@ -64,33 +64,7 @@ struct TurnView {
 
 impl TurnView {
     fn from_value(value: &Value) -> Self {
-        let tools: Vec<ToolActivity> = value
-            .get("tools")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .map(|item| ToolActivity {
-                        id: field(item, "id"),
-                        stream_id: field(item, "stream_id"),
-                        name: field(item, "name"),
-                        completed: item
-                            .get("completed")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false),
-                        failed: item.get("failed").and_then(Value::as_bool).unwrap_or(false),
-                        filepath: field(item, "filepath"),
-                        preview: field(item, "preview"),
-                        language: field(item, "language"),
-                        preview_truncated: item
-                            .get("preview_truncated")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let mut activity = value
+        let activity = value
             .get("activity")
             .and_then(Value::as_array)
             .map(|items| {
@@ -100,13 +74,6 @@ impl TurnView {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        if activity.is_empty() {
-            let reasoning = field(value, "reasoning");
-            if !reasoning.is_empty() {
-                activity.push(ActivityItem::reasoning(reasoning));
-            }
-            activity.extend(tools.iter().cloned().map(ActivityItem::tool));
-        }
         Self {
             id: field(value, "id"),
             user: field(value, "user"),
@@ -4373,12 +4340,10 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_turn_restores_reasoning_and_tools() {
+    fn snapshot_turn_restores_ordered_activity() {
         let turn = TurnView::from_value(&json!({
             "id":"turn-1",
             "assistant":"complete response",
-            "reasoning":"trace",
-            "tools":[{"id":"call-1","name":"create_file","completed":true}],
             "activity":[
                 {"kind":"reasoning","text":"before"},
                 {"kind":"tool","id":"call-1","name":"create_file","completed":true},

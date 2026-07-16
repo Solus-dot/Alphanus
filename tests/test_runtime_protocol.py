@@ -238,8 +238,10 @@ def test_runtime_snapshot_preserves_reasoning_and_tool_lifecycle(tmp_path: Path)
 
         item = server._snapshot()["transcript"][-1]
 
-        assert item["reasoning"] == "I should use memory"
-        assert item["tools"] == [{"id": "call-1", "name": "store_memory", "completed": True}]
+        assert item["activity"] == [
+            {"kind": "reasoning", "text": "I should use memory"},
+            {"kind": "tool", "id": "call-1", "name": "store_memory", "completed": True},
+        ]
     finally:
         server.close()
 

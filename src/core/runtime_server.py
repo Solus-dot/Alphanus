@@ -20,7 +20,6 @@ TRANSCRIPT_PAGE_SIZE = 100
 TRANSCRIPT_PAGE_BYTES = 800 * 1024
 OVERSIZED_ASSISTANT_BYTES = 400 * 1024
 OVERSIZED_USER_BYTES = 64 * 1024
-OVERSIZED_REASONING_BYTES = 48 * 1024
 OVERSIZED_ACTIVITY_BYTES = 128 * 1024
 TREE_PAGE_SIZE = 250
 SESSION_PAGE_SIZE = 100
@@ -206,8 +205,6 @@ def _turn_view(turn: Turn, *, field_limit: int | None = TRANSCRIPT_FIELD_CHARS) 
         "user": display(turn.user_text()),
         "attachments": display(turn.attachment_summary(), 256),
         "assistant": display(turn.assistant_content),
-        "reasoning": display(turn.reasoning_content),
-        "tools": _tool_activity(turn)[:MAX_ACTIVITY_ITEMS],
         "activity": _activity_trace(turn, field_limit=field_limit),
         "assistant_state": turn.assistant_state,
         "parent": turn.parent,
@@ -261,7 +258,6 @@ def _bounded_full_turn_view(turn: Turn) -> dict[str, Any]:
     view = _turn_view(turn, field_limit=None)
     view["user"] = _clip_utf8(turn.user_text(), OVERSIZED_USER_BYTES)
     view["assistant"] = _clip_utf8(turn.assistant_content, OVERSIZED_ASSISTANT_BYTES)
-    view["reasoning"] = _clip_utf8(turn.reasoning_content, OVERSIZED_REASONING_BYTES)
     view["activity"] = activity
     view["activity_truncated"] = activity_truncated
 
@@ -270,9 +266,6 @@ def _bounded_full_turn_view(turn: Turn) -> dict[str, Any]:
     while _encoded_size(view) > TRANSCRIPT_PAGE_BYTES and view["activity"]:
         cast(list[dict[str, Any]], view["activity"]).pop()
         view["activity_truncated"] = True
-    while _encoded_size(view) > TRANSCRIPT_PAGE_BYTES and view["tools"]:
-        cast(list[dict[str, Any]], view["tools"]).pop()
-        view["tools_truncated"] = True
     if _encoded_size(view) > TRANSCRIPT_PAGE_BYTES:
         view["assistant"] = _clip_utf8(view["assistant"], OVERSIZED_ASSISTANT_BYTES // 2)
     if _encoded_size(view) > TRANSCRIPT_PAGE_BYTES:
@@ -280,9 +273,7 @@ def _bounded_full_turn_view(turn: Turn) -> dict[str, Any]:
             "id": turn.id,
             "user": _clip_utf8(turn.user_text(), 16 * 1024),
             "assistant": _clip_utf8(turn.assistant_content, 64 * 1024),
-            "reasoning": "",
             "activity": [],
-            "tools": [],
             "assistant_state": turn.assistant_state,
             "parent": turn.parent,
             "children": list(turn.children),
