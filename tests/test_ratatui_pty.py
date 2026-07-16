@@ -41,7 +41,10 @@ def test_ratatui_starts_handshakes_and_restores_terminal(tmp_path: Path) -> None
     try:
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline and process.poll() is None and not (
-            b"Alphanus Alpha" in output and b"Ready" in output
+                b"Alphanus" in output
+                and b"Ctrl+F" in output
+                and b"ctx" in output
+                and b"Recent conversations" in output
         ):
             readable, _, _ = select.select([master], [], [], 0.1)
             if not readable:
@@ -50,8 +53,11 @@ def test_ratatui_starts_handshakes_and_restores_terminal(tmp_path: Path) -> None
             output.extend(data)
             if b"\x1b[6n" in data:
                 os.write(master, b"\x1b[1;1R")
-        assert b"Alphanus Alpha" in output
-        assert b"Ready" in output
+        assert b"Alphanus" in output
+        assert b"Alphanus Alpha" not in output
+        assert b"Ctrl+F" in output
+        assert b"ctx" in output
+        assert b"Recent conversations" in output
         os.write(master, b"\x03")
         shutdown_deadline = time.monotonic() + 10
         while time.monotonic() < shutdown_deadline and (process.poll() is None or b"\x1b[?1049l" not in output):

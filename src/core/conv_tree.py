@@ -4,7 +4,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import cast
 
-from core.message_types import ChatMessage, JSONValue, MessageContentPart, ToolCallDelta, ToolFunctionCall
+from core.message_types import ChatMessage, JsonObject, JSONValue, MessageContentPart, ToolCallDelta, ToolFunctionCall
 
 _COMPACTED_MARKER = "\n...[compacted]"
 
@@ -16,6 +16,8 @@ class Turn:
     assistant_content: str | None
     parent: str | None
     children: list[str]
+    reasoning_content: str = ""
+    activity_trace: list[JsonObject] = field(default_factory=list)
     label: str = ""
     branch_root: bool = False
     skill_exchanges: list[ChatMessage] = field(default_factory=list)
@@ -103,6 +105,8 @@ class Turn:
             "assistant_content": self.assistant_content,
             "parent": self.parent,
             "children": self.children,
+            "reasoning_content": self.reasoning_content,
+            "activity_trace": self.activity_trace,
             "label": self.label,
             "branch_root": self.branch_root,
             "skill_exchanges": self.skill_exchanges,
@@ -139,12 +143,41 @@ class Turn:
             for item in exchanges_raw:
                 if isinstance(item, dict):
                     exchanges.append(cast(ChatMessage, item))
+        activity_raw = data.get("activity_trace", [])
+        activity_trace: list[JsonObject] = []
+        if isinstance(activity_raw, list):
+            for item in activity_raw:
+                if not isinstance(item, dict):
+                    continue
+                kind = str(item.get("kind") or "")
+                if kind == "reasoning":
+                    activity_trace.append({"kind": kind, "text": str(item.get("text") or "")})
+                elif kind == "tool":
+                    tool_activity: JsonObject = {
+                        "kind": kind,
+                        "id": str(item.get("id") or ""),
+                        "name": str(item.get("name") or "tool"),
+                        "completed": bool(item.get("completed", False)),
+                    }
+                    stream_id = str(item.get("stream_id") or "")
+                    if stream_id:
+                        tool_activity["stream_id"] = stream_id
+                    for key in ("filepath", "preview", "language"):
+                        if key in item:
+                            tool_activity[key] = str(item.get(key) or "")
+                    if "preview_truncated" in item:
+                        tool_activity["preview_truncated"] = bool(item.get("preview_truncated"))
+                    if "failed" in item:
+                        tool_activity["failed"] = bool(item.get("failed"))
+                    activity_trace.append(tool_activity)
         return Turn(
             id=str(data.get("id", "")),
             user_content=user_content,
             assistant_content=assistant_content,
             parent=parent,
             children=children,
+            reasoning_content=str(data.get("reasoning_content", "") or ""),
+            activity_trace=activity_trace,
             label=str(data.get("label", "")),
             branch_root=bool(data.get("branch_root", False)),
             skill_exchanges=exchanges,
@@ -269,26 +302,53 @@ class ConvTree:
         self._mark_structure_changed()
         return turn
 
-    def complete_turn(self, turn_id: str, reply: str) -> None:
+    def complete_turn(
+        self,
+        turn_id: str,
+        reply: str,
+        reasoning: str = "",
+        activity_trace: list[JsonObject] | None = None,
+    ) -> None:
         if turn_id in self.nodes:
             self.nodes[turn_id].assistant_content = reply
+            self.nodes[turn_id].reasoning_content = str(reasoning or "")
+            if activity_trace is not None:
+                self.nodes[turn_id].activity_trace = activity_trace
             self.nodes[turn_id].assistant_state = "done"
             self.compact_inactive_branches()
             self._mark_history_changed()
 
-    def cancel_turn(self, turn_id: str, partial: str) -> None:
+    def cancel_turn(
+        self,
+        turn_id: str,
+        partial: str,
+        reasoning: str = "",
+        activity_trace: list[JsonObject] | None = None,
+    ) -> None:
         if turn_id not in self.nodes:
             return
         partial = (partial or "").rstrip()
         self.nodes[turn_id].assistant_content = f"{partial}\n[interrupted]" if partial else "[interrupted]"
+        self.nodes[turn_id].reasoning_content = str(reasoning or "")
+        if activity_trace is not None:
+            self.nodes[turn_id].activity_trace = activity_trace
         self.nodes[turn_id].assistant_state = "cancelled"
         self.compact_inactive_branches()
         self._mark_history_changed()
 
-    def fail_turn(self, turn_id: str, partial: str) -> None:
+    def fail_turn(
+        self,
+        turn_id: str,
+        partial: str,
+        reasoning: str = "",
+        activity_trace: list[JsonObject] | None = None,
+    ) -> None:
         if turn_id not in self.nodes:
             return
         self.nodes[turn_id].assistant_content = (partial or "").rstrip()
+        self.nodes[turn_id].reasoning_content = str(reasoning or "")
+        if activity_trace is not None:
+            self.nodes[turn_id].activity_trace = activity_trace
         self.nodes[turn_id].assistant_state = "error"
         self.compact_inactive_branches()
         self._mark_history_changed()
@@ -386,9 +446,7 @@ class ConvTree:
         tree._context_summaries = {}
         if isinstance(raw_summaries, dict):
             tree._context_summaries = {
-                str(key): str(value).strip()
-                for key, value in raw_summaries.items()
-                if str(key) in tree.nodes and str(value).strip()
+                str(key): str(value).strip() for key, value in raw_summaries.items() if str(key) in tree.nodes and str(value).strip()
             }
         tree.compact_inactive_branches()
         return tree
@@ -451,5 +509,15 @@ class ConvTree:
                     node.assistant_content,
                     self._inactive_assistant_char_limit,
                 )
+            node.reasoning_content = self._truncate_text(
+                node.reasoning_content,
+                self._inactive_assistant_char_limit,
+            )
+            for activity in node.activity_trace:
+                if activity.get("kind") == "reasoning":
+                    activity["text"] = self._truncate_text(
+                        str(activity.get("text") or ""),
+                        self._inactive_assistant_char_limit,
+                    )
             if node.skill_exchanges:
                 node.skill_exchanges = [self._compact_skill_message(msg) for msg in node.skill_exchanges]

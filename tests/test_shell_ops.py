@@ -205,6 +205,36 @@ def test_shell_command_external_cwd_requests_approval_and_forwards_cwd(mocker, t
     )
 
 
+def test_shell_command_external_argument_requests_path_approval(mocker, tmp_path: Path):
+    runtime = _runtime(
+        tmp_path,
+        {"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": False}},
+    )
+    shell_skill = runtime.get_skill("shell-ops")
+    assert shell_skill is not None
+    outside_file = runtime.project.project_root.parent / "outside.py"
+    outside_file.write_text("print('ok')\n", encoding="utf-8")
+    run = mocker.patch.object(
+        runtime.project,
+        "run_shell_command",
+        return_value={"ok": True, "data": {"returncode": 0}, "error": None, "meta": {}},
+    )
+    approvals: list[dict] = []
+    command = f"python3 {outside_file}"
+
+    out = runtime.execute_tool_call(
+        "shell_command",
+        {"command": command},
+        selected=[shell_skill],
+        ctx=_ctx(str(runtime.project.project_root)),
+        request_approval=lambda request: approvals.append(request) or True,
+    )
+
+    assert out["ok"] is True
+    assert approvals[0]["paths"] == [str(outside_file.resolve())]
+    run.assert_called_once_with(command, timeout_s=600, cwd=None, allowed_cwd_roots=None, approved=True)
+
+
 def test_shell_command_nonzero_exit_bubbles_up_as_tool_failure(tmp_path: Path):
     runtime = _runtime(
         tmp_path,

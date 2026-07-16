@@ -537,10 +537,14 @@ class SkillRuntime:
             try:
                 timeout_s = int(timeout_raw)
             except (TypeError, ValueError):
-                self._append_unique(manifest.validation_warnings, f"tool '{tool_name}' has invalid timeout {timeout_raw!r}; defaulting to 30")
+                self._append_unique(
+                    manifest.validation_warnings, f"tool '{tool_name}' has invalid timeout {timeout_raw!r}; defaulting to 30"
+                )
                 timeout_s = 30
             if timeout_s <= 0:
-                self._append_unique(manifest.validation_warnings, f"tool '{tool_name}' has non-positive timeout {timeout_s}; defaulting to 30")
+                self._append_unique(
+                    manifest.validation_warnings, f"tool '{tool_name}' has non-positive timeout {timeout_s}; defaulting to 30"
+                )
                 timeout_s = 30
             if self._register_tool(
                 tool_name,
@@ -892,7 +896,20 @@ class SkillRuntime:
             normalized_name = str(tool_name).strip()
             return normalized_name not in (_CORE_TOOL_NAMES | _ALWAYS_AVAILABLE_TOOL_NAMES | {_RUN_SKILL_TOOL_NAME, "shell_command"})
         capability = str(reg.capability or "").strip().lower()
-        if capability.startswith(("project_", "memory_", "skill_")):
+        # local_search is a read-only, project-root-scoped capability. Blocking
+        # it here makes the bundled local-search skill unusable precisely when a
+        # turn asks to search local project files.
+        if capability.startswith(
+            (
+                "project_",
+                "memory_",
+                "skill_",
+                "local_search",
+                "knowledge_",
+                "retrieval_",
+                "utility_file_search",
+            )
+        ):
             return False
         if capability in {"run_shell_command", "user_input_requester"}:
             return False

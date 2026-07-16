@@ -2,16 +2,16 @@
 source: src-rust/app.rs
 expression: "fixture_snapshot(160, 50)"
 ---
-╭ Alphanus Alpha · Example ──────────────────────────────────────────────────────────────────────────────────────────────────────╮╭ Conversation Tree ─────────╮
-││ You                                                                                                                           ││› first turn                │
-│Build a reliable terminal agent.                                                                                                ││  ⎇ alternate path          │
+╭ Alphanus ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮╭ Conversation Tree ─────────╮
+│┃ Build a reliable terminal agent.                                                                                              ││› first turn                │
+│                                                                                                                                ││  ⎇ alternate path          │
+│┃ I’ll inspect the repository and stream progress here.                                                                         ││                            │
+│┃ ▶ read_file                                                                                                                   ││Inspector                   │
+│┃ ✓ search_code                                                                                                                 ││state: done                 │
 │                                                                                                                                ││                            │
-││ Alphanus                                                                                                                      ││Inspector                   │
-│I’ll inspect the repository and stream progress here.                                                                           ││state: done                 │
 │                                                                                                                                ││                            │
-│Activity                                                                                                                        ││                            │
-│▶ read_file                                                                                                                     ││                            │
-│✓ search_code                                                                                                                   ││                            │
+│                                                                                                                                ││                            │
+│                                                                                                                                ││                            │
 │                                                                                                                                ││                            │
 │                                                                                                                                ││                            │
 │                                                                                                                                ││                            │

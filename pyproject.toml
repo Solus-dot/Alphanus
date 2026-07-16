@@ -64,13 +64,13 @@ ignore = ["E501"]
 
 [tool.setuptools]
 package-dir = {"" = "src", "alphanus_bundled" = "bundled-skills"}
-packages = ["agent", "core", "tui", "skills", "alphanus_bundled"]
+packages = ["agent", "core", "skills", "alphanus_bundled"]
 py-modules = ["alphanus_cli", "alphanus_paths"]
 include-package-data = false
 
 [tool.setuptools.package-data]
 alphanus_bundled = ["**/*"]
-tui = ["theme_specs/*.json"]
+core = ["theme_specs/*.json"]
 
 [[tool.setuptools-rust.ext-modules]]
 target = "_alphanus_tui"

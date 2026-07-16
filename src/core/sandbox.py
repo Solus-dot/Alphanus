@@ -149,9 +149,7 @@ def _is_single_git_command(command: str) -> bool:
 def _run_subprocess(argv: list[str], *, cwd: Path, timeout_s: int) -> dict[str, Any]:
     start = time.perf_counter()
     safe_env = {
-        key: value
-        for key, value in os.environ.items()
-        if key in {"HOME", "LANG", "LC_ALL", "PATH", "SHELL", "TERM", "TMPDIR", "TZ"}
+        key: value for key, value in os.environ.items() if key in {"HOME", "LANG", "LC_ALL", "PATH", "SHELL", "TERM", "TMPDIR", "TZ"}
     }
     proc = subprocess.Popen(
         argv,
@@ -237,10 +235,12 @@ class SandboxRunner:
         backend = self._resolve_backend(config.backend)
         if backend == "macos-seatbelt":
             ok = shutil.which("sandbox-exec") is not None
-            return {"ok": ok, "backend": backend, "message": "sandbox-exec is required on macOS"}
+            message = "sandbox-exec is available" if ok else "sandbox-exec is required on macOS"
+            return {"ok": ok, "backend": backend, "message": message}
         if backend == "linux-bubblewrap":
             ok = shutil.which("bwrap") is not None or shutil.which("bubblewrap") is not None
-            return {"ok": ok, "backend": backend, "message": "Install bubblewrap: apt install bubblewrap / dnf install bubblewrap"}
+            message = "bubblewrap is available" if ok else "Install bubblewrap: apt install bubblewrap / dnf install bubblewrap"
+            return {"ok": ok, "backend": backend, "message": message}
         if backend == "windows-native":
             return {
                 "ok": False,
@@ -306,8 +306,7 @@ class SandboxRunner:
             )
         )
         extra_read_rules = "\n".join(
-            f'(allow file-read* (literal "{_seatbelt_escape(str(root))}"))\n'
-            f'(allow file-read* (subpath "{_seatbelt_escape(str(root))}"))'
+            f'(allow file-read* (literal "{_seatbelt_escape(str(root))}"))\n(allow file-read* (subpath "{_seatbelt_escape(str(root))}"))'
             for root in extra_roots
         )
         read_roots = "\n".join(

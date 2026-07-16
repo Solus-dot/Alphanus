@@ -1130,6 +1130,8 @@ def test_tool_is_blocked_for_local_project_uses_capability_metadata(tmp_path: Pa
     home.mkdir()
     ws.mkdir()
     (skills / "project-ops").mkdir(parents=True)
+    (skills / "local-search").mkdir(parents=True)
+    (skills / "search-ops").mkdir(parents=True)
     (skills / "utilities").mkdir(parents=True)
 
     (skills / "project-ops" / "SKILL.md").write_text(
@@ -1168,8 +1170,71 @@ description: Utility tools
 tools:
   allowed-tools:
     - open_url
+    - search_project_files
 ---
 Utility helpers.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "local-search" / "SKILL.md").write_text(
+        """
+---
+name: local-search
+description: Local search tools
+tools:
+  allowed-tools:
+    - search_local_files
+---
+Search project files.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "local-search" / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "search_local_files": {
+    "capability": "local_search",
+    "description": "Search local files",
+    "parameters": {"type": "object", "properties": {}, "required": []}
+  }
+}
+
+def execute(tool_name, args, env):
+    return {"ok": True, "data": {}, "error": None, "meta": {}}
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "search-ops" / "SKILL.md").write_text(
+        """
+---
+name: search-ops
+description: Local retrieval tools
+tools:
+  allowed-tools:
+    - retrieve_knowledge
+    - retrieval_stats
+---
+Retrieve indexed project knowledge.
+""".strip(),
+        encoding="utf-8",
+    )
+    (skills / "search-ops" / "tools.py").write_text(
+        """
+TOOL_SPECS = {
+  "retrieve_knowledge": {
+    "capability": "knowledge_retrieve",
+    "description": "Retrieve local knowledge",
+    "parameters": {"type": "object", "properties": {}, "required": []}
+  },
+  "retrieval_stats": {
+    "capability": "retrieval_stats",
+    "description": "Inspect the local retrieval index",
+    "parameters": {"type": "object", "properties": {}, "required": []}
+  }
+}
+
+def execute(tool_name, args, env):
+    return {"ok": True, "data": {}, "error": None, "meta": {}}
 """.strip(),
         encoding="utf-8",
     )
@@ -1179,6 +1244,11 @@ TOOL_SPECS = {
   "open_url": {
     "capability": "utility_open_url",
     "description": "Open URL",
+    "parameters": {"type": "object", "properties": {}, "required": []}
+  },
+  "search_project_files": {
+    "capability": "utility_file_search",
+    "description": "Search project filenames",
     "parameters": {"type": "object", "properties": {}, "required": []}
   }
 }
@@ -1197,6 +1267,10 @@ def execute(tool_name, args, env):
     )
 
     assert runtime.tool_is_blocked_for_local_project("read_blob") is False
+    assert runtime.tool_is_blocked_for_local_project("search_local_files") is False
+    assert runtime.tool_is_blocked_for_local_project("retrieve_knowledge") is False
+    assert runtime.tool_is_blocked_for_local_project("retrieval_stats") is False
+    assert runtime.tool_is_blocked_for_local_project("search_project_files") is False
     assert runtime.tool_is_blocked_for_local_project("open_url") is True
     assert runtime.tool_is_blocked_for_local_project("request_user_input") is False
     assert runtime.tool_is_blocked_for_local_project("unknown_tool") is True

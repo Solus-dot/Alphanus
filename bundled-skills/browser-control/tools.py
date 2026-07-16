@@ -122,6 +122,7 @@ def _current_page(args: dict[str, object]) -> dict[str, object]:
         # Text extraction is intentionally omitted; URL/title is the useful common denominator.
         candidates = _mac_browser_candidates(browser)
 
+        timed_out: list[str] = []
         for app_name in candidates:
             if app_name == "Safari":
                 script = (
@@ -143,11 +144,27 @@ def _current_page(args: dict[str, object]) -> dict[str, object]:
                     "end if\n"
                     "end tell"
                 )
-            proc = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=5)
+            try:
+                proc = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=5)
+            except subprocess.TimeoutExpired:
+                # A browser may be running without Automation permission. Do not
+                # let that candidate prevent best-effort probing of the rest.
+                timed_out.append(app_name)
+                continue
             if proc.returncode == 0 and proc.stdout.strip():
                 title, _, url = proc.stdout.partition("\n")
                 return _ok({"platform": system, "browser": app_name, "title": title.strip(), "url": url.strip(), "text": ""})
-    return _err("E_UNSUPPORTED", "Current browser page inspection is not supported on this platform/browser", {"platform": system, "browser": browser})
+        if timed_out:
+            return _err(
+                "E_TIMEOUT",
+                "Browser inspection timed out; allow Automation access for Alphanus and the selected browser",
+                {"platform": system, "browser": browser, "timed_out": timed_out},
+            )
+    return _err(
+        "E_UNSUPPORTED",
+        "Current browser page inspection is not supported on this platform/browser",
+        {"platform": system, "browser": browser},
+    )
 
 
 def execute(tool_name: str, args: dict[str, object], _env: ToolExecutionEnv) -> dict[str, Any]:

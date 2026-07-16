@@ -130,7 +130,16 @@ def test_app_control_parses_macos_running_apps(mocker, tmp_path: Path) -> None:
 
     class _Proc:
         returncode = 0
-        stdout = "Finder\nTerminal\n"
+        stdout = """
+ 1) "Finder" ASN:0x0-0x1:
+    bundleID="com.apple.finder"
+    pid = 1 type="Foreground" flavor=3
+ 2) "backgroundd" ASN:0x0-0x2:
+    pid = 2 type="BackgroundOnly" flavor=3
+ 3) "Terminal" ASN:0x0-0x3:
+    bundleID="com.apple.Terminal"
+    pid = 3 type="Foreground" flavor=3
+"""
         stderr = ""
 
     mocker.patch.object(module.subprocess, "run", return_value=_Proc())
@@ -142,7 +151,7 @@ def test_app_control_parses_macos_running_apps(mocker, tmp_path: Path) -> None:
     assert out["data"]["apps"] == ["Finder", "Terminal"]  # type: ignore[index]
 
 
-def test_app_control_escapes_macos_applescript_app_names(mocker, tmp_path: Path) -> None:
+def test_app_control_focus_uses_open_without_shell_interpolation(mocker, tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     module = _load_tool_module(runtime, "focus_app")
     mocker.patch.object(module.platform, "system", return_value="Darwin")
@@ -163,8 +172,7 @@ def test_app_control_escapes_macos_applescript_app_names(mocker, tmp_path: Path)
     out = _execute(runtime, "app-control", "focus_app", {"name": name, "confirm_focus": True})
 
     assert out["ok"] is True
-    script = commands[-1][2]
-    assert script == 'tell application "Bad\\" & do shell script \\"touch /tmp/pwned\\" & \\"" to activate'
+    assert commands[-1] == ["open", "-a", name]
 
 
 def test_app_control_windows_open_passes_app_name_through_environment(mocker, tmp_path: Path) -> None:
@@ -255,6 +263,29 @@ def test_browser_current_page_uses_linefeed_in_macos_applescript(mocker, tmp_pat
     script = commands[-1][2]
     assert "return pageTitle & linefeed & pageUrl" in script
     assert 'return pageTitle & "\n" & pageUrl' not in script
+
+
+def test_browser_current_page_skips_timed_out_macos_candidate(mocker, tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    module = _load_tool_module(runtime, "get_current_browser_page")
+    mocker.patch.object(module.platform, "system", return_value="Darwin")
+
+    class _Proc:
+        returncode = 0
+        stdout = "Example Domain\nhttps://example.com\n"
+        stderr = ""
+
+    run = mocker.patch.object(
+        module.subprocess,
+        "run",
+        side_effect=[module.subprocess.TimeoutExpired(["osascript"], 5), _Proc()],
+    )
+
+    out = _execute(runtime, "browser-control", "get_current_browser_page", {})
+
+    assert out["ok"] is True
+    assert out["data"]["browser"] == "Google Chrome"  # type: ignore[index]
+    assert run.call_count == 2
 
 
 def test_local_search_finds_filename_and_content_matches(tmp_path: Path) -> None:
@@ -453,6 +484,29 @@ def test_screenshot_capture_rejects_protected_output_path(tmp_path: Path) -> Non
 
     assert out["ok"] is False
     assert out["error"]["code"] == "E_POLICY"  # type: ignore[index]
+
+
+def test_screenshot_capture_explains_macos_screen_recording_denial(mocker, tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    module = _load_tool_module(runtime, "capture_screenshot")
+    mocker.patch.object(module.platform, "system", return_value="Darwin")
+
+    class _Proc:
+        returncode = 1
+        stdout = ""
+        stderr = "could not create image from display"
+
+    mocker.patch.object(module.subprocess, "run", return_value=_Proc())
+    out = _execute(
+        runtime,
+        "screenshot-ocr",
+        "capture_screenshot",
+        {"output_path": str(Path(runtime.project.project_root) / "screen.png"), "confirm_capture": True},
+    )
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "E_PERMISSION"  # type: ignore[index]
+    assert "Screen Recording" in out["error"]["message"]  # type: ignore[index]
 
 
 def test_screenshot_windows_capture_passes_output_path_through_environment(mocker, tmp_path: Path) -> None:

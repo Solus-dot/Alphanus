@@ -235,6 +235,43 @@ def test_dict_roundtrip_preserves_context_summaries():
     assert loaded.context_summary(turn.id) == "summarized branch"
 
 
+def test_dict_roundtrip_preserves_reasoning_content():
+    tree = ConvTree()
+    turn = tree.add_turn("hello")
+    tree.complete_turn(turn.id, "world", "private trace")
+
+    loaded = ConvTree.from_dict(tree.to_dict())
+
+    assert loaded.nodes[turn.id].reasoning_content == "private trace"
+
+
+def test_dict_roundtrip_preserves_ordered_activity_trace():
+    tree = ConvTree()
+    turn = tree.add_turn("do work")
+    activity = [
+        {"kind": "reasoning", "text": "first"},
+        {
+            "kind": "tool",
+            "id": "one",
+            "stream_id": "stream-one",
+            "name": "create_file",
+            "completed": True,
+            "filepath": "demo.py",
+            "preview": "print('hello')",
+            "language": "",
+            "preview_truncated": False,
+        },
+        {"kind": "reasoning", "text": "second"},
+        {"kind": "tool", "id": "two", "name": "edit", "completed": True},
+        {"kind": "reasoning", "text": "third"},
+    ]
+    tree.complete_turn(turn.id, "done", "firstsecondthird", activity)
+
+    loaded = ConvTree.from_dict(tree.to_dict())
+
+    assert loaded.nodes[turn.id].activity_trace == activity
+
+
 def test_user_text_strips_inline_attachment_blocks():
     tree = ConvTree()
     content = [

@@ -2,16 +2,16 @@
 source: src-rust/app.rs
 expression: "fixture_snapshot(80, 24)"
 ---
-╭ Alphanus Alpha · Example ────────────────────────────────────────────────────╮
-││ You                                                                         │
-│Build a reliable terminal agent.                                              │
+╭ Alphanus ────────────────────────────────────────────────────────────────────╮
+│┃ Build a reliable terminal agent.                                            │
 │                                                                              │
-││ Alphanus                                                                    │
-│I’ll inspect the repository and stream progress here.                         │
+│┃ I’ll inspect the repository and stream progress here.                       │
+│┃ ▶ read_file                                                                 │
+│┃ ✓ search_code                                                               │
 │                                                                              │
-│Activity                                                                      │
-│▶ read_file                                                                   │
-│✓ search_code                                                                 │
+│                                                                              │
+│                                                                              │
+│                                                                              │
 │                                                                              │
 │                                                                              │
 │                                                                              │

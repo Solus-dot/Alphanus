@@ -104,7 +104,9 @@ class ProjectRuntime:
         if not self.project_root.is_dir():
             raise NotADirectoryError(f"Project root is not a directory: {self.project_root}")
         self.blocked_patterns = list(blocked_patterns or DEFAULT_BLOCKED_PATTERNS)
-        self.permission_mode = permission_mode if permission_mode in {"read-only", "project-write", "danger-full-access"} else "project-write"
+        self.permission_mode = (
+            permission_mode if permission_mode in {"read-only", "project-write", "danger-full-access"} else "project-write"
+        )
         self.sandbox_config = SandboxConfig(
             mode=self.permission_mode,
             network=bool(network_access),
@@ -432,7 +434,7 @@ class ProjectRuntime:
 
     def write_path_requires_approval(self, path: str, *, overwrite: bool = False) -> bool:
         target = self._resolve_write_path(path)
-        return bool(overwrite and target.exists() and self._is_outside_project(target))
+        return self._is_outside_project(target)
 
     def delete_path_requires_approval(self, path: str, *, recursive: bool = False) -> bool:
         target = self._resolve_write_path(path)
@@ -443,11 +445,7 @@ class ProjectRuntime:
     def move_path_requires_approval(self, source_path: str, destination_path: str, *, overwrite: bool = False) -> bool:
         source = self._resolve_write_path(source_path)
         destination = self._resolve_write_path(destination_path)
-        return bool(
-            overwrite
-            or self._is_outside_project(source)
-            or self._is_outside_project(destination)
-        )
+        return bool(overwrite or self._is_outside_project(source) or self._is_outside_project(destination))
 
     def shell_cwd_requires_approval(self, cwd: str | None) -> bool:
         if not cwd:
@@ -456,6 +454,76 @@ class ProjectRuntime:
         if target.is_file():
             target = target.parent
         return self._is_outside_project(target)
+
+    def shell_command_external_paths(self, command: str) -> tuple[Path, ...]:
+        """Find external paths explicitly present in a shell command.
+
+        These paths are approval boundaries and, after approval, narrow sandbox
+        grants. Non-existent targets are retained so approved redirections and
+        creation commands can receive a grant for their nearest existing parent.
+        """
+        trusted_runtime_roots = tuple(Path(root) for root in ("/bin", "/sbin", "/usr", "/System", "/Library", "/opt", "/lib"))
+        external_paths: list[Path] = []
+        seen: set[str] = set()
+        try:
+            lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>()")
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            tokens = list(lexer)
+        except ValueError:
+            tokens = shell_tokens(command)
+        for token in tokens:
+            if token and all(character in ";&|<>()" for character in token):
+                continue
+            candidate_text = token.split("=", 1)[1] if "=" in token else token
+            if candidate_text.startswith("~/"):
+                candidate_text = os.path.expanduser(candidate_text)
+            candidate = Path(candidate_text)
+            if not candidate.is_absolute():
+                continue
+            resolved = candidate.resolve(strict=False)
+            if self._is_relative_to(resolved, self.project_root):
+                continue
+            if any(self._is_relative_to(resolved, root) for root in trusted_runtime_roots):
+                continue
+            if resolved.exists():
+                # Reuse normal read validation so protected and restricted paths
+                # do not become accessible merely because they appeared in a command.
+                resolved = self._resolve_read_path(str(resolved), extra_allowed_roots=[str(resolved)])
+            else:
+                for blocked_root in (Path("/etc"), Path("/var"), Path("/System"), Path("/bin"), Path("/usr")):
+                    if self._is_relative_to(resolved, blocked_root):
+                        raise PermissionError("Shell command path is in restricted system location")
+                if self._is_protected_project_path(resolved):
+                    raise PermissionError("Shell command path targets protected internal state or project paths")
+            key = str(resolved)
+            if key not in seen:
+                seen.add(key)
+                external_paths.append(resolved)
+        return tuple(external_paths)
+
+    @staticmethod
+    def shell_command_external_grant_roots(paths: Iterable[Path]) -> tuple[Path, ...]:
+        """Return bindable roots for approved external command paths.
+
+        Existing files can be granted directly. A target that does not exist yet
+        must use its nearest existing parent because both Seatbelt and bubblewrap
+        require a real path before the command starts.
+        """
+        roots: list[Path] = []
+        seen: set[str] = set()
+        for path in paths:
+            target = Path(path).resolve(strict=False)
+            grant = target
+            while not grant.exists() and grant != grant.parent:
+                grant = grant.parent
+            if not grant.exists():
+                continue
+            key = str(grant.resolve())
+            if key not in seen:
+                seen.add(key)
+                roots.append(Path(key))
+        return tuple(roots)
 
     def _resolve_read_path(self, path: str, extra_allowed_roots: Iterable[str] | None = None) -> Path:
         raw = self._normalize_project_relative(path)
@@ -638,13 +706,17 @@ class ProjectRuntime:
         target.write_text(content, encoding="utf-8")
         return str(target)
 
-    def create_directory(self, path: str) -> str:
+    def create_directory(self, path: str, *, approved: bool = False) -> str:
         target = self._resolve_write_path(path)
+        if self.write_path_requires_approval(path) and self.permission_mode != "danger-full-access" and not approved:
+            raise PermissionError("External directory creation requires approval before execution")
         target.mkdir(parents=True, exist_ok=True)
         return str(target)
 
-    def edit_file(self, filepath: str, content: str) -> str:
+    def edit_file(self, filepath: str, content: str, *, approved: bool = False) -> str:
         target = self._resolve_write_path(filepath)
+        if self.write_path_requires_approval(filepath, overwrite=True) and self.permission_mode != "danger-full-access" and not approved:
+            raise PermissionError("External file edit requires approval before execution")
         if not target.exists():
             raise FileNotFoundError(str(target))
         target.write_text(content, encoding="utf-8")
@@ -663,7 +735,11 @@ class ProjectRuntime:
             raise PermissionError("Moving protected internal state or project paths is not allowed")
         if source == destination:
             raise ValueError("Source and destination must be different")
-        if self.move_path_requires_approval(source_path, destination_path, overwrite=overwrite) and self.permission_mode != "danger-full-access" and not approved:
+        if (
+            self.move_path_requires_approval(source_path, destination_path, overwrite=overwrite)
+            and self.permission_mode != "danger-full-access"
+            and not approved
+        ):
             raise PermissionError("Move crosses the project-write approval boundary")
 
         if destination.exists():
@@ -1369,7 +1445,9 @@ class ProjectRuntime:
             return True
         if executable in {"chmod", "chown"} and any(part == "-R" or part.startswith("-R") for part in remaining):
             return True
-        if executable in {"rm", "trash"} and any(part in {"-r", "-R", "-rf", "-fr"} or ("r" in part and part.startswith("-")) for part in remaining):
+        if executable in {"rm", "trash"} and any(
+            part in {"-r", "-R", "-rf", "-fr"} or ("r" in part and part.startswith("-")) for part in remaining
+        ):
             return True
         if executable == "git":
             subcommand = ProjectCommandPolicy.git_subcommand(argv[executable_index:])
@@ -1402,14 +1480,21 @@ class ProjectRuntime:
                 raise PermissionError("Commands touching protected internal state are not allowed")
             if self._shell_command_touches_protected_project_path(command_text, target_cwd):
                 raise PermissionError("Commands touching protected project paths are not allowed")
-            if self.permission_mode == "read-only" and ProjectCommandPolicy.classify_shell_command(shell_tokens(command_text)) != "readonly":
+            if (
+                self.permission_mode == "read-only"
+                and ProjectCommandPolicy.classify_shell_command(shell_tokens(command_text)) != "readonly"
+            ):
                 raise PermissionError("Mutating shell commands are not allowed in read-only mode")
             external_cwd = self.shell_cwd_requires_approval(str(target_cwd))
+            external_paths = () if self.permission_mode == "danger-full-access" else self.shell_command_external_paths(command_text)
             if self.permission_mode != "danger-full-access" and external_cwd and not approved:
                 raise PermissionError("Shell command outside the project requires approval before execution")
+            if self.permission_mode != "danger-full-access" and external_paths and not approved:
+                raise PermissionError("Shell command accessing paths outside the project requires approval before execution")
             if self.permission_mode != "danger-full-access" and self.shell_command_requires_approval(command_text) and not approved:
                 raise PermissionError("Shell command requires approval before execution")
             extra_roots = [target_cwd] if external_cwd else []
+            extra_roots.extend(self.shell_command_external_grant_roots(external_paths))
             run = self._run_shell_string(command_text, timeout_s=timeout_s, cwd=target_cwd, extra_roots=extra_roots)
             sandbox_error = run.get("sandbox_error")
             if isinstance(sandbox_error, dict):
@@ -1425,10 +1510,9 @@ class ProjectRuntime:
             # Shell commands do not provide a reliable list of touched paths.
             # Avoid O(repository-size) before/after fingerprints and report the
             # conservative mutation classification to downstream auditing.
-            project_changed = (
-                ProjectCommandPolicy.classify_shell_command(shell_tokens(command_text)) == "mutating"
-                or shell_has_approval_boundary(command_text)
-            )
+            project_changed = ProjectCommandPolicy.classify_shell_command(
+                shell_tokens(command_text)
+            ) == "mutating" or shell_has_approval_boundary(command_text)
             if run["returncode"] != 0:
                 detail = (run["stderr"] or run["stdout"] or "").strip()
                 message = f"Command exited with code {run['returncode']}"

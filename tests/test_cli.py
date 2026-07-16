@@ -19,7 +19,6 @@ def _paths(tmp_path: Path) -> SimpleNamespace:
         app_root=tmp_path,
         state_root=root,
         config_path=root / "config" / "config.toml",
-        dotenv_path=root / ".env",
         bundled_skills_dir=tmp_path / "bundled-skills",
         user_skills_dir=root / "skills",
         repo_root=tmp_path,
@@ -28,12 +27,26 @@ def _paths(tmp_path: Path) -> SimpleNamespace:
 
 def _init_args(**updates: object) -> SimpleNamespace:
     values = {
-        "section": "all", "non_interactive": True, "reset": False, "project_root": "", "debug": False,
-        "base_url": "http://127.0.0.1:8080", "responses_endpoint": "", "model_endpoint": "",
-        "models_endpoint": "", "endpoint_mode": "chat", "backend_profile": "auto", "api_key": "",
-        "api_key_env": "ALPHANUS_API_KEY", "backend_api_key_env": "", "search_provider": "searxng",
-        "search_fallback_provider": "none", "searxng_base_url": "", "tavily_api_key": "",
-        "tavily_api_key_env": "TAVILY_API_KEY", "theme": "classic",
+        "section": "all",
+        "non_interactive": True,
+        "reset": False,
+        "project_root": "",
+        "debug": False,
+        "base_url": "http://127.0.0.1:8080",
+        "responses_endpoint": "",
+        "model_endpoint": "",
+        "models_endpoint": "",
+        "endpoint_mode": "chat",
+        "backend_profile": "auto",
+        "api_key": "",
+        "api_key_env": "ALPHANUS_API_KEY",
+        "backend_api_key_env": "",
+        "search_provider": "searxng",
+        "search_fallback_provider": "none",
+        "searxng_base_url": "",
+        "tavily_api_key": "",
+        "tavily_api_key_env": "TAVILY_API_KEY",
+        "theme": "classic",
     }
     values.update(updates)
     return SimpleNamespace(**values)
@@ -44,7 +57,7 @@ def test_init_writes_owner_only_versioned_toml_and_no_dotenv(tmp_path: Path, mon
     monkeypatch.setattr(alphanus_cli, "get_app_paths", lambda: paths)
     assert alphanus_cli._run_init(_init_args()) == 0
     assert paths.config_path.stat().st_mode & 0o777 == 0o600
-    assert not paths.dotenv_path.exists()
+    assert not (paths.state_root / ".env").exists()
     assert load_global_config(paths.config_path)["config_version"] == 1
 
 
@@ -57,6 +70,27 @@ def test_resolve_project_root_uses_override(tmp_path: Path) -> None:
     target = tmp_path / "workspace"
     target.mkdir()
     assert alphanus_cli.resolve_project_root({}, override=str(target)) == target.resolve()
+
+
+def test_doctor_json_ok_matches_nonzero_exit_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    output = io.StringIO()
+    report = {
+        "agent": {"ready": True, "endpoint_policy_error": ""},
+        "project": {"exists": True, "writable": True},
+        "search": {"ready": False},
+        "retrieval": {"ready": True},
+    }
+    agent = SimpleNamespace(doctor_report=lambda: report)
+    args = SimpleNamespace(json=True, debug=False, project_root="")
+    monkeypatch.setattr(alphanus_cli, "get_app_paths", lambda: _paths(tmp_path))
+    monkeypatch.setattr(alphanus_cli, "_load_runtime_config", lambda _paths, _args: ({"logging": {}}, []))
+    monkeypatch.setattr(alphanus_cli, "_build_agent_runtime", lambda *_args, **_kwargs: (None, None, None, agent))
+    monkeypatch.setattr(alphanus_cli.sys, "stdout", output)
+
+    assert alphanus_cli._run_doctor(args) == 1
+    payload = json.loads(output.getvalue())
+    assert payload["ok"] is False
+    assert payload["failures"] == ["search"]
 
 
 class _FakeMemory:
@@ -78,8 +112,7 @@ class _FakeAgent:
 
 
 def _exec_args(prompt: str = "hello") -> SimpleNamespace:
-    return SimpleNamespace(prompt=prompt, input="text", approval_policy="deny", no_thinking=False,
-                           project_root="", debug=False)
+    return SimpleNamespace(prompt=prompt, input="text", approval_policy="deny", no_thinking=False, project_root="", debug=False)
 
 
 def test_exec_emits_versioned_jsonl_and_success_exit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -88,7 +121,9 @@ def test_exec_emits_versioned_jsonl_and_success_exit(tmp_path: Path, monkeypatch
     result = AgentTurnResult(status="done", content="final", reasoning="", skill_exchanges=[])
     monkeypatch.setattr(alphanus_cli, "get_app_paths", lambda: paths)
     monkeypatch.setattr(alphanus_cli, "_load_runtime_config", lambda _paths, _args: ({"logging": {}}, []))
-    monkeypatch.setattr(alphanus_cli, "_build_agent_runtime", lambda *_args, **_kwargs: (None, _FakeMemory(), None, _FakeAgent(result, tmp_path)))
+    monkeypatch.setattr(
+        alphanus_cli, "_build_agent_runtime", lambda *_args, **_kwargs: (None, _FakeMemory(), None, _FakeAgent(result, tmp_path))
+    )
     monkeypatch.setattr(alphanus_cli.sys, "stdout", output)
     assert alphanus_cli._run_exec(_exec_args()) == EXIT_SUCCESS
     records = [json.loads(line) for line in output.getvalue().splitlines()]
@@ -102,7 +137,9 @@ def test_exec_policy_denial_has_stable_exit_code(tmp_path: Path, monkeypatch: py
     result = AgentTurnResult(status="error", content="", reasoning="", skill_exchanges=[], error="approval denied")
     monkeypatch.setattr(alphanus_cli, "get_app_paths", lambda: _paths(tmp_path))
     monkeypatch.setattr(alphanus_cli, "_load_runtime_config", lambda _paths, _args: ({"logging": {}}, []))
-    monkeypatch.setattr(alphanus_cli, "_build_agent_runtime", lambda *_args, **_kwargs: (None, _FakeMemory(), None, _FakeAgent(result, tmp_path)))
+    monkeypatch.setattr(
+        alphanus_cli, "_build_agent_runtime", lambda *_args, **_kwargs: (None, _FakeMemory(), None, _FakeAgent(result, tmp_path))
+    )
     monkeypatch.setattr(alphanus_cli.sys, "stdout", output)
     assert alphanus_cli._run_exec(_exec_args()) == EXIT_POLICY_DENIED
 

@@ -47,6 +47,15 @@ _DRAFT_LIMITATION_RE = re.compile(
 )
 _PROJECT_FILE_TOKEN_RE = re.compile(r"(?<![\w/.-])(?:[\w.-]+/)*[\w.-]+\.[a-z0-9]{1,16}\b", re.IGNORECASE)
 _PROJECT_ABS_PATH_RE = re.compile(r"(?<![:/\w])(?:~/|/)[^\s\"'`]+")
+_WELL_KNOWN_DIRECTORY_RE = re.compile(
+    r"\b(?:in|into|to|on|under)\s+(?:my\s+|the\s+)?(?P<directory>desktop|downloads|documents)\b",
+    re.IGNORECASE,
+)
+_FILESYSTEM_DIRECTORY_CONTEXT_RE = re.compile(
+    r"\b(?:file|folder|directory|script|code|document|archive|project|repo(?:sitory)?|shortcut)s?\b|\b(?:save|write)\b",
+    re.IGNORECASE,
+)
+
 
 class TurnClassifier:
     def __init__(
@@ -192,6 +201,17 @@ class TurnClassifier:
                 resolved.relative_to(project_root)
             except ValueError:
                 return resolved_str
+        known_directory = _WELL_KNOWN_DIRECTORY_RE.search(text or "")
+        has_filesystem_context = bool(
+            _FILESYSTEM_DIRECTORY_CONTEXT_RE.search(text or "") or _PROJECT_FILE_TOKEN_RE.search(text or "")
+        )
+        if known_directory and has_filesystem_context:
+            directory_name = known_directory.group("directory").capitalize()
+            resolved = (Path.home() / directory_name).resolve(strict=False)
+            try:
+                resolved.relative_to(project_root)
+            except ValueError:
+                return str(resolved)
         return ""
 
     def _should_model_classify(self) -> bool:
@@ -534,8 +554,15 @@ class TurnClassifier:
         return "not_completed"
 
     def classify(self, ctx: SkillContext, stop_event=None) -> TurnClassification:
+        explicit_external_path = self._explicit_path_outside_project(ctx.user_input)
+        rule_requires_action = bool(explicit_external_path) and self._request_requires_project_mutation(
+            ctx.user_input,
+            getattr(ctx, "recent_routing_hint", ""),
+        )
         seed = TurnClassification(
-            explicit_external_path=self._explicit_path_outside_project(ctx.user_input),
+            requires_project_action=rule_requires_action,
+            prefer_local_project_tools=False,
+            explicit_external_path=explicit_external_path,
             source="rules",
         )
         if not self._should_model_classify():
@@ -547,7 +574,8 @@ class TurnClassifier:
             '"prefer_local_project_tools":false,"followup_kind":"new_request"}\n'
             "Allowed followup_kind values: new_request, confirmation, contextual_followup.\n"
             "Set requires_project_action only for actions on project files, folders, projects, or repository state. "
-            "Do not set it for desktop apps, browser actions, screenshots, OCR, package managers, or general system checks.\n"
+            "A request to create or save a file in the Desktop directory is a filesystem action. "
+            "Do not set it for desktop applications, browser actions, screenshots, OCR, package managers, or general system checks.\n"
             "Do not explain."
         )
         user_lines = [f"User request:\n{ctx.user_input}"]
@@ -575,8 +603,8 @@ class TurnClassifier:
             followup_kind = seed.followup_kind
         merged = TurnClassification(
             time_sensitive=bool(parsed.get("time_sensitive", seed.time_sensitive)),
-            requires_project_action=bool(parsed.get("requires_project_action", seed.requires_project_action)),
-            prefer_local_project_tools=bool(parsed.get("prefer_local_project_tools", seed.prefer_local_project_tools)),
+            requires_project_action=seed.requires_project_action or bool(parsed.get("requires_project_action", False)),
+            prefer_local_project_tools=seed.prefer_local_project_tools or bool(parsed.get("prefer_local_project_tools", False)),
             explicit_external_path=seed.explicit_external_path,
             followup_kind=followup_kind,
             used_model=True,

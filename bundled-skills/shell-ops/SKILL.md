@@ -18,6 +18,7 @@ Rules:
 - Do not ask for duplicate confirmation in normal assistant text before calling `shell_command`.
 - Do not run malicious, credential-harvesting, privacy-invasive, system-destructive, or unrelated destructive shell commands.
 - Commands run in the project `cwd` by default. If the user explicitly named another directory and command execution there is required, pass that absolute path as the tool `cwd`.
+- On macOS and Linux, invoke Python scripts with `python3`, not `python`.
 - Each `shell_command` call runs independently and does not persist shell state after the command exits.
 - Shell syntax is available. You may use normal shell chaining and composition such as `&&`, `||`, `;`, pipes, redirects, environment assignments, globbing, and shell wrappers when that is the clearest way to perform the task.
 - Keep commands transparent and reviewable. Prefer straightforward commands over dense one-liners when separate calls would be clearer.

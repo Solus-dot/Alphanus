@@ -14,7 +14,8 @@ TOOL_SPECS = {
             "Run a shell command using the user's shell. Commands run in the project by default; pass cwd only when "
             "the user explicitly named another directory. Shell syntax such as &&, ;, pipes, redirects, environment "
             "assignments, and globbing is allowed. The tool itself asks for confirmation when required, so do not ask "
-            "separately in assistant text. Use timeout_s for long builds, installs, updates, or tests. Do not run "
+            "separately in assistant text. On macOS and Linux, invoke Python scripts with python3 rather than python. "
+            "Use timeout_s for long builds, installs, updates, or tests. Do not run "
             "malicious or unrelated destructive commands."
         ),
         "parameters": {
@@ -40,6 +41,8 @@ def _timeout_s(args: dict[str, object]) -> int:
     raw = args.get("timeout_s")
     if raw is None:
         return _DEFAULT_TIMEOUT_S
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        raise ValueError("timeout_s must be an integer")
     try:
         value = int(raw)
     except (TypeError, ValueError):
@@ -57,7 +60,16 @@ def execute(tool_name: str, args: dict[str, object], env: ToolExecutionEnv):
     cwd = str(args["cwd"]).strip() if args.get("cwd") is not None else None
     timeout_s = _timeout_s(args)
     approved = False
-    needs_approval = env.project.shell_command_requires_approval(command) or env.project.shell_cwd_requires_approval(cwd)
+    external_paths = (
+        ()
+        if env.project.permission_mode == "danger-full-access"
+        else env.project.shell_command_external_paths(command)
+    )
+    needs_approval = (
+        env.project.shell_command_requires_approval(command)
+        or env.project.shell_cwd_requires_approval(cwd)
+        or bool(external_paths)
+    )
     if needs_approval and env.project.permission_mode != "danger-full-access":
         if not env.request_approval:
             raise PermissionError("Approval callback is required")
@@ -67,6 +79,7 @@ def execute(tool_name: str, args: dict[str, object], env: ToolExecutionEnv):
                     "kind": "shell_command",
                     "command": command,
                     "cwd": str(cwd or env.project.project_root),
+                    "paths": [str(path) for path in external_paths],
                     "reason": "Command crosses the project-write approval boundary.",
                 }
             )

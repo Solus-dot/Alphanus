@@ -88,6 +88,34 @@ def test_project_ops_returns_rich_file_metadata(tmp_path: Path):
     assert read["data"]["line_count"] == 3
 
 
+def test_project_ops_requests_approval_for_new_external_writes(tmp_path: Path):
+    runtime = _runtime(tmp_path)
+    skill = runtime.get_skill("project-ops")
+    assert skill is not None
+    ctx = _ctx(str(runtime.project.project_root))
+    external = tmp_path / "home" / "Desktop" / "sorting.py"
+    approvals: list[object] = []
+
+    result = runtime.execute_tool_call(
+        "create_file",
+        {"filepath": str(external), "content": "print(sorted([3, 1, 2]))\n"},
+        selected=[skill],
+        ctx=ctx,
+        request_approval=lambda request: approvals.append(request) or True,
+    )
+
+    assert result["ok"] is True
+    assert external.read_text(encoding="utf-8") == "print(sorted([3, 1, 2]))\n"
+    assert approvals == [
+        {
+            "kind": "project_file_write",
+            "path": str(external),
+            "operation": "write",
+            "reason": "External file write crosses the project-write approval boundary.",
+        }
+    ]
+
+
 def test_project_ops_long_write_and_edit_return_bounded_evidence(tmp_path: Path):
     runtime = _runtime(tmp_path)
     skill = runtime.get_skill("project-ops")
@@ -123,7 +151,7 @@ def test_project_ops_long_write_and_edit_return_bounded_evidence(tmp_path: Path)
     assert "+finish" in edited["data"]["diff"]
 
 
-def test_project_ops_create_file_allows_explicit_absolute_path_outside_project(tmp_path: Path):
+def test_project_ops_create_file_allows_approved_absolute_path_outside_project(tmp_path: Path):
     runtime = _runtime(tmp_path)
     skill = runtime.get_skill("project-ops")
     assert skill is not None
@@ -137,6 +165,7 @@ def test_project_ops_create_file_allows_explicit_absolute_path_outside_project(t
         {"filepath": str(target), "content": 'fn main() {\n    println!("Hello, world!");\n}\n'},
         selected=[skill],
         ctx=ctx,
+        request_approval=lambda _request: True,
     )
 
     assert created["ok"] is True
@@ -790,6 +819,7 @@ def test_project_ops_read_file_returns_full_content_until_large_cap_then_middle_
     assert huge_read["data"]["content"].endswith("\nEND\n")
     assert "chars truncated" in huge_read["data"]["content"]
     assert "original char count" in huge_read["data"]["truncation"]
+
 
 def test_project_ops_read_file_supports_section_and_numbered_output(tmp_path: Path):
     runtime = _runtime(tmp_path)

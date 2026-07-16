@@ -17,10 +17,20 @@ from core.sessions import ChatSession, SessionStore
 from core.themes import available_theme_ids, reload_themes, theme_payload
 
 TRANSCRIPT_PAGE_SIZE = 100
+TRANSCRIPT_PAGE_BYTES = 800 * 1024
+OVERSIZED_ASSISTANT_BYTES = 400 * 1024
+OVERSIZED_USER_BYTES = 64 * 1024
+OVERSIZED_REASONING_BYTES = 48 * 1024
+OVERSIZED_ACTIVITY_BYTES = 128 * 1024
 TREE_PAGE_SIZE = 250
 SESSION_PAGE_SIZE = 100
 TRANSCRIPT_FIELD_CHARS = 768
 EVENT_DATA_BYTES = 256 * 1024
+COMPLETION_CONTENT_CHARS = 64 * 1024
+MAX_ACTIVITY_ITEMS = 256
+MAX_PERSISTED_REASONING_CHARS = 512 * 1024
+TOOL_PREVIEW_CHARS = 8_000
+TOOL_PREVIEW_LINES = 140
 
 
 def _clip(value: Any, limit: int = TRANSCRIPT_FIELD_CHARS) -> str:
@@ -28,6 +38,44 @@ def _clip(value: Any, limit: int = TRANSCRIPT_FIELD_CHARS) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + f"\n… [{len(text) - limit} characters omitted]"
+
+
+def _clip_utf8(value: Any, limit: int) -> str:
+    text = str(value or "")
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    marker = f"\n… [{len(encoded) - limit} bytes omitted]"
+    content_limit = max(0, limit - len(marker.encode("utf-8")))
+    clipped = encoded[:content_limit].decode("utf-8", errors="ignore")
+    return clipped + marker
+
+
+class _BoundedTextChunks:
+    __slots__ = ("_chunks", "_length", "_limit", "_truncated")
+
+    def __init__(self, limit: int) -> None:
+        self._chunks: list[str] = []
+        self._length = 0
+        self._limit = max(0, int(limit))
+        self._truncated = False
+
+    def append(self, text: str) -> str:
+        if not text or self._length >= self._limit:
+            self._truncated = self._truncated or bool(text)
+            return ""
+        remaining = self._limit - self._length
+        accepted = text[:remaining]
+        if accepted:
+            self._chunks.append(accepted)
+            self._length += len(accepted)
+        if len(accepted) < len(text):
+            self._truncated = True
+        return accepted
+
+    def value(self) -> str:
+        text = "".join(self._chunks)
+        return text + ("\n… [reasoning truncated]" if self._truncated else "")
 
 
 def _bounded_event_data(payload: dict[str, Any]) -> dict[str, Any]:
@@ -44,12 +92,123 @@ def _bounded_event_data(payload: dict[str, Any]) -> dict[str, Any]:
     return bounded
 
 
-def _turn_view(turn: Turn, *, field_limit: int = TRANSCRIPT_FIELD_CHARS) -> dict[str, Any]:
+def _tool_activity(turn: Turn) -> list[dict[str, Any]]:
+    tools: list[dict[str, Any]] = []
+    by_id: dict[str, dict[str, Any]] = {}
+    for message in turn.skill_exchanges:
+        role = str(message.get("role") or "")
+        if role == "assistant":
+            calls = message.get("tool_calls")
+            if not isinstance(calls, list):
+                continue
+            for call in calls:
+                if not isinstance(call, dict):
+                    continue
+                function = call.get("function")
+                name = str(function.get("name") or "tool") if isinstance(function, dict) else "tool"
+                tool_id = str(call.get("id") or "")
+                item = {"id": tool_id, "name": name, "completed": False}
+                tools.append(item)
+                if tool_id:
+                    by_id[tool_id] = item
+        elif role == "tool":
+            tool_id = str(message.get("tool_call_id") or "")
+            name = str(message.get("name") or "tool")
+            failed = False
+            content = message.get("content")
+            if isinstance(content, str):
+                try:
+                    decoded = json.loads(content)
+                except json.JSONDecodeError:
+                    decoded = None
+                failed = isinstance(decoded, dict) and decoded.get("ok") is False
+            match = by_id.get(tool_id) if tool_id else None
+            if match is None:
+                match = next(
+                    (item for item in reversed(tools) if not item["completed"] and item["name"] == name),
+                    None,
+                )
+            if match is None:
+                tools.append({"id": tool_id, "name": name, "completed": True, **({"failed": True} if failed else {})})
+            else:
+                match["completed"] = True
+                if failed:
+                    match["failed"] = True
+    return tools
+
+
+def _activity_trace(turn: Turn, *, field_limit: int | None = TRANSCRIPT_FIELD_CHARS) -> list[dict[str, Any]]:
+    if turn.activity_trace:
+        activity = [dict(item) for item in turn.activity_trace]
+        if field_limit is not None:
+            for item in activity:
+                if item.get("kind") == "reasoning":
+                    item["text"] = _clip(item.get("text"), field_limit)
+        return activity
+    # Older sessions did not record event chronology. Preserve their content in
+    # the least surprising order while all newly-created turns use exact events.
+    activity: list[dict[str, Any]] = []
+    if turn.reasoning_content:
+        activity.append({"kind": "reasoning", "text": turn.reasoning_content})
+    activity.extend({"kind": "tool", **item} for item in _tool_activity(turn))
+    return activity
+
+
+def _bounded_tool_preview(content: str) -> tuple[str, bool]:
+    lines = content.splitlines()
+    preview = "\n".join(lines[:TOOL_PREVIEW_LINES])
+    truncated = len(lines) > TOOL_PREVIEW_LINES
+    if len(preview) > TOOL_PREVIEW_CHARS:
+        preview = preview[:TOOL_PREVIEW_CHARS]
+        truncated = True
+    return preview, truncated
+
+
+def _tool_preview_fields(name: str, payload: dict[str, Any], *, completed: bool = False) -> dict[str, JSONValue]:
+    canonical = name.split(":")[-1].split(".")[-1]
+    if canonical not in {"create_file", "edit_file"}:
+        return {}
+    source = payload.get("result") if completed else payload.get("arguments")
+    if not isinstance(source, dict):
+        return {}
+    if completed:
+        data = source.get("data")
+        if not isinstance(data, dict):
+            return {}
+        filepath = str(data.get("filepath") or "")
+        content = data.get("diff") if canonical == "edit_file" else data.get("content_preview")
+        language = "diff" if canonical == "edit_file" and isinstance(content, str) else ""
+        already_truncated = bool(data.get("diff_truncated") or data.get("content_preview_truncated"))
+    else:
+        filepath = str(source.get("filepath") or "")
+        content = source.get("content")
+        language = ""
+        already_truncated = False
+    fields: dict[str, JSONValue] = {"filepath": filepath}
+    if isinstance(content, str) and content:
+        preview, truncated = _bounded_tool_preview(content)
+        fields.update(
+            {
+                "preview": preview,
+                "preview_truncated": truncated or already_truncated,
+                "language": language,
+            }
+        )
+    return fields
+
+
+def _turn_view(turn: Turn, *, field_limit: int | None = TRANSCRIPT_FIELD_CHARS) -> dict[str, Any]:
+    def display(value: Any, limit: int | None = field_limit) -> str:
+        return str(value or "") if limit is None else _clip(value, limit)
+
     return {
         "id": turn.id,
-        "user": _clip(turn.user_text(), field_limit),
-        "attachments": _clip(turn.attachment_summary(), min(256, field_limit)),
-        "assistant": _clip(turn.assistant_content, field_limit),
+        "user": display(turn.user_text()),
+        "attachments": display(turn.attachment_summary(), 256),
+        "assistant": display(turn.assistant_content),
+        "reasoning": display(turn.reasoning_content),
+        "tools": _tool_activity(turn)[:MAX_ACTIVITY_ITEMS],
+        "activity": _activity_trace(turn, field_limit=field_limit),
         "assistant_state": turn.assistant_state,
         "parent": turn.parent,
         "children": list(turn.children),
@@ -57,6 +216,125 @@ def _turn_view(turn: Turn, *, field_limit: int = TRANSCRIPT_FIELD_CHARS) -> dict
         "branch_root": turn.branch_root,
         "tool_exchange_count": len(turn.skill_exchanges),
     }
+
+
+def _tree_turn_view(turn: Turn) -> dict[str, Any]:
+    return {
+        "id": turn.id,
+        "user": _clip(turn.user_text(), 120),
+        "assistant_state": turn.assistant_state,
+        "parent": turn.parent,
+        "children": list(turn.children),
+        "label": turn.label,
+        "branch_root": turn.branch_root,
+    }
+
+
+def _encoded_size(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def _bounded_activity_view(turn: Turn, byte_limit: int) -> tuple[list[dict[str, Any]], bool]:
+    selected: list[dict[str, Any]] = []
+    used = 2  # JSON list delimiters.
+    truncated = False
+    for raw_item in _activity_trace(turn, field_limit=None):
+        item = dict(raw_item)
+        if item.get("kind") == "reasoning":
+            item["text"] = _clip_utf8(item.get("text"), 16 * 1024)
+        elif item.get("kind") == "tool" and "preview" in item:
+            item["preview"] = _clip_utf8(item.get("preview"), TOOL_PREVIEW_CHARS)
+        size = _encoded_size(item) + (1 if selected else 0)
+        if len(selected) >= MAX_ACTIVITY_ITEMS or used + size > byte_limit:
+            truncated = True
+            break
+        selected.append(item)
+        used += size
+    return selected, truncated
+
+
+def _bounded_full_turn_view(turn: Turn) -> dict[str, Any]:
+    view = _turn_view(turn, field_limit=None)
+    if _encoded_size(view) <= TRANSCRIPT_PAGE_BYTES:
+        return view
+    activity, activity_truncated = _bounded_activity_view(turn, OVERSIZED_ACTIVITY_BYTES)
+    view = _turn_view(turn, field_limit=None)
+    view["user"] = _clip_utf8(turn.user_text(), OVERSIZED_USER_BYTES)
+    view["assistant"] = _clip_utf8(turn.assistant_content, OVERSIZED_ASSISTANT_BYTES)
+    view["reasoning"] = _clip_utf8(turn.reasoning_content, OVERSIZED_REASONING_BYTES)
+    view["activity"] = activity
+    view["activity_truncated"] = activity_truncated
+
+    # The fixed budgets above leave ample room for metadata, but enforce the
+    # protocol invariant even for pathological legacy tool identifiers.
+    while _encoded_size(view) > TRANSCRIPT_PAGE_BYTES and view["activity"]:
+        cast(list[dict[str, Any]], view["activity"]).pop()
+        view["activity_truncated"] = True
+    while _encoded_size(view) > TRANSCRIPT_PAGE_BYTES and view["tools"]:
+        cast(list[dict[str, Any]], view["tools"]).pop()
+        view["tools_truncated"] = True
+    if _encoded_size(view) > TRANSCRIPT_PAGE_BYTES:
+        view["assistant"] = _clip_utf8(view["assistant"], OVERSIZED_ASSISTANT_BYTES // 2)
+    if _encoded_size(view) > TRANSCRIPT_PAGE_BYTES:
+        view = {
+            "id": turn.id,
+            "user": _clip_utf8(turn.user_text(), 16 * 1024),
+            "assistant": _clip_utf8(turn.assistant_content, 64 * 1024),
+            "reasoning": "",
+            "activity": [],
+            "tools": [],
+            "assistant_state": turn.assistant_state,
+            "parent": turn.parent,
+            "children": list(turn.children),
+            "label": turn.label,
+            "branch_root": turn.branch_root,
+            "content_truncated": True,
+        }
+    while _encoded_size(view) > TRANSCRIPT_PAGE_BYTES and view["children"]:
+        cast(list[str], view["children"]).pop()
+        view["children_truncated"] = True
+    if _encoded_size(view) > TRANSCRIPT_PAGE_BYTES:
+        for key in ("id", "parent", "label"):
+            view[key] = _clip_utf8(view.get(key), 1024)
+    return view
+
+
+def _transcript_page(path: list[Turn], offset: int | None) -> tuple[int, list[dict[str, Any]]]:
+    if not path:
+        return 0, []
+    if offset is None:
+        selected: list[dict[str, Any]] = []
+        total = 0
+        start = len(path)
+        for index in range(len(path) - 1, -1, -1):
+            view = _bounded_full_turn_view(path[index])
+            size = _encoded_size(view)
+            if selected and (len(selected) >= TRANSCRIPT_PAGE_SIZE or total + size > TRANSCRIPT_PAGE_BYTES):
+                break
+            selected.append(view)
+            total += size
+            start = index
+        selected.reverse()
+        return start, selected
+
+    start = min(max(0, offset), len(path))
+    selected = []
+    total = 0
+    for turn in path[start : start + TRANSCRIPT_PAGE_SIZE]:
+        view = _bounded_full_turn_view(turn)
+        size = _encoded_size(view)
+        if selected and total + size > TRANSCRIPT_PAGE_BYTES:
+            break
+        selected.append(view)
+        total += size
+    return start, selected
+
+
+def _previous_transcript_offset(path: list[Turn], current_offset: int) -> int | None:
+    if current_offset <= 0:
+        return None
+    start, _page = _transcript_page(path[:current_offset], None)
+    return start
 
 
 class RuntimeServer:
@@ -114,6 +392,14 @@ class RuntimeServer:
         )
 
     def _session_meta(self) -> dict[str, Any]:
+        branch_name = (
+            self.session.tree._pending_branch_label
+            if self.session.tree._pending_branch
+            else next(
+                (turn.label for turn in reversed(self.session.tree.active_path) if turn.branch_root and turn.label),
+                "root",
+            )
+        )
         return {
             "id": self.session.id,
             "title": self.session.title,
@@ -122,25 +408,31 @@ class RuntimeServer:
             "collaboration_mode": self.session.collaboration_mode,
             "loaded_skill_ids": list(self.session.loaded_skill_ids),
             "current_id": self.session.tree.current_id,
+            "branch_name": str(branch_name),
             "pending_branch": self.session.tree._pending_branch,
             "pending_branch_label": self.session.tree._pending_branch_label,
         }
 
-    def _snapshot(self, *, transcript_offset: int | None = None, tree_offset: int | None = None) -> dict[str, Any]:
+    def _snapshot(
+        self,
+        *,
+        transcript_offset: int | None = None,
+        tree_offset: int | None = None,
+        streaming: bool | None = None,
+    ) -> dict[str, Any]:
         path = [turn for turn in self.session.tree.active_path if turn.id != "root"]
-        transcript_offset = max(0, transcript_offset) if transcript_offset is not None else max(0, len(path) - TRANSCRIPT_PAGE_SIZE)
-        transcript = path[transcript_offset : transcript_offset + TRANSCRIPT_PAGE_SIZE]
+        transcript_offset, transcript = _transcript_page(path, transcript_offset)
         nodes = [turn for turn in self.session.tree.nodes.values() if turn.id != "root"]
         tree_offset = max(0, tree_offset) if tree_offset is not None else max(0, len(nodes) - TREE_PAGE_SIZE)
         tree = nodes[tree_offset : tree_offset + TREE_PAGE_SIZE]
         status = self.agent.get_model_status()
         return {
             "session": self._session_meta(),
-            "transcript": [_turn_view(turn) for turn in transcript],
+            "transcript": transcript,
             "transcript_offset": transcript_offset,
-            "transcript_previous": max(0, transcript_offset - TRANSCRIPT_PAGE_SIZE) if transcript_offset > 0 else None,
+            "transcript_previous": _previous_transcript_offset(path, transcript_offset),
             "transcript_next": transcript_offset + len(transcript) if transcript_offset + len(transcript) < len(path) else None,
-            "tree": [_turn_view(turn, field_limit=128) for turn in tree],
+            "tree": [_tree_turn_view(turn) for turn in tree],
             "tree_offset": tree_offset,
             "tree_previous": max(0, tree_offset - TREE_PAGE_SIZE) if tree_offset > 0 else None,
             "tree_next": tree_offset + len(tree) if tree_offset + len(tree) < len(nodes) else None,
@@ -152,8 +444,15 @@ class RuntimeServer:
                 "detail": str(status.last_error or ""),
                 "model_name": str(status.model_name or ""),
                 "context_window": status.context_window,
+                "endpoint": str(status.endpoint or getattr(self.agent, "model_endpoint", "")),
             },
-            "streaming": bool(self.turn_thread and self.turn_thread.is_alive()),
+            # A worker remains alive for a few instructions after it emits
+            # turn.completed.  Using Thread.is_alive() here lets a slash command
+            # submitted in that window publish a stale streaming=true snapshot,
+            # permanently locking the Rust composer.  turn_request_id is cleared
+            # before the terminal event and therefore represents protocol-visible
+            # activity rather than Python thread cleanup.
+            "streaming": (bool(self.turn_request_id) if streaming is None else bool(streaming)),
         }
 
     def _emit_completed(self, request_id: str, data: dict[str, Any] | None = None) -> None:
@@ -298,7 +597,7 @@ class RuntimeServer:
 
     def _turn_start(self, request_id: str, data: dict[str, Any]) -> None:
         with self._state_lock:
-            if self.turn_thread and self.turn_thread.is_alive():
+            if self.turn_request_id:
                 raise ValueError("a turn is already active")
             prompt = str(data.get("prompt") or "").strip()
             if not prompt:
@@ -320,8 +619,105 @@ class RuntimeServer:
             )
             self.turn_thread.start()
 
+    def _finish_turn_request(self, request_id: str) -> None:
+        """Release protocol-visible turn state without clobbering a newer turn."""
+        with self._state_lock:
+            if self.turn_request_id == request_id:
+                self.turn_request_id = ""
+                self.turn_id = ""
+
+    def _emit_turn_completion(
+        self,
+        request_id: str,
+        turn_id: str,
+        data: dict[str, Any],
+        *,
+        status: str,
+    ) -> None:
+        """Publish terminal events before allowing the next turn to start."""
+        with self._state_lock:
+            self.emitter.emit("turn.completed", request_id=request_id, turn_id=turn_id, data=data)
+            self._emit_completed(request_id, {"status": status})
+            self._finish_turn_request(request_id)
+
     def _run_turn(self, request_id: str, turn: Turn, prompt: str, attachment_paths: list[str], thinking: bool) -> None:
         reply_parts: list[str] = []
+        reasoning_parts = _BoundedTextChunks(MAX_PERSISTED_REASONING_CHARS)
+        activity_trace: list[dict[str, JSONValue]] = []
+        current_reasoning_item: dict[str, JSONValue] | None = None
+        current_reasoning_chunks: list[str] = []
+        current_reasoning_truncated = False
+
+        def flush_reasoning_activity() -> None:
+            nonlocal current_reasoning_item, current_reasoning_chunks, current_reasoning_truncated
+            if current_reasoning_item is not None:
+                current_reasoning_item["text"] = "".join(current_reasoning_chunks) + (
+                    "\n… [reasoning truncated]" if current_reasoning_truncated else ""
+                )
+            current_reasoning_item = None
+            current_reasoning_chunks = []
+            current_reasoning_truncated = False
+
+        def append_reasoning_activity(text: str) -> None:
+            nonlocal current_reasoning_item, current_reasoning_truncated
+            if not text:
+                return
+            accepted = reasoning_parts.append(text)
+            if current_reasoning_item is None:
+                if len(activity_trace) >= MAX_ACTIVITY_ITEMS:
+                    activity_trace.pop(0)
+                current_reasoning_item = {"kind": "reasoning", "text": ""}
+                activity_trace.append(current_reasoning_item)
+            if accepted:
+                current_reasoning_chunks.append(accepted)
+            if len(accepted) < len(text):
+                current_reasoning_truncated = True
+
+        def append_tool_activity(payload: dict[str, Any]) -> None:
+            flush_reasoning_activity()
+            if len(activity_trace) >= MAX_ACTIVITY_ITEMS:
+                activity_trace.pop(0)
+            name = str(payload.get("name") or "tool")
+            stream_id = str(payload.get("stream_id") or "")
+            activity_trace.append(
+                {
+                    "kind": "tool",
+                    "id": str(payload.get("id") or ""),
+                    "name": name,
+                    "completed": False,
+                    **({"stream_id": stream_id} if stream_id else {}),
+                    **_tool_preview_fields(name, payload),
+                }
+            )
+
+        def complete_tool_activity(payload: dict[str, Any]) -> None:
+            tool_id = str(payload.get("id") or "")
+            name = str(payload.get("name") or "tool")
+            result = payload.get("result")
+            failed = isinstance(result, dict) and result.get("ok") is False
+            for activity in reversed(activity_trace):
+                if activity.get("kind") != "tool" or bool(activity.get("completed")):
+                    continue
+                if (tool_id and activity.get("id") == tool_id) or (not tool_id and activity.get("name") == name):
+                    activity["completed"] = True
+                    if failed:
+                        activity["failed"] = True
+                    activity.update(_tool_preview_fields(name, payload, completed=True))
+                    return
+            if len(activity_trace) >= MAX_ACTIVITY_ITEMS:
+                activity_trace.pop(0)
+            stream_id = str(payload.get("stream_id") or "")
+            activity_trace.append(
+                {
+                    "kind": "tool",
+                    "id": tool_id,
+                    "name": name,
+                    "completed": True,
+                    **({"failed": True} if failed else {}),
+                    **({"stream_id": stream_id} if stream_id else {}),
+                    **_tool_preview_fields(name, payload, completed=True),
+                }
+            )
 
         def on_event(event: dict[str, Any]) -> None:
             event_type = str(event.get("type") or "agent.event")
@@ -330,10 +726,14 @@ class RuntimeServer:
                 reply_parts.append(str(payload.get("text") or ""))
                 event_type = "assistant.delta"
             elif event_type == "reasoning_token":
+                reasoning_text = str(payload.get("text") or "")
+                append_reasoning_activity(reasoning_text)
                 event_type = "reasoning.delta"
             elif event_type == "tool_call":
+                append_tool_activity(payload)
                 event_type = "tool.requested"
             elif event_type == "tool_result":
+                complete_tool_activity(payload)
                 event_type = "tool.completed"
             self.emitter.emit(event_type, request_id=request_id, turn_id=turn.id, data=_bounded_event_data(payload))
 
@@ -360,7 +760,10 @@ class RuntimeServer:
 
         try:
             result = self.agent.run_turn(
-                history_messages=self.session.tree.history_messages()[:-1],
+                # The agent contract expects the active user turn in history.
+                # `user_input` is also supplied for routing/classification, but is
+                # not independently appended to the provider message payload.
+                history_messages=self.session.tree.history_messages(),
                 user_input=prompt,
                 thinking=thinking,
                 branch_labels=[item.label for item in self.session.tree.active_path if item.branch_root and item.label],
@@ -373,41 +776,56 @@ class RuntimeServer:
                 request_approval=request_approval,
             )
             reply = str(result.content or "") or "".join(reply_parts)
+            flush_reasoning_activity()
+            reasoning = _clip(
+                str(getattr(result, "reasoning", "") or "") or reasoning_parts.value(),
+                MAX_PERSISTED_REASONING_CHARS,
+            )
+            if reasoning and not any(item.get("kind") == "reasoning" for item in activity_trace):
+                activity_trace.insert(0, {"kind": "reasoning", "text": reasoning})
             if self.stop_event.is_set() or result.status == "cancelled":
-                self.session.tree.cancel_turn(turn.id, reply)
+                self.session.tree.cancel_turn(turn.id, reply, reasoning, activity_trace)
                 status = "cancelled"
             elif result.status not in {"ok", "done"}:
-                self.session.tree.fail_turn(turn.id, reply)
+                self.session.tree.fail_turn(turn.id, reply, reasoning, activity_trace)
                 status = "error"
             else:
-                self.session.tree.complete_turn(turn.id, reply)
+                self.session.tree.complete_turn(turn.id, reply, reasoning, activity_trace)
                 status = "success"
             for exchange in list(result.skill_exchanges or []):
                 self.session.tree.append_skill_exchange(turn.id, exchange)
             self._save()
-            self.emitter.emit(
-                "turn.completed",
-                request_id=request_id,
-                turn_id=turn.id,
-                data={"status": status, "content": reply, "error": str(result.error or ""), "snapshot": self._snapshot()},
+            self._emit_turn_completion(
+                request_id,
+                turn.id,
+                {
+                    "status": status,
+                    "content": _clip(reply, COMPLETION_CONTENT_CHARS),
+                    "error": str(result.error or ""),
+                    "snapshot": self._snapshot(streaming=False),
+                },
+                status=status,
             )
-            self._emit_completed(request_id, {"status": status})
         except Exception as exc:
-            self.session.tree.fail_turn(turn.id, "".join(reply_parts))
-            self._save()
-            self.emitter.emit(
-                "turn.completed",
-                request_id=request_id,
-                turn_id=turn.id,
-                data={"status": "error", "content": "".join(reply_parts), "error": f"{type(exc).__name__}: {exc}"},
+            flush_reasoning_activity()
+            self.session.tree.fail_turn(
+                turn.id,
+                "".join(reply_parts),
+                reasoning_parts.value(),
+                activity_trace,
             )
-            self._emit_completed(request_id, {"status": "error"})
+            self._save()
+            self._emit_turn_completion(
+                request_id,
+                turn.id,
+                {"status": "error", "content": "".join(reply_parts), "error": f"{type(exc).__name__}: {exc}"},
+                status="error",
+            )
         finally:
-            self.turn_id = ""
-            self.turn_request_id = ""
+            self._finish_turn_request(request_id)
 
     def _turn_cancel(self, request_id: str, _data: dict[str, Any]) -> None:
-        active = bool(self.turn_thread and self.turn_thread.is_alive())
+        active = bool(self.turn_request_id)
         self.stop_event.set()
         for event, holder in list(self.approvals.values()):
             holder["approved"] = False
@@ -432,7 +850,7 @@ class RuntimeServer:
         self._emit_completed(request_id, {"status": "ok"})
 
     def _require_idle(self) -> None:
-        if self.turn_thread and self.turn_thread.is_alive():
+        if self.turn_request_id:
             raise ValueError("stop the active response before changing sessions")
 
     def _session_list(self, request_id: str, data: dict[str, Any]) -> None:
@@ -442,7 +860,11 @@ class RuntimeServer:
         self.emitter.emit(
             "session.list",
             request_id=request_id,
-            data={"items": [asdict(item) for item in sessions], "offset": offset, "next": offset + len(sessions) if len(sessions) == limit else None},
+            data={
+                "items": [asdict(item) for item in sessions],
+                "offset": offset,
+                "next": offset + len(sessions) if len(sessions) == limit else None,
+            },
         )
         self._emit_completed(request_id, {"status": "ok"})
 
@@ -535,9 +957,7 @@ class RuntimeServer:
         item = (str(path), kind)
         if item not in self.pending_attachments:
             self.pending_attachments.append(item)
-        self.emitter.emit(
-            "attachments.changed", request_id=request_id, data={"items": self._snapshot()["pending_attachments"]}
-        )
+        self.emitter.emit("attachments.changed", request_id=request_id, data={"items": self._snapshot()["pending_attachments"]})
         self._emit_completed(request_id, {"status": "ok"})
 
     def _attachment_remove(self, request_id: str, data: dict[str, Any]) -> None:
@@ -552,17 +972,22 @@ class RuntimeServer:
             if index < 0 or index >= len(self.pending_attachments):
                 raise ValueError("attachment index is out of range")
             self.pending_attachments.pop(index)
-        self.emitter.emit(
-            "attachments.changed", request_id=request_id, data={"items": self._snapshot()["pending_attachments"]}
-        )
+        self.emitter.emit("attachments.changed", request_id=request_id, data={"items": self._snapshot()["pending_attachments"]})
         self._emit_completed(request_id, {"status": "ok"})
 
     def _status_refresh(self, request_id: str, _data: dict[str, Any]) -> None:
-        status = self.agent.refresh_model_status()
+        timeout = min(float(getattr(self.agent, "connect_timeout_s", 2.0)), 2.0)
+        status = self.agent.refresh_model_status(timeout_s=timeout, force=True)
         self.emitter.emit(
             "status.changed",
             request_id=request_id,
-            data={"state": str(status.state), "detail": str(status.last_error or ""), "model_name": str(status.model_name or "")},
+            data={
+                "state": str(status.state),
+                "detail": str(status.last_error or ""),
+                "model_name": str(status.model_name or ""),
+                "context_window": status.context_window,
+                "endpoint": str(status.endpoint or getattr(self.agent, "model_endpoint", "")),
+            },
         )
         self._emit_completed(request_id, {"status": "ok"})
 
@@ -647,9 +1072,7 @@ class RuntimeServer:
                 path = (Path(current) / name).resolve()
                 if classify_attachment(str(path)) not in {"image", "text"}:
                     continue
-                items.append(
-                    {"kind": "file", "value": str(path), "prompt": str(path.relative_to(root)), "description": "attach file"}
-                )
+                items.append({"kind": "file", "value": str(path), "prompt": str(path.relative_to(root)), "description": "attach file"})
                 file_count += 1
                 if file_count >= 60:
                     break

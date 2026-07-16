@@ -5,6 +5,14 @@ from pathlib import Path
 from core.sandbox import SandboxCommand, SandboxConfig, SandboxRunner
 
 
+def test_preflight_success_message_does_not_describe_available_backend_as_missing(monkeypatch) -> None:
+    monkeypatch.setattr("core.sandbox.shutil.which", lambda name: f"/usr/bin/{name}")
+
+    result = SandboxRunner().preflight(SandboxConfig(mode="project-write", backend="macos-seatbelt"))
+
+    assert result == {"ok": True, "backend": "macos-seatbelt", "message": "sandbox-exec is available"}
+
+
 def test_linux_backend_unshares_network_only_when_disabled(tmp_path: Path, monkeypatch) -> None:
     runner = SandboxRunner()
     commands: list[list[str]] = []

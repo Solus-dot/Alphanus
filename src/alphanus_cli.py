@@ -151,7 +151,9 @@ def _build_parser() -> argparse.ArgumentParser:
     exec_parser.add_argument("prompt", nargs="?", default="", help="Prompt text; reads stdin when omitted")
     exec_parser.add_argument("--input", choices=("text", "jsonl"), default="text", help="Input framing")
     exec_parser.add_argument(
-        "--approval-policy", choices=("deny", "allow-boundary"), default="deny",
+        "--approval-policy",
+        choices=("deny", "allow-boundary"),
+        default="deny",
         help="How non-interactive boundary approvals are handled",
     )
     exec_parser.add_argument("--no-thinking", action="store_true", help="Disable model reasoning mode")
@@ -193,7 +195,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional extra environment variable to mirror the model API key for a local backend process",
     )
     init_parser.add_argument("--search-provider", type=str, choices=list(SEARCH_PROVIDERS), default="", help="Search provider")
-    init_parser.add_argument("--search-fallback-provider", type=str, choices=list(SEARCH_FALLBACK_PROVIDERS), default="", help="Search fallback provider")
+    init_parser.add_argument(
+        "--search-fallback-provider", type=str, choices=list(SEARCH_FALLBACK_PROVIDERS), default="", help="Search fallback provider"
+    )
     init_parser.add_argument("--searxng-base-url", type=str, default="", help="SearXNG base URL")
     init_parser.add_argument("--tavily-api-key", type=str, default="", help=argparse.SUPPRESS)
     init_parser.add_argument("--tavily-api-key-env", type=str, default="", help="Environment variable name for Tavily API key")
@@ -296,7 +300,9 @@ def _build_agent_runtime(
         backup_revisions=int(memory_cfg.get("backup_revisions", 2)),
     )
     user_skills_dir = getattr(app_paths, "user_skills_dir", None)
-    runtime_skills_dir = Path(user_skills_dir).resolve() if user_skills_dir is not None else (Path(app_paths.state_root).resolve() / "skills").resolve()
+    runtime_skills_dir = (
+        Path(user_skills_dir).resolve() if user_skills_dir is not None else (Path(app_paths.state_root).resolve() / "skills").resolve()
+    )
     runtime_skills_dir.mkdir(parents=True, exist_ok=True)
     runtime = SkillRuntime(
         skills_dir=str(runtime_skills_dir),
@@ -463,7 +469,11 @@ def _run_init(args: Any) -> int:
     reset_requested = bool(getattr(args, "reset", False))
     app_paths = get_app_paths()
     if str(getattr(args, "api_key", "") or "").strip() or str(getattr(args, "tavily_api_key", "") or "").strip():
-        print(theme.error("init failed: secret values cannot be passed on the command line; export the configured environment variable instead"))
+        print(
+            theme.error(
+                "init failed: secret values cannot be passed on the command line; export the configured environment variable instead"
+            )
+        )
         return 2
     state_root = Path(app_paths.state_root)
     state_root.mkdir(parents=True, exist_ok=True)
@@ -556,9 +566,7 @@ def _run_init(args: Any) -> int:
             api_key_ref = f"env:{api_key_env}"
         if _section_selected(section, "search"):
             search_provider = str(getattr(args, "search_provider", "") or "").strip() or search_provider_default
-            search_fallback_provider = (
-                str(getattr(args, "search_fallback_provider", "") or "").strip() or search_fallback_default
-            )
+            search_fallback_provider = str(getattr(args, "search_fallback_provider", "") or "").strip() or search_fallback_default
             searxng_base_url = str(getattr(args, "searxng_base_url", "") or "").strip() or searxng_base_url_default
             tavily_api_key_env = str(getattr(args, "tavily_api_key_env", "") or "").strip() or tavily_api_key_env_default
             if search_provider == SEARCH_PROVIDER_TAVILY:
@@ -631,11 +639,7 @@ def _run_init(args: Any) -> int:
                     theme,
                     "Backend profile:",
                     [(profile, BACKEND_PROFILE_LABELS.get(profile, profile)) for profile in sorted(VALID_BACKEND_PROFILES)],
-                    default=(
-                        backend_profile_default
-                        if backend_profile_default in VALID_BACKEND_PROFILES
-                        else "auto"
-                    ),
+                    default=(backend_profile_default if backend_profile_default in VALID_BACKEND_PROFILES else "auto"),
                 )
             api_key_env = _prompt_env_name(
                 theme,
@@ -811,16 +815,28 @@ def _run_doctor(args: Any) -> int:
         return 2
     report = agent.doctor_report()
     report_obj = report if isinstance(report, dict) else {}
+    agent_status = _as_object(report_obj.get("agent"))
+    project_status = _as_object(report_obj.get("project"))
+    search_status = _as_object(report_obj.get("search"))
+    retrieval_status = _as_object(report_obj.get("retrieval"))
+    failures = []
+    if str(agent_status.get("endpoint_policy_error") or "").strip():
+        failures.append("endpoint-policy")
+    if not bool(agent_status.get("ready")):
+        failures.append("model-readiness")
+    if not bool(project_status.get("exists")) or not bool(project_status.get("writable")):
+        failures.append("project")
+    if not bool(search_status.get("ready")):
+        failures.append("search")
+    if not bool(retrieval_status.get("ready")):
+        failures.append("retrieval")
     if args.json:
         payload: dict[str, Any] = dict(report_obj) if report_obj else {"doctor": report}
-        payload["ok"] = True
+        payload["ok"] = not failures
+        payload["failures"] = failures
         payload["config_warnings"] = warnings
         print(json.dumps(payload, indent=2))
     else:
-        agent_status = _as_object(report_obj.get("agent"))
-        project_status = _as_object(report_obj.get("project"))
-        search_status = _as_object(report_obj.get("search"))
-        retrieval_status = _as_object(report_obj.get("retrieval"))
         endpoint_error = str(agent_status.get("endpoint_policy_error") or "").strip()
         endpoint_ok = not endpoint_error
         model_ok = bool(agent_status.get("ready"))
@@ -845,7 +861,6 @@ def _run_doctor(args: Any) -> int:
             "Runtime Paths",
             [
                 ("Config", str(app_paths.config_path)),
-                ("Env", str(app_paths.dotenv_path)),
                 ("Sessions", str((Path(app_paths.state_root) / "sessions").resolve())),
                 ("Memory", str(memory.storage_path)),
                 ("Project", str(project.project_root)),
@@ -866,21 +881,6 @@ def _run_doctor(args: Any) -> int:
             ],
         )
 
-    failures = []
-    agent_status = _as_object(report_obj.get("agent"))
-    project_status = _as_object(report_obj.get("project"))
-    search_status = _as_object(report_obj.get("search"))
-    retrieval_status = _as_object(report_obj.get("retrieval"))
-    if str(agent_status.get("endpoint_policy_error") or "").strip():
-        failures.append("endpoint-policy")
-    if not bool(agent_status.get("ready")):
-        failures.append("model-readiness")
-    if not bool(project_status.get("exists")) or not bool(project_status.get("writable")):
-        failures.append("project")
-    if not bool(search_status.get("ready")):
-        failures.append("search")
-    if not bool(retrieval_status.get("ready")):
-        failures.append("retrieval")
     if not args.json:
         print(theme.rule("Result"))
         if failures:
@@ -1043,8 +1043,12 @@ def _run_exec(args: Any) -> int:
             return allowed
 
         result = agent.run_turn(
-            history_messages=[], user_input=prompt, thinking=not args.no_thinking,
-            stop_event=stop_event, on_event=on_event, request_approval=request_approval,
+            history_messages=[],
+            user_input=prompt,
+            thinking=not args.no_thinking,
+            stop_event=stop_event,
+            on_event=on_event,
+            request_approval=request_approval,
         )
         if stop_event.is_set() or result.status == "cancelled":
             emitter.emit("run.completed", status="cancelled")

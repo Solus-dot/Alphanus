@@ -254,7 +254,7 @@ Skill discovery is intentionally explicit. `/skills` shows the installed catalog
 
 ### Themes
 
-- Built-in themes are JSON files under `src/tui/theme_specs/`
+- Built-in themes are JSON files under `src/core/theme_specs/`
 - Custom themes can be added as `~/.alphanus/themes/<theme-id>.json`
 - Extra theme directories can be supplied with `ALPHANUS_THEME_PATHS` using the platform path separator
 - Existing theme JSON is interpreted without modification: `theme` and `colors` provide semantic Ratatui colors, while legacy syntax-theme fields remain accepted

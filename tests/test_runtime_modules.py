@@ -170,11 +170,12 @@ def test_classifier_rule_path_reports_rules_source(mocker, tmp_path: Path) -> No
     call.assert_not_called()
 
 
-def test_classifier_seed_keeps_explicit_external_path_without_model(tmp_path: Path) -> None:
+def test_classifier_seed_keeps_explicit_external_path_without_model(mocker, tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
     llm_client = LLMClient(cfg)
     classifier = TurnClassifier(cfg, runtime, llm_client)
+    mocker.patch.object(classifier, "call_with_retry", side_effect=ConnectionError("offline"))
     ctx = classifier.build_skill_context(
         "Read /tmp/proposal.docx",
         [],
@@ -188,11 +189,12 @@ def test_classifier_seed_keeps_explicit_external_path_without_model(tmp_path: Pa
     assert classification.explicit_external_path == str(Path("/tmp/proposal.docx").resolve(strict=False))
 
 
-def test_classifier_seed_keeps_time_sensitive_flag_without_model(tmp_path: Path) -> None:
+def test_classifier_seed_keeps_time_sensitive_flag_without_model(mocker, tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
     llm_client = LLMClient(cfg)
     classifier = TurnClassifier(cfg, runtime, llm_client)
+    mocker.patch.object(classifier, "call_with_retry", side_effect=ConnectionError("offline"))
     ctx = classifier.build_skill_context(
         "latest OpenAI news",
         [],
@@ -206,11 +208,12 @@ def test_classifier_seed_keeps_time_sensitive_flag_without_model(tmp_path: Path)
     assert classification.time_sensitive is False
 
 
-def test_classifier_seed_does_not_infer_project_flags_without_model(tmp_path: Path) -> None:
+def test_classifier_seed_does_not_infer_project_flags_without_model(mocker, tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
     llm_client = LLMClient(cfg)
     classifier = TurnClassifier(cfg, runtime, llm_client)
+    mocker.patch.object(classifier, "call_with_retry", side_effect=ConnectionError("offline"))
     history_messages = [
         {"role": "user", "content": "delete all files in the project"},
         {
@@ -344,11 +347,12 @@ def test_classifier_keeps_project_action_for_extensionless_file_requests(mocker,
     assert classification.requires_project_action is True
 
 
-def test_classifier_seed_does_not_infer_contextual_followup_without_model(tmp_path: Path) -> None:
+def test_classifier_seed_does_not_infer_contextual_followup_without_model(mocker, tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
     cfg = {"agent": {"enable_structured_classification": True}}
     llm_client = LLMClient(cfg)
     classifier = TurnClassifier(cfg, runtime, llm_client)
+    mocker.patch.object(classifier, "call_with_retry", side_effect=ConnectionError("offline"))
     history_messages = [
         {"role": "user", "content": "create a bakery landing page in a folder called 1738 with html css js"},
         {

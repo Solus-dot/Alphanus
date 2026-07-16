@@ -21,16 +21,6 @@ class AppPaths:
     def config_path(self) -> Path:
         return self.state_root / "config" / "config.toml"
 
-    @property
-    def dotenv_path(self) -> Path:
-        """Legacy v0 path. V1 never reads or writes secrets here."""
-        return self.state_root / ".env"
-
-    @property
-    def database_path(self) -> Path:
-        return self.state_root / "state" / "alphanus.db"
-
-
 def default_state_root(base_dir: Path | None = None) -> Path:
     return ((base_dir or Path.home()).resolve() / DEFAULT_APP_DIRNAME).resolve()
 

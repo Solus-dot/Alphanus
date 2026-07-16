@@ -934,6 +934,50 @@ def test_project_action_keeps_project_ops_visible_when_other_skill_loaded(mocker
     assert "load it with skill_view(name)" in system_content
 
 
+def test_desktop_file_write_is_deterministic_even_when_model_classifier_misses_it(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    agent.llm_client.enable_structured_classification = True
+    mocker.patch.object(
+        agent.classifier,
+        "call_with_retry",
+        return_value=type(
+            "Result",
+            (),
+            {
+                "content": (
+                    '{"time_sensitive":false,"requires_project_action":false,'
+                    '"prefer_local_project_tools":false,"followup_kind":"new_request"}'
+                )
+            },
+        )(),
+    )
+    ctx = agent.classifier.build_skill_context(
+        "write sorting code in Python to the desktop",
+        [],
+        [],
+    )
+
+    classification = agent.classifier.classify(ctx)
+
+    assert classification.requires_project_action is True
+    assert classification.prefer_local_project_tools is False
+    assert classification.explicit_external_path == str((Path.home() / "Desktop").resolve())
+
+
+def test_desktop_ui_language_is_not_mistaken_for_a_filesystem_target(runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    ctx = agent.classifier.build_skill_context(
+        "move the browser window to the desktop and make the desktop app responsive",
+        [],
+        [],
+    )
+
+    classification = agent.classifier.classify(ctx)
+
+    assert classification.requires_project_action is False
+    assert classification.explicit_external_path == ""
+
+
 def test_confirmation_project_action_retries_instead_of_accepting_manual_terminal_advice(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
@@ -1929,8 +1973,7 @@ def test_explicit_external_path_adds_prompt_rule_and_skips_local_project_rule(mo
         thinking=True,
     )
 
-    assert result.status == "done"
-    assert result.content == "Need confirmation."
+    assert result.status == "error"
 
 
 def test_policy_rules_require_shell_tool_exposure_for_external_path_guidance(runtime: SkillRuntime):

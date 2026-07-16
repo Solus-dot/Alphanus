@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -47,7 +48,7 @@ def test_write_path_traversal_denied(tmp_path: Path):
         mgr.create_file("../escape.txt", "x")
 
 
-def test_absolute_write_outside_project_allowed(tmp_path: Path):
+def test_absolute_write_outside_project_requires_approval(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     outside = home / "outside"
@@ -58,8 +59,20 @@ def test_absolute_write_outside_project_allowed(tmp_path: Path):
 
     target = outside / "outside.txt"
 
-    assert mgr.create_file(str(target), "x") == str(target.resolve())
+    with pytest.raises(PermissionError, match="requires approval"):
+        mgr.create_file(str(target), "x")
+
+    assert mgr.create_file(str(target), "x", approved=True) == str(target.resolve())
     assert target.read_text(encoding="utf-8") == "x"
+
+    external_directory = outside / "nested"
+    with pytest.raises(PermissionError, match="requires approval"):
+        mgr.create_directory(str(external_directory))
+    assert mgr.create_directory(str(external_directory), approved=True) == str(external_directory.resolve())
+
+    with pytest.raises(PermissionError, match="requires approval"):
+        mgr.edit_file(str(target), "changed")
+    assert mgr.edit_file(str(target), "changed", approved=True) == str(target.resolve())
 
 
 def test_absolute_read_outside_project_allowed(tmp_path: Path):
@@ -434,6 +447,73 @@ def test_shell_command_external_cwd_requires_approval(tmp_path: Path):
     approved = mgr.run_shell_command('python3 -c "import os; print(os.getcwd())"', cwd=str(outside), approved=True)
     assert approved["ok"] is True
     assert approved["data"]["stdout"].strip() == str(outside.resolve())
+
+
+def test_shell_command_external_absolute_file_requires_approval_and_is_sandboxed_narrowly(tmp_path: Path):
+    home = tmp_path / "home"
+    ws = home / "ws"
+    script = home / "sort_numbers.py"
+    home.mkdir()
+    ws.mkdir()
+    script.write_text("print('external-ok')\n", encoding="utf-8")
+
+    mgr = ProjectRuntime(str(ws))
+    command = f"python3 {shlex.quote(str(script))}"
+
+    assert mgr.shell_command_external_paths(command) == (script.resolve(),)
+    denied = mgr.run_shell_command(command)
+    assert denied["ok"] is False
+    assert denied["error"]["code"] == "E_POLICY"
+    assert "outside the project" in denied["error"]["message"]
+
+    approved = mgr.run_shell_command(command, approved=True)
+    assert approved["ok"] is True
+    assert approved["data"]["stdout"].strip() == "external-ok"
+
+
+def test_shell_external_paths_survive_shell_punctuation_and_redirection(tmp_path: Path):
+    ws = tmp_path / "ws"
+    outside = tmp_path / "outside.py"
+    ws.mkdir()
+    outside.write_text("print('outside')\n", encoding="utf-8")
+    mgr = ProjectRuntime(str(ws))
+
+    assert mgr.shell_command_external_paths(f"python3 {shlex.quote(str(outside))}; printf done") == (outside.resolve(),)
+    assert mgr.shell_command_external_paths(f"python3 <{shlex.quote(str(outside))}") == (outside.resolve(),)
+
+    denied = mgr.run_shell_command(f"python3 {shlex.quote(str(outside))}; printf done")
+    assert denied["ok"] is False
+    assert denied["error"]["code"] == "E_POLICY"
+
+
+def test_approved_shell_command_can_create_a_new_external_target(tmp_path: Path):
+    ws = tmp_path / "ws"
+    outside = tmp_path / "outside" / "created.txt"
+    ws.mkdir()
+    outside.parent.mkdir()
+    mgr = ProjectRuntime(str(ws))
+    command = f"printf external-ok > {shlex.quote(str(outside))}"
+
+    assert mgr.shell_command_external_paths(command) == (outside.resolve(),)
+    assert mgr.shell_command_external_grant_roots((outside,)) == (outside.parent.resolve(),)
+
+    denied = mgr.run_shell_command(command)
+    assert denied["ok"] is False
+    assert denied["error"]["code"] == "E_POLICY"
+
+    approved = mgr.run_shell_command(command, approved=True)
+    assert approved["ok"] is True
+    assert outside.read_text(encoding="utf-8") == "external-ok"
+
+
+def test_danger_full_access_does_not_apply_external_path_sandbox_validation(tmp_path: Path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    mgr = ProjectRuntime(str(ws), permission_mode="danger-full-access")
+
+    result = mgr.run_shell_command("test -r /etc/hosts")
+
+    assert result["ok"] is True
 
 
 def test_shell_command_known_mutator_sets_project_changed_true(tmp_path: Path):

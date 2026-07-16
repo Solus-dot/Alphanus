@@ -270,8 +270,7 @@ def _content_payload(content: str, *, limit: int) -> dict[str, object]:
     }
     if truncated:
         payload["truncation"] = (
-            f"Warning: truncated output (original char count: {total_chars})\n"
-            f"Total output lines: {_line_count_from_text(content)}"
+            f"Warning: truncated output (original char count: {total_chars})\nTotal output lines: {_line_count_from_text(content)}"
         )
     return payload
 
@@ -365,8 +364,8 @@ def _create_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, ob
             {
                 "kind": "project_file_write",
                 "path": filepath,
-                "operation": "overwrite",
-                "reason": "External file overwrite crosses the project-write approval boundary.",
+                "operation": "write",
+                "reason": "External file write crosses the project-write approval boundary.",
             },
         )
     path_str = env.project.create_file(filepath, content, approved=approved)
@@ -390,7 +389,19 @@ def _create_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, ob
 
 
 def _create_directory(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
-    path_str = env.project.create_directory(str(args["path"]))
+    path = str(args["path"])
+    approved = False
+    if env.project.write_path_requires_approval(path):
+        approved = _require_approval(
+            env,
+            {
+                "kind": "project_directory_write",
+                "path": path,
+                "operation": "create",
+                "reason": "External directory creation crosses the project-write approval boundary.",
+            },
+        )
+    path_str = env.project.create_directory(path, approved=approved)
     data = _path_info(path_str)
     data.update({"created": True, "kind": "directory"})
     return data
@@ -398,6 +409,17 @@ def _create_directory(args: dict[str, object], env: ToolExecutionEnv) -> dict[st
 
 def _edit_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     filepath = str(args["filepath"])
+    approved = False
+    if env.project.write_path_requires_approval(filepath, overwrite=True):
+        approved = _require_approval(
+            env,
+            {
+                "kind": "project_file_write",
+                "path": filepath,
+                "operation": "edit",
+                "reason": "External file edit crosses the project-write approval boundary.",
+            },
+        )
     before = env.project.read_file(filepath)
     section = _section_selectors(args)
     has_section_selectors = _has_section_selectors(section)
@@ -466,9 +488,7 @@ def _edit_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, obje
                 raise ValueError("edit_file regex_pattern did not match the selected section")
             replace_all = bool(args.get("regex_replace_all", False))
             if match_count > 1 and not replace_all:
-                raise ValueError(
-                    "edit_file regex_pattern matched multiple locations; set regex_replace_all=true or tighten the pattern"
-                )
+                raise ValueError("edit_file regex_pattern matched multiple locations; set regex_replace_all=true or tighten the pattern")
             target_after, replacements_applied = regex.subn(
                 replacement_text,
                 target_before,
@@ -476,17 +496,13 @@ def _edit_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, obje
             )
             edit_mode = "regex_replace_all" if replace_all else "regex_replace_one"
 
-        after = (
-            before[: int(resolved["start_offset"])]
-            + target_after
-            + before[int(resolved["end_offset"]) :]
-        )
+        after = before[: int(resolved["start_offset"])] + target_after + before[int(resolved["end_offset"]) :]
         resolved_start_line = int(resolved["start_line"])
         resolved_end_line = int(resolved["end_line"])
         total_line_count_before = int(resolved["total_line_count"])
         total_line_count_after = _line_count(after)
 
-    path_str = env.project.edit_file(filepath, after)
+    path_str = env.project.edit_file(filepath, after, approved=approved)
     diff_text = "\n".join(
         difflib.unified_diff(
             before.splitlines(),
@@ -546,11 +562,7 @@ def _read_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, obje
     if resolved_start_line > 0 and resolved_end_line >= resolved_start_line:
         returned_line_count = resolved_end_line - resolved_start_line + 1
     include_line_numbers = bool(args.get("include_line_numbers", False))
-    content_out = (
-        _render_numbered_content(selected_content, resolved_start_line)
-        if include_line_numbers
-        else selected_content
-    )
+    content_out = _render_numbered_content(selected_content, resolved_start_line) if include_line_numbers else selected_content
     content_payload = _content_payload(content_out, limit=READ_CONTENT_MAX_CHARS)
     data = _path_info(filepath)
     data.update(

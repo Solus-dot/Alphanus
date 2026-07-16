@@ -12,31 +12,95 @@ COMMAND_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     (
         "CONVERSATION",
         (
-            ("/help", "Show this help"), ("/shortcuts", "Show keyboard shortcuts"),
-            ("/details", "Toggle tool execution details"), ("/think", "Toggle thinking mode"),
-            ("/mode [plan|execute]", "Show or set collaboration mode"), ("/clear", "Clear the active conversation"),
-            ("/sessions", "Open sessions"), ("/rename <name>", "Rename the active session"),
-            ("/save [name]", "Save the active session"), ("/file [path]", "Attach a file or open the picker"),
-            ("/detach [n|last|all]", "Remove pending attachments"), ("/quit", "Exit Alphanus"),
+            ("/help", "Show this help"),
+            ("/shortcuts", "Show keyboard shortcuts"),
+            ("/details", "Toggle tool execution details"),
+            ("/think", "Toggle thinking mode"),
+            ("/mode [plan|execute]", "Show or set collaboration mode"),
+            ("/clear", "Clear the active conversation"),
+            ("/sessions", "Open sessions"),
+            ("/rename <name>", "Rename the active session"),
+            ("/save [name]", "Save the active session"),
+            ("/file [path]", "Attach a file or open the picker"),
+            ("/detach [n|last|all]", "Remove pending attachments"),
+            ("/quit", "Exit Alphanus"),
         ),
     ),
     (
         "BRANCHING",
-        (("/branch [label]", "Arm the next message as a branch"), ("/unbranch", "Return to the nearest fork"),
-         ("/branches", "List child branches"), ("/switch <n>", "Switch to a child branch"), ("/tree", "Show the conversation tree")),
+        (
+            ("/branch [label]", "Arm the next message as a branch"),
+            ("/unbranch", "Return to the nearest fork"),
+            ("/branches", "List child branches"),
+            ("/switch <n>", "Switch to a child branch"),
+            ("/tree", "Show the conversation tree"),
+        ),
     ),
     (
         "SKILLS",
-        (("/skills", "List installed skills"), ("/reload", "Reload skills"), ("/doctor", "Run readiness diagnostics"),
-         ("/health", "Open project health"), ("/skill-on <id>", "Enable a skill"), ("/skill-off <id>", "Disable a skill"),
-         ("/skill-unload <id>", "Unload a session skill"), ("/skill-unload-all", "Unload all session skills"),
-         ("/skill-reload", "Reload skills"), ("/skill-info <id>", "Show skill details")),
+        (
+            ("/skills", "List installed skills"),
+            ("/reload", "Reload skills"),
+            ("/doctor", "Run readiness diagnostics"),
+            ("/health", "Open project health"),
+            ("/skill-on <id>", "Enable a skill"),
+            ("/skill-off <id>", "Disable a skill"),
+            ("/skill-unload <id>", "Unload a session skill"),
+            ("/skill-unload-all", "Unload all session skills"),
+            ("/skill-reload", "Reload skills"),
+            ("/skill-info <id>", "Show skill details"),
+        ),
     ),
     (
         "UTILITIES",
-        (("/memory-stats", "Show memory statistics"), ("/context", "Show context usage"), ("/audit", "Show turn file changes"),
-         ("/project-tree", "Show the project tree"), ("/theme", "Open the theme picker"), ("/config", "Edit configuration"),
-         ("/report [file]", "Save a support report"), ("/code [n|last]", "Open a code block")),
+        (
+            ("/memory-stats", "Show memory statistics"),
+            ("/context", "Show context usage"),
+            ("/audit", "Show turn file changes"),
+            ("/project-tree", "Show the project tree"),
+            ("/theme", "Open the theme picker"),
+            ("/config", "Edit configuration"),
+            ("/report [file]", "Save a support report"),
+            ("/code [n|last]", "Open a code block"),
+        ),
+    ),
+)
+
+SHORTCUT_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    (
+        "KEYMAP",
+        (
+            ("F1 / ?", "Show keyboard shortcuts"),
+            ("Ctrl+P", "Open command palette"),
+            ("Ctrl+K", "Open global palette"),
+            ("Ctrl+F", "Open file picker"),
+            ("Ctrl+B", "Toggle conversation tree"),
+            ("Ctrl+G / Ctrl+H / Ctrl+L", "Focus composer, transcript, or tree"),
+            ("Tab / Shift+Tab", "Cycle active panels"),
+            ("F2 / F3", "Toggle tool details or thinking mode"),
+            ("Ctrl+C / Ctrl+D", "Quit Alphanus"),
+        ),
+    ),
+    ("TRANSCRIPT", (("PgUp / PgDn / wheel", "Scroll transcript"),)),
+    (
+        "TREE",
+        (
+            ("j / k", "Move selection"),
+            ("Enter / o", "Open selected node"),
+            ("[ / ]", "Jump sibling branches"),
+            ("g / G", "Jump top or bottom"),
+        ),
+    ),
+    (
+        "INPUT",
+        (
+            ("Enter", "Send message"),
+            ("Esc", "Clear input or stop the active turn"),
+            ("Ctrl+Backspace", "Remove the last attachment"),
+            ("Ctrl+Shift+Backspace", "Clear attachments"),
+            ("Ctrl+U", "Clear the draft"),
+            ("Ctrl+Shift+K", "Delete to end of line"),
+        ),
     ),
 )
 
@@ -60,13 +124,20 @@ def execute_ui_command(server: Any, raw: str) -> dict[str, Any]:
     arg = parts[1].strip() if len(parts) > 1 else ""
     tree = server.session.tree
 
-    if cmd in {"/help", "/shortcuts", "/keymap", "/keys"}:
+    if cmd == "/help":
         lines: list[str] = []
         for section, rows in COMMAND_SECTIONS:
             lines.append(section)
             lines.extend(f"  {command:<26} {description}" for command, description in rows)
             lines.append("")
         return _result(*lines, action="help")
+    if cmd in {"/shortcuts", "/keymap", "/keys"}:
+        lines = []
+        for section, rows in SHORTCUT_SECTIONS:
+            lines.append(section)
+            lines.extend(f"  {key:<28} {description}" for key, description in rows)
+            lines.append("")
+        return _result(*lines, action="shortcuts")
     if cmd in {"/quit", "/exit", "/q"}:
         return _result(action="quit")
     if cmd == "/sessions":
@@ -107,7 +178,7 @@ def execute_ui_command(server: Any, raw: str) -> dict[str, Any]:
         server.session.loaded_skill_ids = []
         server.pending_attachments.clear()
         server._save()
-        return _result("Conversation cleared", state_changed=True)
+        return _result("Conversation cleared", action="clear", state_changed=True)
     if cmd == "/branch":
         tree.arm_branch(arg)
         server._save()
@@ -124,7 +195,8 @@ def execute_ui_command(server: Any, raw: str) -> dict[str, Any]:
         return _result(message, state_changed=True)
     if cmd == "/branches":
         children = tree.current.children
-        return _result(*(f"{index + 1}. {tree.nodes[node_id].short(60)}" for index, node_id in enumerate(children)) or ["No child branches"])
+        lines = [f"{index + 1}. {tree.nodes[node_id].short(60)}" for index, node_id in enumerate(children)]
+        return _result(*(lines or ["No child branches"]))
     if cmd == "/switch":
         try:
             index = int(arg) - 1
@@ -146,10 +218,8 @@ def execute_ui_command(server: Any, raw: str) -> dict[str, Any]:
         return _result(action="file_picker") if not arg else _result(action="attach", path=arg)
     if cmd == "/detach":
         if not arg:
-            return _result(
-                *(f"{index + 1}. {Path(path).name} ({kind})" for index, (path, kind) in enumerate(server.pending_attachments))
-                or ["No pending attachments"]
-            )
+            lines = [f"{index + 1}. {Path(path).name} ({kind})" for index, (path, kind) in enumerate(server.pending_attachments)]
+            return _result(*(lines or ["No pending attachments"]))
         detach_target: str | int = arg.lower()
         if detach_target not in {"last", "all"}:
             try:
@@ -192,16 +262,21 @@ def execute_ui_command(server: Any, raw: str) -> dict[str, Any]:
             return _result(f"Unloaded skill {arg}", state_changed=True)
         if action == "info":
             return _result(
-                skill.name, skill.description, f"id: {skill.id}", f"version: {skill.version}",
+                skill.name,
+                skill.description,
+                f"id: {skill.id}",
+                f"version: {skill.version}",
                 f"source: {server.agent.skill_runtime.skill_source_label(skill)}",
-                f"available: {str(skill.available).lower()}", f"reason: {skill.availability_reason or 'ready'}",
+                f"available: {str(skill.available).lower()}",
+                f"reason: {skill.availability_reason or 'ready'}",
             )
     if cmd == "/memory-stats":
         stats = server.agent.skill_runtime.memory.stats()
         return _result(*(f"{key}: {json.dumps(value) if isinstance(value, (dict, list)) else value}" for key, value in stats.items()))
     if cmd == "/context":
         report = getattr(server.agent, "last_context_report", None) or {}
-        return _result(*(f"{key}: {value}" for key, value in report.items()) or ["Context usage is not available yet"])
+        lines = [f"{key}: {value}" for key, value in report.items()]
+        return _result(*(lines or ["Context usage is not available yet"]))
     if cmd == "/doctor":
         report = server.agent.doctor_report(probe_ready=False)
         return _result(json.dumps(report, indent=2, ensure_ascii=False))

@@ -119,6 +119,13 @@ def _capture(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object
         env=process_env if system == "windows" else None,
     )
     if proc.returncode != 0:
+        detail = proc.stderr.strip()
+        if system == "darwin" and "could not create image from display" in detail.lower():
+            return _err(
+                "E_PERMISSION",
+                "macOS denied screen capture; enable Screen Recording for the terminal or application running Alphanus in System Settings",
+                {"platform": system, "output_path": str(output)},
+            )
         return _err("E_IO", proc.stderr.strip() or "Screenshot capture failed", {"platform": system, "output_path": str(output)})
     return _ok({"platform": system, "output_path": str(output)})
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import subprocess
 from typing import Any
@@ -78,6 +79,13 @@ def _system() -> str:
     return platform.system().lower()
 
 
+_LSAPPINFO_RECORD_RE = re.compile(r'^\s*\d+\) "([^"]+)".*?(?=^\s*\d+\) |\Z)', re.MULTILINE | re.DOTALL)
+
+
+def _macos_foreground_apps(output: str) -> list[str]:
+    return sorted(dict.fromkeys(match.group(1) for match in _LSAPPINFO_RECORD_RE.finditer(output) if 'type="Foreground"' in match.group(0)))
+
+
 def _applescript_string(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\r", " ").replace("\n", " ")
     return f'"{escaped}"'
@@ -87,12 +95,13 @@ def _list_apps(args: dict[str, object]) -> dict[str, object]:
     include_windows = bool(args.get("include_windows"))
     system = _system()
     if system == "darwin":
-        script = 'tell application "System Events" to get name of every process whose background only is false'
-        proc = _run(["osascript", "-e", script])
+        # lsappinfo reads LaunchServices state without requiring the macOS
+        # Automation permission that makes System Events hang in headless and
+        # first-run environments.
+        proc = _run(["lsappinfo", "list"], timeout=5)
         if proc.returncode != 0:
             return _err("E_UNSUPPORTED", proc.stderr.strip() or "Unable to list macOS applications", {"platform": system})
-        apps = [item.strip() for item in proc.stdout.replace("\n", ",").split(",") if item.strip()]
-        return _ok({"platform": system, "apps": sorted(dict.fromkeys(apps)), "windows": []})
+        return _ok({"platform": system, "apps": _macos_foreground_apps(proc.stdout), "windows": []})
     if system == "linux":
         if shutil.which("wmctrl") is None:
             return _err("E_DEPENDENCY", "wmctrl is required to list graphical applications on Linux", {"platform": system})
@@ -111,7 +120,12 @@ def _list_apps(args: dict[str, object]) -> dict[str, object]:
                     windows.append({"app": app, "title": title, "window_id": parts[0]})
         return _ok({"platform": system, "apps": sorted(dict.fromkeys(apps)), "windows": windows})
     if system == "windows":
-        cmd = ["powershell", "-NoProfile", "-Command", "Get-Process | Where-Object {$_.MainWindowTitle} | Select-Object ProcessName,MainWindowTitle | ConvertTo-Json"]
+        cmd = [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "Get-Process | Where-Object {$_.MainWindowTitle} | Select-Object ProcessName,MainWindowTitle | ConvertTo-Json",
+        ]
         proc = _run(cmd)
         if proc.returncode != 0:
             return _err("E_IO", proc.stderr.strip() or "PowerShell process listing failed", {"platform": system})
@@ -156,7 +170,9 @@ def _focus_app(args: dict[str, object]) -> dict[str, object]:
         return blocked
     system = _system()
     if system == "darwin":
-        proc = _run(["osascript", "-e", f"tell application {_applescript_string(name)} to activate"])
+        # `open -a` activates an existing app and launches it only if needed;
+        # unlike AppleScript it does not depend on Automation permission.
+        proc = _run(["open", "-a", name])
     elif system == "linux":
         if shutil.which("wmctrl") is None:
             return _err("E_DEPENDENCY", "wmctrl is required to focus applications on Linux", {"platform": system})

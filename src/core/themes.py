@@ -104,7 +104,7 @@ def _read(text: str, *, source: str) -> dict[str, Any]:
 @lru_cache(maxsize=1)
 def theme_payloads() -> dict[str, dict[str, Any]]:
     payloads: dict[str, dict[str, Any]] = {}
-    root = resources.files("tui.theme_specs")
+    root = resources.files("core") / "theme_specs"
     for theme_id in BUILTIN_THEME_IDS:
         payload = _read((root / f"{theme_id}.json").read_text(encoding="utf-8"), source=f"builtin:{theme_id}")
         payloads[theme_id] = payload
