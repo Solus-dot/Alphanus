@@ -113,6 +113,21 @@ def command_catalog() -> list[dict[str, str]]:
     ]
 
 
+def shortcut_catalog() -> list[dict[str, str]]:
+    return [
+        {"section": section, "key": key, "description": description}
+        for section, rows in SHORTCUT_SECTIONS
+        for key, description in rows
+    ]
+
+
+def palette_command_catalog() -> list[dict[str, str]]:
+    return [
+        dict(kind="command", value=row["command"].split()[0], prompt=row["command"], description=row["description"])
+        for row in command_catalog()
+    ]
+
+
 def _result(*lines: str, ok: bool = True, action: str = "", state_changed: bool = False, **extra: Any) -> dict[str, Any]:
     return {"ok": ok, "lines": list(lines), "action": action, "state_changed": state_changed, **extra}
 

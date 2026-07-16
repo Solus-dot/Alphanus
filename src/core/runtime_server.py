@@ -553,6 +553,8 @@ class RuntimeServer:
             self._emit_error(request_id, f"{type(exc).__name__}: {exc}", category="internal")
 
     def _hello(self, request_id: str, data: dict[str, Any]) -> None:
+        from core.ui_commands import palette_command_catalog, shortcut_catalog
+
         minimum = int(data.get("min_protocol", 1))
         maximum = int(data.get("max_protocol", 1))
         if not minimum <= 1 <= maximum:
@@ -565,6 +567,8 @@ class RuntimeServer:
                 "protocol_version": 1,
                 "runtime_version": "0.2.0",
                 "workspace": str(self.agent.skill_runtime.project.project_root),
+                "commands": palette_command_catalog(),
+                "shortcuts": shortcut_catalog(),
                 "capabilities": sorted(
                     [
                         "approvals",
@@ -1046,12 +1050,9 @@ class RuntimeServer:
         self._emit_completed(request_id, {"status": "ok"})
 
     def _palette_get(self, request_id: str, _data: dict[str, Any]) -> None:
-        from core.ui_commands import command_catalog
+        from core.ui_commands import palette_command_catalog
 
-        items: list[dict[str, Any]] = [
-            {"kind": "command", "value": row["command"].split()[0], "prompt": row["command"], "description": row["description"]}
-            for row in command_catalog()
-        ]
+        items: list[dict[str, Any]] = list(palette_command_catalog())
         for summary in self.store.list_sessions(limit=20):
             items.append(
                 {

@@ -55,8 +55,6 @@ struct TurnView {
     user: String,
     attachments: String,
     assistant: String,
-    reasoning: String,
-    tools: Vec<ToolActivity>,
     activity: Vec<ActivityItem>,
     state: String,
     label: String,
@@ -114,8 +112,6 @@ impl TurnView {
             user: field(value, "user"),
             attachments: field(value, "attachments"),
             assistant: field(value, "assistant"),
-            reasoning: field(value, "reasoning"),
-            tools,
             activity,
             state: field(value, "assistant_state"),
             label: field(value, "label"),
@@ -303,11 +299,10 @@ struct App {
     theme: Theme,
     themes: Vec<Value>,
     command_catalog: Vec<Value>,
+    shortcut_catalog: Vec<Value>,
     last_sequence: u64,
     last_escape: Option<Instant>,
     last_frame: Instant,
-    active_assistant: String,
-    active_reasoning: String,
     active_turn_id: String,
     clipboard_notice: Option<(String, Instant)>,
     session_delete_armed: Option<String>,
@@ -373,12 +368,11 @@ impl App {
             popup: None,
             theme: Theme::default(),
             themes: Vec::new(),
-            command_catalog: default_commands(),
+            command_catalog: Vec::new(),
+            shortcut_catalog: Vec::new(),
             last_sequence: 0,
             last_escape: None,
             last_frame: Instant::now(),
-            active_assistant: String::new(),
-            active_reasoning: String::new(),
             active_turn_id: String::new(),
             clipboard_notice: None,
             session_delete_armed: None,
@@ -467,6 +461,18 @@ impl App {
             "runtime.ready" => {
                 self.connected = true;
                 self.status = "Ready".into();
+                self.command_catalog = frame
+                    .data
+                    .get("commands")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                self.shortcut_catalog = frame
+                    .data
+                    .get("shortcuts")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
                 if let Some(snapshot) = frame.data.get("snapshot") {
                     self.apply_snapshot(snapshot);
                 }
@@ -482,8 +488,6 @@ impl App {
                 self.streaming = true;
                 self.transcript_auto_follow = true;
                 self.active_turn_id = frame.turn_id.unwrap_or_default();
-                self.active_assistant.clear();
-                self.active_reasoning.clear();
                 if let Some(turn) = frame.data.get("turn") {
                     self.transcript.push(TurnView::from_value(turn));
                     trim_vec(&mut self.transcript, MAX_TRANSCRIPT_ITEMS);
@@ -491,22 +495,20 @@ impl App {
                 self.status = "Thinking…".into();
             }
             "assistant.delta" => {
-                append_bounded(
-                    &mut self.active_assistant,
-                    frame.data.get("text").and_then(Value::as_str).unwrap_or(""),
-                    MAX_STREAM_CHARS,
-                );
                 if let Some(turn) = self
                     .transcript
                     .iter_mut()
                     .find(|turn| turn.id == self.active_turn_id)
                 {
-                    turn.assistant = self.active_assistant.clone();
+                    append_bounded(
+                        &mut turn.assistant,
+                        frame.data.get("text").and_then(Value::as_str).unwrap_or(""),
+                        MAX_STREAM_CHARS,
+                    );
                 }
             }
             "reasoning.delta" => {
                 let chunk = frame.data.get("text").and_then(Value::as_str).unwrap_or("");
-                append_bounded(&mut self.active_reasoning, chunk, MAX_STREAM_CHARS);
                 append_reasoning(&mut self.transcript, &self.active_turn_id, chunk);
             }
             "tool_call_delta" => {
@@ -574,25 +576,13 @@ impl App {
                     .filter(|item| !item.is_empty())
                     .unwrap_or(&self.active_turn_id)
                     .to_owned();
-                let assistant_was_streamed = !self.active_assistant.is_empty();
-                let reasoning_was_streamed = !self.active_reasoning.is_empty();
-                let completed_reasoning = std::mem::take(&mut self.active_reasoning);
-                let completed_assistant = if self.active_assistant.is_empty() {
-                    frame
-                        .data
-                        .get("content")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_owned()
-                } else {
-                    std::mem::take(&mut self.active_assistant)
-                };
-                let completed_tools = self
+                let completed_assistant = self
                     .transcript
                     .iter()
                     .find(|turn| turn.id == completed_turn_id)
-                    .map(|turn| turn.tools.clone())
-                    .unwrap_or_default();
+                    .map(|turn| turn.assistant.clone())
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or_else(|| field(&frame.data, "content"));
                 let completed_activity = self
                     .transcript
                     .iter()
@@ -616,39 +606,16 @@ impl App {
                 // the backend worker just before it exited and still report itself
                 // as streaming; never let that stale value lock the composer.
                 self.streaming = false;
-                let snapshot_reasoning = self
-                    .transcript
-                    .iter()
-                    .find(|turn| turn.id == completed_turn_id)
-                    .map(|turn| turn.reasoning.as_str())
-                    .unwrap_or("");
-                if should_overlay_completed_text(reasoning_was_streamed, snapshot_reasoning) {
-                    set_reasoning(
-                        &mut self.transcript,
-                        &completed_turn_id,
-                        &completed_reasoning,
-                    );
-                }
-                let snapshot_assistant = self
-                    .transcript
-                    .iter()
-                    .find(|turn| turn.id == completed_turn_id)
-                    .map(|turn| turn.assistant.as_str())
-                    .unwrap_or("");
-                if should_overlay_completed_text(assistant_was_streamed, snapshot_assistant) {
+                if !completed_assistant.is_empty() {
                     set_assistant(
                         &mut self.transcript,
                         &completed_turn_id,
                         &completed_assistant,
                     );
                 }
-                if !completed_tools.is_empty() {
-                    set_tool_activity(&mut self.transcript, &completed_turn_id, completed_tools);
-                }
                 if !completed_activity.is_empty() {
                     set_activity(&mut self.transcript, &completed_turn_id, completed_activity);
                 }
-                self.active_assistant.clear();
                 self.active_turn_id.clear();
             }
             "turn.cancellation_acknowledged" => self.status = "Stopping current turn…".into(),
@@ -720,7 +687,7 @@ impl App {
                     .get("items")
                     .and_then(Value::as_array)
                     .cloned()
-                    .unwrap_or_else(default_commands);
+                    .unwrap_or_default();
             }
             "skill.changed" => self.send("palette.get", json!({})),
             "command.result" => self.apply_command_result(&frame.data),
@@ -870,8 +837,6 @@ impl App {
                 self.tree.clear();
                 self.command_messages.clear();
                 self.pending_attachments.clear();
-                self.active_assistant.clear();
-                self.active_reasoning.clear();
                 self.active_turn_id.clear();
                 self.transcript_offset = Some(0);
                 self.transcript_previous = None;
@@ -1198,7 +1163,7 @@ impl App {
         push_bounded(
             &mut self.command_messages,
             CommandMessage {
-                text: help_text(),
+                text: catalog_text(&self.shortcut_catalog, "key"),
                 turn_position,
             },
             64,
@@ -3449,7 +3414,6 @@ fn append_reasoning(turns: &mut [TurnView], turn_id: &str, reasoning: &str) {
         return;
     }
     if let Some(turn) = turns.iter_mut().find(|turn| turn.id == turn_id) {
-        append_bounded(&mut turn.reasoning, reasoning, MAX_STREAM_CHARS);
         if let Some(activity) = turn
             .activity
             .last_mut()
@@ -3464,13 +3428,6 @@ fn append_reasoning(turns: &mut [TurnView], turn_id: &str, reasoning: &str) {
             append_bounded(&mut text, reasoning, MAX_STREAM_CHARS);
             turn.activity.push(ActivityItem::reasoning(text));
         }
-    }
-}
-
-fn set_reasoning(turns: &mut [TurnView], turn_id: &str, reasoning: &str) {
-    if let Some(turn) = turns.iter_mut().find(|turn| turn.id == turn_id) {
-        turn.reasoning.clear();
-        append_bounded(&mut turn.reasoning, reasoning, MAX_STREAM_CHARS);
     }
 }
 
@@ -3654,26 +3611,6 @@ fn append_tool_activity(
     };
     merge_tool_preview(&mut tool, &preview);
     if let Some(existing) = turn
-        .tools
-        .iter_mut()
-        .rev()
-        .find(|existing| matches_tool(existing, id, stream_id, name))
-    {
-        if !id.is_empty() {
-            existing.id = id.to_owned();
-        }
-        if !stream_id.is_empty() {
-            existing.stream_id = stream_id.to_owned();
-        }
-        existing.name = name.to_owned();
-        merge_tool_preview(existing, &preview);
-    } else {
-        if turn.tools.len() >= 128 {
-            turn.tools.remove(0);
-        }
-        turn.tools.push(tool.clone());
-    }
-    if let Some(existing) = turn
         .activity
         .iter_mut()
         .rev()
@@ -3706,29 +3643,6 @@ fn complete_tool_activity(
     let Some(turn) = turns.iter_mut().find(|turn| turn.id == turn_id) else {
         return;
     };
-    if let Some(tool) = turn.tools.iter_mut().rev().find(|tool| {
-        !tool.completed
-            && ((!id.is_empty() && tool.id == id) || (id.is_empty() && tool.name == name))
-    }) {
-        tool.completed = true;
-        tool.failed = failed;
-        merge_tool_preview(tool, &preview);
-    } else {
-        if turn.tools.len() >= 128 {
-            turn.tools.remove(0);
-        }
-        turn.tools.push(ToolActivity {
-            id: id.to_owned(),
-            stream_id: String::new(),
-            name: name.to_owned(),
-            completed: true,
-            failed,
-            filepath: preview.filepath.clone(),
-            preview: preview.content.clone(),
-            language: preview.language.clone(),
-            preview_truncated: preview.truncated,
-        });
-    }
     if let Some(activity) = turn.activity.iter_mut().rev().find(|activity| {
         activity.kind == "tool"
             && !activity.tool.completed
@@ -3825,12 +3739,6 @@ fn update_tool_preview_delta(turns: &mut [TurnView], turn_id: &str, data: &Value
     );
 }
 
-fn set_tool_activity(turns: &mut [TurnView], turn_id: &str, tools: Vec<ToolActivity>) {
-    if let Some(turn) = turns.iter_mut().find(|turn| turn.id == turn_id) {
-        turn.tools = tools;
-    }
-}
-
 fn set_activity(turns: &mut [TurnView], turn_id: &str, activity: Vec<ActivityItem>) {
     if let Some(turn) = turns.iter_mut().find(|turn| turn.id == turn_id) {
         turn.activity = activity;
@@ -3858,10 +3766,6 @@ fn append_bounded(destination: &mut String, chunk: &str, limit: usize) {
 
 fn should_retain_draft(streaming: bool, value: &str) -> bool {
     streaming && !value.starts_with('/')
-}
-
-fn should_overlay_completed_text(was_streamed: bool, snapshot_text: &str) -> bool {
-    was_streamed || snapshot_text.is_empty()
 }
 
 fn terminal_mouse_report_len(value: &str) -> Option<usize> {
@@ -3909,51 +3813,6 @@ fn strip_terminal_mouse_reports(value: &str) -> String {
         offset += character.len_utf8();
     }
     output
-}
-
-fn default_commands() -> Vec<Value> {
-    let rows = [
-        ("/help", "Show help"),
-        ("/shortcuts", "Show keyboard shortcuts"),
-        ("/details", "Toggle tool details"),
-        ("/think", "Toggle thinking"),
-        ("/mode", "Set plan or execute mode"),
-        ("/clear", "Clear conversation"),
-        ("/sessions", "Open sessions"),
-        ("/rename", "Rename session"),
-        ("/save", "Save session"),
-        ("/file", "Attach a file"),
-        ("/detach", "Remove attachments"),
-        ("/branch", "Arm a branch"),
-        ("/unbranch", "Leave a branch"),
-        ("/branches", "List branches"),
-        ("/switch", "Switch branch"),
-        ("/tree", "Show conversation tree"),
-        ("/skills", "List skills"),
-        ("/reload", "Reload skills"),
-        ("/doctor", "Run diagnostics"),
-        ("/health", "Open health panel"),
-        ("/skill-on", "Enable a skill"),
-        ("/skill-off", "Disable a skill"),
-        ("/skill-unload", "Unload a skill"),
-        ("/skill-unload-all", "Unload all skills"),
-        ("/skill-reload", "Reload skills"),
-        ("/skill-info", "Show skill details"),
-        ("/memory-stats", "Show memory stats"),
-        ("/context", "Show context usage"),
-        ("/audit", "Show file changes"),
-        ("/project-tree", "Show project tree"),
-        ("/theme", "Choose theme"),
-        ("/config", "Edit config"),
-        ("/report", "Save support report"),
-        ("/code", "Open code viewer"),
-        ("/quit", "Exit Alphanus"),
-    ];
-    rows.into_iter()
-        .map(|(command, description)| {
-            json!({"kind":"command","value":command,"prompt":command,"description":description})
-        })
-        .collect()
 }
 
 fn palette_prompt(value: &Value) -> String {
@@ -4027,15 +3886,39 @@ fn filtered_palette(catalog: &[Value], query: &str, mode: PaletteMode) -> Vec<Va
         .collect()
 }
 
-fn help_text() -> String {
-    "KEYMAP\n  F1 / ?                      Show keyboard shortcuts\n  Ctrl+P                      Open command palette\n  Ctrl+K                      Open global palette\n  Ctrl+F                      Open file picker\n  Ctrl+B                      Toggle conversation tree\n  Ctrl+G / Ctrl+H / Ctrl+L    Focus composer, transcript, or tree\n  Tab / Shift+Tab             Cycle active panels\n  F2 / F3                     Toggle tool details or thinking mode\n  Ctrl+C / Ctrl+D             Quit Alphanus\n\nTRANSCRIPT\n  PgUp / PgDn / wheel         Scroll transcript\n\nTREE\n  j / k                       Move selection\n  Enter / o                   Open selected node\n  [ / ]                       Jump sibling branches\n  g / G                       Jump top or bottom\n\nINPUT\n  Enter                       Send message\n  Esc                         Clear input or stop the active turn\n  Ctrl+Backspace              Remove the last attachment\n  Ctrl+Shift+Backspace        Clear attachments\n  Ctrl+U                      Clear the draft\n  Ctrl+Shift+K                Delete to end of line"
-        .into()
+fn catalog_text(rows: &[Value], label_field: &str) -> String {
+    let mut output = String::new();
+    let mut section = "";
+    for row in rows {
+        let next_section = row.get("section").and_then(Value::as_str).unwrap_or("");
+        if next_section != section {
+            if !output.is_empty() {
+                output.push('\n');
+            }
+            section = next_section;
+            output.push_str(section);
+            output.push('\n');
+        }
+        output.push_str(&format!(
+            "  {:<28} {}\n",
+            field(row, label_field),
+            field(row, "description")
+        ));
+    }
+    output.trim_end().into()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+
+    fn command_fixture() -> Vec<Value> {
+        vec![
+            json!({"kind":"command","value":"/memory-stats","prompt":"/memory-stats","description":"Show memory statistics"}),
+            json!({"kind":"command","value":"/sessions","prompt":"/sessions","description":"Open sessions"}),
+        ]
+    }
 
     #[test]
     fn compact_paste_expands_without_losing_content() {
@@ -4049,7 +3932,7 @@ mod tests {
 
     #[test]
     fn command_filter_matches_descriptions() {
-        let catalog = default_commands();
+        let catalog = command_fixture();
         assert_eq!(
             palette_value(&filtered_palette(&catalog, "memory", PaletteMode::Commands)[0]),
             "/memory-stats"
@@ -4058,7 +3941,7 @@ mod tests {
 
     #[test]
     fn slash_query_filters_inline_commands() {
-        let catalog = default_commands();
+        let catalog = command_fixture();
         let query = "/mem".strip_prefix('/').expect("slash prefix");
         let matches = filtered_palette(&catalog, query, PaletteMode::Commands);
         assert_eq!(palette_value(&matches[0]), "/memory-stats");
@@ -4066,7 +3949,12 @@ mod tests {
 
     #[test]
     fn f1_help_is_a_keymap_not_duplicate_command_help() {
-        let text = help_text();
+        let text = catalog_text(
+            &[
+                json!({"section":"INPUT","key":"Ctrl+Shift+K","description":"Delete to end of line"}),
+            ],
+            "key",
+        );
         assert!(text.contains("Ctrl+Shift+K"));
         assert!(!text.contains("/sessions"));
     }
@@ -4076,19 +3964,6 @@ mod tests {
         assert!(should_retain_draft(true, "next prompt"));
         assert!(!should_retain_draft(false, "next prompt"));
         assert!(!should_retain_draft(true, "/details"));
-    }
-
-    #[test]
-    fn non_streamed_completion_preserves_the_full_snapshot_text() {
-        assert!(!should_overlay_completed_text(
-            false,
-            "full snapshot response"
-        ));
-        assert!(should_overlay_completed_text(false, ""));
-        assert!(should_overlay_completed_text(
-            true,
-            "older snapshot response"
-        ));
     }
 
     #[test]
@@ -4305,15 +4180,15 @@ mod tests {
         }];
         append_reasoning(&mut streaming, "turn-1", "first ");
         append_reasoning(&mut streaming, "turn-1", "second");
-        assert_eq!(streaming[0].reasoning, "first second");
+        assert_eq!(streaming[0].activity[0].text, "first second");
 
         let mut reloaded = vec![TurnView {
             id: "turn-1".into(),
             assistant: "final answer".into(),
             ..TurnView::default()
         }];
-        set_reasoning(&mut reloaded, "turn-1", &streaming[0].reasoning);
-        assert_eq!(reloaded[0].reasoning, "first second");
+        set_activity(&mut reloaded, "turn-1", streaming[0].activity.clone());
+        assert_eq!(reloaded[0].activity[0].text, "first second");
         assert_eq!(reloaded[0].assistant, "final answer");
     }
 
@@ -4340,9 +4215,9 @@ mod tests {
             false,
         );
 
-        assert_eq!(turns[0].tools.len(), 1);
-        assert_eq!(turns[0].tools[0].name, "recall_memory");
-        assert!(turns[0].tools[0].completed);
+        assert_eq!(turns[0].activity.len(), 1);
+        assert_eq!(turns[0].activity[0].tool.name, "recall_memory");
+        assert!(turns[0].activity[0].tool.completed);
     }
 
     #[test]
@@ -4368,8 +4243,7 @@ mod tests {
             true,
         );
 
-        assert!(turns[0].tools[0].completed);
-        assert!(turns[0].tools[0].failed);
+        assert!(turns[0].activity[0].tool.completed);
         assert!(turns[0].activity[0].tool.failed);
     }
 
@@ -4513,9 +4387,6 @@ mod tests {
         }));
 
         assert_eq!(turn.assistant, "complete response");
-        assert_eq!(turn.reasoning, "trace");
-        assert_eq!(turn.tools.len(), 1);
-        assert!(turn.tools[0].completed);
         assert_eq!(turn.activity.len(), 3);
         assert_eq!(turn.activity[2].text, "after");
     }
