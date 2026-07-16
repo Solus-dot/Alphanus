@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-from agent.llm_client import LLMClient
+from agent.provider import LLMClient
 from core.types import ModelStatus, StreamPassResult
 
 
 def test_strict_local_backend_rejects_model_mismatch(mocker) -> None:
     llm_client = LLMClient({"agent": {"backend_profile": "llamacpp"}})
     mocker.patch.object(
-        llm_client.provider,
+        llm_client,
         "_status_allows_immediate_send",
         return_value=ModelStatus(state="online", model_name="qwen-3"),
     )
-    mocker.patch.object(llm_client.provider, "stream_completion")
+    mocker.patch.object(llm_client, "stream_completion")
 
     try:
         llm_client.call_with_retry(
@@ -30,11 +30,11 @@ def test_non_strict_local_backends_allow_model_switch(mocker) -> None:
         llm_client = LLMClient({"agent": {"backend_profile": profile}})
         expected = StreamPassResult(finish_reason="stop", content="ok")
         mocker.patch.object(
-            llm_client.provider,
+            llm_client,
             "_status_allows_immediate_send",
             return_value=ModelStatus(state="online", model_name="qwen-3"),
         )
-        stream = mocker.patch.object(llm_client.provider, "stream_completion", return_value=expected)
+        stream = mocker.patch.object(llm_client, "stream_completion", return_value=expected)
 
         result = llm_client.call_with_retry(
             {"messages": [{"role": "user", "content": "hello"}], "model": "llava-1.5b"},
@@ -51,11 +51,11 @@ def test_non_strict_model_switch_sets_integrity_state_ok(mocker) -> None:
     llm_client = LLMClient({"agent": {"backend_profile": "ollama"}})
     expected = StreamPassResult(finish_reason="stop", content="ok")
     mocker.patch.object(
-        llm_client.provider,
+        llm_client,
         "_status_allows_immediate_send",
         return_value=ModelStatus(state="online", model_name="qwen-3"),
     )
-    mocker.patch.object(llm_client.provider, "stream_completion", return_value=expected)
+    mocker.patch.object(llm_client, "stream_completion", return_value=expected)
 
     llm_client.call_with_retry(
         {"messages": [{"role": "user", "content": "hello"}], "model": "llava-1.5b"},

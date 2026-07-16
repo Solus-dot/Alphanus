@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from core.config_model import ProviderConfig, SkillsRuntimeConfig, UiRuntimeConfig
+from core.config_model import AgentConfig, SkillsConfig, UiConfig
 from core.configuration import (
     DEFAULT_CONFIG,
     ConfigMigrationError,
@@ -286,9 +286,9 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
         }
     )
 
-    provider = ProviderConfig.from_config(normalized, auth_header="Authorization: Bearer demo")
-    skills = SkillsRuntimeConfig.from_config(normalized)
-    ui = UiRuntimeConfig.from_config(normalized)
+    provider = AgentConfig.from_config(normalized, auth_header="Authorization: Bearer demo")
+    skills = SkillsConfig.from_config(normalized)
+    ui = UiConfig.from_config(normalized)
 
     assert provider.connect_timeout_s == 3.0
     assert provider.per_turn_retries == 2
@@ -305,7 +305,7 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
 def test_tui_chat_log_max_lines_zero_is_clamped_for_bounded_memory() -> None:
     normalized, _warnings = normalize_config({"tui": {"chat_log_max_lines": 0}})
 
-    ui = UiRuntimeConfig.from_config(normalized)
+    ui = UiConfig.from_config(normalized)
 
     assert normalized["tui"]["chat_log_max_lines"] == 1000
     assert ui.chat_log_max_lines == 1000
@@ -314,7 +314,7 @@ def test_tui_chat_log_max_lines_zero_is_clamped_for_bounded_memory() -> None:
 def test_tui_stream_drain_default_is_terminal_friendly() -> None:
     normalized, _warnings = normalize_config({})
 
-    ui = UiRuntimeConfig.from_config(normalized)
+    ui = UiConfig.from_config(normalized)
 
     assert normalized["tui"]["timing"]["stream_drain_interval_s"] == 0.033
     assert ui.timing.stream_drain_interval_s == 0.033
@@ -367,7 +367,7 @@ def test_normalize_config_accepts_loadable_custom_theme(tmp_path: Path, monkeypa
     themes.reload_themes()
     try:
         normalized, warnings = normalize_config({"tui": {"theme": "custom-oxide"}})
-        ui = UiRuntimeConfig.from_config(normalized)
+        ui = UiConfig.from_config(normalized)
     finally:
         themes.reload_themes()
 

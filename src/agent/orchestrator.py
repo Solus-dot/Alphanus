@@ -10,8 +10,8 @@ from typing import Any, cast
 from agent.classifier import TurnClassifier
 from agent.evidence_guard import EvidenceGuard
 from agent.finalization_engine import FinalizationEngine
-from agent.llm_client import LLMClient
 from agent.policies import OutputSanitizer, PromptPolicyRenderer
+from agent.provider import LLMClient
 from agent.telemetry import TelemetryEmitter
 from agent.tool_execution_engine import ToolExecutionEngine
 from agent.tool_loop_engine import ToolLoopEngine

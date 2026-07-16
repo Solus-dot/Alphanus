@@ -64,10 +64,6 @@ class AgentConfig(ConfigSection):
     auth_header: str | None = Field(default=None, exclude=True)
 
     @property
-    def provider_name(self) -> str:
-        return self.provider
-
-    @property
     def allow_cross_host(self) -> bool:
         return self.allow_cross_host_endpoints
 
@@ -188,22 +184,6 @@ class UiConfig(ConfigSection):
     timing: UiTimingConfig = Field(default_factory=lambda: UiTimingConfig())
     tree_compaction: TreeCompactionConfig = Field(default_factory=lambda: TreeCompactionConfig())
 
-    @property
-    def tree_compaction_enabled(self) -> bool:
-        return self.tree_compaction.enabled
-
-    @property
-    def inactive_assistant_char_limit(self) -> int:
-        return self.tree_compaction.inactive_assistant_char_limit
-
-    @property
-    def inactive_tool_argument_char_limit(self) -> int:
-        return self.tree_compaction.inactive_tool_argument_char_limit
-
-    @property
-    def inactive_tool_content_char_limit(self) -> int:
-        return self.tree_compaction.inactive_tool_content_char_limit
-
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
         return cls.model_validate(_section(config, "tui"))
@@ -225,11 +205,6 @@ class ConfigSchema(ConfigSection):
     retrieval: RetrievalConfig = Field(default_factory=lambda: RetrievalConfig())
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     tui: UiConfig = Field(default_factory=lambda: UiConfig())
-
-
-ProviderConfig = AgentConfig
-SkillsRuntimeConfig = SkillsConfig
-UiRuntimeConfig = UiConfig
 
 
 def validated_config(config: dict[str, Any] | None = None) -> dict[str, Any]:

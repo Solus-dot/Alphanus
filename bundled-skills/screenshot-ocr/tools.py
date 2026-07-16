@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import platform
 import shutil
 import subprocess
@@ -16,41 +15,16 @@ _SCREENSHOT_TIMEOUT_S = 20
 _TESSERACT_TIMEOUT_S = 60
 _DEFAULT_SCREENSHOT_FILENAME = "screenshot.png"
 
-TOOL_SPECS = {
-    "capture_screenshot": {
-        "capability": "screen_capture",
-        "mutates": True,
-        "actions": ["read", "check"],
-        "description": "Capture a full-screen screenshot. Requires confirm_capture=true.",
-        "parameters": {
-            "type": "object",
-            "properties": {"output_path": {"type": "string"}, "confirm_capture": {"type": "boolean"}},
-            "required": [],
-        },
-    },
-    "ocr_image": {
-        "capability": "ocr_read",
-        "mutates": False,
-        "actions": ["read", "check"],
-        "description": "Run OCR on an explicit image file path. Requires optional OCR tooling.",
-        "parameters": {
-            "type": "object",
-            "properties": {"path": {"type": "string"}, "max_chars": {"type": "integer"}},
-            "required": ["path"],
-        },
-    },
-    "capture_and_ocr": {
-        "capability": "screen_capture",
-        "mutates": True,
-        "actions": ["read", "check"],
-        "description": "Capture a full-screen screenshot and OCR it. Requires confirm_capture=true and OCR tooling.",
-        "parameters": {
-            "type": "object",
-            "properties": {"max_chars": {"type": "integer"}, "confirm_capture": {"type": "boolean"}},
-            "required": [],
-        },
-    },
+def _specs(rows: dict[str, tuple]) -> dict[str, dict[str, Any]]:
+    return {name: {"capability": capability, "mutates": mutates, "actions": list(actions), "description": description, "parameters": {"type": "object", "properties": properties, "required": list(required)}} for name, (capability, mutates, actions, description, properties, required, _closed) in rows.items()}
+
+
+TOOL_SPEC_ROWS = {  # fmt: skip
+    "capture_screenshot": ("screen_capture", True, ("read", "check"), "Capture a full-screen screenshot. Requires confirm_capture=true.", {"output_path": {"type": "string"}, "confirm_capture": {"type": "boolean"}}, (), False),
+    "ocr_image": ("ocr_read", False, ("read", "check"), "Run OCR on an explicit image file path. Requires optional OCR tooling.", {"path": {"type": "string"}, "max_chars": {"type": "integer"}}, ("path",), False),
+    "capture_and_ocr": ("screen_capture", True, ("read", "check"), "Capture a full-screen screenshot and OCR it. Requires confirm_capture=true and OCR tooling.", {"max_chars": {"type": "integer"}, "confirm_capture": {"type": "boolean"}}, (), False),
 }
+TOOL_SPECS = _specs(TOOL_SPEC_ROWS)
 
 
 def _ok(data: dict[str, object]) -> dict[str, object]:
@@ -96,19 +70,6 @@ def _capture(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object
         if binary is None:
             return _err("E_DEPENDENCY", "Screenshot capture on Linux requires gnome-screenshot or scrot", {"platform": system})
         cmd = [binary, "-f", str(output)] if Path(binary).name == "gnome-screenshot" else [binary, str(output)]
-    elif system == "windows":
-        process_env = os.environ.copy()
-        process_env["ALPHANUS_SCREENSHOT_OUTPUT"] = str(output)
-        script = (
-            "Add-Type -AssemblyName System.Windows.Forms; "
-            "Add-Type -AssemblyName System.Drawing; "
-            "$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds; "
-            "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height; "
-            "$g=[System.Drawing.Graphics]::FromImage($bmp); "
-            "$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size); "
-            "$bmp.Save($env:ALPHANUS_SCREENSHOT_OUTPUT);"
-        )
-        cmd = ["powershell", "-NoProfile", "-Command", script]
     else:
         return _err("E_UNSUPPORTED", f"Unsupported platform: {system}", {"platform": system})
     proc = subprocess.run(
@@ -116,7 +77,6 @@ def _capture(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object
         capture_output=True,
         text=True,
         timeout=_SCREENSHOT_TIMEOUT_S,
-        env=process_env if system == "windows" else None,
     )
     if proc.returncode != 0:
         detail = proc.stderr.strip()

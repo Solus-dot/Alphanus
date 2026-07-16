@@ -175,32 +175,6 @@ def test_app_control_focus_uses_open_without_shell_interpolation(mocker, tmp_pat
     assert commands[-1] == ["open", "-a", name]
 
 
-def test_app_control_windows_open_passes_app_name_through_environment(mocker, tmp_path: Path) -> None:
-    runtime = _runtime(tmp_path)
-    module = _load_tool_module(runtime, "open_app")
-    mocker.patch.object(module.platform, "system", return_value="Windows")
-    commands: list[tuple[list[str], dict[str, object]]] = []
-
-    class _Proc:
-        returncode = 0
-        stdout = ""
-        stderr = ""
-
-    def _capture_run(cmd: list[str], **kwargs):
-        commands.append((cmd, kwargs))
-        return _Proc()
-
-    mocker.patch.object(module.subprocess, "run", side_effect=_capture_run)
-    name = "bad\"; Start-Process calc; '"
-
-    out = _execute(runtime, "app-control", "open_app", {"name": name, "confirm_open": True})
-
-    assert out["ok"] is True
-    cmd, kwargs = commands[-1]
-    assert name not in " ".join(cmd)
-    assert cmd[-1] == "Start-Process -FilePath $env:ALPHANUS_APP_CONTROL_NAME"
-    assert kwargs["env"]["ALPHANUS_APP_CONTROL_NAME"] == name  # type: ignore[index]
-
 
 def test_browser_open_and_search_require_confirmation_before_launching(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
@@ -507,35 +481,3 @@ def test_screenshot_capture_explains_macos_screen_recording_denial(mocker, tmp_p
     assert out["ok"] is False
     assert out["error"]["code"] == "E_PERMISSION"  # type: ignore[index]
     assert "Screen Recording" in out["error"]["message"]  # type: ignore[index]
-
-
-def test_screenshot_windows_capture_passes_output_path_through_environment(mocker, tmp_path: Path) -> None:
-    runtime = _runtime(tmp_path)
-    module = _load_tool_module(runtime, "capture_screenshot")
-    mocker.patch.object(module.platform, "system", return_value="Windows")
-    commands: list[tuple[list[str], dict[str, object]]] = []
-
-    class _Proc:
-        returncode = 0
-        stdout = ""
-        stderr = ""
-
-    def _capture_run(cmd: list[str], **kwargs):
-        commands.append((cmd, kwargs))
-        return _Proc()
-
-    mocker.patch.object(module.subprocess, "run", side_effect=_capture_run)
-    output = Path(runtime.project.project_root) / "x'$(Start-Process calc)'.png"
-
-    out = _execute(
-        runtime,
-        "screenshot-ocr",
-        "capture_screenshot",
-        {"output_path": str(output), "confirm_capture": True},
-    )
-
-    assert out["ok"] is True
-    cmd, kwargs = commands[-1]
-    assert str(output) not in cmd[-1]
-    assert "$env:ALPHANUS_SCREENSHOT_OUTPUT" in cmd[-1]
-    assert kwargs["env"]["ALPHANUS_SCREENSHOT_OUTPUT"] == str(output.resolve())  # type: ignore[index]

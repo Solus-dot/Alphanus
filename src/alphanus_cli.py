@@ -420,10 +420,6 @@ def _screen_capture_setup_lines(*, open_settings: bool = False) -> list[tuple[st
         if session == "wayland":
             detail += "; compositor/portal permission prompts may still be required"
         return [("Linux screenshot helper", detail)]
-    if system == "windows":
-        powershell = shutil.which("powershell") or shutil.which("pwsh")
-        detail = f"found {Path(powershell).name}" if powershell else "PowerShell is required for screenshot capture"
-        return [("Windows screenshot helper", detail)]
     return [(f"{platform.system() or 'Unknown'} screenshot helper", "unsupported by screenshot-ocr")]
 
 

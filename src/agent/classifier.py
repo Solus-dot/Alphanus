@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from agent.llm_client import LLMClient
+from agent.provider import LLMClient
 from agent.telemetry import TelemetryEmitter
 from core.message_types import ChatMessage, JsonObject, JSONValue, MessageContentPart
 from core.types import TurnClassification

@@ -11,30 +11,15 @@ _MAX_CHARS_LIMIT = 1_000_000
 _DEFAULT_MAX_ROWS = 200
 _MAX_ROWS_LIMIT = 5000
 
-TOOL_SPECS = {
-    "extract_document_text": {
-        "capability": "document_read",
-        "mutates": False,
-        "actions": ["read"],
-        "description": "Extract text from TXT, CSV, PDF, or DOCX. PDF/DOCX require optional dependencies.",
-        "parameters": {
-            "type": "object",
-            "properties": {"path": {"type": "string"}, "max_chars": {"type": "integer"}},
-            "required": ["path"],
-        },
-    },
-    "extract_document_tables": {
-        "capability": "document_read",
-        "mutates": False,
-        "actions": ["read", "list"],
-        "description": "Extract table-like rows from CSV or DOCX tables when optional dependencies are available.",
-        "parameters": {
-            "type": "object",
-            "properties": {"path": {"type": "string"}, "max_rows": {"type": "integer"}},
-            "required": ["path"],
-        },
-    },
+def _specs(rows: dict[str, tuple]) -> dict[str, dict[str, Any]]:
+    return {name: {"capability": capability, "mutates": mutates, "actions": list(actions), "description": description, "parameters": {"type": "object", "properties": properties, "required": list(required)}} for name, (capability, mutates, actions, description, properties, required, _closed) in rows.items()}
+
+
+TOOL_SPEC_ROWS = {  # fmt: skip
+    "extract_document_text": ("document_read", False, ("read",), "Extract text from TXT, CSV, PDF, or DOCX. PDF/DOCX require optional dependencies.", {"path": {"type": "string"}, "max_chars": {"type": "integer"}}, ("path",), False),
+    "extract_document_tables": ("document_read", False, ("read", "list"), "Extract table-like rows from CSV or DOCX tables when optional dependencies are available.", {"path": {"type": "string"}, "max_rows": {"type": "integer"}}, ("path",), False),
 }
+TOOL_SPECS = _specs(TOOL_SPEC_ROWS)
 
 
 def _ok(data: dict[str, object]) -> dict[str, object]:

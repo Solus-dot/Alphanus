@@ -10,10 +10,10 @@ from typing import Any
 from agent.classifier import TurnClassifier
 from agent.context import ContextWindowManager
 from agent.harness_metrics import HarnessMetrics
-from agent.llm_client import LLMClient
 from agent.orchestrator import TurnOrchestrator, request_user_input_passthrough
 from agent.policies import PromptPolicyRenderer
 from agent.prompts import build_system_prompt
+from agent.provider import LLMClient
 from agent.telemetry import TelemetryEmitter
 from core.configuration import normalize_config, validate_endpoint_policy
 from core.message_types import ChatMessage, JsonObject
@@ -96,7 +96,7 @@ class Agent:
         error = (
             f"Model endpoint offline{self._offline_status_detail(status)}"
             if status.state == "offline"
-            else f"Model endpoint not ready: {self.llm_client.provider.models_endpoint}"
+            else f"Model endpoint not ready: {self.llm_client.models_endpoint}"
         )
         return self._empty_result("error", error)
 
@@ -105,11 +105,11 @@ class Agent:
             validate_endpoint_policy(
                 {
                     "agent": {
-                        "base_url": self.llm_client.provider.base_url,
-                        "model_endpoint": self.llm_client.provider.model_endpoint,
-                        "responses_endpoint": self.llm_client.provider.responses_endpoint,
-                        "models_endpoint": self.llm_client.provider.models_endpoint,
-                        "allow_cross_host_endpoints": self.llm_client.provider.allow_cross_host,
+                        "base_url": self.llm_client.base_url,
+                        "model_endpoint": self.llm_client.model_endpoint,
+                        "responses_endpoint": self.llm_client.responses_endpoint,
+                        "models_endpoint": self.llm_client.models_endpoint,
+                        "allow_cross_host_endpoints": self.llm_client.allow_cross_host,
                     }
                 }
             )
@@ -153,21 +153,21 @@ class Agent:
             retrieval_ready = False
             retrieval_reason = str(exc)
         if probe_ready:
-            ready = self.ensure_ready(timeout_s=min(self.llm_client.provider.readiness_timeout_s, 3.0))
+            ready = self.ensure_ready(timeout_s=min(self.llm_client.readiness_timeout_s, 3.0))
         else:
             ready = self.get_model_status().state == "online"
         backend_info = self.llm_client.backend_profile_info()
         sandbox_preflight = self.skill_runtime.project.sandbox_preflight()
         return {
             "agent": {
-                "base_url": self.llm_client.provider.base_url,
-                "model_endpoint": self.llm_client.provider.model_endpoint,
-                "responses_endpoint": self.llm_client.provider.responses_endpoint,
-                "models_endpoint": self.llm_client.provider.models_endpoint,
+                "base_url": self.llm_client.base_url,
+                "model_endpoint": self.llm_client.model_endpoint,
+                "responses_endpoint": self.llm_client.responses_endpoint,
+                "models_endpoint": self.llm_client.models_endpoint,
                 "ready": bool(ready),
                 "endpoint_policy_error": endpoint_error or "",
                 "auth_header_source": self.llm_client.auth_source,
-                "endpoint_mode": self.llm_client.provider.endpoint_mode,
+                "endpoint_mode": self.llm_client.endpoint_mode,
                 "backend_profile_requested": str(backend_info.get("requested", "auto")),
                 "backend_profile_detected": str(backend_info.get("detected", "unknown")),
                 "backend_profile_selected": str(backend_info.get("selected", "unknown")),
@@ -262,7 +262,7 @@ class Agent:
                 return self._record_and_return(self._not_ready_result(self.get_model_status()))
         if not self.llm_client.is_model_status_fresh(status):
             if status.state != "unknown":
-                status = self.refresh_model_status(timeout_s=min(self.llm_client.provider.connect_timeout_s, 1.0), force=True)
+                status = self.refresh_model_status(timeout_s=min(self.llm_client.connect_timeout_s, 1.0), force=True)
             if status.state != "online":
                 ready = self.ensure_ready(stop_event=stop_event, on_event=on_event)
                 if ready is None:

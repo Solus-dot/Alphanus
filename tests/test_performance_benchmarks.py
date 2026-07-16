@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.llm_client import LLMClient
+from agent.provider import LLMClient
 from core.memory import LexicalMemory
 from core.message_types import ChatMessage
 from core.project import ProjectRuntime

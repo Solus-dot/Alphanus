@@ -8,9 +8,9 @@ from types import SimpleNamespace
 
 from agent.classifier import TurnClassifier
 from agent.context import ContextWindowManager
-from agent.llm_client import LLMClient
 from agent.orchestrator import TurnOrchestrator
 from agent.policies import PromptPolicyRenderer
+from agent.provider import LLMClient
 from agent.telemetry import TelemetryEmitter, configure_logging
 from core.config_model import default_config
 from core.memory import LexicalMemory
@@ -1889,8 +1889,8 @@ def test_skill_runtime_only_exposes_custom_tools_after_skill_view_load(tmp_path:
 def test_llm_client_call_with_retry_delegates_to_provider_stream(mocker) -> None:
     llm_client = LLMClient({"agent": {}})
     expected = StreamPassResult(finish_reason="stop", content="ok")
-    mocker.patch.object(llm_client.provider, "_status_allows_immediate_send", return_value=ModelStatus(state="online"))
-    stream = mocker.patch.object(llm_client.provider, "stream_completion", return_value=expected)
+    mocker.patch.object(llm_client, "_status_allows_immediate_send", return_value=ModelStatus(state="online"))
+    stream = mocker.patch.object(llm_client, "stream_completion", return_value=expected)
 
     result = llm_client.call_with_retry({"messages": []}, stop_event=None, on_event=None, pass_id="pass_1")
 
@@ -1900,15 +1900,15 @@ def test_llm_client_call_with_retry_delegates_to_provider_stream(mocker) -> None
 
 def test_llm_client_call_with_retry_retries_once_on_retryable_failure(mocker) -> None:
     llm_client = LLMClient({"agent": {}})
-    llm_client.provider.per_turn_retries = 1
-    llm_client.provider.retry_backoff_s = 0.0
+    llm_client.per_turn_retries = 1
+    llm_client.retry_backoff_s = 0.0
     events: list[dict[str, object]] = []
-    mocker.patch.object(llm_client.provider, "_status_allows_immediate_send", return_value=ModelStatus(state="online"))
-    mocker.patch.object(llm_client.provider, "_should_retry_exception", return_value=True)
-    mocker.patch.object(llm_client.provider, "refresh_model_status", return_value=ModelStatus(state="online"))
-    mocker.patch.object(llm_client.provider, "check_ready", return_value=True)
+    mocker.patch.object(llm_client, "_status_allows_immediate_send", return_value=ModelStatus(state="online"))
+    mocker.patch.object(llm_client, "_should_retry_exception", return_value=True)
+    mocker.patch.object(llm_client, "refresh_model_status", return_value=ModelStatus(state="online"))
+    mocker.patch.object(llm_client, "check_ready", return_value=True)
     stream = mocker.patch.object(
-        llm_client.provider,
+        llm_client,
         "stream_completion",
         side_effect=[
             RuntimeError("temporary"),
@@ -1928,11 +1928,11 @@ def test_llm_client_call_with_retry_injects_status_model_when_payload_omits_mode
     llm_client = LLMClient({"agent": {}})
     expected = StreamPassResult(finish_reason="stop", content="ok")
     mocker.patch.object(
-        llm_client.provider,
+        llm_client,
         "_status_allows_immediate_send",
         return_value=ModelStatus(state="online", model_name="mlx-community/Qwen2.5-VL-7B-Instruct-4bit"),
     )
-    stream = mocker.patch.object(llm_client.provider, "stream_completion", return_value=expected)
+    stream = mocker.patch.object(llm_client, "stream_completion", return_value=expected)
 
     result = llm_client.call_with_retry({"messages": []}, stop_event=None, on_event=None, pass_id="pass_1")
 
@@ -1945,11 +1945,11 @@ def test_llm_client_call_with_retry_keeps_explicit_model_override(mocker) -> Non
     llm_client = LLMClient({"agent": {}})
     expected = StreamPassResult(finish_reason="stop", content="ok")
     mocker.patch.object(
-        llm_client.provider,
+        llm_client,
         "_status_allows_immediate_send",
         return_value=ModelStatus(state="online", model_name="mlx-community/Qwen2.5-VL-7B-Instruct-4bit"),
     )
-    stream = mocker.patch.object(llm_client.provider, "stream_completion", return_value=expected)
+    stream = mocker.patch.object(llm_client, "stream_completion", return_value=expected)
 
     result = llm_client.call_with_retry({"messages": [], "model": "custom-model"}, stop_event=None, on_event=None, pass_id="pass_1")
 
@@ -2005,8 +2005,8 @@ def test_llm_client_auto_mode_falls_back_from_responses_to_chat(mocker) -> None:
         yield {"choices": [{"delta": {"content": "ok"}}]}
         yield {"choices": [{"finish_reason": "stop"}]}
 
-    mocker.patch.object(llm_client.provider, "_status_allows_immediate_send", return_value=ModelStatus(state="online"))
-    llm_client.provider._stream_chat_completions = fake_stream
+    mocker.patch.object(llm_client, "_status_allows_immediate_send", return_value=ModelStatus(state="online"))
+    llm_client._stream_chat_completions = fake_stream
 
     result = llm_client.call_with_retry(payload, stop_event=None, on_event=None, pass_id="pass_1")
 
@@ -2019,7 +2019,7 @@ def test_llm_client_auto_mode_falls_back_from_responses_to_chat(mocker) -> None:
 def test_llm_client_detects_backend_profile_from_models_payload() -> None:
     llm_client = LLMClient({"agent": {"backend_profile": "auto"}})
 
-    llm_client.provider._refresh_backend_profile({"data": [{"id": "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"}]})
+    llm_client._refresh_backend_profile({"data": [{"id": "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"}]})
     info = llm_client.backend_profile_info()
 
     assert info["requested"] == "auto"
@@ -2043,11 +2043,11 @@ def test_llm_client_rewrites_mlx_vlm_multimodal_payload(mocker) -> None:
     )
     expected = StreamPassResult(finish_reason="stop", content="ok")
     mocker.patch.object(
-        llm_client.provider,
+        llm_client,
         "_status_allows_immediate_send",
         return_value=ModelStatus(state="online", model_name="mlx-community/Qwen2.5-VL-7B-Instruct-4bit"),
     )
-    stream = mocker.patch.object(llm_client.provider, "stream_completion", return_value=expected)
+    stream = mocker.patch.object(llm_client, "stream_completion", return_value=expected)
 
     result = llm_client.call_with_retry(payload, stop_event=None, on_event=None, pass_id="pass_1")
 
@@ -2066,11 +2066,11 @@ def test_llm_client_preserves_disabled_thinking_for_template_backends(mocker) ->
     )
     expected = StreamPassResult(finish_reason="stop", content="ok")
     mocker.patch.object(
-        llm_client.provider,
+        llm_client,
         "_status_allows_immediate_send",
         return_value=ModelStatus(state="online", model_name="mlx-community/Qwen2.5-VL-7B-Instruct-4bit"),
     )
-    stream = mocker.patch.object(llm_client.provider, "stream_completion", return_value=expected)
+    stream = mocker.patch.object(llm_client, "stream_completion", return_value=expected)
 
     result = llm_client.call_with_retry(payload, stop_event=None, on_event=None, pass_id="pass_1")
 
@@ -2083,11 +2083,11 @@ def test_llm_client_preserves_disabled_thinking_for_template_backends(mocker) ->
 def test_llm_client_fails_fast_on_local_backend_model_mismatch(mocker) -> None:
     llm_client = LLMClient({"agent": {"backend_profile": "llamacpp"}})
     mocker.patch.object(
-        llm_client.provider,
+        llm_client,
         "_status_allows_immediate_send",
         return_value=ModelStatus(state="online", model_name="qwen-3"),
     )
-    mocker.patch.object(llm_client.provider, "stream_completion")
+    mocker.patch.object(llm_client, "stream_completion")
 
     try:
         llm_client.call_with_retry(

@@ -144,14 +144,14 @@ def _build_agent(tmp_path: Path, fixture: dict[str, Any]) -> Agent:
     )
     agent = Agent(config, runtime)
     now = time.monotonic()
-    agent.llm_client.provider._store_model_status(
+    agent.llm_client._store_model_status(
         ModelStatus(
             state="online",
             model_name="replay-model",
             context_window=8192,
             last_checked_at=now,
             last_success_at=now,
-            endpoint=agent.llm_client.provider.models_endpoint,
+            endpoint=agent.llm_client.models_endpoint,
         )
     )
     return agent

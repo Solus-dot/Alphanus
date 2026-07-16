@@ -11,7 +11,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
 
-from core.config_model import SkillsRuntimeConfig
+from core.config_model import SkillsConfig
 from core.memory import LexicalMemory
 from core.message_types import ApprovalRequestFn, JSONValue, UserInputRequestFn
 from core.project import ProjectRuntime
@@ -130,7 +130,7 @@ class SkillRuntime:
         self.project = project
         self.memory = memory
         self.config = {}
-        self.runtime_config = SkillsRuntimeConfig()
+        self.runtime_config = SkillsConfig()
         self.debug = debug
         self.skills_cfg = {}
         self.tools_cfg = {}
@@ -176,7 +176,7 @@ class SkillRuntime:
         self.config = config or {}
         self.skills_cfg = self.config.get("skills", {}) if isinstance(self.config.get("skills"), dict) else {}
         self.tools_cfg = self.config.get("tools", {}) if isinstance(self.config.get("tools"), dict) else {}
-        self.runtime_config = SkillsRuntimeConfig.from_config(self.config)
+        self.runtime_config = SkillsConfig.from_config(self.config)
         self.python_executable = self.runtime_config.python_executable
         raw_paths = self.skills_cfg.get("paths", [])
         config_paths = raw_paths if isinstance(raw_paths, list) else []
@@ -467,8 +467,6 @@ class SkillRuntime:
             aliases.update({"darwin", "mac", "macos", "osx"})
         elif sys.platform.startswith("linux"):
             aliases.update({"linux", "posix"})
-        elif sys.platform.startswith("win"):
-            aliases.update({"windows", "win32", "nt"})
         return aliases
 
     @staticmethod

@@ -20,41 +20,16 @@ _MAC_BROWSER_APPS = {
 }
 _DEFAULT_MAC_BROWSER_APPS = ["Safari", "Google Chrome", "Chromium", "Brave Browser", "Microsoft Edge"]
 
-TOOL_SPECS = {
-    "open_browser_url": {
-        "capability": "browser_open",
-        "mutates": True,
-        "actions": ["open"],
-        "description": "Open a URL in the default browser. Requires confirm_open=true.",
-        "parameters": {
-            "type": "object",
-            "properties": {"url": {"type": "string"}, "confirm_open": {"type": "boolean"}},
-            "required": ["url"],
-        },
-    },
-    "browser_search": {
-        "capability": "browser_open",
-        "mutates": True,
-        "actions": ["open", "read"],
-        "description": "Open a browser search. Requires confirm_open=true.",
-        "parameters": {
-            "type": "object",
-            "properties": {"query": {"type": "string"}, "engine": {"type": "string"}, "confirm_open": {"type": "boolean"}},
-            "required": ["query"],
-        },
-    },
-    "get_current_browser_page": {
-        "capability": "browser_read",
-        "mutates": False,
-        "actions": ["read", "check"],
-        "description": "Return best-effort current browser URL/title/text where platform support exists.",
-        "parameters": {
-            "type": "object",
-            "properties": {"browser": {"type": "string"}},
-            "required": [],
-        },
-    },
+def _specs(rows: dict[str, tuple]) -> dict[str, dict[str, Any]]:
+    return {name: {"capability": capability, "mutates": mutates, "actions": list(actions), "description": description, "parameters": {"type": "object", "properties": properties, "required": list(required)}} for name, (capability, mutates, actions, description, properties, required, _closed) in rows.items()}
+
+
+TOOL_SPEC_ROWS = {  # fmt: skip
+    "open_browser_url": ("browser_open", True, ("open",), "Open a URL in the default browser. Requires confirm_open=true.", {"url": {"type": "string"}, "confirm_open": {"type": "boolean"}}, ("url",), False),
+    "browser_search": ("browser_open", True, ("open", "read"), "Open a browser search. Requires confirm_open=true.", {"query": {"type": "string"}, "engine": {"type": "string"}, "confirm_open": {"type": "boolean"}}, ("query",), False),
+    "get_current_browser_page": ("browser_read", False, ("read", "check"), "Return best-effort current browser URL/title/text where platform support exists.", {"browser": {"type": "string"}}, (), False),
 }
+TOOL_SPECS = _specs(TOOL_SPEC_ROWS)
 
 
 def _ok(data: dict[str, object]) -> dict[str, object]:

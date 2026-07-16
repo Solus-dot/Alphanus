@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import socket
 import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from agent.backend_profiles import (
     AUTO_BACKEND_PROFILE,
@@ -30,12 +31,14 @@ from agent.provider_metadata import ProviderMetadataExtractor
 from agent.provider_payload import ProviderPayloadAdapter
 from agent.provider_stream_parser import ProviderStreamParser
 from agent.telemetry import TelemetryEmitter
-from core.config_model import ProviderConfig
+from core.config_model import AgentConfig
 from core.endpoint_modes import CONCRETE_ENDPOINT_MODES, ENDPOINT_MODE_AUTO, ENDPOINT_MODE_CHAT, ENDPOINT_MODE_RESPONSES, ENDPOINT_MODES
-from core.message_types import ToolCallDelta
+from core.message_types import ChatMessage, ToolCallDelta
 from core.streaming import build_ssl_context
 from core.streaming import stream_chat_completions as core_stream_chat_completions
 from core.types import JsonObject, ModelStatus, StreamPassResult, ToolCallAccumulator
+
+stream_chat_completions = core_stream_chat_completions
 
 
 @dataclass(slots=True)
@@ -72,7 +75,7 @@ class OpenAICompatibleProvider:
 
     def __init__(
         self,
-        config: ProviderConfig,
+        config: AgentConfig,
         *,
         telemetry: TelemetryEmitter | None = None,
         debug: bool = False,
@@ -86,10 +89,10 @@ class OpenAICompatibleProvider:
         self._stream_parser = ProviderStreamParser()
         self._ready_checked = False
         self._model_status = ModelStatus(endpoint=config.models_endpoint)
-        self.reload_config(config)
+        self._apply_provider_config(config)
 
-    def reload_config(self, config: ProviderConfig) -> None:
-        self.config = config
+    def _apply_provider_config(self, config: AgentConfig) -> None:
+        self.provider_config = config
         self.auth_header = config.auth_header
         self.base_url = config.base_url
         self.model_endpoint = config.model_endpoint
@@ -274,8 +277,7 @@ class OpenAICompatibleProvider:
 
     def build_payload(
         self,
-        *,
-        model_messages: list[JsonObject],
+        model_messages: list[JsonObject] | list[ChatMessage],
         thinking: bool,
         tools: list[JsonObject] | None = None,
         max_tokens_override: int | None = None,
@@ -284,7 +286,7 @@ class OpenAICompatibleProvider:
     ) -> JsonObject:
         selected_mode = mode if mode in CONCRETE_ENDPOINT_MODES else self._select_endpoint_mode()
         return self._payload_adapter.build_payload(
-            model_messages=model_messages,
+            model_messages=cast(list[JsonObject], model_messages),
             thinking=thinking,
             tools=tools,
             max_tokens_override=max_tokens_override,
@@ -657,7 +659,7 @@ class OpenAICompatibleProvider:
             first_token_latency_ms=first_token_latency_ms,
         )
 
-    def call_with_retry(self, payload: dict[str, object], stop_event, on_event, pass_id: str) -> StreamPassResult:
+    def call_with_retry(self, payload: dict[str, Any], stop_event, on_event, pass_id: str) -> StreamPassResult:
         attempt = 0
         mode = self._select_endpoint_mode()
         fallback_attempted = False
@@ -770,3 +772,66 @@ class OpenAICompatibleProvider:
             return False
         markers = ("<tool_call", "</tool_call>", "<function=", "</function>", "<parameter=", "</parameter>")
         return any(marker in text.lower() for marker in markers)
+
+
+class LLMClient(OpenAICompatibleProvider):
+    """Configured provider used by classification and turn execution."""
+
+    def __init__(self, config: dict[str, Any], debug: bool = False, telemetry: TelemetryEmitter | None = None) -> None:
+        self.debug = debug
+        self.telemetry = telemetry or TelemetryEmitter()
+        self.api_key = ""
+        self.auth_source = "none"
+        provider_config = self._client_config(config)
+        super().__init__(
+            provider_config,
+            telemetry=self.telemetry,
+            debug=debug,
+            stream_chat_completions_fn=lambda *args, **kwargs: stream_chat_completions(*args, **kwargs),
+        )
+        self._load_classifier_config(config)
+
+    def _client_config(self, config: dict[str, Any]) -> AgentConfig:
+        self.config = config
+        agent = config.get("agent")
+        agent = agent if isinstance(agent, dict) else {}
+        api_key_ref = str(agent.get("api_key", "")).strip()
+        api_key_env = str(agent.get("api_key_env", "ALPHANUS_API_KEY")).strip() or "ALPHANUS_API_KEY"
+        template = str(agent.get("auth_header_template", "Authorization: Bearer {api_key}")).strip()
+        explicit_header = os.environ.get("ALPHANUS_AUTH_HEADER", "").strip()
+        if api_key_ref.lower().startswith("env:"):
+            name = api_key_ref[4:].strip()
+            key = os.environ.get(name, "").strip() if name else ""
+        else:
+            key = api_key_ref or os.environ.get(api_key_env, "").strip()
+        self.api_key = key
+        if key:
+            try:
+                rendered = template.format(api_key=key)
+            except Exception as exc:
+                self.telemetry.emit("auth_header_template_invalid", template=template, error_type=type(exc).__name__)
+                rendered = f"Authorization: Bearer {key}"
+            if ":" in rendered:
+                self.auth_source = "api_key"
+                return AgentConfig.from_config(config, auth_header=rendered)
+        self.auth_source = "env" if explicit_header else "none"
+        return AgentConfig.from_config(config, auth_header=explicit_header)
+
+    def _load_classifier_config(self, config: dict[str, Any]) -> None:
+        agent = config.get("agent")
+        parsed = AgentConfig.model_validate(agent if isinstance(agent, dict) else {})
+        self.classifier_model = parsed.classifier_model.strip()
+        self.classifier_use_primary_model = parsed.classifier_use_primary_model
+        self.enable_structured_classification = parsed.enable_structured_classification
+        self.max_classifier_tokens = parsed.max_classifier_tokens
+
+    def reload_config(self, config: dict[str, Any]) -> None:
+        provider_config = self._client_config(config)
+        self._apply_provider_config(provider_config)
+        self._load_classifier_config(config)
+
+    def ensure_ready(self, stop_event=None, on_event=None, timeout_s: float | None = None) -> bool | None:
+        return self.check_ready(stop_event=stop_event, on_event=on_event, timeout_s=timeout_s)
+
+    def friendly_endpoint_error(self, exc_or_message: Exception | str) -> str:
+        return self._friendly_endpoint_error(exc_or_message)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import platform
 import re
 import shutil
@@ -9,52 +8,18 @@ from typing import Any
 
 from skills.runtime import ToolExecutionEnv
 
-TOOL_SPECS = {
-    "list_apps": {
-        "capability": "desktop_read",
-        "mutates": False,
-        "actions": ["list", "read"],
-        "description": "List running desktop applications where the platform supports it.",
-        "parameters": {
-            "type": "object",
-            "properties": {"include_windows": {"type": "boolean"}},
-            "required": [],
-        },
-    },
-    "open_app": {
-        "capability": "desktop_control",
-        "mutates": True,
-        "actions": ["open"],
-        "description": "Open a desktop application. Requires confirm_open=true.",
-        "parameters": {
-            "type": "object",
-            "properties": {"name": {"type": "string"}, "confirm_open": {"type": "boolean"}},
-            "required": ["name"],
-        },
-    },
-    "focus_app": {
-        "capability": "desktop_control",
-        "mutates": True,
-        "actions": ["open"],
-        "description": "Focus a running desktop application. Requires confirm_focus=true.",
-        "parameters": {
-            "type": "object",
-            "properties": {"name": {"type": "string"}, "window_title": {"type": "string"}, "confirm_focus": {"type": "boolean"}},
-            "required": ["name"],
-        },
-    },
-    "quit_app": {
-        "capability": "desktop_control",
-        "mutates": True,
-        "actions": ["delete"],
-        "description": "Quit a desktop application. Requires confirm_quit=true.",
-        "parameters": {
-            "type": "object",
-            "properties": {"name": {"type": "string"}, "force": {"type": "boolean"}, "confirm_quit": {"type": "boolean"}},
-            "required": ["name"],
-        },
-    },
+
+def _specs(rows: dict[str, tuple]) -> dict[str, dict[str, Any]]:
+    return {name: {"capability": capability, "mutates": mutates, "actions": list(actions), "description": description, "parameters": {"type": "object", "properties": properties, "required": list(required)}} for name, (capability, mutates, actions, description, properties, required, _closed) in rows.items()}
+
+
+TOOL_SPEC_ROWS = {  # fmt: skip
+    "list_apps": ("desktop_read", False, ("list", "read"), "List running desktop applications where the platform supports it.", {"include_windows": {"type": "boolean"}}, (), False),
+    "open_app": ("desktop_control", True, ("open",), "Open a desktop application. Requires confirm_open=true.", {"name": {"type": "string"}, "confirm_open": {"type": "boolean"}}, ("name",), False),
+    "focus_app": ("desktop_control", True, ("open",), "Focus a running desktop application. Requires confirm_focus=true.", {"name": {"type": "string"}, "window_title": {"type": "string"}, "confirm_focus": {"type": "boolean"}}, ("name",), False),
+    "quit_app": ("desktop_control", True, ("delete",), "Quit a desktop application. Requires confirm_quit=true.", {"name": {"type": "string"}, "force": {"type": "boolean"}, "confirm_quit": {"type": "boolean"}}, ("name",), False),
 }
+TOOL_SPECS = _specs(TOOL_SPEC_ROWS)
 
 
 def _ok(data: dict[str, object]) -> dict[str, object]:
@@ -119,17 +84,6 @@ def _list_apps(args: dict[str, object]) -> dict[str, object]:
                 if include_windows:
                     windows.append({"app": app, "title": title, "window_id": parts[0]})
         return _ok({"platform": system, "apps": sorted(dict.fromkeys(apps)), "windows": windows})
-    if system == "windows":
-        cmd = [
-            "powershell",
-            "-NoProfile",
-            "-Command",
-            "Get-Process | Where-Object {$_.MainWindowTitle} | Select-Object ProcessName,MainWindowTitle | ConvertTo-Json",
-        ]
-        proc = _run(cmd)
-        if proc.returncode != 0:
-            return _err("E_IO", proc.stderr.strip() or "PowerShell process listing failed", {"platform": system})
-        return _ok({"platform": system, "apps_text": proc.stdout.strip(), "windows": []})
     return _err("E_UNSUPPORTED", f"Unsupported platform: {system}", {"platform": system})
 
 
@@ -151,10 +105,6 @@ def _open_app(args: dict[str, object]) -> dict[str, object]:
         except OSError as exc:
             return _err("E_IO", f"Failed to open {name}: {exc}", {"platform": system, "name": name})
         return _ok({"platform": system, "name": name})
-    elif system == "windows":
-        process_env = os.environ.copy()
-        process_env["ALPHANUS_APP_CONTROL_NAME"] = name
-        proc = _run(["powershell", "-NoProfile", "-Command", "Start-Process -FilePath $env:ALPHANUS_APP_CONTROL_NAME"], env=process_env)
     else:
         return _err("E_UNSUPPORTED", f"Unsupported platform: {system}", {"platform": system, "name": name})
     if proc.returncode != 0:
@@ -178,8 +128,6 @@ def _focus_app(args: dict[str, object]) -> dict[str, object]:
             return _err("E_DEPENDENCY", "wmctrl is required to focus applications on Linux", {"platform": system})
         target = str(args.get("window_title") or name)
         proc = _run(["wmctrl", "-a", target])
-    elif system == "windows":
-        return _err("E_UNSUPPORTED", "Focusing windows on Windows is not supported by app-control", {"platform": system, "name": name})
     else:
         return _err("E_UNSUPPORTED", f"Unsupported platform: {system}", {"platform": system, "name": name})
     if proc.returncode != 0:
@@ -201,8 +149,6 @@ def _quit_app(args: dict[str, object]) -> dict[str, object]:
     elif system == "linux":
         sig = "-9" if force else "-TERM"
         proc = _run(["pkill", sig, "-x", name])
-    elif system == "windows":
-        proc = _run(["taskkill", "/IM", f"{name}.exe", *(["/F"] if force else [])])
     else:
         return _err("E_UNSUPPORTED", f"Unsupported platform: {system}", {"platform": system, "name": name})
     if proc.returncode != 0:

@@ -8,58 +8,22 @@ import urllib.parse
 import urllib.request
 import webbrowser
 from pathlib import Path
+from typing import Any
 
 from skills.runtime import ToolExecutionEnv
 
-TOOL_SPECS = {
-    "get_weather": {
-        "capability": "utility_weather",
-        "mutates": False,
-        "actions": ["read", "check"],
-        "description": "Fetch weather for a city.",
-        "parameters": {
-            "type": "object",
-            "properties": {"city": {"type": "string"}},
-            "required": ["city"],
-        },
-    },
-    "search_project_files": {
-        "capability": "utility_file_search",
-        "mutates": False,
-        "actions": ["read", "list", "check"],
-        "description": "Search filenames under the project root.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "directory": {"type": "string"},
-            },
-            "required": ["query"],
-        },
-    },
-    "open_url": {
-        "capability": "utility_open_url",
-        "mutates": True,
-        "actions": ["open"],
-        "description": "Open URL in default browser.",
-        "parameters": {
-            "type": "object",
-            "properties": {"url": {"type": "string"}},
-            "required": ["url"],
-        },
-    },
-    "play_youtube": {
-        "capability": "utility_play_youtube",
-        "mutates": True,
-        "actions": ["open"],
-        "description": "Open the first YouTube video result for a topic and autoplay when resolvable.",
-        "parameters": {
-            "type": "object",
-            "properties": {"topic": {"type": "string"}},
-            "required": ["topic"],
-        },
-    },
+
+def _specs(rows: dict[str, tuple]) -> dict[str, dict[str, Any]]:
+    return {name: {"capability": capability, "mutates": mutates, "actions": list(actions), "description": description, "parameters": {"type": "object", "properties": properties, "required": list(required)}} for name, (capability, mutates, actions, description, properties, required, _closed) in rows.items()}
+
+
+TOOL_SPEC_ROWS = {  # fmt: skip
+    "get_weather": ("utility_weather", False, ("read", "check"), "Fetch weather for a city.", {"city": {"type": "string"}}, ("city",), False),
+    "search_project_files": ("utility_file_search", False, ("read", "list", "check"), "Search filenames under the project root.", {"query": {"type": "string"}, "directory": {"type": "string"}}, ("query",), False),
+    "open_url": ("utility_open_url", True, ("open",), "Open URL in default browser.", {"url": {"type": "string"}}, ("url",), False),
+    "play_youtube": ("utility_play_youtube", True, ("open",), "Open the first YouTube video result for a topic and autoplay when resolvable.", {"topic": {"type": "string"}}, ("topic",), False),
 }
+TOOL_SPECS = _specs(TOOL_SPEC_ROWS)
 
 _VIDEO_ID_RE = re.compile(r'"videoId":"([A-Za-z0-9_-]{11})"')
 

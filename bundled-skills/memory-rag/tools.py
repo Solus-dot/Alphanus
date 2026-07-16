@@ -2,94 +2,35 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import Any
 
 from core.coercion import coerce_bool
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
 from skills.runtime import ToolExecutionEnv
 
-TOOL_SPECS = {
-    "store_memory": {
-        "capability": "memory_store",
-        "mutates": True,
-        "actions": ["save", "write", "update"],
-        "description": "Persist a memory item.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "text": {"type": "string"},
-                "memory_type": {"type": "string"},
-                "importance": {"type": "number"},
-                "replace_existing": {"type": "boolean"},
-                "replace_query": {"type": "string"},
-                "replace_top_k": {"type": "integer"},
-                "replace_min_score": {"type": "number"},
-                "replace_ids": {"type": "array", "items": {"type": "integer"}},
-                "metadata": {"type": "object"},
-            },
-            "required": ["text"],
-        },
-    },
-    "recall_memory": {
-        "capability": "memory_recall",
-        "mutates": False,
-        "actions": ["read", "check"],
-        "description": "Semantic search over memories.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "top_k": {"type": "integer"},
-                "memory_type": {"type": "string"},
-                "min_score": {"type": "number"},
-            },
-            "required": ["query"],
-        },
-    },
-    "list_memories": {
-        "capability": "memory_list",
-        "mutates": False,
-        "actions": ["list", "read"],
-        "description": "List recent memories.",
-        "parameters": {
-            "type": "object",
-            "properties": {"count": {"type": "integer"}},
-            "required": [],
-        },
-    },
-    "forget_memory": {
-        "capability": "memory_forget",
-        "mutates": True,
-        "actions": ["delete", "remove"],
-        "description": "Delete memory by id.",
-        "parameters": {
-            "type": "object",
-            "properties": {"memory_id": {"type": "integer"}},
-            "required": ["memory_id"],
-        },
-    },
-    "get_memory_stats": {
-        "capability": "memory_stats",
-        "mutates": False,
-        "actions": ["check", "read"],
-        "description": "Get memory statistics.",
-        "parameters": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
-    },
-    "export_memories": {
-        "capability": "memory_export",
-        "mutates": True,
-        "actions": ["save", "write"],
-        "description": "Export memories to a text file.",
-        "parameters": {
-            "type": "object",
-            "properties": {"filepath": {"type": "string"}},
-            "required": [],
-        },
-    },
+
+def _specs(rows: dict[str, tuple]) -> dict[str, dict[str, Any]]:
+    return {
+        name: {
+            "capability": capability,
+            "mutates": mutates,
+            "actions": list(actions),
+            "description": description,
+            "parameters": {"type": "object", "properties": properties, "required": list(required)},
+        }
+        for name, (capability, mutates, actions, description, properties, required, _closed) in rows.items()
+    }
+
+
+TOOL_SPEC_ROWS = {  # fmt: skip
+    "store_memory": ("memory_store", True, ("save", "write", "update"), "Persist a memory item.", {"text": {"type": "string"}, "memory_type": {"type": "string"}, "importance": {"type": "number"}, "replace_existing": {"type": "boolean"}, "replace_query": {"type": "string"}, "replace_top_k": {"type": "integer"}, "replace_min_score": {"type": "number"}, "replace_ids": {"type": "array", "items": {"type": "integer"}}, "metadata": {"type": "object"}}, ("text",), False),
+    "recall_memory": ("memory_recall", False, ("read", "check"), "Semantic search over memories.", {"query": {"type": "string"}, "top_k": {"type": "integer"}, "memory_type": {"type": "string"}, "min_score": {"type": "number"}}, ("query",), False),
+    "list_memories": ("memory_list", False, ("list", "read"), "List recent memories.", {"count": {"type": "integer"}}, (), False),
+    "forget_memory": ("memory_forget", True, ("delete", "remove"), "Delete memory by id.", {"memory_id": {"type": "integer"}}, ("memory_id",), False),
+    "get_memory_stats": ("memory_stats", False, ("check", "read"), "Get memory statistics.", {}, (), False),
+    "export_memories": ("memory_export", True, ("save", "write"), "Export memories to a text file.", {"filepath": {"type": "string"}}, (), False),
 }
+TOOL_SPECS = _specs(TOOL_SPEC_ROWS)
 
 
 def _normalize_whitespace(value: str) -> str:
