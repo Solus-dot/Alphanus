@@ -16,7 +16,6 @@ from agent.orchestrator import TurnOrchestrator, request_user_input_passthrough
 from agent.policies import PromptPolicyRenderer
 from agent.prompts import build_system_prompt
 from agent.telemetry import TelemetryEmitter
-from core.config_model import TypedConfigV2
 from core.configuration import validate_endpoint_policy
 from core.message_types import ChatMessage, JsonObject
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
@@ -84,7 +83,6 @@ class Agent:
         self.context_mgr.safety_margin = coerce_int(context_cfg.get("safety_margin"), DEFAULT_SAFETY_MARGIN, minimum=0)
         self.system_prompt = build_system_prompt(str(self.skill_runtime.project.project_root))
         self.llm_client.reload_config(config)
-        self.typed_config = TypedConfigV2.from_normalized_config(config, auth_header=self.llm_client.auth_header)
         self.classifier.reload_config(config)
         self.prompt_renderer.system_prompt = self.system_prompt
         self.prompt_renderer.skill_runtime = self.skill_runtime

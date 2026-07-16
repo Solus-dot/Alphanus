@@ -922,6 +922,29 @@ class ProjectRuntime:
         after_rows = [{"line_number": line_idx + 1, "line": lines[line_idx]} for line_idx in range(max(idx + 1, 0), after_end)]
         return before_rows, after_rows
 
+    @staticmethod
+    def _search_response(
+        needle: str,
+        target: Path,
+        glob: str | None,
+        results: list[dict[str, Any]],
+        truncated: bool,
+        backend: str,
+        before_context: int,
+        after_context: int,
+    ) -> dict[str, Any]:
+        return {
+            "query": needle,
+            "path": str(target),
+            "glob": glob,
+            "count": len(results),
+            "results": results,
+            "truncated": truncated,
+            "backend": backend,
+            "before_context": max(0, int(before_context)),
+            "after_context": max(0, int(after_context)),
+        }
+
     def _search_code_with_rg(
         self,
         target: Path,
@@ -936,30 +959,8 @@ class ProjectRuntime:
     ) -> dict[str, Any] | None:
         if not self._is_relative_to(target, self.project_root):
             return None
-        if not target.exists():
-            return {
-                "query": needle,
-                "path": str(target),
-                "glob": glob,
-                "count": 0,
-                "results": [],
-                "truncated": False,
-                "backend": "rg",
-                "before_context": max(0, int(before_context)),
-                "after_context": max(0, int(after_context)),
-            }
-        if target.is_file() and glob and not fnmatch.fnmatch(target.name, glob):
-            return {
-                "query": needle,
-                "path": str(target),
-                "glob": glob,
-                "count": 0,
-                "results": [],
-                "truncated": False,
-                "backend": "rg",
-                "before_context": max(0, int(before_context)),
-                "after_context": max(0, int(after_context)),
-            }
+        if not target.exists() or (target.is_file() and glob and not fnmatch.fnmatch(target.name, glob)):
+            return self._search_response(needle, target, glob, [], False, "rg", before_context, after_context)
 
         rg_path = shutil.which("rg")
         if not rg_path:
@@ -1064,17 +1065,7 @@ class ProjectRuntime:
         # Treat that like a partial search result rather than a hard failure.
         if returncode not in (0, 1, 2):
             raise RuntimeError(stderr_text.strip() or "rg search failed")
-        return {
-            "query": needle,
-            "path": str(target),
-            "glob": glob,
-            "count": len(results),
-            "results": results,
-            "truncated": truncated,
-            "backend": "rg",
-            "before_context": max(0, int(before_context)),
-            "after_context": max(0, int(after_context)),
-        }
+        return self._search_response(needle, target, glob, results, truncated, "rg", before_context, after_context)
 
     def search_code(
         self,
@@ -1159,28 +1150,8 @@ class ProjectRuntime:
                         {"line_number": row_idx + 1, "line": content_lines[row_idx]} for row_idx in range(idx + 1, after_end)
                     ]
                 if len(results) >= limit:
-                    return {
-                        "query": needle,
-                        "path": str(target),
-                        "glob": glob,
-                        "count": len(results),
-                        "results": results,
-                        "truncated": True,
-                        "backend": "python",
-                        "before_context": max(0, int(before_context)),
-                        "after_context": max(0, int(after_context)),
-                    }
-        return {
-            "query": needle,
-            "path": str(target),
-            "glob": glob,
-            "count": len(results),
-            "results": results,
-            "truncated": False,
-            "backend": "python",
-            "before_context": max(0, int(before_context)),
-            "after_context": max(0, int(after_context)),
-        }
+                    return self._search_response(needle, target, glob, results, True, "python", before_context, after_context)
+        return self._search_response(needle, target, glob, results, False, "python", before_context, after_context)
 
     def _validate_shell_command(self, command: str) -> str:
         trimmed = command.strip()

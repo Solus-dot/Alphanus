@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from core.config_model import ProviderConfig, SkillsRuntimeConfig, TypedConfigV2, UiRuntimeConfig
+from core.config_model import ProviderConfig, SkillsRuntimeConfig, UiRuntimeConfig
 from core.configuration import (
     DEFAULT_CONFIG,
     ConfigMigrationError,
@@ -318,42 +318,6 @@ def test_tui_stream_drain_default_is_terminal_friendly() -> None:
 
     assert normalized["tui"]["timing"]["stream_drain_interval_s"] == 0.033
     assert ui.timing.stream_drain_interval_s == 0.033
-
-
-def test_typed_config_v2_groups_runtime_sections() -> None:
-    normalized, _warnings = normalize_config(
-        {
-            "agent": {"connect_timeout_s": 3, "per_turn_retries": 2},
-            "project": {"root_strategy": "git-or-cwd"},
-            "memory": {"backup_revisions": 4},
-            "permissions": {"mode": "read-only", "approvals": "on-boundary", "network": False},
-            "sandbox": {"backend": "auto", "fail_closed": True},
-            "runtime": {"ask_user_tool": False},
-            "search": {"provider": "searxng", "fallback_provider": "tavily", "searxng_base_url": "http://127.0.0.1:8888"},
-            "skills": {"python_executable": "/usr/bin/python3", "paths": ["~/agent-skills"]},
-            "tui": {"theme": "gruvbox-dark-soft"},
-        }
-    )
-
-    typed = TypedConfigV2.from_normalized_config(normalized, auth_header="Authorization: Bearer demo")
-
-    assert typed.provider.connect_timeout_s == 3.0
-    assert typed.provider.auth_header == "Authorization: Bearer demo"
-    assert typed.project.root_strategy == "git-or-cwd"
-    assert typed.memory.backup_revisions == 4
-    assert typed.runtime_policy.permission_mode == "read-only"
-    assert typed.runtime_policy.approvals == "on-boundary"
-    assert typed.runtime_policy.network is False
-    assert typed.runtime_policy.sandbox_backend == "auto"
-    assert typed.runtime_policy.sandbox_fail_closed is True
-    assert typed.runtime_policy.ask_user_tool is False
-    assert typed.search.provider == "searxng"
-    assert typed.search.fallback_provider == "tavily"
-    assert typed.search.searxng_base_url == "http://127.0.0.1:8888"
-    assert typed.retrieval.enabled is True
-    assert typed.skills.python_executable == "/usr/bin/python3"
-    assert typed.skills.paths == ["~/agent-skills"]
-    assert typed.ui.theme == "gruvbox-dark-soft"
 
 
 def test_normalize_config_accepts_loadable_custom_theme(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

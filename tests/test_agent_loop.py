@@ -1265,7 +1265,8 @@ def test_project_action_preserves_policy_blocked_reply_when_outcome_classifier_f
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
-        agent.classifier, "classify",
+        agent.classifier,
+        "classify",
         return_value=TurnClassification(requires_project_action=True, prefer_local_project_tools=True, followup_kind="confirmation"),
     )
 
@@ -1323,7 +1324,8 @@ def test_project_action_classifier_failure_does_not_accept_manual_shell_advice_a
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
-        agent.classifier, "classify",
+        agent.classifier,
+        "classify",
         return_value=TurnClassification(requires_project_action=True, prefer_local_project_tools=True, followup_kind="confirmation"),
     )
 
@@ -1421,7 +1423,8 @@ def test_run_turn_allows_same_host_endpoints_with_different_ports(mocker, runtim
     )
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
-        agent.llm_client, "call_with_retry",
+        agent.llm_client,
+        "call_with_retry",
         return_value=type(
             "R",
             (),
@@ -1803,7 +1806,8 @@ def test_project_action_accepts_successful_mutating_shell_command(mocker, runtim
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
-        agent.classifier, "classify",
+        agent.classifier,
+        "classify",
         return_value=TurnClassification(requires_project_action=True, prefer_local_project_tools=True),
     )
     selected = [runtime.get_skill("project-ops")]
@@ -1874,7 +1878,8 @@ def test_project_action_allows_snapshotting_around_shell_command(mocker, runtime
     agent = Agent({"agent": {}}, runtime)
     mocker.patch.object(agent, "ensure_ready", return_value=True)
     mocker.patch.object(
-        agent.classifier, "classify",
+        agent.classifier,
+        "classify",
         return_value=TurnClassification(requires_project_action=True, prefer_local_project_tools=True),
     )
     selected = [runtime.get_skill("project-ops")]
@@ -1887,6 +1892,7 @@ def test_project_action_allows_snapshotting_around_shell_command(mocker, runtime
             {"type": "function", "function": {"name": "shell_command"}},
         ],
     )
+
     def fake_call_with_retry(payload, stop_event, on_event, pass_id):
         if pass_id == "pass_1":
             return type(
@@ -2325,7 +2331,8 @@ def execute(tool_name, args, env):
     }
     agent = Agent(cfg, runtime)
     mocker.patch.object(
-        agent.classifier, "classify",
+        agent.classifier,
+        "classify",
         return_value=TurnClassification(time_sensitive=True),
     )
 
@@ -2785,9 +2792,7 @@ def test_tool_result_compaction_middle_truncates_long_strings(runtime: SkillRunt
     agent = Agent({"agent": {"max_tool_result_chars": 120}}, runtime)
     value = "BEGIN-" + ("x" * 500) + "-END"
 
-    compacted = agent.orchestrator.compact_tool_result(
-        {"ok": True, "data": {"content": value}, "error": None, "meta": {}}
-    )
+    compacted = agent.orchestrator.compact_tool_result({"ok": True, "data": {"content": value}, "error": None, "meta": {}})
 
     content = compacted["data"]["content"]
     assert content.startswith("BEGIN-")
@@ -3426,7 +3431,7 @@ def test_typed_config_provider_uses_resolved_auth_header(runtime: SkillRuntime, 
     )
 
     assert agent.llm_client.auth_header == "Authorization: Bearer secret-token"
-    assert agent.typed_config.provider.auth_header == "Authorization: Bearer secret-token"
+    assert agent.llm_client.provider_config.auth_header == "Authorization: Bearer secret-token"
 
 
 def test_doctor_report_handles_non_object_runtime_and_capabilities_sections(mocker, runtime: SkillRuntime):
