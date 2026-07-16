@@ -97,10 +97,7 @@ TOOL_SPECS = {
     },
 }
 
-_USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-)
+_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 _BLOCK_TAG_RE = re.compile(r"</?(?:p|div|section|article|li|ul|ol|h[1-6]|br|tr|td|th|blockquote)[^>]*>", re.IGNORECASE)
 _SCRIPT_STYLE_RE = re.compile(r"<(script|style|noscript|svg)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -108,7 +105,9 @@ _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 _META_RE = re.compile(r"<meta\s+([^>]+)>", re.IGNORECASE)
 _ATTR_RE = re.compile(r'([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*("([^"]*)"|\'([^\']*)\'|([^\s>]+))')
 _HEADING_RE = re.compile(r"<h([1-3])[^>]*>(.*?)</h\1>", re.IGNORECASE | re.DOTALL)
-_BLOCK_CAPTURE_RE = re.compile(r"<(?:p|li|blockquote|h[1-6]|td|th)[^>]*>(.*?)</(?:p|li|blockquote|h[1-6]|td|th)>", re.IGNORECASE | re.DOTALL)
+_BLOCK_CAPTURE_RE = re.compile(
+    r"<(?:p|li|blockquote|h[1-6]|td|th)[^>]*>(.*?)</(?:p|li|blockquote|h[1-6]|td|th)>", re.IGNORECASE | re.DOTALL
+)
 _TAVILY_ENDPOINT = "https://api.tavily.com/search"
 _ALLOWED_FETCH_CONTENT_TYPES = ("text/html", "text/plain", "application/json", "application/xml", "text/xml")
 _REDIRECT_HTTP_STATUS = {301, 302, 303, 307, 308}
@@ -125,6 +124,8 @@ _TRUSTED_SOURCE_HINTS = (
     "docs.",
 )
 _TRACKING_QUERY_KEYS = {"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "gclid", "fbclid"}
+_MAX_JSON_RESPONSE_BYTES = 4 * 1024 * 1024
+_MAX_FETCH_RESPONSE_BYTES = 2 * 1024 * 1024
 _DATE_FORMATS = (
     "%Y-%m-%dT%H:%M:%S%z",
     "%Y-%m-%dT%H:%M:%SZ",
@@ -179,7 +180,7 @@ class SearchResponse:
 
     def to_payload(self) -> dict[str, Any]:
         provider = self.provider or (self.results[0].get("provider", "") if self.results else "")
-        payload = {
+        return {
             "query": self.request.query,
             "results": self.results,
             "provider": provider,
@@ -190,7 +191,6 @@ class SearchResponse:
             "evidence_quality": self.evidence_quality,
             "cache_hits": self.cache_hits,
         }
-        return payload
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -212,8 +212,13 @@ def _open_no_redirect(req: urllib.request.Request, *, timeout_s: float):
     return _NO_REDIRECT_OPENER.open(req, timeout=timeout_s)
 
 
-def _decode_response(resp) -> tuple[str, str]:
-    raw = resp.read()
+def _decode_response(resp, max_bytes: int) -> tuple[str, str]:
+    content_length = resp.headers.get("Content-Length", "")
+    if content_length.isdigit() and int(content_length) > max_bytes:
+        raise SearchError("HTTP response exceeds byte limit", failure_class=_FAILURE_INVALID_RESPONSE, recoverable=True)
+    raw = resp.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise SearchError("HTTP response exceeds byte limit", failure_class=_FAILURE_INVALID_RESPONSE, recoverable=True)
     content_type = resp.headers.get("Content-Type", "text/html")
     charset_getter = getattr(resp.headers, "get_content_charset", None)
     charset = charset_getter() if callable(charset_getter) else None
@@ -388,13 +393,11 @@ def _ranking_bonus(source_type: str) -> float:
 
 
 def _provider_name(env: ToolExecutionEnv) -> str:
-    search_cfg = env.config.get("search", {}) if isinstance(env.config, dict) else {}
-    return str(search_cfg.get("provider", SEARCH_PROVIDER_SEARXNG)).strip().lower() or SEARCH_PROVIDER_SEARXNG
+    return str(_search_cfg(env).get("provider", SEARCH_PROVIDER_SEARXNG)).strip().lower() or SEARCH_PROVIDER_SEARXNG
 
 
 def _fallback_provider_name(env: ToolExecutionEnv) -> str:
-    search_cfg = env.config.get("search", {}) if isinstance(env.config, dict) else {}
-    return str(search_cfg.get("fallback_provider", "")).strip().lower()
+    return str(_search_cfg(env).get("fallback_provider", "")).strip().lower()
 
 
 def _search_cfg(env: ToolExecutionEnv) -> dict[str, Any]:
@@ -404,19 +407,9 @@ def _search_cfg(env: ToolExecutionEnv) -> dict[str, Any]:
     return cfg if isinstance(cfg, dict) else {}
 
 
-def _cfg_float(search_cfg: dict[str, Any], key: str, default: float, *, minimum: float = 0.0) -> float:
-    raw = search_cfg.get(key, default)
+def _cfg_number(search_cfg: dict[str, Any], key: str, default: int | float, *, minimum: int | float = 0) -> int | float:
     try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        value = default
-    return max(minimum, value)
-
-
-def _cfg_int(search_cfg: dict[str, Any], key: str, default: int, *, minimum: int = 0) -> int:
-    raw = search_cfg.get(key, default)
-    try:
-        value = int(raw)
+        value = type(default)(search_cfg.get(key, default))
     except (TypeError, ValueError):
         value = default
     return max(minimum, value)
@@ -427,19 +420,19 @@ def _cfg_bool(search_cfg: dict[str, Any], key: str, default: bool) -> bool:
 
 
 def _request_timeout_s(env: ToolExecutionEnv) -> float:
-    return _cfg_float(_search_cfg(env), "request_timeout_s", 20.0, minimum=1.0)
+    return float(_cfg_number(_search_cfg(env), "request_timeout_s", 20.0, minimum=1.0))
 
 
 def _request_retries(env: ToolExecutionEnv) -> int:
-    return _cfg_int(_search_cfg(env), "request_retries", 1, minimum=0)
+    return int(_cfg_number(_search_cfg(env), "request_retries", 1))
 
 
 def _request_retry_backoff_s(env: ToolExecutionEnv) -> float:
-    return _cfg_float(_search_cfg(env), "request_retry_backoff_s", 0.5, minimum=0.0)
+    return float(_cfg_number(_search_cfg(env), "request_retry_backoff_s", 0.5))
 
 
 def _fetch_max_redirects(env: ToolExecutionEnv) -> int:
-    return _cfg_int(_search_cfg(env), "fetch_max_redirects", 5, minimum=0)
+    return int(_cfg_number(_search_cfg(env), "fetch_max_redirects", 5))
 
 
 def _cache_first(env: ToolExecutionEnv) -> bool:
@@ -447,11 +440,11 @@ def _cache_first(env: ToolExecutionEnv) -> bool:
 
 
 def _min_usable_results(env: ToolExecutionEnv) -> int:
-    return _cfg_int(_search_cfg(env), "min_usable_results", 1, minimum=1)
+    return int(_cfg_number(_search_cfg(env), "min_usable_results", 1, minimum=1))
 
 
 def _fetch_min_chars(env: ToolExecutionEnv) -> int:
-    return _cfg_int(_search_cfg(env), "fetch_min_chars", 20, minimum=1)
+    return int(_cfg_number(_search_cfg(env), "fetch_min_chars", 20, minimum=1))
 
 
 def _provider_chain(env: ToolExecutionEnv) -> list[str]:
@@ -645,7 +638,13 @@ def _normalize_result_item(item: dict, *, provider: str, provider_rank: int, que
     trust_score = round(_trust_score(domain, source_type), 2)
     query_match_score = _query_match_score(" ".join((title, snippet, description, domain)), query)
     freshness_score = _freshness_score(published_at)
-    score = (trust_score * 0.5) + (query_match_score * 0.35) + (freshness_score * 0.1) + _ranking_bonus(source_type) + max(0.0, 0.05 - provider_rank * 0.02)
+    score = (
+        (trust_score * 0.5)
+        + (query_match_score * 0.35)
+        + (freshness_score * 0.1)
+        + _ranking_bonus(source_type)
+        + max(0.0, 0.05 - provider_rank * 0.02)
+    )
     return {
         "provider_rank": provider_rank,
         "title": title,
@@ -692,7 +691,7 @@ def _request_json(
     while True:
         try:
             with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-                content_type, body = _decode_response(resp)
+                content_type, body = _decode_response(resp, _MAX_JSON_RESPONSE_BYTES)
         except urllib.error.HTTPError as exc:
             if should_retry(exc) and attempt < retries:
                 attempt += 1
@@ -854,7 +853,8 @@ def _evidence_quality(results: list[dict[str, Any]], *, min_usable: int) -> str:
     high_signal = [
         item
         for item in fresh
-        if float(item.get("trust_score", 0.0) or 0.0) >= 0.75 or str(item.get("source_type", "")) in {"official", "documentation", "reference"}
+        if float(item.get("trust_score", 0.0) or 0.0) >= 0.75
+        or str(item.get("source_type", "")) in {"official", "documentation", "reference"}
     ]
     if len(high_signal) >= min_usable:
         return "high"
@@ -910,33 +910,25 @@ def _search(query: str, limit: int, env: ToolExecutionEnv) -> dict[str, Any]:
         started = time.monotonic()
         try:
             payload = _search_provider(provider, request, env, provider_rank=provider_rank)
-        except SearchError as exc:
-            attempt = SearchAttempt(
-                provider=provider,
-                status="error",
-                failure_class=exc.failure_class,
-                error=str(exc),
-                latency_ms=int((time.monotonic() - started) * 1000),
+        except (RuntimeError, SearchError) as raw_error:
+            error = (
+                raw_error
+                if isinstance(raw_error, SearchError)
+                else SearchError(str(raw_error), failure_class=_FAILURE_INVALID_RESPONSE, recoverable=True)
             )
-            attempts.append(attempt)
-            if first_error is None:
-                first_error = exc
-            if not exc.recoverable:
-                break
-            continue
-        except RuntimeError as exc:
-            wrapped = SearchError(str(exc), failure_class=_FAILURE_INVALID_RESPONSE, recoverable=True)
             attempts.append(
                 SearchAttempt(
                     provider=provider,
                     status="error",
-                    failure_class=wrapped.failure_class,
-                    error=str(wrapped),
+                    failure_class=error.failure_class,
+                    error=str(error),
                     latency_ms=int((time.monotonic() - started) * 1000),
                 )
             )
             if first_error is None:
-                first_error = wrapped
+                first_error = error
+            if not error.recoverable:
+                break
             continue
 
         provider_results = payload.get("results") if isinstance(payload, dict) else []
@@ -999,12 +991,7 @@ def _is_private_or_local_host(host: str) -> bool:
         addr = None
     if addr is not None:
         return bool(
-            addr.is_private
-            or addr.is_loopback
-            or addr.is_link_local
-            or addr.is_multicast
-            or addr.is_reserved
-            or addr.is_unspecified
+            addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast or addr.is_reserved or addr.is_unspecified
         )
 
     try:
@@ -1021,14 +1008,7 @@ def _is_private_or_local_host(host: str) -> bool:
             ip = ipaddress.ip_address(ip_text)
         except ValueError:
             continue
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_reserved
-            or ip.is_unspecified
-        ):
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
             return True
     return False
 
@@ -1123,7 +1103,7 @@ def _fetch(
         try:
             with _open_no_redirect(_request(current_url), timeout_s=timeout_s) as resp:
                 final_url = resp.geturl() or current_url
-                content_type, payload = _decode_response(resp)
+                content_type, payload = _decode_response(resp, _MAX_FETCH_RESPONSE_BYTES)
             break
         except urllib.error.HTTPError as exc:
             status = int(getattr(exc, "code", 0) or 0)
@@ -1139,10 +1119,14 @@ def _fetch(
                 next_url = urllib.parse.urljoin(current_url, location)
                 parsed_next = urllib.parse.urlparse(next_url)
                 if parsed_next.scheme not in {"http", "https"}:
-                    raise SearchError("Refusing to follow non-http redirect URL", failure_class=_FAILURE_FETCH_BLOCKED, recoverable=False) from exc
+                    raise SearchError(
+                        "Refusing to follow non-http redirect URL", failure_class=_FAILURE_FETCH_BLOCKED, recoverable=False
+                    ) from exc
                 next_host = (parsed_next.hostname or "").strip()
                 if _is_private_or_local_host(next_host):
-                    raise SearchError("Refusing to fetch private or local network URL", failure_class=_FAILURE_FETCH_BLOCKED, recoverable=False) from exc
+                    raise SearchError(
+                        "Refusing to fetch private or local network URL", failure_class=_FAILURE_FETCH_BLOCKED, recoverable=False
+                    ) from exc
 
                 current_url = next_url
                 redirect_count += 1
@@ -1218,7 +1202,8 @@ def _fetch(
         "truncated": truncated,
         "domain": domain,
         "source_type": source_type,
-        "selection_reason": "fetched source content" + (" from a primary or official source" if source_type in {"official", "documentation"} else ""),
+        "selection_reason": "fetched source content"
+        + (" from a primary or official source" if source_type in {"official", "documentation"} else ""),
         "extraction_quality": extraction_quality,
         "content_chars": len(content),
         "usable_text": usable_text,

@@ -17,12 +17,15 @@ from skills.runtime import SkillContext, SkillRuntime
 
 
 class _Headers:
-    def __init__(self, content_type: str = "application/json; charset=utf-8"):
+    def __init__(self, content_type: str = "application/json; charset=utf-8", content_length: int | None = None):
         self._content_type = content_type
+        self._content_length = content_length
 
     def get(self, key, default=None):
         if key.lower() == "content-type":
             return self._content_type
+        if key.lower() == "content-length" and self._content_length is not None:
+            return str(self._content_length)
         return default
 
     def get_content_charset(self):
@@ -87,6 +90,24 @@ def _location_headers(location: str) -> Message:
     return headers
 
 
+def test_http_response_reader_rejects_declared_and_streamed_oversize_bodies():
+    module = _load_search_module()
+
+    class _Response:
+        def __init__(self, payload: bytes, declared: int | None = None):
+            self.payload = payload
+            self.headers = _Headers(content_length=declared)
+
+        def read(self, size=-1):
+            return self.payload[:size]
+
+    limit = 32
+    with pytest.raises(module.SearchError, match="exceeds byte limit"):
+        module._decode_response(_Response(b"small", declared=limit + 1), limit)
+    with pytest.raises(module.SearchError, match="exceeds byte limit"):
+        module._decode_response(_Response(b"x" * (limit + 1)), limit)
+
+
 def test_web_search_calls_searxng_and_normalizes_results(mocker):
     module = _load_search_module()
 
@@ -116,7 +137,7 @@ def test_web_search_calls_searxng_and_normalizes_results(mocker):
         def __exit__(self, *_args):
             return False
 
-        def read(self):
+        def read(self, _size=-1):
             return self._payload
 
     opened = {}
@@ -178,7 +199,7 @@ def test_fetch_url_extracts_title_and_text(mocker):
         def __exit__(self, *_args):
             return False
 
-        def read(self):
+        def read(self, _size=-1):
             return self._payload
 
         def geturl(self):
@@ -211,7 +232,7 @@ def test_fetch_url_marks_short_extraction_unusable(mocker):
         def __exit__(self, *_args):
             return False
 
-        def read(self):
+        def read(self, _size=-1):
             return html.encode("utf-8")
 
         def geturl(self):
@@ -248,7 +269,7 @@ def test_fetch_url_respects_disabled_retrieval(mocker, tmp_path: Path):
         def __exit__(self, *_args):
             return False
 
-        def read(self):
+        def read(self, _size=-1):
             return html.encode("utf-8")
 
         def geturl(self):
@@ -284,7 +305,7 @@ def test_fetch_url_indexes_embeddings_and_retrieve_uses_dense_query(mocker, tmp_
         def __exit__(self, *_args):
             return False
 
-        def read(self):
+        def read(self, _size=-1):
             return html.encode("utf-8")
 
         def geturl(self):
@@ -302,7 +323,7 @@ def test_fetch_url_indexes_embeddings_and_retrieve_uses_dense_query(mocker, tmp_
         def __exit__(self, *_args):
             return False
 
-        def read(self):
+        def read(self, _size=-1):
             return self._payload
 
     embedding_calls: list[dict[str, object]] = []
@@ -416,7 +437,7 @@ def test_web_search_deduplicates_cached_chunks_before_cache_first_decision(mocke
         def __exit__(self, *_args):
             return False
 
-        def read(self):
+        def read(self, _size=-1):
             return json.dumps(payload).encode("utf-8")
 
     urlopen = mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp())
@@ -462,7 +483,7 @@ def test_web_search_preserves_stale_cache_metadata_when_provider_succeeds(mocker
         def __exit__(self, *_args):
             return False
 
-        def read(self):
+        def read(self, _size=-1):
             return json.dumps(payload).encode("utf-8")
 
     mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp())
@@ -509,7 +530,7 @@ def test_web_search_deduplicates_searxng_results(mocker):
         def __exit__(self, *_args):
             return False
 
-        def read(self):
+        def read(self, _size=-1):
             return self._payload
 
     mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp())
@@ -548,7 +569,7 @@ def test_web_search_falls_back_to_tavily_when_searxng_unreachable(mocker, monkey
         def __exit__(self, *_args):
             return False
 
-        def read(self):
+        def read(self, _size=-1):
             return self._payload
 
     calls: list[str] = []
@@ -593,7 +614,7 @@ def test_web_search_falls_back_to_tavily_when_searxng_url_missing(mocker, monkey
         def __exit__(self, *_args):
             return False
 
-        def read(self):
+        def read(self, _size=-1):
             return json.dumps(payload).encode("utf-8")
 
     calls: list[str] = []
@@ -632,7 +653,7 @@ def test_web_search_can_use_tavily_as_primary(mocker, monkeypatch):
         def __exit__(self, *_args):
             return False
 
-        def read(self):
+        def read(self, _size=-1):
             return json.dumps(payload).encode("utf-8")
 
     mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp())
@@ -658,7 +679,7 @@ def test_web_search_classifies_invalid_provider_response(mocker):
         def __exit__(self, *_args):
             return False
 
-        def read(self):
+        def read(self, _size=-1):
             return b"<html>not json</html>"
 
     mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp())
@@ -691,7 +712,7 @@ def test_web_search_retries_retryable_http_error(mocker):
         def __exit__(self, *_args):
             return False
 
-        def read(self):
+        def read(self, _size=-1):
             return self._payload
 
     def fake_urlopen(req, timeout=None):
@@ -774,7 +795,7 @@ def test_fetch_url_follows_safe_redirect_chain(mocker):
         def __exit__(self, *_args):
             return False
 
-        def read(self):
+        def read(self, _size=-1):
             return self._payload
 
         def geturl(self):
@@ -835,7 +856,7 @@ def test_fetch_url_extracts_metadata_and_headings(mocker):
         def __exit__(self, *_args):
             return False
 
-        def read(self):
+        def read(self, _size=-1):
             return self._payload
 
         def geturl(self):
@@ -878,7 +899,7 @@ def test_fetch_url_preserves_div_and_section_body_text(mocker):
         def __exit__(self, *_args):
             return False
 
-        def read(self):
+        def read(self, _size=-1):
             return self._payload
 
         def geturl(self):
@@ -928,7 +949,7 @@ def test_search_ops_skill_loads_and_executes_from_repo(tmp_path: Path, mocker):
         def __exit__(self, *_args):
             return False
 
-        def read(self):
+        def read(self, _size=-1):
             return self._payload
 
     mocker.patch.object(module.urllib.request, "urlopen", return_value=_Resp())
