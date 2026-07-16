@@ -8,20 +8,12 @@ from typing import Any
 
 from skills.runtime import ToolExecutionEnv
 
-
-def _specs(rows: dict[str, tuple]) -> dict[str, dict[str, Any]]:
-    return {name: {"capability": capability, "mutates": mutates, "actions": list(actions), "description": description, "parameters": {"type": "object", "properties": properties, "required": list(required)}} for name, (capability, mutates, actions, description, properties, required, _closed) in rows.items()}
-
-
 TOOL_SPEC_ROWS = {  # fmt: skip
     "list_apps": ("desktop_read", False, ("list", "read"), "List running desktop applications where the platform supports it.", {"include_windows": {"type": "boolean"}}, (), False),
     "open_app": ("desktop_control", True, ("open",), "Open a desktop application. Requires confirm_open=true.", {"name": {"type": "string"}, "confirm_open": {"type": "boolean"}}, ("name",), False),
     "focus_app": ("desktop_control", True, ("open",), "Focus a running desktop application. Requires confirm_focus=true.", {"name": {"type": "string"}, "window_title": {"type": "string"}, "confirm_focus": {"type": "boolean"}}, ("name",), False),
     "quit_app": ("desktop_control", True, ("delete",), "Quit a desktop application. Requires confirm_quit=true.", {"name": {"type": "string"}, "force": {"type": "boolean"}, "confirm_quit": {"type": "boolean"}}, ("name",), False),
 }
-TOOL_SPECS = _specs(TOOL_SPEC_ROWS)
-
-
 def _ok(data: dict[str, object]) -> dict[str, object]:
     return {"ok": True, "data": data, "error": None, "meta": {}}
 

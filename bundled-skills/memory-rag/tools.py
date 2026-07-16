@@ -2,25 +2,10 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any
 
 from core.coercion import coerce_bool
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
 from skills.runtime import ToolExecutionEnv
-
-
-def _specs(rows: dict[str, tuple]) -> dict[str, dict[str, Any]]:
-    return {
-        name: {
-            "capability": capability,
-            "mutates": mutates,
-            "actions": list(actions),
-            "description": description,
-            "parameters": {"type": "object", "properties": properties, "required": list(required)},
-        }
-        for name, (capability, mutates, actions, description, properties, required, _closed) in rows.items()
-    }
-
 
 TOOL_SPEC_ROWS = {  # fmt: skip
     "store_memory": ("memory_store", True, ("save", "write", "update"), "Persist a memory item.", {"text": {"type": "string"}, "memory_type": {"type": "string"}, "importance": {"type": "number"}, "replace_existing": {"type": "boolean"}, "replace_query": {"type": "string"}, "replace_top_k": {"type": "integer"}, "replace_min_score": {"type": "number"}, "replace_ids": {"type": "array", "items": {"type": "integer"}}, "metadata": {"type": "object"}}, ("text",), False),
@@ -30,9 +15,6 @@ TOOL_SPEC_ROWS = {  # fmt: skip
     "get_memory_stats": ("memory_stats", False, ("check", "read"), "Get memory statistics.", {}, (), False),
     "export_memories": ("memory_export", True, ("save", "write"), "Export memories to a text file.", {"filepath": {"type": "string"}}, (), False),
 }
-TOOL_SPECS = _specs(TOOL_SPEC_ROWS)
-
-
 def _normalize_whitespace(value: str) -> str:
     return " ".join(value.strip().split()).lower()
 

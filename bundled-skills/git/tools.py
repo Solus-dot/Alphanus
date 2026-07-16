@@ -8,23 +8,6 @@ from typing import Any
 
 from skills.runtime import ToolExecutionEnv
 
-
-def _specs(rows: dict[str, tuple]) -> dict[str, dict[str, Any]]:
-    specs = {}
-    for name, (capability, mutates, actions, description, properties, required) in rows.items():
-        parameters = {"type": "object", "properties": properties, "additionalProperties": False}
-        if required:
-            parameters["required"] = list(required)
-        specs[name] = dict(
-            capability=capability,
-            mutates=mutates,
-            actions=list(actions),
-            description=description,
-            parameters=parameters,
-        )
-    return specs
-
-
 TOOL_SPEC_ROWS = {  # fmt: skip
     "git_status": ("project_read", False, ("check", "read"), "Return structured Git status for a repository inside the project.", {"path": {"type": "string"}}, ()),
     "git_log": ("project_read", False, ("read", "list"), "Return recent Git commits for a repository inside the project.", {"path": {"type": "string"}, "max_count": {"type": "integer"}, "ref": {"type": "string"}}, ()),
@@ -40,8 +23,6 @@ TOOL_SPEC_ROWS = {  # fmt: skip
     "git_push": ("project_write", True, ("update",), "Push to a Git remote after explicit confirmation. Force push modes are rejected.", {"path": {"type": "string"}, "remote": {"type": "string"}, "branch": {"type": "string"}, "confirm_push": {"type": "boolean"}, "force": {"type": "boolean"}}, ("confirm_push",)),
     "git_init": ("project_write", True, ("create",), "Initialize a Git repository in an explicit descendant folder inside the project, never at project root.", {"path": {"type": "string"}, "create_if_missing": {"type": "boolean"}}, ("path",)),
 }
-TOOL_SPECS = _specs(TOOL_SPEC_ROWS)
-
 MAX_OUTPUT_BYTES = 20000
 
 

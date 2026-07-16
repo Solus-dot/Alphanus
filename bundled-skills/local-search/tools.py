@@ -6,23 +6,8 @@ from typing import Any
 
 from skills.runtime import ToolExecutionEnv
 
-TOOL_SPECS = {
-    "search_local_files": {
-        "capability": "local_search",
-        "mutates": False,
-        "actions": ["read", "list", "check"],
-        "description": "Search local filenames and text content under the project root.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "root": {"type": "string"},
-                "mode": {"type": "string", "enum": ["filename", "content", "both"]},
-                "max_results": {"type": "integer"},
-            },
-            "required": ["query"],
-        },
-    },
+TOOL_SPEC_ROWS = {  # fmt: skip
+    "search_local_files": ("local_search", False, ("read", "list", "check"), "Search local filenames and text content under the project root.", {"query": {"type": "string"}, "root": {"type": "string"}, "mode": {"type": "string", "enum": ["filename", "content", "both"]}, "max_results": {"type": "integer"}}, ("query",), False),
 }
 
 _IGNORE_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".next", "dist", "build", ".cache"}

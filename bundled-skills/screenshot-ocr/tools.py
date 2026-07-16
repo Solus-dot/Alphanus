@@ -15,18 +15,11 @@ _SCREENSHOT_TIMEOUT_S = 20
 _TESSERACT_TIMEOUT_S = 60
 _DEFAULT_SCREENSHOT_FILENAME = "screenshot.png"
 
-def _specs(rows: dict[str, tuple]) -> dict[str, dict[str, Any]]:
-    return {name: {"capability": capability, "mutates": mutates, "actions": list(actions), "description": description, "parameters": {"type": "object", "properties": properties, "required": list(required)}} for name, (capability, mutates, actions, description, properties, required, _closed) in rows.items()}
-
-
 TOOL_SPEC_ROWS = {  # fmt: skip
     "capture_screenshot": ("screen_capture", True, ("read", "check"), "Capture a full-screen screenshot. Requires confirm_capture=true.", {"output_path": {"type": "string"}, "confirm_capture": {"type": "boolean"}}, (), False),
     "ocr_image": ("ocr_read", False, ("read", "check"), "Run OCR on an explicit image file path. Requires optional OCR tooling.", {"path": {"type": "string"}, "max_chars": {"type": "integer"}}, ("path",), False),
     "capture_and_ocr": ("screen_capture", True, ("read", "check"), "Capture a full-screen screenshot and OCR it. Requires confirm_capture=true and OCR tooling.", {"max_chars": {"type": "integer"}, "confirm_capture": {"type": "boolean"}}, (), False),
 }
-TOOL_SPECS = _specs(TOOL_SPEC_ROWS)
-
-
 def _ok(data: dict[str, object]) -> dict[str, object]:
     return {"ok": True, "data": data, "error": None, "meta": {}}
 

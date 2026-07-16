@@ -19,23 +19,6 @@ from core.search_providers import DEFAULT_TAVILY_API_KEY_ENV, SEARCH_PROVIDER_SE
 from core.streaming import should_retry
 from skills.runtime import ToolExecutionEnv
 
-
-def _specs(rows: dict[str, tuple]) -> dict[str, dict[str, Any]]:
-    specs = {}
-    for name, (capability, mutates, actions, description, properties, required, closed) in rows.items():
-        parameters = {"type": "object", "properties": properties, "required": list(required)}
-        if closed:
-            parameters["additionalProperties"] = False
-        specs[name] = dict(
-            capability=capability,
-            mutates=mutates,
-            actions=list(actions),
-            description=description,
-            parameters=parameters,
-        )
-    return specs
-
-
 TOOL_SPEC_ROWS = {  # fmt: skip
     "web_search": ("web_search", False, ("read", "check"), "Search the public web and return structured results with titles, URLs, snippets, and source metadata.", {"query": {"type": "string"}, "limit": {"type": "integer"}}, ("query",), False),
     "fetch_url": ("web_fetch", False, ("read",), "Fetch a URL and extract readable text content plus source metadata.", {"url": {"type": "string"}, "max_chars": {"type": "integer"}}, ("url",), False),
@@ -49,8 +32,6 @@ TOOL_SPEC_ROWS = {  # fmt: skip
     "retrieval_stats": ("retrieval_stats", False, ("check", "read"), "Return local retrieval database statistics and embedding availability.", {}, (), False),
     "forget_retrieval_record": ("retrieval_forget", True, ("delete", "remove"), "Delete a retrieval record by id.", {"record_id": {"type": "integer"}}, ("record_id",), False),
 }
-TOOL_SPECS = _specs(TOOL_SPEC_ROWS)
-
 _USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 _BLOCK_TAG_RE = re.compile(r"</?(?:p|div|section|article|li|ul|ol|h[1-6]|br|tr|td|th|blockquote)[^>]*>", re.IGNORECASE)
 _SCRIPT_STYLE_RE = re.compile(r"<(script|style|noscript|svg)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)

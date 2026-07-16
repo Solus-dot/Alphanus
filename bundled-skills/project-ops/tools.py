@@ -4,7 +4,6 @@ import difflib
 import hashlib
 import re
 from pathlib import Path
-from typing import Any
 
 from skills.runtime import ToolExecutionEnv
 
@@ -13,18 +12,6 @@ WRITE_PREVIEW_HEAD_CHARS = 800
 WRITE_PREVIEW_TAIL_CHARS = 400
 READ_CONTENT_MAX_CHARS = 64000
 EDIT_DIFF_MAX_CHARS = 12000
-
-
-def _specs(rows: dict[str, tuple]) -> dict[str, dict[str, Any]]:
-    specs = {}
-    for name, (capability, mutates, actions, description, properties, required, closed) in rows.items():
-        parameters = {"type": "object", "properties": properties}
-        if required is not None:
-            parameters["required"] = list(required)
-        if closed:
-            parameters["additionalProperties"] = False
-        specs[name] = dict(capability=capability, mutates=mutates, actions=list(actions), description=description, parameters=parameters)
-    return specs
 
 
 TOOL_SPEC_ROWS = {  # fmt: skip
@@ -60,9 +47,6 @@ TOOL_SPEC_ROWS = {  # fmt: skip
     "delete_path": ("project_delete", True, ("delete", "remove"), "Delete a project path, or an explicit absolute path when policy allows it.", {"path": {"type": "string"}, "recursive": {"type": "boolean"}}, ("path",), False),
     "project_tree": ("project_tree", False, ("list", "read"), "Render a bounded tree for the project or a specific allowed directory path.", {"path": {"type": "string"}, "max_depth": {"type": "integer"}, "max_entries": {"type": "integer"}}, (), False),
 }
-TOOL_SPECS = _specs(TOOL_SPEC_ROWS)
-
-
 def _line_count(text: str) -> int:
     if not text:
         return 0

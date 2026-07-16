@@ -20,18 +20,11 @@ _MAC_BROWSER_APPS = {
 }
 _DEFAULT_MAC_BROWSER_APPS = ["Safari", "Google Chrome", "Chromium", "Brave Browser", "Microsoft Edge"]
 
-def _specs(rows: dict[str, tuple]) -> dict[str, dict[str, Any]]:
-    return {name: {"capability": capability, "mutates": mutates, "actions": list(actions), "description": description, "parameters": {"type": "object", "properties": properties, "required": list(required)}} for name, (capability, mutates, actions, description, properties, required, _closed) in rows.items()}
-
-
 TOOL_SPEC_ROWS = {  # fmt: skip
     "open_browser_url": ("browser_open", True, ("open",), "Open a URL in the default browser. Requires confirm_open=true.", {"url": {"type": "string"}, "confirm_open": {"type": "boolean"}}, ("url",), False),
     "browser_search": ("browser_open", True, ("open", "read"), "Open a browser search. Requires confirm_open=true.", {"query": {"type": "string"}, "engine": {"type": "string"}, "confirm_open": {"type": "boolean"}}, ("query",), False),
     "get_current_browser_page": ("browser_read", False, ("read", "check"), "Return best-effort current browser URL/title/text where platform support exists.", {"browser": {"type": "string"}}, (), False),
 }
-TOOL_SPECS = _specs(TOOL_SPEC_ROWS)
-
-
 def _ok(data: dict[str, object]) -> dict[str, object]:
     return {"ok": True, "data": data, "error": None, "meta": {}}
 
