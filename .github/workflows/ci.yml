@@ -25,6 +25,8 @@ jobs:
       - run: uv sync --all-extras
       - run: uv run ruff check .
       - run: uv run pyright
+      - run: uv run vulture
+      - run: uv run python tools/code_metrics.py --check
       - run: uv run pytest -m "not benchmark" --cov --cov-branch --cov-report=term-missing
       - run: uv build
       - run: uv run pip-audit
