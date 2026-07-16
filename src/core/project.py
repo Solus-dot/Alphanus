@@ -1110,12 +1110,14 @@ class ProjectRuntime:
                 raise ValueError(f"Invalid search_code regex: {exc}") from exc
             pattern = ""
         results = []
+        context_line_cache: dict[str, list[str] | None] = {}
         for file_path in self._iter_searchable_files(target, glob):
             try:
                 content = file_path.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
                 continue
             content_lines = content.splitlines()
+            context_line_cache[str(file_path)] = content_lines
             for line_number, line in enumerate(content_lines, start=1):
                 if regex is None:
                     haystack = line if case_sensitive else line.lower()
@@ -1140,15 +1142,14 @@ class ProjectRuntime:
                     }
                 )
                 if before_context > 0 or after_context > 0:
-                    idx = line_number - 1
-                    before_start = max(0, idx - max(0, int(before_context)))
-                    after_end = min(len(content_lines), idx + 1 + max(0, int(after_context)))
-                    results[-1]["before_context"] = [
-                        {"line_number": row_idx + 1, "line": content_lines[row_idx]} for row_idx in range(before_start, idx)
-                    ]
-                    results[-1]["after_context"] = [
-                        {"line_number": row_idx + 1, "line": content_lines[row_idx]} for row_idx in range(idx + 1, after_end)
-                    ]
+                    before_rows, after_rows = self._search_result_context(
+                        file_path=str(file_path),
+                        line_number=line_number,
+                        before_context=before_context,
+                        after_context=after_context,
+                        line_cache=context_line_cache,
+                    )
+                    results[-1].update(before_context=before_rows, after_context=after_rows)
                 if len(results) >= limit:
                     return self._search_response(needle, target, glob, results, True, "python", before_context, after_context)
         return self._search_response(needle, target, glob, results, False, "python", before_context, after_context)

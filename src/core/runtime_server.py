@@ -30,6 +30,11 @@ MAX_ACTIVITY_ITEMS = 256
 MAX_PERSISTED_REASONING_CHARS = 512 * 1024
 TOOL_PREVIEW_CHARS = 8_000
 TOOL_PREVIEW_LINES = 140
+_REQUEST_TYPES = frozenset(
+    "hello state.get turn.start turn.cancel approval.resolve session.list session.search session.create session.load "
+    "session.rename session.delete branch.arm branch.unbranch branch.switch branch.open attachment.add attachment.remove "
+    "status.refresh config.get config.apply command.execute theme.list theme.apply palette.get skill.toggle shutdown".split()
+)
 
 
 def _clip(value: Any, limit: int = TRANSCRIPT_FIELD_CHARS) -> str:
@@ -519,38 +524,10 @@ class RuntimeServer:
         request_id = str(frame["request_id"])
         data = frame.get("data", {})
         assert isinstance(data, dict)
-        handlers = {
-            "hello": self._hello,
-            "state.get": self._state_get,
-            "turn.start": self._turn_start,
-            "turn.cancel": self._turn_cancel,
-            "approval.resolve": self._approval_resolve,
-            "session.list": self._session_list,
-            "session.search": self._session_search,
-            "session.create": self._session_create,
-            "session.load": self._session_load,
-            "session.rename": self._session_rename,
-            "session.delete": self._session_delete,
-            "branch.arm": self._branch_arm,
-            "branch.unbranch": self._branch_unbranch,
-            "branch.switch": self._branch_switch,
-            "branch.open": self._branch_open,
-            "attachment.add": self._attachment_add,
-            "attachment.remove": self._attachment_remove,
-            "status.refresh": self._status_refresh,
-            "config.get": self._config_get,
-            "config.apply": self._config_apply,
-            "command.execute": self._command_execute,
-            "theme.list": self._theme_list,
-            "theme.apply": self._theme_apply,
-            "palette.get": self._palette_get,
-            "skill.toggle": self._skill_toggle,
-            "shutdown": self._shutdown,
-        }
-        handler = handlers.get(message_type)
-        if handler is None:
+        if message_type not in _REQUEST_TYPES:
             self._emit_error(request_id, f"unknown runtime request: {message_type}")
             return
+        handler = getattr(self, "_" + message_type.replace(".", "_"))
         try:
             handler(request_id, data)
         except (FileNotFoundError, KeyError, OSError, TypeError, ValueError) as exc:
