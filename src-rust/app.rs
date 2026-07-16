@@ -37,13 +37,12 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::backend::Backend;
 use crate::protocol::{BackendEvent, EventFrame, Request};
 use crate::theme::Theme;
+use crate::tool_preview::{self, ToolPreview};
 
 const MAX_EVENTS_PER_FRAME: usize = 256;
 const MAX_TRANSCRIPT_ITEMS: usize = 4096;
 const MAX_STREAM_CHARS: usize = 512 * 1024;
 const MAX_ACTIVITY_ITEMS: usize = 256;
-const MAX_TOOL_PREVIEW_CHARS: usize = 8_000;
-const MAX_TOOL_PREVIEW_LINES: usize = 140;
 const MAX_DIAGNOSTICS: usize = 256;
 const PASTE_THRESHOLD: usize = 120;
 const CANCEL_WINDOW: Duration = Duration::from_secs(2);
@@ -489,7 +488,7 @@ impl App {
                     .unwrap_or("tool");
                 let id = field(&frame.data, "id");
                 let stream_id = field(&frame.data, "stream_id");
-                let preview = tool_preview_from_request(name, &frame.data);
+                let preview = tool_preview::from_request(name, &frame.data);
                 append_tool_activity(
                     &mut self.transcript,
                     &self.active_turn_id,
@@ -507,7 +506,7 @@ impl App {
                     .and_then(Value::as_str)
                     .unwrap_or("tool");
                 let id = field(&frame.data, "id");
-                let preview = tool_preview_from_result(name, &frame.data);
+                let preview = tool_preview::from_result(name, &frame.data);
                 let failed = frame
                     .data
                     .get("result")
@@ -2317,7 +2316,7 @@ fn draw_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
                         Style::default().fg(app.theme.subtle),
                     )));
                     let language = if activity.tool.language.is_empty() {
-                        language_for_filepath(&activity.tool.filepath)
+                        tool_preview::language_for_filepath(&activity.tool.filepath)
                     } else {
                         activity.tool.language.as_str()
                     };
@@ -3405,138 +3404,6 @@ fn set_assistant(turns: &mut [TurnView], turn_id: &str, assistant: &str) {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-struct ToolPreview {
-    filepath: String,
-    content: String,
-    language: String,
-    truncated: bool,
-}
-
-fn canonical_tool_name(name: &str) -> &str {
-    name.rsplit([':', '.']).next().unwrap_or(name)
-}
-
-fn language_for_filepath(filepath: &str) -> &str {
-    match filepath
-        .rsplit('.')
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "bash" | "sh" | "zsh" => "bash",
-        "c" | "h" => "c",
-        "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => "cpp",
-        "css" => "css",
-        "htm" | "html" => "html",
-        "js" | "cjs" | "mjs" => "javascript",
-        "json" => "json",
-        "md" => "markdown",
-        "py" => "python",
-        "ts" => "typescript",
-        "tsx" => "tsx",
-        _ => "text",
-    }
-}
-
-fn bounded_tool_preview(content: &str) -> (String, bool) {
-    let mut output = String::new();
-    let mut truncated = false;
-    for (index, line) in content.lines().enumerate() {
-        if index >= MAX_TOOL_PREVIEW_LINES {
-            truncated = true;
-            break;
-        }
-        if !output.is_empty() {
-            output.push('\n');
-        }
-        for character in line.chars() {
-            if output.len() + character.len_utf8() > MAX_TOOL_PREVIEW_CHARS {
-                truncated = true;
-                break;
-            }
-            output.push(character);
-        }
-        if truncated {
-            break;
-        }
-    }
-    (output, truncated)
-}
-
-fn tool_preview_from_request(name: &str, data: &Value) -> ToolPreview {
-    if !matches!(canonical_tool_name(name), "create_file" | "edit_file") {
-        return ToolPreview::default();
-    }
-    let Some(arguments) = data.get("arguments").and_then(Value::as_object) else {
-        return ToolPreview::default();
-    };
-    let filepath = arguments
-        .get("filepath")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    let Some(content) = arguments.get("content").and_then(Value::as_str) else {
-        return ToolPreview {
-            filepath,
-            ..ToolPreview::default()
-        };
-    };
-    let (content, truncated) = bounded_tool_preview(content);
-    ToolPreview {
-        filepath,
-        content,
-        language: String::new(),
-        truncated,
-    }
-}
-
-fn tool_preview_from_result(name: &str, data: &Value) -> ToolPreview {
-    let canonical = canonical_tool_name(name);
-    if !matches!(canonical, "create_file" | "edit_file") {
-        return ToolPreview::default();
-    }
-    let Some(result_data) = data
-        .get("result")
-        .and_then(|result| result.get("data"))
-        .and_then(Value::as_object)
-    else {
-        return ToolPreview::default();
-    };
-    let filepath = result_data
-        .get("filepath")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    let (field_name, language) = if canonical == "edit_file" {
-        ("diff", "diff")
-    } else {
-        ("content_preview", "")
-    };
-    let Some(content) = result_data.get(field_name).and_then(Value::as_str) else {
-        return ToolPreview {
-            filepath,
-            ..ToolPreview::default()
-        };
-    };
-    let (content, locally_truncated) = bounded_tool_preview(content);
-    let result_truncated = result_data
-        .get(if canonical == "edit_file" {
-            "diff_truncated"
-        } else {
-            "content_preview_truncated"
-        })
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    ToolPreview {
-        filepath,
-        content,
-        language: language.into(),
-        truncated: locally_truncated || result_truncated,
-    }
-}
-
 fn merge_tool_preview(tool: &mut ToolActivity, preview: &ToolPreview) {
     if !preview.filepath.is_empty() {
         tool.filepath.clone_from(&preview.filepath);
@@ -3637,60 +3504,20 @@ fn complete_tool_activity(
     }
 }
 
-fn extract_partial_json_string(raw: &str, key: &str) -> Option<String> {
-    let marker = format!("\"{key}\"");
-    let start = raw.find(&marker)? + marker.len();
-    let after_colon = raw[start..].find(':')? + start + 1;
-    let value = raw[after_colon..].trim_start();
-    let chars = value.strip_prefix('"')?.chars().collect::<Vec<_>>();
-    let mut output = String::new();
-    let mut index = 0;
-    while index < chars.len() {
-        let character = chars[index];
-        if character == '"' {
-            return Some(output);
-        }
-        if character != '\\' {
-            output.push(character);
-            index += 1;
-            continue;
-        }
-        index += 1;
-        let escaped = *chars.get(index)?;
-        match escaped {
-            'n' => output.push('\n'),
-            'r' => output.push('\r'),
-            't' => output.push('\t'),
-            'b' => output.push('\u{0008}'),
-            'f' => output.push('\u{000c}'),
-            '"' | '\\' | '/' => output.push(escaped),
-            'u' => {
-                let hex = chars.get(index + 1..index + 5)?.iter().collect::<String>();
-                if let Ok(value) = u32::from_str_radix(&hex, 16) {
-                    if let Some(decoded) = char::from_u32(value) {
-                        output.push(decoded);
-                    }
-                }
-                index += 4;
-            }
-            _ => output.push(escaped),
-        }
-        index += 1;
-    }
-    Some(output)
-}
-
 fn update_tool_preview_delta(turns: &mut [TurnView], turn_id: &str, data: &Value) {
     let name = field(data, "name");
-    if !matches!(canonical_tool_name(&name), "create_file" | "edit_file") {
+    if !matches!(
+        tool_preview::canonical_name(&name),
+        "create_file" | "edit_file"
+    ) {
         return;
     }
     let raw = field(data, "raw_arguments");
-    let Some(content) = extract_partial_json_string(&raw, "content") else {
+    let Some(content) = tool_preview::partial_json_string(&raw, "content") else {
         return;
     };
-    let filepath = extract_partial_json_string(&raw, "filepath").unwrap_or_default();
-    let (content, truncated) = bounded_tool_preview(&content);
+    let filepath = tool_preview::partial_json_string(&raw, "filepath").unwrap_or_default();
+    let (content, truncated) = tool_preview::bounded(&content);
     append_tool_activity(
         turns,
         turn_id,

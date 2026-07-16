@@ -2,6 +2,7 @@ mod app;
 mod backend;
 mod protocol;
 mod theme;
+mod tool_preview;
 
 use pyo3::prelude::*;
 
