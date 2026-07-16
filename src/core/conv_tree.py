@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import cast
 
 from core.message_types import ChatMessage, JsonObject, JSONValue, MessageContentPart, ToolCallDelta, ToolFunctionCall
@@ -99,19 +99,7 @@ class Turn:
         return text[:max_len] + "…"
 
     def to_dict(self) -> dict[str, object]:
-        return {
-            "id": self.id,
-            "user_content": self.user_content,
-            "assistant_content": self.assistant_content,
-            "parent": self.parent,
-            "children": self.children,
-            "reasoning_content": self.reasoning_content,
-            "activity_trace": self.activity_trace,
-            "label": self.label,
-            "branch_root": self.branch_root,
-            "skill_exchanges": self.skill_exchanges,
-            "assistant_state": self.assistant_state,
-        }
+        return asdict(self)
 
     @staticmethod
     def from_dict(data: dict[str, object]) -> Turn:
@@ -293,14 +281,7 @@ class ConvTree:
         reasoning: str = "",
         activity_trace: list[JsonObject] | None = None,
     ) -> None:
-        if turn_id in self.nodes:
-            self.nodes[turn_id].assistant_content = reply
-            self.nodes[turn_id].reasoning_content = str(reasoning or "")
-            if activity_trace is not None:
-                self.nodes[turn_id].activity_trace = activity_trace
-            self.nodes[turn_id].assistant_state = "done"
-            self.compact_inactive_branches()
-            self._mark_history_changed()
+        self._finish_turn(turn_id, reply, reasoning, activity_trace, "done")
 
     def cancel_turn(
         self,
@@ -309,16 +290,8 @@ class ConvTree:
         reasoning: str = "",
         activity_trace: list[JsonObject] | None = None,
     ) -> None:
-        if turn_id not in self.nodes:
-            return
         partial = (partial or "").rstrip()
-        self.nodes[turn_id].assistant_content = f"{partial}\n[interrupted]" if partial else "[interrupted]"
-        self.nodes[turn_id].reasoning_content = str(reasoning or "")
-        if activity_trace is not None:
-            self.nodes[turn_id].activity_trace = activity_trace
-        self.nodes[turn_id].assistant_state = "cancelled"
-        self.compact_inactive_branches()
-        self._mark_history_changed()
+        self._finish_turn(turn_id, f"{partial}\n[interrupted]" if partial else "[interrupted]", reasoning, activity_trace, "cancelled")
 
     def fail_turn(
         self,
@@ -327,13 +300,17 @@ class ConvTree:
         reasoning: str = "",
         activity_trace: list[JsonObject] | None = None,
     ) -> None:
+        self._finish_turn(turn_id, (partial or "").rstrip(), reasoning, activity_trace, "error")
+
+    def _finish_turn(self, turn_id: str, content: str, reasoning: str, activity_trace: list[JsonObject] | None, state: str) -> None:
         if turn_id not in self.nodes:
             return
-        self.nodes[turn_id].assistant_content = (partial or "").rstrip()
-        self.nodes[turn_id].reasoning_content = str(reasoning or "")
+        turn = self.nodes[turn_id]
+        turn.assistant_content = content
+        turn.reasoning_content = str(reasoning or "")
         if activity_trace is not None:
-            self.nodes[turn_id].activity_trace = activity_trace
-        self.nodes[turn_id].assistant_state = "error"
+            turn.activity_trace = activity_trace
+        turn.assistant_state = state
         self.compact_inactive_branches()
         self._mark_history_changed()
 

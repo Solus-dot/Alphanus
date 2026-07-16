@@ -338,7 +338,6 @@ class SkillRuntime:
         for skill in self.list_skills():
             aliases = {
                 str(skill.id).strip(),
-                str(skill.id).strip(),
                 *(str(item).strip() for item in (getattr(skill, "aliases", []) or [])),
             }
             for alias in aliases:

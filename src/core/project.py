@@ -808,14 +808,6 @@ class ProjectRuntime:
             "truncated": truncated,
         }
 
-    @staticmethod
-    def _clip_text(text: str, max_bytes: int = MAX_TOOL_TEXT_BYTES) -> tuple[str, bool]:
-        encoded = text.encode("utf-8")
-        if len(encoded) <= max_bytes:
-            return text, False
-        clipped = encoded[:max_bytes].decode("utf-8", errors="ignore")
-        return clipped, True
-
     def _run_shell_string(
         self,
         command: str,

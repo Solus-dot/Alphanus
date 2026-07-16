@@ -65,13 +65,7 @@ class Agent:
         self.llm_client.reload_config(config)
         self.classifier.reload_config(config)
         self.prompt_renderer.system_prompt = self.system_prompt
-        self.prompt_renderer.skill_runtime = self.skill_runtime
         self.prompt_renderer.context_limit = self.context_mgr.context_limit
-        self.orchestrator.skill_runtime = self.skill_runtime
-        self.orchestrator.context_mgr = self.context_mgr
-        self.orchestrator.llm_client = self.llm_client
-        self.orchestrator.classifier = self.classifier
-        self.orchestrator.prompt_renderer = self.prompt_renderer
         self.orchestrator.reload_config(config)
 
     def ensure_ready(

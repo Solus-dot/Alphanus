@@ -4,7 +4,7 @@ import copy
 import json
 import re
 import tomllib
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -44,6 +44,7 @@ PERMISSION_MODES = {"read-only", "project-write", "danger-full-access"}
 APPROVAL_MODES = {"on-boundary"}
 SANDBOX_BACKENDS = {"auto", "macos-seatbelt", "linux-bubblewrap", "windows-native"}
 _VALID_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 
 class _LazyDefaults(Mapping[str, Any]):
     _data: dict[str, Any] | None = None
@@ -93,34 +94,27 @@ def _coerce_bool(value: Any, default: bool, *, path: str, warnings: list[str]) -
     return default
 
 
-def _coerce_int(
+def _coerce_number(
     value: Any,
-    default: int,
+    default: int | float,
+    converter: Callable[[Any], int | float],
+    label: str,
     *,
     path: str,
     warnings: list[str],
-    minimum: int | None = None,
-    maximum: int | None = None,
-) -> int:
+    minimum: int | float | None = None,
+    maximum: int | float | None = None,
+) -> int | float:
     original = value
-    parsed: int
     if isinstance(value, bool):
-        _warn(warnings, f"{path}: expected integer, using default")
+        _warn(warnings, f"{path}: expected {label}, using default")
         parsed = default
-    elif isinstance(value, int):
-        parsed = value
-    elif isinstance(value, float):
-        parsed = int(value)
-    elif isinstance(value, str):
-        try:
-            parsed = int(value.strip())
-        except Exception:
-            _warn(warnings, f"{path}: expected integer, using default")
-            parsed = default
     else:
-        _warn(warnings, f"{path}: expected integer, using default")
-        parsed = default
-
+        try:
+            parsed = converter(value.strip() if isinstance(value, str) else value)
+        except (TypeError, ValueError, OverflowError):
+            _warn(warnings, f"{path}: expected {label}, using default")
+            parsed = default
     if minimum is not None and parsed < minimum:
         _warn(warnings, f"{path}: clamped {original!r} -> {minimum}")
         parsed = minimum
@@ -128,6 +122,10 @@ def _coerce_int(
         _warn(warnings, f"{path}: clamped {original!r} -> {maximum}")
         parsed = maximum
     return parsed
+
+
+def _coerce_int(value: Any, default: int, *, path: str, warnings: list[str], minimum: int | None = None, maximum: int | None = None) -> int:
+    return int(_coerce_number(value, default, int, "integer", path=path, warnings=warnings, minimum=minimum, maximum=maximum))
 
 
 def _coerce_float(
@@ -139,30 +137,7 @@ def _coerce_float(
     minimum: float | None = None,
     maximum: float | None = None,
 ) -> float:
-    original = value
-    parsed: float
-    if isinstance(value, bool):
-        _warn(warnings, f"{path}: expected number, using default")
-        parsed = default
-    elif isinstance(value, (int, float)):
-        parsed = float(value)
-    elif isinstance(value, str):
-        try:
-            parsed = float(value.strip())
-        except Exception:
-            _warn(warnings, f"{path}: expected number, using default")
-            parsed = default
-    else:
-        _warn(warnings, f"{path}: expected number, using default")
-        parsed = default
-
-    if minimum is not None and parsed < minimum:
-        _warn(warnings, f"{path}: clamped {original!r} -> {minimum}")
-        parsed = minimum
-    if maximum is not None and parsed > maximum:
-        _warn(warnings, f"{path}: clamped {original!r} -> {maximum}")
-        parsed = maximum
-    return parsed
+    return float(_coerce_number(value, default, float, "number", path=path, warnings=warnings, minimum=minimum, maximum=maximum))
 
 
 def _coerce_string(
@@ -309,7 +284,7 @@ def config_for_editor_view(config: Mapping[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
-def _normalize_endpoint(url: Any, *, default: str, path: str, warnings: list[str]) -> str:
+def _normalize_url(url: Any, *, default: str, path: str, warnings: list[str], base_only: bool) -> str:
     endpoint = _coerce_string(url, default, path=path, warnings=warnings, allow_empty=False)
     parsed = urlparse(endpoint)
     scheme = parsed.scheme.lower()
@@ -319,24 +294,19 @@ def _normalize_endpoint(url: Any, *, default: str, path: str, warnings: list[str
     if parsed.username or parsed.password:
         _warn(warnings, f"{path}: credentials in URL are not allowed, using default")
         return default
-    return endpoint
+    if not base_only:
+        return endpoint
+    if parsed.path.rstrip("/"):
+        _warn(warnings, f"{path}: dropped path component from {endpoint!r}")
+    return parsed._replace(path="", params="", query="", fragment="").geturl().rstrip("/")
+
+
+def _normalize_endpoint(url: Any, *, default: str, path: str, warnings: list[str]) -> str:
+    return _normalize_url(url, default=default, path=path, warnings=warnings, base_only=False)
 
 
 def _normalize_base_url(url: Any, *, default: str, path: str, warnings: list[str]) -> str:
-    base = _coerce_string(url, default, path=path, warnings=warnings, allow_empty=False)
-    parsed = urlparse(base)
-    scheme = parsed.scheme.lower()
-    if scheme not in {"http", "https"} or not parsed.hostname:
-        _warn(warnings, f"{path}: invalid URL {base!r}, using default")
-        return default
-    if parsed.username or parsed.password:
-        _warn(warnings, f"{path}: credentials in URL are not allowed, using default")
-        return default
-    root_path = (parsed.path or "").rstrip("/")
-    if root_path:
-        _warn(warnings, f"{path}: dropped path component from {base!r}")
-    normalized = parsed._replace(path="", params="", query="", fragment="")
-    return normalized.geturl().rstrip("/")
+    return _normalize_url(url, default=default, path=path, warnings=warnings, base_only=True)
 
 
 def _endpoint_from_base_url(base_url: str, endpoint_path: str) -> str:
@@ -642,9 +612,7 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
 
     retrieval_cfg = merged.get("retrieval", {}) if isinstance(merged.get("retrieval"), dict) else {}
     retrieval_default = DEFAULT_CONFIG["retrieval"]
-    retrieval_cfg = _normalize_model(
-        retrieval_cfg, RetrievalConfig, "retrieval", warnings, exclude=("store_path", "embeddings")
-    )
+    retrieval_cfg = _normalize_model(retrieval_cfg, RetrievalConfig, "retrieval", warnings, exclude=("store_path", "embeddings"))
     raw_store_path = retrieval_cfg.get("store_path")
     retrieval_cfg["store_path"] = (
         ""
