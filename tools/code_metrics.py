@@ -34,9 +34,8 @@ def _python_lines(path: Path) -> int:
     return len(lines)
 
 
-def _rust_lines(path: Path) -> int:
+def _rust_lines(source: str) -> int:
     """Count non-comment Rust lines while respecting strings and nested comments."""
-    source = path.read_text(encoding="utf-8")
     code_lines: set[int] = set()
     line = 1
     index = 0
@@ -96,7 +95,10 @@ def _files(globs: tuple[str, ...]) -> list[Path]:
 def _measure(globs: tuple[str, ...]) -> tuple[int, dict[str, int]]:
     by_file: dict[str, int] = {}
     for path in _files(globs):
-        count = _python_lines(path) if path.suffix == ".py" else _rust_lines(path)
+        if path.suffix == ".py":
+            count = _python_lines(path)
+        else:
+            count = _rust_lines(path.read_text(encoding="utf-8").split("#[cfg(test)]", 1)[0])
         by_file[path.relative_to(ROOT).as_posix()] = count
     return sum(by_file.values()), by_file
 
@@ -104,6 +106,14 @@ def _measure(globs: tuple[str, ...]) -> tuple[int, dict[str, int]]:
 def report() -> dict[str, object]:
     production, production_files = _measure(PRODUCTION_GLOBS)
     tests, test_files = _measure(TEST_GLOBS)
+    for path in _files(PRODUCTION_GLOBS):
+        if path.suffix != ".rs":
+            continue
+        parts = path.read_text(encoding="utf-8").split("#[cfg(test)]", 1)
+        if len(parts) == 2:
+            relative = path.relative_to(ROOT).as_posix() + "#[cfg(test)]"
+            test_files[relative] = _rust_lines(parts[1])
+            tests += test_files[relative]
     return {
         "production": production,
         "tests": tests,
