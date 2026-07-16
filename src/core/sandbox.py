@@ -16,16 +16,8 @@ from typing import Any
 from core.project_command_policy import shell_has_boundary, unwrap_shell_command
 
 MAX_SANDBOX_OUTPUT_BYTES = 20000
-MACOS_READ_ROOTS = (
-    "/bin",
-    "/sbin",
-    "/usr",
-    "/System",
-    "/Library",
-    "/opt",
-    "/opt/homebrew",
-    "/opt/local",
-)
+MAX_SUBPROCESS_STDIN_BYTES = 1024 * 1024
+MACOS_READ_ROOTS = "/bin /sbin /usr /System /Library /opt /opt/homebrew /opt/local".split()
 SHELL_WRAPPER_EXECUTABLES = {"env", "command", "builtin", "exec", "time", "nice", "nohup", "sudo"}
 
 
@@ -45,14 +37,6 @@ class SandboxCommand:
     timeout_s: int
     config: SandboxConfig
     extra_roots: tuple[Path, ...] = ()
-
-
-def _clip_text(text: str, max_bytes: int = MAX_SANDBOX_OUTPUT_BYTES) -> tuple[str, bool]:
-    encoded = text.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return text, False
-    clipped = encoded[:max_bytes].decode("utf-8", errors="ignore")
-    return clipped, True
 
 
 def _shell() -> str:
@@ -107,6 +91,9 @@ def run_bounded_process(
     stdin: str = "",
 ) -> dict[str, Any]:
     start = time.perf_counter()
+    stdin_bytes = stdin.encode("utf-8")
+    if len(stdin_bytes) > MAX_SUBPROCESS_STDIN_BYTES:
+        raise ValueError(f"subprocess stdin exceeds {MAX_SUBPROCESS_STDIN_BYTES} byte limit")
     safe_env = {
         key: value for key, value in os.environ.items() if key in {"HOME", "LANG", "LC_ALL", "PATH", "SHELL", "TERM", "TMPDIR", "TZ"}
     }
@@ -134,15 +121,25 @@ def run_bounded_process(
         finally:
             stream.close()
 
+    def write_stdin() -> None:
+        if proc.stdin is None:
+            return
+        try:
+            proc.stdin.write(stdin_bytes)
+        except (BrokenPipeError, OSError):
+            pass
+        finally:
+            proc.stdin.close()
+
     readers = [
         threading.Thread(target=drain, args=("stdout", proc.stdout), daemon=True),
         threading.Thread(target=drain, args=("stderr", proc.stderr), daemon=True),
     ]
     for reader in readers:
         reader.start()
-    if stdin and proc.stdin is not None:
-        proc.stdin.write(stdin.encode("utf-8"))
-        proc.stdin.close()
+    writer = threading.Thread(target=write_stdin, daemon=True) if stdin_bytes else None
+    if writer:
+        writer.start()
     try:
         proc.wait(timeout=timeout_s)
     except subprocess.TimeoutExpired:
@@ -157,18 +154,16 @@ def run_bounded_process(
             proc.wait()
         raise
     finally:
+        if writer:
+            writer.join(timeout=2)
         for reader in readers:
             reader.join(timeout=2)
-    stdout = bytes(captured["stdout"]).decode("utf-8", errors="replace")
-    stderr = bytes(captured["stderr"]).decode("utf-8", errors="replace")
-    stdout_truncated = truncated["stdout"]
-    stderr_truncated = truncated["stderr"]
     return {
         "argv": argv,
-        "stdout": stdout,
-        "stderr": stderr,
-        "stdout_truncated": stdout_truncated,
-        "stderr_truncated": stderr_truncated,
+        "stdout": bytes(captured["stdout"]).decode("utf-8", errors="replace"),
+        "stderr": bytes(captured["stderr"]).decode("utf-8", errors="replace"),
+        "stdout_truncated": truncated["stdout"],
+        "stderr_truncated": truncated["stderr"],
         "returncode": proc.returncode,
         "cwd": str(cwd),
         "duration_ms": int((time.perf_counter() - start) * 1000),

@@ -6,7 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from core.sandbox import MAX_SANDBOX_OUTPUT_BYTES, SandboxCommand, SandboxConfig, SandboxRunner, run_bounded_process
+from core.sandbox import (
+    MAX_SANDBOX_OUTPUT_BYTES,
+    MAX_SUBPROCESS_STDIN_BYTES,
+    SandboxCommand,
+    SandboxConfig,
+    SandboxRunner,
+    run_bounded_process,
+)
 
 
 def test_bounded_process_caps_output_and_accepts_stdin(tmp_path: Path) -> None:
@@ -25,6 +32,23 @@ def test_bounded_process_caps_output_and_accepts_stdin(tmp_path: Path) -> None:
 def test_bounded_process_times_out_process_group(tmp_path: Path) -> None:
     with pytest.raises(subprocess.TimeoutExpired):
         run_bounded_process([sys.executable, "-c", "import time; time.sleep(60)"], cwd=tmp_path, timeout_s=1)
+
+
+def test_bounded_process_timeout_covers_blocked_stdin_and_caps_input(tmp_path: Path) -> None:
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_bounded_process(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            cwd=tmp_path,
+            timeout_s=1,
+            stdin="x" * MAX_SUBPROCESS_STDIN_BYTES,
+        )
+    with pytest.raises(ValueError, match="stdin exceeds"):
+        run_bounded_process(
+            [sys.executable, "-c", "pass"],
+            cwd=tmp_path,
+            timeout_s=1,
+            stdin="x" * (MAX_SUBPROCESS_STDIN_BYTES + 1),
+        )
 
 
 def test_preflight_success_message_does_not_describe_available_backend_as_missing(monkeypatch) -> None:
