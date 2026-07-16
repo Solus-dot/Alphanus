@@ -7,9 +7,9 @@ from typing import Any, cast
 from agent.config_values import coerce_int, get_json_object
 from agent.provider import OpenAICompatibleProvider
 from agent.telemetry import TelemetryEmitter
+from core.config_model import ProviderConfig
 from core.message_types import ChatMessage
 from core.message_types import JsonObject as MessageJsonObject
-from core.runtime_config import ProviderConfig
 from core.streaming import stream_chat_completions as _stream_chat_completions
 from core.types import JsonObject, ModelStatus, StreamPassResult
 

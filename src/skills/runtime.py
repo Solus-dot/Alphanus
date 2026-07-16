@@ -11,10 +11,10 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
 
+from core.config_model import SkillsRuntimeConfig
 from core.memory import LexicalMemory
 from core.message_types import ApprovalRequestFn, JSONValue, UserInputRequestFn
 from core.project import ProjectRuntime
-from core.runtime_config import SkillsRuntimeConfig
 from core.tool_results import ToolResult, error_result, ok_result
 from skills.skill_discovery import SkillDiscovery
 from skills.skill_executor import SkillExecutor

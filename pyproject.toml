@@ -9,6 +9,7 @@ description = "Alpha on-device AI coding assistant with a Rust Ratatui interface
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "pydantic>=2.11,<3",
   "PyYAML>=6.0.2",
 ]
 

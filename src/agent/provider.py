@@ -30,9 +30,9 @@ from agent.provider_metadata import ProviderMetadataExtractor
 from agent.provider_payload import ProviderPayloadAdapter
 from agent.provider_stream_parser import ProviderStreamParser
 from agent.telemetry import TelemetryEmitter
+from core.config_model import ProviderConfig
 from core.endpoint_modes import CONCRETE_ENDPOINT_MODES, ENDPOINT_MODE_AUTO, ENDPOINT_MODE_CHAT, ENDPOINT_MODE_RESPONSES, ENDPOINT_MODES
 from core.message_types import ToolCallDelta
-from core.runtime_config import ProviderConfig
 from core.streaming import build_ssl_context
 from core.streaming import stream_chat_completions as core_stream_chat_completions
 from core.types import JsonObject, ModelStatus, StreamPassResult, ToolCallAccumulator

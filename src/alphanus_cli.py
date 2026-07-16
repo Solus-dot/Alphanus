@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import copy
 import importlib.util
@@ -13,8 +15,6 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from agent.core import Agent
-from agent.telemetry import configure_logging
 from alphanus_paths import get_app_paths
 from core.backend_profiles import BACKEND_PROFILE_LABELS, VALID_BACKEND_PROFILES
 from core.configuration import (
@@ -36,9 +36,6 @@ from core.headless_protocol import (
     JsonlEmitter,
     parse_jsonl_request,
 )
-from core.memory import LexicalMemory
-from core.project import ProjectRuntime
-from core.retrieval import SQLiteRetrievalStore, configured_store_path
 from core.search_providers import (
     DEFAULT_TAVILY_API_KEY_ENV,
     SEARCH_FALLBACK_PROVIDERS,
@@ -48,7 +45,6 @@ from core.search_providers import (
 )
 from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
 from core.themes import available_theme_ids, theme_payload
-from skills.runtime import SkillRuntime
 
 INIT_SECTIONS = ("all", "model", "search", "theme", "permissions")
 _VALID_CLI_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -281,7 +277,12 @@ def resolve_project_root(config: dict[str, Any], *, override: str = "", cwd: Pat
 
 def _build_agent_runtime(
     app_paths: Any, config: dict[str, Any], *, debug: bool
-) -> tuple[ProjectRuntime, LexicalMemory, SkillRuntime, Agent]:
+) -> tuple[Any, Any, Any, Any]:
+    from agent.core import Agent
+    from core.memory import LexicalMemory
+    from core.project import ProjectRuntime
+    from skills.runtime import SkillRuntime
+
     project_root = resolve_project_root(config, override=str(config.get("_project_root_override", "")))
     permissions_cfg = _as_object(config.get("permissions"))
     sandbox_cfg = _as_object(config.get("sandbox"))
@@ -893,6 +894,8 @@ def _run_doctor(args: Any) -> int:
 
 
 def _run_retrieval(args: Any) -> int:
+    from core.retrieval import SQLiteRetrievalStore, configured_store_path
+
     app_paths = get_app_paths()
     theme = _CliTheme()
     try:
@@ -970,6 +973,8 @@ def _run_runtime(args: Any) -> int:
     app_paths = get_app_paths()
     memory: Any = None
     try:
+        from agent.telemetry import configure_logging
+
         config, warnings = _load_runtime_config(app_paths, args)
         logger = configure_logging(config)
         for warning in warnings:
@@ -1014,6 +1019,8 @@ def _run_exec(args: Any) -> int:
         previous_handlers[signum] = signal.getsignal(signum)
         signal.signal(signum, cancel)
     try:
+        from agent.telemetry import configure_logging
+
         raw = str(getattr(args, "prompt", "") or "")
         if not raw:
             raw = sys.stdin.readline() if args.input == "jsonl" else sys.stdin.read()

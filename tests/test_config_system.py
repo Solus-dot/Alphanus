@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from core.config_model import TypedConfigV2
+from core.config_model import ProviderConfig, SkillsRuntimeConfig, TypedConfigV2, UiRuntimeConfig
 from core.configuration import (
     DEFAULT_CONFIG,
     ConfigMigrationError,
@@ -14,7 +14,6 @@ from core.configuration import (
     validate_endpoint_policy,
 )
 from core.retrieval import configured_store_path
-from core.runtime_config import ProviderConfig, SkillsRuntimeConfig, UiRuntimeConfig
 
 
 def test_normalize_config_strips_secret_like_fields() -> None:
@@ -295,6 +294,7 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
     assert provider.per_turn_retries == 2
     assert provider.backend_profile == "auto"
     assert provider.auth_header == "Authorization: Bearer demo"
+    assert "auth_header" not in provider.model_dump()
     assert skills.python_executable == "/usr/bin/python3"
     assert skills.paths == ["~/agent-skills"]
     assert ui.theme == "gruvbox-dark-soft"
