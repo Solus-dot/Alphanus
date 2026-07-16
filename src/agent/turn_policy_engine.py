@@ -58,7 +58,7 @@ class TurnPolicyEngine:
             return None
         if state.completion.tool_counts.get(call.name, 0) < limit:
             return None
-        if call.name == "web_search" and state.time_sensitive_query:
+        if call.name == "web_search" and state.classification.time_sensitive:
             return "\n".join(
                 [
                     "Search completion rule:",
@@ -67,7 +67,7 @@ class TurnPolicyEngine:
                     "- Do not issue more search calls.",
                 ]
             )
-        if call.name == "fetch_url" and state.time_sensitive_query:
+        if call.name == "fetch_url" and state.classification.time_sensitive:
             return "\n".join(
                 [
                     "Fetch completion rule:",
@@ -81,13 +81,13 @@ class TurnPolicyEngine:
     def build_policy_snapshot(self, state: TurnState) -> TurnPolicySnapshot:
         turn_tool_names = set(self.skill_runtime.allowed_tool_names(state.selected, ctx=state.ctx))
         return TurnPolicySnapshot(
-            search_mode=state.search_mode,
-            time_sensitive_query=state.time_sensitive_query,
+            search_mode=state.classification.time_sensitive and state.search_tools_enabled,
+            time_sensitive_query=state.classification.time_sensitive,
             forced_search_retry=state.forced_search_retry and state.completion.tool_counts.get("web_search", 0) == 0,
-            requires_project_action=state.requires_project_action,
+            requires_project_action=state.classification.requires_project_action,
             forced_action_retry=state.forced_action_retry and not state.completion.tool_counts,
-            explicit_external_path=state.explicit_external_path,
-            prefer_local_project_tools=state.prefer_local_project_tools,
+            explicit_external_path=state.classification.explicit_external_path,
+            prefer_local_project_tools=state.classification.prefer_local_project_tools,
             shell_tool_exposed="shell_command" in turn_tool_names,
             collaboration_mode=(
                 "plan" if str(getattr(state, "collaboration_mode", "execute") or "").strip().lower() == "plan" else "execute"

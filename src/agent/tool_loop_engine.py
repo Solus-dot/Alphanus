@@ -50,7 +50,7 @@ class ToolLoopEngine:
         return capability in {"project_read", "project_tree"} and not self.orchestrator.skill_runtime.tool_is_mutating(tool_name)
 
     def _requires_project_mutation(self, state: TurnState) -> bool:
-        if not state.requires_project_action or self.orchestrator.evidence_guard.project_mutation_count(state) > 0:
+        if not state.classification.requires_project_action or self.orchestrator.evidence_guard.project_mutation_count(state) > 0:
             return False
         user_text = str(getattr(state.ctx, "user_input", "") or "").lower()
         return any(term in user_text for term in self.MUTATION_INTENT_TERMS)
@@ -235,7 +235,7 @@ class ToolLoopEngine:
                     message=f"Max skill action depth ({self.orchestrator.max_action_depth}) exceeded before executing {call.name}.",
                     on_event=on_event,
                 )
-            if state.search_mode and state.completion.search_has_success:
+            if state.classification.time_sensitive and state.search_tools_enabled and state.completion.search_has_success:
                 return (
                     "finalized",
                     self.orchestrator.finalization_engine.finalize_turn(
@@ -306,7 +306,7 @@ class ToolLoopEngine:
 
             force_finalize_reason = self.orchestrator.policy_engine.tool_budget_reason(state, call) or ""
             if force_finalize_reason:
-                if not state.search_mode:
+                if not (state.classification.time_sensitive and state.search_tools_enabled):
                     return self._error_result(state, force_finalize_reason)
                 break
 
@@ -324,7 +324,7 @@ class ToolLoopEngine:
                     return cancelled
                 continue
 
-            if state.prefer_local_project_tools and self.orchestrator.skill_runtime.tool_is_blocked_for_local_project(call.name):
+            if state.classification.prefer_local_project_tools and self.orchestrator.skill_runtime.tool_is_blocked_for_local_project(call.name):
                 if ":" in call.name or "." in call.name:
                     message = (
                         f"{call.name} is not exposed in this turn. Load the matching skill with skill_view(name), "
@@ -343,7 +343,7 @@ class ToolLoopEngine:
                     return cancelled
                 continue
 
-            if state.search_mode and call.name == "fetch_url":
+            if state.classification.time_sensitive and state.search_tools_enabled and call.name == "fetch_url":
                 raw_url = str(call.arguments.get("url", "")).strip()
                 if raw_url:
                     host = urllib.parse.urlparse(raw_url).netloc.lower()
@@ -423,7 +423,7 @@ class ToolLoopEngine:
                     ),
                 )
 
-            if not state.search_mode:
+            if not (state.classification.time_sensitive and state.search_tools_enabled):
                 continue
             if call.name == "fetch_url" and state.completion.search_failure_count >= 2:
                 force_finalize_reason = search_rule(

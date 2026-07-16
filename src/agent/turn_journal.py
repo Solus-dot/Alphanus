@@ -57,7 +57,7 @@ class TurnJournalBuilder:
                 "requires_project_action": state.classification.requires_project_action,
                 "prefer_local_project_tools": state.classification.prefer_local_project_tools,
             },
-            "search_mode": state.search_mode,
+            "search_mode": state.classification.time_sensitive and state.search_tools_enabled,
             "search_failures": state.completion.search_failure_count,
             "has_fetch_evidence": state.completion.search_has_fetch_content,
             "model_usage": dict(state.telemetry.model_usage),

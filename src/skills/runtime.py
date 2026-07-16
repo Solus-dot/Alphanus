@@ -1058,7 +1058,7 @@ class SkillRuntime:
             return []
         return self._optional_tool_names_for_turn(selected)
 
-    def _tool_names_for_turn(
+    def allowed_tool_names(
         self,
         selected: list[SkillManifest],
         ctx: SkillContext | None = None,
@@ -1083,21 +1083,6 @@ class SkillRuntime:
             names.discard(_REQUEST_USER_INPUT_TOOL_NAME)
         return sorted(name for name in names if name in self._tool_registry)
 
-    def allowed_tool_names(
-        self,
-        selected: list[SkillManifest],
-        ctx: SkillContext | None = None,
-    ) -> list[str]:
-        return self._tool_names_for_turn(selected, ctx=ctx)
-
-    def _tool_schemas(
-        self,
-        names: list[str],
-        selected: list[SkillManifest] | None = None,
-        ctx: SkillContext | None = None,
-    ) -> list[dict[str, Any]]:
-        return self._tool_schema_builder.build(names, selected=selected, ctx=ctx)
-
     def tools_for_turn(
         self,
         selected: list[SkillManifest],
@@ -1108,7 +1093,7 @@ class SkillRuntime:
         cached = self._tools_schema_cache.get(cache_key)
         if cached is not None:
             return cached
-        tools = self._tool_schemas(names, selected=selected, ctx=ctx)
+        tools = self._tool_schema_builder.build(names, selected=selected, ctx=ctx)
         self._tools_schema_cache[cache_key] = tools
         return tools
 
@@ -1204,7 +1189,7 @@ class SkillRuntime:
         if not reg:
             raise LookupError(f"No adapter for tool '{tool_name}'")
 
-        if reg.name in self._tool_names_for_turn(selected, ctx=ctx):
+        if reg.name in self.allowed_tool_names(selected, ctx=ctx):
             if reg.name in _ALWAYS_AVAILABLE_TOOL_NAMES:
                 return reg, None
             return reg, self.skills.get(reg.skill_id)

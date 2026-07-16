@@ -27,24 +27,14 @@ class SkillRunValidator:
         selected: list[Any],
     ) -> dict[str, Any]:
         runtime = self.runtime
-        selected_with_scripts = [
-            skill
-            for skill in selected
-            if runtime._exposed_relevant_skill_scripts(skill) and not skill.disable_model_invocation and skill.execution_allowed
-        ]
-        if not selected_with_scripts:
-            raise PermissionError("No selected skills expose runnable bundled scripts")
-
-        requested_skill_id = str(args.get("skill_id", "")).strip()
-        if requested_skill_id:
-            skill = next((item for item in selected_with_scripts if item.id == requested_skill_id), None)
-            if skill is None:
-                raise PermissionError(f"Skill '{requested_skill_id}' is not selected or has no runnable scripts")
-        elif len(selected_with_scripts) == 1:
-            skill = selected_with_scripts[0]
-        else:
-            skill_ids = ", ".join(skill.id for skill in selected_with_scripts[:4])
-            raise ValueError(f"Multiple selected skills expose scripts; specify skill_id ({skill_ids})")
+        skill = self._select_skill(
+            args,
+            selected,
+            runtime._exposed_relevant_skill_scripts,
+            empty="No selected skills expose runnable bundled scripts",
+            missing="not selected or has no runnable scripts",
+            multiple="scripts",
+        )
 
         requested_script = str(args.get("script", "")).strip()
         if not requested_script:
@@ -60,18 +50,11 @@ class SkillRunValidator:
         if not chosen:
             raise PermissionError(f"Script '{requested_script}' is not available for skill '{skill.id}'")
 
-        params = args.get("params")
-        if params is None:
-            params = {}
-        if not isinstance(params, dict):
-            raise ValueError("Invalid 'params': expected object")
-
         out = dict(args)
         out["skill_id"] = skill.id
         out["script"] = chosen
-        out["params"] = params
-        timeout_s = out.get("timeout_s")
-        if timeout_s is None:
+        out["params"] = self._params(args)
+        if out.get("timeout_s") is None:
             out["timeout_s"] = 30
         return out
 
@@ -81,24 +64,14 @@ class SkillRunValidator:
         selected: list[Any],
     ) -> dict[str, Any]:
         runtime = self.runtime
-        selected_with_entrypoints = [
-            skill
-            for skill in selected
-            if runtime._exposed_relevant_skill_entrypoints(skill) and not skill.disable_model_invocation and skill.execution_allowed
-        ]
-        if not selected_with_entrypoints:
-            raise PermissionError("No selected skills expose runnable entrypoints")
-
-        requested_skill_id = str(args.get("skill_id", "")).strip()
-        if requested_skill_id:
-            skill = next((item for item in selected_with_entrypoints if item.id == requested_skill_id), None)
-            if skill is None:
-                raise PermissionError(f"Skill '{requested_skill_id}' is not selected or has no runnable entrypoints")
-        elif len(selected_with_entrypoints) == 1:
-            skill = selected_with_entrypoints[0]
-        else:
-            skill_ids = ", ".join(skill.id for skill in selected_with_entrypoints[:4])
-            raise ValueError(f"Multiple selected skills expose entrypoints; specify skill_id ({skill_ids})")
+        skill = self._select_skill(
+            args,
+            selected,
+            runtime._exposed_relevant_skill_entrypoints,
+            empty="No selected skills expose runnable entrypoints",
+            missing="not selected or has no runnable entrypoints",
+            multiple="entrypoints",
+        )
 
         requested_entrypoint = str(args.get("entrypoint", "")).strip()
         if not requested_entrypoint:
@@ -108,11 +81,7 @@ class SkillRunValidator:
         if entrypoint is None:
             raise PermissionError(f"Entrypoint '{requested_entrypoint}' is not available for skill '{skill.id}'")
 
-        params = args.get("params")
-        if params is None:
-            params = {}
-        if not isinstance(params, dict):
-            raise ValueError("Invalid 'params': expected object")
+        params = self._params(args)
         runtime._validate_schema_value("params", params, entrypoint.parameters)
 
         out = dict(args)
@@ -122,3 +91,32 @@ class SkillRunValidator:
         if out.get("timeout_s") is None:
             out["timeout_s"] = entrypoint.timeout_s
         return out
+
+    @staticmethod
+    def _params(args: dict[str, Any]) -> dict[str, Any]:
+        params = args.get("params")
+        if params is None:
+            return {}
+        if not isinstance(params, dict):
+            raise ValueError("Invalid 'params': expected object")
+        return params
+
+    @staticmethod
+    def _select_skill(args, selected, exposed, *, empty: str, missing: str, multiple: str):
+        candidates = [
+            skill
+            for skill in selected
+            if exposed(skill) and not skill.disable_model_invocation and skill.execution_allowed
+        ]
+        if not candidates:
+            raise PermissionError(empty)
+        requested = str(args.get("skill_id", "")).strip()
+        if requested:
+            skill = next((item for item in candidates if item.id == requested), None)
+            if skill is None:
+                raise PermissionError(f"Skill '{requested}' is {missing}")
+            return skill
+        if len(candidates) == 1:
+            return candidates[0]
+        skill_ids = ", ".join(skill.id for skill in candidates[:4])
+        raise ValueError(f"Multiple selected skills expose {multiple}; specify skill_id ({skill_ids})")

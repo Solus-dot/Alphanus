@@ -118,7 +118,7 @@ class FinalizationEngine:
                     ]
                 )
 
-            if state.search_mode:
+            if state.classification.time_sensitive and state.search_tools_enabled:
                 lines.extend(
                     [
                         "- If the available web evidence is insufficient, say plainly that you could not verify the answer from reliable results gathered in this turn.",
@@ -126,7 +126,7 @@ class FinalizationEngine:
                         "- If a search/fetch tool failed, explicitly say the web lookup failed in this turn and ask for a retry or alternate source.",
                     ]
                 )
-            if state.requires_project_action and not self.orchestrator._is_plan_mode(state):
+            if state.classification.requires_project_action and not self.orchestrator._is_plan_mode(state):
                 lines.extend(
                     [
                         "- If the requested project action was not completed with tools, say that plainly.",
@@ -153,10 +153,10 @@ class FinalizationEngine:
                 )
             if failed_tools:
                 causes.append("tool_failure")
-            if state.search_mode:
+            if state.classification.time_sensitive and state.search_tools_enabled:
                 causes.append("search_evidence=insufficient")
             if (
-                state.requires_project_action
+                state.classification.requires_project_action
                 and not self.orchestrator._is_plan_mode(state)
                 and self.orchestrator.evidence_guard.project_mutation_count(state) == 0
             ):
@@ -176,8 +176,8 @@ class FinalizationEngine:
                         "causes": causes,
                         "failed_tools": failed_tools[-3:],
                         "tool_counts": dict(state.completion.tool_counts),
-                        "search_mode": state.search_mode,
-                        "requires_project_action": state.requires_project_action,
+                        "search_mode": state.classification.time_sensitive and state.search_tools_enabled,
+                        "requires_project_action": state.classification.requires_project_action,
                         "project_mutation_count": self.orchestrator.evidence_guard.project_mutation_count(state),
                     }
                 },
@@ -251,7 +251,7 @@ class FinalizationEngine:
             state.full_reasoning = finalized.reasoning
             final = finalized.content
 
-        if state.search_mode and state.time_sensitive_query and state.completion.tool_counts.get("web_search", 0) == 0:
+        if state.classification.time_sensitive and state.search_tools_enabled and state.completion.tool_counts.get("web_search", 0) == 0:
             if not state.forced_search_retry:
                 state.forced_search_retry = True
                 self.orchestrator.emit(on_event, {"type": "discard_pass_output", "pass_id": pass_id, "reason": "forced_search_retry"})
@@ -272,7 +272,7 @@ class FinalizationEngine:
 
         if (
             not self.orchestrator._is_plan_mode(state)
-            and state.requires_project_action
+            and state.classification.requires_project_action
             and self.orchestrator.evidence_guard.project_mutation_count(state) == 0
         ):
             if not final.strip():

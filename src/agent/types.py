@@ -155,51 +155,6 @@ class TurnState:
     project_action_stall_blocks: int = 0
     trace_data: dict[str, JSONValue] = field(default_factory=dict)
 
-    @property
-    def search_mode(self) -> bool:
-        return self.classification.time_sensitive and self.search_tools_enabled
-
-    @property
-    def time_sensitive_query(self) -> bool:
-        return self.classification.time_sensitive
-
-    @time_sensitive_query.setter
-    def time_sensitive_query(self, value: bool) -> None:
-        self.classification.time_sensitive = bool(value)
-
-    @property
-    def requires_project_action(self) -> bool:
-        return self.classification.requires_project_action
-
-    @property
-    def prefer_local_project_tools(self) -> bool:
-        return self.classification.prefer_local_project_tools
-
-    @property
-    def explicit_external_path(self) -> str:
-        return self.classification.explicit_external_path
-
-    @property
-    def tool_counts(self) -> dict[str, int]:
-        return self.completion.tool_counts
-
-    @property
-    def search_has_success(self) -> bool:
-        return self.completion.search_has_success
-
-    @search_has_success.setter
-    def search_has_success(self, value: bool) -> None:
-        self.completion.search_has_success = bool(value)
-
-    @property
-    def search_has_fetch_content(self) -> bool:
-        return self.completion.search_has_fetch_content
-
-    @search_has_fetch_content.setter
-    def search_has_fetch_content(self, value: bool) -> None:
-        self.completion.search_has_fetch_content = bool(value)
-
-
 def cancelled_turn_result(state: TurnState) -> AgentTurnResult:
     return AgentTurnResult(
         status="cancelled",

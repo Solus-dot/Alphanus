@@ -110,7 +110,7 @@ class TurnOrchestrator:
 
     def inject_policy_retrieval_context(self, state: TurnState, on_event: Callable[[JsonObject], None] | None = None) -> None:
         retrieval_cfg = get_json_object(self.config, "retrieval")
-        if not bool(retrieval_cfg.get("enabled", True)) or not state.time_sensitive_query:
+        if not bool(retrieval_cfg.get("enabled", True)) or not state.classification.time_sensitive:
             return
         top_k = coerce_int(retrieval_cfg.get("pre_context_top_k", 3), 3, minimum=0, maximum=10)
         if top_k <= 0:
@@ -699,7 +699,7 @@ class TurnOrchestrator:
     def coerce_project_action_failure(self, state: TurnState, result: AgentTurnResult, *, stop_event, pass_id: str) -> AgentTurnResult:
         if self._is_plan_mode(state):
             return result
-        if result.status != "done" or not state.requires_project_action or self.evidence_guard.project_mutation_count(state) > 0:
+        if result.status != "done" or not state.classification.requires_project_action or self.evidence_guard.project_mutation_count(state) > 0:
             return result
         outcome = self.project_action_outcome(state, result.content, stop_event=stop_event, pass_id=pass_id)
         if outcome in {"completed_with_evidence", "declined_or_blocked", "needs_clarification"}:
@@ -731,7 +731,7 @@ class TurnOrchestrator:
             selected_skills=[getattr(skill, "id", "") for skill in state.selected],
             tool_counts=state.completion.tool_counts,
             evidence_count=len(state.evidence),
-            search_mode=state.search_mode,
+            search_mode=state.classification.time_sensitive and state.search_tools_enabled,
             search_failures=state.completion.search_failure_count,
             fetched_urls=len(state.completion.fetched_urls),
             blocked_domains=sorted(state.completion.blocked_fetch_domains),

@@ -2934,7 +2934,7 @@ Use the bundled helper script when available.
         calls["count"] += 1
         return [{"ctx": getattr(ctx, "user_input", ""), "names": list(names)}]
 
-    runtime._tool_schemas = fake_tool_schemas  # type: ignore[method-assign]
+    runtime._tool_schema_builder.build = fake_tool_schemas  # type: ignore[method-assign]
 
     docx_tools = runtime.tools_for_turn([skill], ctx=docx_ctx)
     png_tools = runtime.tools_for_turn([skill], ctx=png_ctx)

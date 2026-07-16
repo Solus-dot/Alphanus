@@ -52,7 +52,7 @@ class ToolExecutionEngine:
                     if path and path not in state.completion.readback_paths:
                         state.completion.readback_paths.append(path)
 
-        if not state.search_mode or call.name not in {"web_search", "fetch_url"}:
+        if not (state.classification.time_sensitive and state.search_tools_enabled) or call.name not in {"web_search", "fetch_url"}:
             return
         if result.get("ok"):
             data_obj = result.get("data")

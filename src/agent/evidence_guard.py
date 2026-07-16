@@ -36,7 +36,7 @@ class EvidenceGuard:
 
     @staticmethod
     def needs_fetch_evidence(state: TurnState) -> bool:
-        return state.search_mode and state.time_sensitive_query and not state.completion.search_has_fetch_content
+        return state.classification.time_sensitive and state.search_tools_enabled and not state.completion.search_has_fetch_content
 
     def project_action_evidence(self, state: TurnState) -> JsonObject:
         successful_tools: list[JSONValue] = []
