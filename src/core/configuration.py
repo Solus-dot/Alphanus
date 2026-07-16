@@ -299,6 +299,39 @@ def _coerce_string_list(value: Any, default: Iterable[str], *, path: str, warnin
     return out
 
 
+def _normalize_fields(
+    values: dict[str, Any],
+    defaults: dict[str, Any],
+    prefix: str,
+    warnings: list[str],
+    rules: Iterable[tuple[str, str, float | None, float | None]],
+    *,
+    keep_unknown: bool = True,
+) -> dict[str, Any]:
+    source = values
+    values = values if keep_unknown else {}
+    for key, kind, minimum, maximum in rules:
+        options = {"path": f"{prefix}.{key}", "warnings": warnings}
+        default = defaults[key]
+        if kind == "bool":
+            values[key] = _coerce_bool(source.get(key), bool(default), **options)
+        elif kind == "int":
+            values[key] = _coerce_int(
+                source.get(key),
+                int(default),
+                minimum=None if minimum is None else int(minimum),
+                maximum=None if maximum is None else int(maximum),
+                **options,
+            )
+        elif kind == "float":
+            values[key] = _coerce_float(source.get(key), float(default), minimum=minimum, maximum=maximum, **options)
+        elif kind == "list":
+            values[key] = _coerce_string_list(source.get(key), default, **options)
+        else:
+            values[key] = _coerce_string(source.get(key), str(default), allow_empty=kind != "required", **options)
+    return values
+
+
 class ConfigMigrationError(ValueError):
     pass
 
@@ -306,7 +339,9 @@ class ConfigMigrationError(ValueError):
 def _legacy_config_errors(config: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     if isinstance(config.get("workspace"), dict) or "workspace" in config:
-        errors.append("`workspace.path` was removed. Launch from the project directory or pass `--project-root`; configure `project.root_strategy` instead.")
+        errors.append(
+            "`workspace.path` was removed. Launch from the project directory or pass `--project-root`; configure `project.root_strategy` instead."
+        )
     caps = config.get("capabilities")
     if isinstance(caps, dict):
         for key in ("permission_profile", "shell_require_confirmation", "dangerously_skip_permissions"):
@@ -314,7 +349,7 @@ def _legacy_config_errors(config: dict[str, Any]) -> list[str]:
                 replacement = {
                     "permission_profile": "`permissions.mode`",
                     "shell_require_confirmation": "`permissions.approvals`",
-                    "dangerously_skip_permissions": "`permissions.mode = \"danger-full-access\"`",
+                    "dangerously_skip_permissions": '`permissions.mode = "danger-full-access"`',
                 }[key]
                 errors.append(f"`capabilities.{key}` was removed. Use {replacement}.")
     elif "capabilities" in config:
@@ -420,8 +455,7 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         raise ConfigMigrationError(
             "Config uses removed workspace-era keys.\n"
             "Run `uv run alphanus init` again to write the new project/permissions config, then retry.\n"
-            "Removed keys:\n"
-            + detail
+            "Removed keys:\n" + detail
         )
     if stripped:
         _warn(warnings, "Removed secret-like fields from config; use environment variables for secrets.")
@@ -452,9 +486,7 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
                         and not parsed_endpoint.username
                         and not parsed_endpoint.password
                     ):
-                        inferred_base_url = (
-                            parsed_endpoint._replace(path="", params="", query="", fragment="").geturl().rstrip("/")
-                        )
+                        inferred_base_url = parsed_endpoint._replace(path="", params="", query="", fragment="").geturl().rstrip("/")
                 if inferred_base_url:
                     break
     base_url_candidate = base_url_input if base_url_input not in (None, "") else (inferred_base_url or str(default_agent["base_url"]))
@@ -551,78 +583,23 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         _warn(warnings, "agent.auth_header_template: missing '{api_key}' placeholder, using default")
         auth_template = str(default_agent.get("auth_header_template", "Authorization: Bearer {api_key}"))
     agent_cfg["auth_header_template"] = auth_template
-    agent_cfg["connect_timeout_s"] = _coerce_float(
-        agent_cfg.get("connect_timeout_s"),
-        float(default_agent["connect_timeout_s"]),
-        path="agent.connect_timeout_s",
-        warnings=warnings,
-        minimum=0.1,
-        maximum=60.0,
-    )
-    agent_cfg["request_timeout_s"] = _coerce_float(
-        agent_cfg.get("request_timeout_s"),
-        float(default_agent["request_timeout_s"]),
-        path="agent.request_timeout_s",
-        warnings=warnings,
-        minimum=5.0,
-        maximum=600.0,
-    )
-    agent_cfg["readiness_timeout_s"] = _coerce_float(
-        agent_cfg.get("readiness_timeout_s"),
-        float(default_agent["readiness_timeout_s"]),
-        path="agent.readiness_timeout_s",
-        warnings=warnings,
-        minimum=1.0,
-        maximum=300.0,
-    )
-    agent_cfg["readiness_poll_s"] = _coerce_float(
-        agent_cfg.get("readiness_poll_s"),
-        float(default_agent["readiness_poll_s"]),
-        path="agent.readiness_poll_s",
-        warnings=warnings,
-        minimum=0.05,
-        maximum=10.0,
-    )
-    agent_cfg["per_turn_retries"] = _coerce_int(
-        agent_cfg.get("per_turn_retries"),
-        int(default_agent["per_turn_retries"]),
-        path="agent.per_turn_retries",
-        warnings=warnings,
-        minimum=0,
-        maximum=5,
-    )
-    agent_cfg["retry_backoff_s"] = _coerce_float(
-        agent_cfg.get("retry_backoff_s"),
-        float(default_agent["retry_backoff_s"]),
-        path="agent.retry_backoff_s",
-        warnings=warnings,
-        minimum=0.0,
-        maximum=30.0,
-    )
-    agent_cfg["enable_thinking"] = _coerce_bool(
-        agent_cfg.get("enable_thinking"),
-        bool(default_agent["enable_thinking"]),
-        path="agent.enable_thinking",
-        warnings=warnings,
-    )
-    agent_cfg["tls_verify"] = _coerce_bool(
-        agent_cfg.get("tls_verify"),
-        bool(default_agent["tls_verify"]),
-        path="agent.tls_verify",
-        warnings=warnings,
-    )
-    agent_cfg["allow_cross_host_endpoints"] = _coerce_bool(
-        agent_cfg.get("allow_cross_host_endpoints"),
-        bool(default_agent["allow_cross_host_endpoints"]),
-        path="agent.allow_cross_host_endpoints",
-        warnings=warnings,
-    )
-    agent_cfg["ca_bundle_path"] = _coerce_string(
-        agent_cfg.get("ca_bundle_path"),
-        str(default_agent["ca_bundle_path"]),
-        path="agent.ca_bundle_path",
-        warnings=warnings,
-        allow_empty=True,
+    _normalize_fields(
+        agent_cfg,
+        default_agent,
+        "agent",
+        warnings,
+        (
+            ("connect_timeout_s", "float", 0.1, 60.0),
+            ("request_timeout_s", "float", 5.0, 600.0),
+            ("readiness_timeout_s", "float", 1.0, 300.0),
+            ("readiness_poll_s", "float", 0.05, 10.0),
+            ("per_turn_retries", "int", 0, 5),
+            ("retry_backoff_s", "float", 0.0, 30.0),
+            ("enable_thinking", "bool", None, None),
+            ("tls_verify", "bool", None, None),
+            ("allow_cross_host_endpoints", "bool", None, None),
+            ("ca_bundle_path", "str", None, None),
+        ),
     )
     raw_max_tokens = agent_cfg.get("max_tokens")
     if raw_max_tokens is None:
@@ -639,75 +616,23 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
             maximum=131072,
         )
         agent_cfg["max_tokens"] = parsed_max_tokens if parsed_max_tokens > 0 else None
-    agent_cfg["context_budget_max_tokens"] = _coerce_int(
-        agent_cfg.get("context_budget_max_tokens"),
-        int(default_agent["context_budget_max_tokens"]),
-        path="agent.context_budget_max_tokens",
-        warnings=warnings,
-        minimum=256,
-        maximum=262144,
-    )
-    agent_cfg["max_action_depth"] = _coerce_int(
-        agent_cfg.get("max_action_depth"),
-        int(default_agent["max_action_depth"]),
-        path="agent.max_action_depth",
-        warnings=warnings,
-        minimum=1,
-        maximum=100,
-    )
-    agent_cfg["max_tool_result_chars"] = _coerce_int(
-        agent_cfg.get("max_tool_result_chars"),
-        int(default_agent["max_tool_result_chars"]),
-        path="agent.max_tool_result_chars",
-        warnings=warnings,
-        minimum=500,
-        maximum=200000,
-    )
-    agent_cfg["max_reasoning_chars"] = _coerce_int(
-        agent_cfg.get("max_reasoning_chars"),
-        int(default_agent["max_reasoning_chars"]),
-        path="agent.max_reasoning_chars",
-        warnings=warnings,
-        minimum=0,
-        maximum=200000,
-    )
-    agent_cfg["compact_tool_results_in_history"] = _coerce_bool(
-        agent_cfg.get("compact_tool_results_in_history"),
-        bool(default_agent["compact_tool_results_in_history"]),
-        path="agent.compact_tool_results_in_history",
-        warnings=warnings,
-    )
-    agent_cfg["compact_tool_result_tools"] = _coerce_string_list(
-        agent_cfg.get("compact_tool_result_tools"),
-        default_agent.get("compact_tool_result_tools", []),
-        path="agent.compact_tool_result_tools",
-        warnings=warnings,
-    )
-    agent_cfg["classifier_model"] = _coerce_string(
-        agent_cfg.get("classifier_model"),
-        str(default_agent.get("classifier_model", "")),
-        path="agent.classifier_model",
-        warnings=warnings,
-    )
-    agent_cfg["classifier_use_primary_model"] = _coerce_bool(
-        agent_cfg.get("classifier_use_primary_model"),
-        bool(default_agent.get("classifier_use_primary_model", True)),
-        path="agent.classifier_use_primary_model",
-        warnings=warnings,
-    )
-    agent_cfg["enable_structured_classification"] = _coerce_bool(
-        agent_cfg.get("enable_structured_classification"),
-        bool(default_agent.get("enable_structured_classification", True)),
-        path="agent.enable_structured_classification",
-        warnings=warnings,
-    )
-    agent_cfg["max_classifier_tokens"] = _coerce_int(
-        agent_cfg.get("max_classifier_tokens"),
-        int(default_agent.get("max_classifier_tokens", 256)),
-        path="agent.max_classifier_tokens",
-        warnings=warnings,
-        minimum=32,
-        maximum=4096,
+    _normalize_fields(
+        agent_cfg,
+        default_agent,
+        "agent",
+        warnings,
+        (
+            ("context_budget_max_tokens", "int", 256, 262144),
+            ("max_action_depth", "int", 1, 100),
+            ("max_tool_result_chars", "int", 500, 200000),
+            ("max_reasoning_chars", "int", 0, 200000),
+            ("compact_tool_results_in_history", "bool", None, None),
+            ("compact_tool_result_tools", "list", None, None),
+            ("classifier_model", "str", None, None),
+            ("classifier_use_primary_model", "bool", None, None),
+            ("enable_structured_classification", "bool", None, None),
+            ("max_classifier_tokens", "int", 32, 4096),
+        ),
     )
     raw_budgets = agent_cfg.get("tool_budgets")
     if isinstance(raw_budgets, dict):
@@ -745,71 +670,33 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
     merged["project"] = project_cfg
 
     raw_memory_cfg = merged.get("memory", {}) if isinstance(merged.get("memory"), dict) else {}
-    memory_cfg: dict[str, Any] = {}
-    memory_cfg["min_score_default"] = _coerce_float(
-        raw_memory_cfg.get("min_score_default"),
-        float(DEFAULT_CONFIG["memory"]["min_score_default"]),
-        path="memory.min_score_default",
-        warnings=warnings,
-        minimum=0.0,
-        maximum=1.0,
-    )
-    memory_cfg["recall_min_score_default"] = _coerce_float(
-        raw_memory_cfg.get("recall_min_score_default"),
-        float(DEFAULT_CONFIG["memory"]["recall_min_score_default"]),
-        path="memory.recall_min_score_default",
-        warnings=warnings,
-        minimum=0.0,
-        maximum=1.0,
-    )
-    memory_cfg["replace_min_score_default"] = _coerce_float(
-        raw_memory_cfg.get("replace_min_score_default"),
-        float(DEFAULT_CONFIG["memory"]["replace_min_score_default"]),
-        path="memory.replace_min_score_default",
-        warnings=warnings,
-        minimum=0.0,
-        maximum=1.0,
-    )
-    memory_cfg["backup_revisions"] = _coerce_int(
-        raw_memory_cfg.get("backup_revisions"),
-        int(DEFAULT_CONFIG["memory"]["backup_revisions"]),
-        path="memory.backup_revisions",
-        warnings=warnings,
-        minimum=0,
-        maximum=20,
-    )
-    memory_cfg["auto_capture"] = _coerce_bool(
-        raw_memory_cfg.get("auto_capture"),
-        bool(DEFAULT_CONFIG["memory"]["auto_capture"]),
-        path="memory.auto_capture",
-        warnings=warnings,
+    memory_cfg = _normalize_fields(
+        raw_memory_cfg,
+        DEFAULT_CONFIG["memory"],
+        "memory",
+        warnings,
+        (
+            ("min_score_default", "float", 0.0, 1.0),
+            ("recall_min_score_default", "float", 0.0, 1.0),
+            ("replace_min_score_default", "float", 0.0, 1.0),
+            ("backup_revisions", "int", 0, 20),
+            ("auto_capture", "bool", None, None),
+        ),
+        keep_unknown=False,
     )
     merged["memory"] = memory_cfg
 
     context_cfg = merged.get("context", {}) if isinstance(merged.get("context"), dict) else {}
-    context_cfg["context_limit"] = _coerce_int(
-        context_cfg.get("context_limit"),
-        int(DEFAULT_CONFIG["context"]["context_limit"]),
-        path="context.context_limit",
-        warnings=warnings,
-        minimum=512,
-        maximum=262144,
-    )
-    context_cfg["keep_last_n"] = _coerce_int(
-        context_cfg.get("keep_last_n"),
-        int(DEFAULT_CONFIG["context"]["keep_last_n"]),
-        path="context.keep_last_n",
-        warnings=warnings,
-        minimum=1,
-        maximum=100,
-    )
-    context_cfg["safety_margin"] = _coerce_int(
-        context_cfg.get("safety_margin"),
-        int(DEFAULT_CONFIG["context"]["safety_margin"]),
-        path="context.safety_margin",
-        warnings=warnings,
-        minimum=0,
-        maximum=100000,
+    _normalize_fields(
+        context_cfg,
+        DEFAULT_CONFIG["context"],
+        "context",
+        warnings,
+        (
+            ("context_limit", "int", 512, 262144),
+            ("keep_last_n", "int", 1, 100),
+            ("safety_margin", "int", 0, 100000),
+        ),
     )
     if context_cfg["safety_margin"] >= context_cfg["context_limit"]:
         adjusted = max(0, context_cfg["context_limit"] // 4)
@@ -871,43 +758,26 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
     merged["sandbox"] = sandbox_cfg
 
     raw_skills_cfg = merged.get("skills", {}) if isinstance(merged.get("skills"), dict) else {}
-    skills_cfg: dict[str, Any] = {}
-    skills_cfg["strict_capability_policy"] = _coerce_bool(
-        raw_skills_cfg.get("strict_capability_policy"),
-        bool(DEFAULT_CONFIG["skills"]["strict_capability_policy"]),
-        path="skills.strict_capability_policy",
-        warnings=warnings,
-    )
-    skills_cfg["python_executable"] = _coerce_string(
-        raw_skills_cfg.get("python_executable"),
-        str(DEFAULT_CONFIG["skills"]["python_executable"]),
-        path="skills.python_executable",
-        warnings=warnings,
-    )
-    skills_cfg["paths"] = _coerce_string_list(
-        raw_skills_cfg.get("paths"),
-        DEFAULT_CONFIG["skills"]["paths"],
-        path="skills.paths",
-        warnings=warnings,
+    skills_cfg = _normalize_fields(
+        raw_skills_cfg,
+        DEFAULT_CONFIG["skills"],
+        "skills",
+        warnings,
+        (
+            ("strict_capability_policy", "bool", None, None),
+            ("python_executable", "str", None, None),
+            ("paths", "list", None, None),
+        ),
+        keep_unknown=False,
     )
     merged["skills"] = skills_cfg
 
     agents_cfg = merged.get("agents", {}) if isinstance(merged.get("agents"), dict) else {}
-    agents_cfg["enable_skill_agents"] = _coerce_bool(
-        agents_cfg.get("enable_skill_agents"),
-        bool(DEFAULT_CONFIG["agents"]["enable_skill_agents"]),
-        path="agents.enable_skill_agents",
-        warnings=warnings,
-    )
+    _normalize_fields(agents_cfg, DEFAULT_CONFIG["agents"], "agents", warnings, (("enable_skill_agents", "bool", None, None),))
     merged["agents"] = agents_cfg
 
     runtime_cfg = merged.get("runtime", {}) if isinstance(merged.get("runtime"), dict) else {}
-    runtime_cfg["ask_user_tool"] = _coerce_bool(
-        runtime_cfg.get("ask_user_tool"),
-        bool(DEFAULT_CONFIG["runtime"]["ask_user_tool"]),
-        path="runtime.ask_user_tool",
-        warnings=warnings,
-    )
+    _normalize_fields(runtime_cfg, DEFAULT_CONFIG["runtime"], "runtime", warnings, (("ask_user_tool", "bool", None, None),))
     merged["runtime"] = runtime_cfg
 
     tools_cfg = merged.get("tools", {}) if isinstance(merged.get("tools"), dict) else {}
@@ -972,63 +842,39 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         path="search.tavily_api_key_env",
         warnings=warnings,
     )
-    search_cfg["request_timeout_s"] = _coerce_float(
-        raw_search_cfg.get("request_timeout_s"),
-        float(DEFAULT_CONFIG["search"]["request_timeout_s"]),
-        path="search.request_timeout_s",
-        warnings=warnings,
-        minimum=1.0,
-    )
-    search_cfg["request_retries"] = _coerce_int(
-        raw_search_cfg.get("request_retries"),
-        int(DEFAULT_CONFIG["search"]["request_retries"]),
-        path="search.request_retries",
-        warnings=warnings,
-        minimum=0,
-    )
-    search_cfg["request_retry_backoff_s"] = _coerce_float(
-        raw_search_cfg.get("request_retry_backoff_s"),
-        float(DEFAULT_CONFIG["search"]["request_retry_backoff_s"]),
-        path="search.request_retry_backoff_s",
-        warnings=warnings,
-        minimum=0.0,
-    )
-    search_cfg["fetch_max_redirects"] = _coerce_int(
-        raw_search_cfg.get("fetch_max_redirects"),
-        int(DEFAULT_CONFIG["search"]["fetch_max_redirects"]),
-        path="search.fetch_max_redirects",
-        warnings=warnings,
-        minimum=0,
-    )
-    search_cfg["cache_first"] = _coerce_bool(
-        raw_search_cfg.get("cache_first"),
-        bool(DEFAULT_CONFIG["search"]["cache_first"]),
-        path="search.cache_first",
-        warnings=warnings,
-    )
-    search_cfg["min_usable_results"] = _coerce_int(
-        raw_search_cfg.get("min_usable_results"),
-        int(DEFAULT_CONFIG["search"]["min_usable_results"]),
-        path="search.min_usable_results",
-        warnings=warnings,
-        minimum=1,
-    )
-    search_cfg["fetch_min_chars"] = _coerce_int(
-        raw_search_cfg.get("fetch_min_chars"),
-        int(DEFAULT_CONFIG["search"]["fetch_min_chars"]),
-        path="search.fetch_min_chars",
-        warnings=warnings,
-        minimum=1,
+    search_cfg.update(
+        _normalize_fields(
+            raw_search_cfg,
+            DEFAULT_CONFIG["search"],
+            "search",
+            warnings,
+            (
+                ("request_timeout_s", "float", 1.0, None),
+                ("request_retries", "int", 0, None),
+                ("request_retry_backoff_s", "float", 0.0, None),
+                ("fetch_max_redirects", "int", 0, None),
+                ("cache_first", "bool", None, None),
+                ("min_usable_results", "int", 1, None),
+                ("fetch_min_chars", "int", 1, None),
+            ),
+            keep_unknown=False,
+        )
     )
     merged["search"] = search_cfg
 
     retrieval_cfg = merged.get("retrieval", {}) if isinstance(merged.get("retrieval"), dict) else {}
     retrieval_default = DEFAULT_CONFIG["retrieval"]
-    retrieval_cfg["enabled"] = _coerce_bool(
-        retrieval_cfg.get("enabled"),
-        bool(retrieval_default["enabled"]),
-        path="retrieval.enabled",
-        warnings=warnings,
+    _normalize_fields(
+        retrieval_cfg,
+        retrieval_default,
+        "retrieval",
+        warnings,
+        (
+            ("enabled", "bool", None, None),
+            ("web_ttl_hours", "float", 0.0, None),
+            ("max_chunks_per_record", "int", 1, None),
+            ("pre_context_top_k", "int", 0, 10),
+        ),
     )
     raw_store_path = retrieval_cfg.get("store_path")
     retrieval_cfg["store_path"] = (
@@ -1041,41 +887,20 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
             warnings=warnings,
         )
     )
-    retrieval_cfg["web_ttl_hours"] = _coerce_float(
-        retrieval_cfg.get("web_ttl_hours"),
-        float(retrieval_default["web_ttl_hours"]),
-        path="retrieval.web_ttl_hours",
-        warnings=warnings,
-        minimum=0.0,
-    )
-    retrieval_cfg["max_chunks_per_record"] = _coerce_int(
-        retrieval_cfg.get("max_chunks_per_record"),
-        int(retrieval_default["max_chunks_per_record"]),
-        path="retrieval.max_chunks_per_record",
-        warnings=warnings,
-        minimum=1,
-    )
-    retrieval_cfg["pre_context_top_k"] = _coerce_int(
-        retrieval_cfg.get("pre_context_top_k"),
-        int(retrieval_default["pre_context_top_k"]),
-        path="retrieval.pre_context_top_k",
-        warnings=warnings,
-        minimum=0,
-        maximum=10,
-    )
     embeddings_cfg = retrieval_cfg.get("embeddings", {}) if isinstance(retrieval_cfg.get("embeddings"), dict) else {}
     embeddings_default = retrieval_default["embeddings"]
-    embeddings_cfg["enabled"] = _coerce_bool(
-        embeddings_cfg.get("enabled"),
-        bool(embeddings_default["enabled"]),
-        path="retrieval.embeddings.enabled",
-        warnings=warnings,
-    )
-    embeddings_cfg["base_url"] = _coerce_string(
-        embeddings_cfg.get("base_url"),
-        str(embeddings_default["base_url"]),
-        path="retrieval.embeddings.base_url",
-        warnings=warnings,
+    _normalize_fields(
+        embeddings_cfg,
+        embeddings_default,
+        "retrieval.embeddings",
+        warnings,
+        (
+            ("enabled", "bool", None, None),
+            ("base_url", "str", None, None),
+            ("model", "str", None, None),
+            ("dimensions", "int", 0, None),
+            ("batch_size", "int", 1, None),
+        ),
     )
     if embeddings_cfg["base_url"]:
         embeddings_cfg["base_url"] = _normalize_base_url(
@@ -1084,31 +909,11 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
             path="retrieval.embeddings.base_url",
             warnings=warnings,
         )
-    embeddings_cfg["model"] = _coerce_string(
-        embeddings_cfg.get("model"),
-        str(embeddings_default["model"]),
-        path="retrieval.embeddings.model",
-        warnings=warnings,
-    )
     embeddings_cfg["api_key_env"] = _normalize_env_name(
         embeddings_cfg.get("api_key_env"),
         default=str(embeddings_default["api_key_env"]),
         path="retrieval.embeddings.api_key_env",
         warnings=warnings,
-    )
-    embeddings_cfg["dimensions"] = _coerce_int(
-        embeddings_cfg.get("dimensions"),
-        int(embeddings_default["dimensions"]),
-        path="retrieval.embeddings.dimensions",
-        warnings=warnings,
-        minimum=0,
-    )
-    embeddings_cfg["batch_size"] = _coerce_int(
-        embeddings_cfg.get("batch_size"),
-        int(embeddings_default["batch_size"]),
-        path="retrieval.embeddings.batch_size",
-        warnings=warnings,
-        minimum=1,
     )
     retrieval_cfg["embeddings"] = embeddings_cfg
     merged["retrieval"] = retrieval_cfg
@@ -1165,42 +970,28 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         else:
             _warn(warnings, f"tui.theme: empty value, using {resolved_theme!r}")
     tui_cfg["theme"] = resolved_theme
-    tui_cfg["chat_log_max_lines"] = _coerce_int(
-        tui_cfg.get("chat_log_max_lines"),
-        int(DEFAULT_CONFIG["tui"]["chat_log_max_lines"]),
-        path="tui.chat_log_max_lines",
-        warnings=warnings,
-        minimum=1000,
-        maximum=200000,
+    _normalize_fields(
+        tui_cfg,
+        DEFAULT_CONFIG["tui"],
+        "tui",
+        warnings,
+        (("chat_log_max_lines", "int", 1000, 200000),),
     )
     timing_cfg = tui_cfg.get("timing", {})
     if not isinstance(timing_cfg, dict):
         _warn(warnings, "tui.timing: expected object, using defaults")
         timing_cfg = {}
     default_timing = DEFAULT_CONFIG["tui"]["timing"]
-    timing_cfg["stream_drain_interval_s"] = _coerce_float(
-        timing_cfg.get("stream_drain_interval_s"),
-        float(default_timing["stream_drain_interval_s"]),
-        path="tui.timing.stream_drain_interval_s",
-        warnings=warnings,
-        minimum=0.001,
-        maximum=1.0,
-    )
-    timing_cfg["scroll_interval_s"] = _coerce_float(
-        timing_cfg.get("scroll_interval_s"),
-        float(default_timing["scroll_interval_s"]),
-        path="tui.timing.scroll_interval_s",
-        warnings=warnings,
-        minimum=0.001,
-        maximum=1.0,
-    )
-    timing_cfg["action_approval_timeout_s"] = _coerce_float(
-        timing_cfg.get("action_approval_timeout_s"),
-        float(default_timing["action_approval_timeout_s"]),
-        path="tui.timing.action_approval_timeout_s",
-        warnings=warnings,
-        minimum=1.0,
-        maximum=600.0,
+    _normalize_fields(
+        timing_cfg,
+        default_timing,
+        "tui.timing",
+        warnings,
+        (
+            ("stream_drain_interval_s", "float", 0.001, 1.0),
+            ("scroll_interval_s", "float", 0.001, 1.0),
+            ("action_approval_timeout_s", "float", 1.0, 600.0),
+        ),
     )
     tui_cfg["timing"] = timing_cfg
     tree_cfg = tui_cfg.get("tree_compaction", {})
@@ -1208,35 +999,17 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         _warn(warnings, "tui.tree_compaction: expected object, using defaults")
         tree_cfg = {}
     default_tree = DEFAULT_CONFIG["tui"]["tree_compaction"]
-    tree_cfg["enabled"] = _coerce_bool(
-        tree_cfg.get("enabled"),
-        bool(default_tree["enabled"]),
-        path="tui.tree_compaction.enabled",
-        warnings=warnings,
-    )
-    tree_cfg["inactive_assistant_char_limit"] = _coerce_int(
-        tree_cfg.get("inactive_assistant_char_limit"),
-        int(default_tree["inactive_assistant_char_limit"]),
-        path="tui.tree_compaction.inactive_assistant_char_limit",
-        warnings=warnings,
-        minimum=1000,
-        maximum=200000,
-    )
-    tree_cfg["inactive_tool_argument_char_limit"] = _coerce_int(
-        tree_cfg.get("inactive_tool_argument_char_limit"),
-        int(default_tree["inactive_tool_argument_char_limit"]),
-        path="tui.tree_compaction.inactive_tool_argument_char_limit",
-        warnings=warnings,
-        minimum=500,
-        maximum=100000,
-    )
-    tree_cfg["inactive_tool_content_char_limit"] = _coerce_int(
-        tree_cfg.get("inactive_tool_content_char_limit"),
-        int(default_tree["inactive_tool_content_char_limit"]),
-        path="tui.tree_compaction.inactive_tool_content_char_limit",
-        warnings=warnings,
-        minimum=1000,
-        maximum=200000,
+    _normalize_fields(
+        tree_cfg,
+        default_tree,
+        "tui.tree_compaction",
+        warnings,
+        (
+            ("enabled", "bool", None, None),
+            ("inactive_assistant_char_limit", "int", 1000, 200000),
+            ("inactive_tool_argument_char_limit", "int", 500, 100000),
+            ("inactive_tool_content_char_limit", "int", 1000, 200000),
+        ),
     )
     tui_cfg["tree_compaction"] = tree_cfg
     merged["tui"] = tui_cfg
@@ -1291,8 +1064,7 @@ def load_global_config(path: Path, *, warnings: list[str] | None = None) -> dict
 
     if path.suffix.lower() != ".toml":
         raise ValueError(
-            f"Unsupported legacy configuration at {path}. Alphanus v1 requires config/config.toml; "
-            "run `alphanus init --reset`."
+            f"Unsupported legacy configuration at {path}. Alphanus v1 requires config/config.toml; run `alphanus init --reset`."
         )
     try:
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
