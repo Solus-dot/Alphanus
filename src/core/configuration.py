@@ -4,7 +4,7 @@ import copy
 import json
 import re
 import tomllib
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -13,20 +13,12 @@ from core.backend_profiles import AUTO_BACKEND_PROFILE, VALID_BACKEND_PROFILES
 from core.coercion import parse_bool
 from core.endpoint_modes import (
     ENDPOINT_MODE_AUTO,
-    ENDPOINT_MODE_CHAT,
     ENDPOINT_MODES,
     OPENAI_CHAT_COMPLETIONS_PATH,
     OPENAI_MODELS_PATH,
     OPENAI_RESPONSES_PATH,
 )
-from core.search_providers import (
-    DEFAULT_TAVILY_API_KEY_ENV,
-    SEARCH_FALLBACK_NONE,
-    SEARCH_FALLBACK_PROVIDERS,
-    SEARCH_PROVIDER_SEARXNG,
-    SEARCH_PROVIDER_TAVILY,
-    SEARCH_PROVIDERS,
-)
+from core.search_providers import SEARCH_FALLBACK_NONE, SEARCH_FALLBACK_PROVIDERS, SEARCH_PROVIDERS
 from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
 
 MAX_CONFIG_BYTES = 512 * 1024
@@ -53,131 +45,34 @@ APPROVAL_MODES = {"on-boundary"}
 SANDBOX_BACKENDS = {"auto", "macos-seatbelt", "linux-bubblewrap", "windows-native"}
 _VALID_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-DEFAULT_CONFIG: dict[str, Any] = {
-    "config_version": CONFIG_VERSION,
-    "agent": {
-        "provider": "openai-compatible",
-        "base_url": "http://127.0.0.1:8080",
-        "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
-        "responses_endpoint": "http://127.0.0.1:8080/v1/responses",
-        "models_endpoint": "http://127.0.0.1:8080/v1/models",
-        "endpoint_mode": ENDPOINT_MODE_CHAT,
-        "backend_profile": "auto",
-        "api_key": "env:ALPHANUS_API_KEY",
-        "api_key_env": "ALPHANUS_API_KEY",
-        "auth_header_template": "Authorization: Bearer {api_key}",
-        "connect_timeout_s": 10,
-        "request_timeout_s": 180,
-        "readiness_timeout_s": 30,
-        "readiness_poll_s": 0.5,
-        "per_turn_retries": 1,
-        "retry_backoff_s": 0.5,
-        "enable_thinking": True,
-        "tls_verify": True,
-        "ca_bundle_path": "",
-        "allow_cross_host_endpoints": False,
-        "max_tokens": None,
-        "context_budget_max_tokens": 2048,
-        "max_action_depth": 10,
-        "max_tool_result_chars": 12000,
-        "max_reasoning_chars": 20000,
-        "compact_tool_results_in_history": True,
-        "compact_tool_result_tools": [],
-        "classifier_model": "",
-        "classifier_use_primary_model": True,
-        "enable_structured_classification": True,
-        "max_classifier_tokens": 256,
-    },
-    "project": {
-        "root_strategy": "git-or-cwd",
-    },
-    "memory": {
-        "min_score_default": 0.3,
-        "recall_min_score_default": 0.18,
-        "replace_min_score_default": 0.72,
-        "backup_revisions": 2,
-        "auto_capture": True,
-    },
-    "context": {
-        "context_limit": 8192,
-        "keep_last_n": 10,
-        "safety_margin": 500,
-    },
-    "permissions": {
-        "mode": "project-write",
-        "approvals": "on-boundary",
-        "network": False,
-    },
-    "sandbox": {
-        "backend": "auto",
-        "fail_closed": True,
-    },
-    "skills": {
-        "strict_capability_policy": False,
-        "python_executable": "",
-        "paths": [],
-    },
-    "agents": {
-        "enable_skill_agents": True,
-    },
-    "runtime": {
-        "ask_user_tool": True,
-    },
-    "tools": {},
-    "search": {
-        "provider": SEARCH_PROVIDER_SEARXNG,
-        "fallback_provider": SEARCH_PROVIDER_TAVILY,
-        "searxng_base_url": "",
-        "tavily_api_key_env": DEFAULT_TAVILY_API_KEY_ENV,
-        "request_timeout_s": 20,
-        "request_retries": 1,
-        "request_retry_backoff_s": 0.5,
-        "fetch_max_redirects": 5,
-        "provider_chain": [],
-        "cache_first": True,
-        "min_usable_results": 1,
-        "fetch_min_chars": 20,
-    },
-    "retrieval": {
-        "enabled": True,
-        "store_path": "",
-        "web_ttl_hours": 72,
-        "max_chunks_per_record": 64,
-        "pre_context_top_k": 3,
-        "embeddings": {
-            "enabled": False,
-            "base_url": "",
-            "model": "",
-            "api_key_env": "ALPHANUS_EMBEDDINGS_API_KEY",
-            "dimensions": 0,
-            "batch_size": 32,
-        },
-    },
-    "logging": {
-        "level": "INFO",
-        "format": "json",
-        "path": "./logs/runtime.jsonl",
-    },
-    "tui": {
-        "theme": DEFAULT_THEME_ID,
-        "chat_log_max_lines": 10000,
-        "timing": {
-            "stream_drain_interval_s": 0.033,
-            "scroll_interval_s": 0.05,
-            "action_approval_timeout_s": 60.0,
-        },
-        "tree_compaction": {
-            "enabled": True,
-            "inactive_assistant_char_limit": 12000,
-            "inactive_tool_argument_char_limit": 5000,
-            "inactive_tool_content_char_limit": 8000,
-        },
-    },
-}
+class _LazyDefaults(Mapping[str, Any]):
+    _data: dict[str, Any] | None = None
+
+    def _load(self) -> dict[str, Any]:
+        if self._data is None:
+            from core.config_model import default_config
+
+            self._data = default_config()
+        return self._data
+
+    def __getitem__(self, key: str) -> Any:
+        return self._load()[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._load())
+
+    def __len__(self) -> int:
+        return len(self._load())
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> dict[str, Any]:
+        return copy.deepcopy(self._load(), memo)
 
 
-def deep_merge(base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
-    out = copy.deepcopy(base)
+DEFAULT_CONFIG: Mapping[str, Any] = _LazyDefaults()
+
+
+def deep_merge(base: Mapping[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+    out = {key: copy.deepcopy(value) for key, value in base.items()}
     for key, value in updates.items():
         if isinstance(value, dict) and isinstance(out.get(key), dict):
             out[key] = deep_merge(out[key], value)
@@ -395,12 +290,12 @@ def _legacy_config_errors(config: dict[str, Any]) -> list[str]:
     return errors
 
 
-def strip_secret_fields(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+def strip_secret_fields(config: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
     changed = False
 
     def _strip(obj: Any) -> Any:
         nonlocal changed
-        if isinstance(obj, dict):
+        if isinstance(obj, Mapping):
             cleaned: dict[str, Any] = {}
             for key, value in obj.items():
                 key_text = str(key)
@@ -423,7 +318,7 @@ def strip_secret_fields(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     return (stripped if isinstance(stripped, dict) else {}, changed)
 
 
-def config_for_editor_view(config: dict[str, Any]) -> dict[str, Any]:
+def config_for_editor_view(config: Mapping[str, Any]) -> dict[str, Any]:
     cleaned, _ = strip_secret_fields(config)
     agent_cfg = cleaned.get("agent")
     if isinstance(agent_cfg, dict):
@@ -939,7 +834,9 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
     tui_cfg["tree_compaction"] = tree_cfg
     merged["tui"] = tui_cfg
 
-    return merged, warnings
+    from core.config_model import validated_config
+
+    return validated_config(merged), warnings
 
 
 def validate_endpoint_policy(config: dict[str, Any]) -> None:
@@ -1052,7 +949,7 @@ def config_to_toml(config: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def save_global_config(path: Path, config: dict[str, Any]) -> None:
+def save_global_config(path: Path, config: Mapping[str, Any]) -> None:
     from core.secure_io import atomic_write_text
 
     cleaned = config_for_editor_view(config)

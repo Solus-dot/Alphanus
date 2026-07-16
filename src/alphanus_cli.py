@@ -479,19 +479,19 @@ def _run_init(args: Any) -> int:
     state_root = Path(app_paths.state_root)
     state_root.mkdir(parents=True, exist_ok=True)
 
-    base: dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG)
+    base: dict[str, Any] = copy.deepcopy(dict(DEFAULT_CONFIG))
     existing_warnings: list[str] = []
     if app_paths.config_path.exists():
         try:
             existing = load_global_config(app_paths.config_path, warnings=existing_warnings)
             base = deep_merge(base, existing)
         except (OSError, ValueError):
-            base = copy.deepcopy(DEFAULT_CONFIG)
+            base = copy.deepcopy(dict(DEFAULT_CONFIG))
     if reset_requested:
         if section == "all":
-            base = copy.deepcopy(DEFAULT_CONFIG)
+            base = copy.deepcopy(dict(DEFAULT_CONFIG))
         else:
-            default_cfg = copy.deepcopy(DEFAULT_CONFIG)
+            default_cfg = copy.deepcopy(dict(DEFAULT_CONFIG))
             if _section_selected(section, "model"):
                 current_agent = base.get("agent", {}) if isinstance(base.get("agent"), dict) else {}
                 default_agent = default_cfg.get("agent", {}) if isinstance(default_cfg.get("agent"), dict) else {}
