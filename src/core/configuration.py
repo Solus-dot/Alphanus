@@ -332,6 +332,23 @@ def _normalize_fields(
     return values
 
 
+def _normalize_choice(
+    value: Any,
+    default: str,
+    allowed: Iterable[str],
+    *,
+    path: str,
+    warnings: list[str],
+    upper: bool = False,
+) -> str:
+    choice = _coerce_string(value, default, path=path, warnings=warnings, allow_empty=False)
+    choice = choice.upper() if upper else choice.lower()
+    if choice not in allowed:
+        _warn(warnings, f"{path}: unsupported {choice!r}, using {default!r}")
+        return default
+    return choice
+
+
 class ConfigMigrationError(ValueError):
     pass
 
@@ -522,28 +539,20 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         path="agent.models_endpoint",
         warnings=warnings,
     )
-    endpoint_mode = _coerce_string(
+    agent_cfg["endpoint_mode"] = _normalize_choice(
         agent_cfg.get("endpoint_mode"),
         str(default_agent.get("endpoint_mode", ENDPOINT_MODE_AUTO)),
+        ENDPOINT_MODES,
         path="agent.endpoint_mode",
         warnings=warnings,
-        allow_empty=False,
-    ).lower()
-    if endpoint_mode not in ENDPOINT_MODES:
-        _warn(warnings, f"agent.endpoint_mode: unsupported {endpoint_mode!r}, using 'auto'")
-        endpoint_mode = ENDPOINT_MODE_AUTO
-    agent_cfg["endpoint_mode"] = endpoint_mode
-    backend_profile = _coerce_string(
+    )
+    agent_cfg["backend_profile"] = _normalize_choice(
         agent_cfg.get("backend_profile"),
-        str(default_agent.get("backend_profile", "auto")),
+        AUTO_BACKEND_PROFILE,
+        VALID_BACKEND_PROFILES,
         path="agent.backend_profile",
         warnings=warnings,
-        allow_empty=False,
-    ).lower()
-    if backend_profile not in VALID_BACKEND_PROFILES:
-        _warn(warnings, f"agent.backend_profile: unsupported {backend_profile!r}, using 'auto'")
-        backend_profile = AUTO_BACKEND_PROFILE
-    agent_cfg["backend_profile"] = backend_profile
+    )
     api_key_value = _coerce_string(
         agent_cfg.get("api_key"),
         str(default_agent.get("api_key", "env:ALPHANUS_API_KEY")),
@@ -656,16 +665,13 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
     merged["agent"] = agent_cfg
 
     project_cfg = merged.get("project", {}) if isinstance(merged.get("project"), dict) else {}
-    root_strategy = _coerce_string(
+    root_strategy = _normalize_choice(
         project_cfg.get("root_strategy"),
         str(DEFAULT_CONFIG["project"]["root_strategy"]),
+        PROJECT_ROOT_STRATEGIES,
         path="project.root_strategy",
         warnings=warnings,
-        allow_empty=False,
-    ).lower()
-    if root_strategy not in PROJECT_ROOT_STRATEGIES:
-        _warn(warnings, f"project.root_strategy: unsupported {root_strategy!r}, using 'git-or-cwd'")
-        root_strategy = "git-or-cwd"
+    )
     project_cfg = {"root_strategy": root_strategy}
     merged["project"] = project_cfg
 
@@ -706,26 +712,20 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
 
     raw_permissions_cfg = merged.get("permissions", {}) if isinstance(merged.get("permissions"), dict) else {}
     permissions_cfg: dict[str, Any] = {}
-    permission_mode = _coerce_string(
+    permission_mode = _normalize_choice(
         raw_permissions_cfg.get("mode"),
         str(DEFAULT_CONFIG["permissions"]["mode"]),
+        PERMISSION_MODES,
         path="permissions.mode",
         warnings=warnings,
-        allow_empty=False,
-    ).lower()
-    if permission_mode not in PERMISSION_MODES:
-        _warn(warnings, f"permissions.mode: unsupported {permission_mode!r}, using 'project-write'")
-        permission_mode = "project-write"
-    approvals = _coerce_string(
+    )
+    approvals = _normalize_choice(
         raw_permissions_cfg.get("approvals"),
         str(DEFAULT_CONFIG["permissions"]["approvals"]),
+        APPROVAL_MODES,
         path="permissions.approvals",
         warnings=warnings,
-        allow_empty=False,
-    ).lower()
-    if approvals not in APPROVAL_MODES:
-        _warn(warnings, f"permissions.approvals: unsupported {approvals!r}, using 'on-boundary'")
-        approvals = "on-boundary"
+    )
     permissions_cfg["mode"] = permission_mode
     permissions_cfg["approvals"] = approvals
     permissions_cfg["network"] = _coerce_bool(
@@ -738,16 +738,13 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
 
     raw_sandbox_cfg = merged.get("sandbox", {}) if isinstance(merged.get("sandbox"), dict) else {}
     sandbox_cfg: dict[str, Any] = {}
-    sandbox_backend = _coerce_string(
+    sandbox_backend = _normalize_choice(
         raw_sandbox_cfg.get("backend"),
         str(DEFAULT_CONFIG["sandbox"]["backend"]),
+        SANDBOX_BACKENDS,
         path="sandbox.backend",
         warnings=warnings,
-        allow_empty=False,
-    ).lower()
-    if sandbox_backend not in SANDBOX_BACKENDS:
-        _warn(warnings, f"sandbox.backend: unsupported {sandbox_backend!r}, using 'auto'")
-        sandbox_backend = "auto"
+    )
     sandbox_cfg["backend"] = sandbox_backend
     sandbox_cfg["fail_closed"] = _coerce_bool(
         raw_sandbox_cfg.get("fail_closed"),
@@ -785,16 +782,13 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
 
     raw_search_cfg = merged.get("search", {}) if isinstance(merged.get("search"), dict) else {}
     search_cfg: dict[str, Any] = {}
-    provider = _coerce_string(
+    provider = _normalize_choice(
         raw_search_cfg.get("provider"),
         str(DEFAULT_CONFIG["search"]["provider"]),
+        SEARCH_PROVIDERS,
         path="search.provider",
         warnings=warnings,
-        allow_empty=False,
-    ).lower()
-    if provider not in SEARCH_PROVIDERS:
-        _warn(warnings, f"search.provider: unsupported {provider!r}, using default")
-        provider = str(DEFAULT_CONFIG["search"]["provider"])
+    )
     search_cfg["provider"] = provider
     fallback_provider = _coerce_string(
         raw_search_cfg.get("fallback_provider"),
@@ -919,27 +913,22 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
     merged["retrieval"] = retrieval_cfg
 
     logging_cfg = merged.get("logging", {}) if isinstance(merged.get("logging"), dict) else {}
-    level = _coerce_string(
+    level = _normalize_choice(
         logging_cfg.get("level"),
         str(DEFAULT_CONFIG["logging"]["level"]),
+        {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"},
         path="logging.level",
         warnings=warnings,
-        allow_empty=False,
-    ).upper()
-    if level not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}:
-        _warn(warnings, f"logging.level: unsupported {level!r}, using default")
-        level = str(DEFAULT_CONFIG["logging"]["level"])
+        upper=True,
+    )
     logging_cfg["level"] = level
-    fmt = _coerce_string(
+    fmt = _normalize_choice(
         logging_cfg.get("format"),
         str(DEFAULT_CONFIG["logging"]["format"]),
+        {"plain", "json"},
         path="logging.format",
         warnings=warnings,
-        allow_empty=False,
-    ).lower()
-    if fmt not in {"plain", "json"}:
-        _warn(warnings, f"logging.format: unsupported {fmt!r}, using default")
-        fmt = str(DEFAULT_CONFIG["logging"]["format"])
+    )
     logging_cfg["format"] = fmt
     logging_cfg["path"] = _coerce_string(
         logging_cfg.get("path"),
