@@ -3430,7 +3430,7 @@ def test_typed_config_provider_uses_resolved_auth_header(runtime: SkillRuntime, 
         runtime,
     )
 
-    assert agent.llm_client.auth_header == "Authorization: Bearer secret-token"
+    assert agent.llm_client.provider_config.auth_header == "Authorization: Bearer secret-token"
     assert agent.llm_client.provider_config.auth_header == "Authorization: Bearer secret-token"
 
 
@@ -3793,8 +3793,8 @@ def test_reload_config_resets_readiness_state(runtime: SkillRuntime):
         }
     )
 
-    assert agent.model_endpoint == "http://127.0.0.1:8081/v1/chat/completions"
-    assert agent.models_endpoint == "http://127.0.0.1:8081/v1/models"
+    assert agent.llm_client.provider.model_endpoint == "http://127.0.0.1:8081/v1/chat/completions"
+    assert agent.llm_client.provider.models_endpoint == "http://127.0.0.1:8081/v1/models"
     assert agent.llm_client.provider._ready_checked is False
 
 
@@ -3883,7 +3883,7 @@ def test_run_turn_fails_fast_when_cached_status_is_freshly_offline(mocker, runti
             last_checked_at=time.monotonic(),
             last_success_at=time.monotonic(),
             last_error="[Errno 61] Connection refused",
-            endpoint=agent.models_endpoint,
+            endpoint=agent.llm_client.provider.models_endpoint,
         )
     )
     run = mocker.patch.object(agent.orchestrator, "run_turn")
@@ -3908,7 +3908,7 @@ def test_run_turn_waits_for_cold_local_model_despite_fresh_offline_status(mocker
             last_checked_at=time.monotonic(),
             last_success_at=0.0,
             last_error="[Errno 61] Connection refused",
-            endpoint=agent.models_endpoint,
+            endpoint=agent.llm_client.provider.models_endpoint,
         )
     )
     ready = mocker.patch.object(agent, "ensure_ready", return_value=True)
@@ -3934,7 +3934,7 @@ def test_run_turn_probes_when_status_is_stale(mocker, runtime: SkillRuntime):
             context_window=8192,
             last_checked_at=1.0,
             last_success_at=1.0,
-            endpoint=agent.models_endpoint,
+            endpoint=agent.llm_client.provider.models_endpoint,
         )
     )
     refreshed = ModelStatus(
@@ -3943,7 +3943,7 @@ def test_run_turn_probes_when_status_is_stale(mocker, runtime: SkillRuntime):
         context_window=16384,
         last_checked_at=time.monotonic(),
         last_success_at=time.monotonic(),
-        endpoint=agent.models_endpoint,
+        endpoint=agent.llm_client.provider.models_endpoint,
     )
     refresh = mocker.patch.object(agent, "refresh_model_status", return_value=refreshed)
     run = mocker.patch.object(
@@ -3968,7 +3968,7 @@ def test_run_turn_uses_configured_readiness_timeout_before_first_turn(mocker, ru
         }
     }
     agent = Agent(cfg, runtime)
-    agent.llm_client.provider._store_model_status(ModelStatus(state="unknown", endpoint=agent.models_endpoint))
+    agent.llm_client.provider._store_model_status(ModelStatus(state="unknown", endpoint=agent.llm_client.provider.models_endpoint))
     ready = mocker.patch.object(agent, "ensure_ready", return_value=True)
     run = mocker.patch.object(
         agent.orchestrator,
@@ -3993,7 +3993,7 @@ def test_local_connection_refused_is_not_retried(mocker, runtime: SkillRuntime):
             context_window=8192,
             last_checked_at=1.0,
             last_success_at=1.0,
-            endpoint=agent.models_endpoint,
+            endpoint=agent.llm_client.provider.models_endpoint,
         )
     )
     events: list[dict] = []
@@ -4002,7 +4002,9 @@ def test_local_connection_refused_is_not_retried(mocker, runtime: SkillRuntime):
         raise urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
 
     mocker.patch.object(
-        agent.llm_client.provider, "_status_allows_immediate_send", return_value=ModelStatus(state="online", endpoint=agent.models_endpoint)
+        agent.llm_client.provider,
+        "_status_allows_immediate_send",
+        return_value=ModelStatus(state="online", endpoint=agent.llm_client.provider.models_endpoint),
     )
     mocker.patch("agent.llm_client.stream_chat_completions", side_effect=boom)
 
@@ -4036,7 +4038,9 @@ def test_retryable_transport_error_still_runs_readiness_poll_after_offline_probe
     agent = Agent({"agent": {}}, runtime)
     events: list[dict] = []
     mocker.patch.object(
-        agent.llm_client.provider, "_status_allows_immediate_send", return_value=ModelStatus(state="online", endpoint=agent.models_endpoint)
+        agent.llm_client.provider,
+        "_status_allows_immediate_send",
+        return_value=ModelStatus(state="online", endpoint=agent.llm_client.provider.models_endpoint),
     )
     stream = mocker.patch(
         "agent.llm_client.stream_chat_completions",
@@ -4045,7 +4049,7 @@ def test_retryable_transport_error_still_runs_readiness_poll_after_offline_probe
     mocker.patch.object(
         agent.llm_client.provider,
         "refresh_model_status",
-        return_value=ModelStatus(state="offline", last_error="timed out", endpoint=agent.models_endpoint),
+        return_value=ModelStatus(state="offline", last_error="timed out", endpoint=agent.llm_client.provider.models_endpoint),
     )
     ready = mocker.patch.object(agent.llm_client.provider, "check_ready", return_value=False)
 
@@ -4054,7 +4058,7 @@ def test_retryable_transport_error_still_runs_readiness_poll_after_offline_probe
 
     assert stream.called
     ready.assert_called_once()
-    assert ready.call_args.kwargs["timeout_s"] == min(agent.llm_client.readiness_timeout_s, 5.0)
+    assert ready.call_args.kwargs["timeout_s"] == min(agent.llm_client.provider.readiness_timeout_s, 5.0)
 
 
 def test_refresh_model_status_preserves_model_name_when_endpoint_goes_offline(mocker, runtime: SkillRuntime):
@@ -4066,7 +4070,7 @@ def test_refresh_model_status_preserves_model_name_when_endpoint_goes_offline(mo
             context_window=8192,
             last_checked_at=1.0,
             last_success_at=1.0,
-            endpoint=agent.models_endpoint,
+            endpoint=agent.llm_client.provider.models_endpoint,
         )
     )
     mocker.patch.object(urllib.request, "urlopen", side_effect=urllib.error.URLError("offline"))

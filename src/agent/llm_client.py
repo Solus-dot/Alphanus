@@ -22,7 +22,6 @@ class LLMClient:
     def __init__(self, config: dict[str, Any], debug: bool = False, telemetry: TelemetryEmitter | None = None) -> None:
         self.debug = debug
         self.telemetry = telemetry or TelemetryEmitter()
-        self.auth_header = None
         self.api_key = ""
         self.auth_source = "none"
         self.reload_config(config)
@@ -37,22 +36,6 @@ class LLMClient:
             debug=self.debug,
             stream_chat_completions_fn=lambda *args, **kwargs: stream_chat_completions(*args, **kwargs),
         )
-        self.auth_header = self.provider_config.auth_header
-        self.connect_timeout_s = self.provider.connect_timeout_s
-        self.model_endpoint = self.provider.model_endpoint
-        self.responses_endpoint = self.provider.responses_endpoint
-        self.models_endpoint = self.provider.models_endpoint
-        self.base_url = self.provider.base_url
-        self.endpoint_mode = self.provider.endpoint_mode
-        self.backend_profile = self.provider.backend_profile_requested
-        self.allow_cross_host = self.provider.allow_cross_host
-        self.request_timeout_s = self.provider.request_timeout_s
-        self.readiness_timeout_s = self.provider.readiness_timeout_s
-        self.readiness_poll_s = self.provider.readiness_poll_s
-        self.per_turn_retries = self.provider.per_turn_retries
-        self.retry_backoff_s = self.provider.retry_backoff_s
-        self.default_max_tokens = self.provider.default_max_tokens
-        self.ssl_context = self.provider.ssl_context
         self.classifier_model = str(agent_cfg.get("classifier_model", "")).strip()
         self.classifier_use_primary_model = bool(agent_cfg.get("classifier_use_primary_model", True))
         self.enable_structured_classification = bool(agent_cfg.get("enable_structured_classification", True))

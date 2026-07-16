@@ -49,30 +49,6 @@ class Agent:
         )
         self._apply_config(config)
 
-    @property
-    def connect_timeout_s(self) -> float:
-        return float(self.llm_client.connect_timeout_s)
-
-    @property
-    def request_timeout_s(self) -> float:
-        return float(self.llm_client.request_timeout_s)
-
-    @property
-    def classifier_model(self) -> str:
-        return str(self.llm_client.classifier_model)
-
-    @property
-    def classifier_use_primary_model(self) -> bool:
-        return bool(self.llm_client.classifier_use_primary_model)
-
-    @property
-    def max_classifier_tokens(self) -> int:
-        return int(self.llm_client.max_classifier_tokens)
-
-    @property
-    def auth_header(self) -> str | None:
-        return self.llm_client.auth_header
-
     def reload_config(self, config: dict[str, Any]) -> None:
         config, _ = normalize_config(config)
         self._apply_config(config)
@@ -97,10 +73,6 @@ class Agent:
         self.orchestrator.classifier = self.classifier
         self.orchestrator.prompt_renderer = self.prompt_renderer
         self.orchestrator.reload_config(config)
-        self.model_endpoint = self.llm_client.model_endpoint
-        self.models_endpoint = self.llm_client.models_endpoint
-        self.allow_cross_host = self.llm_client.allow_cross_host
-        self.readiness_timeout_s = self.llm_client.readiness_timeout_s
 
     def ensure_ready(
         self, stop_event=None, on_event: Callable[[dict[str, Any]], None] | None = None, timeout_s: float | None = None
@@ -116,16 +88,28 @@ class Agent:
     def _offline_status_detail(self, status: ModelStatus) -> str:
         return f": {self.llm_client.friendly_endpoint_error(status.last_error)}" if status.last_error else ""
 
+    @staticmethod
+    def _empty_result(status: str, error: str = "") -> AgentTurnResult:
+        return AgentTurnResult(status=status, content="", reasoning="", skill_exchanges=[], error=error)
+
+    def _not_ready_result(self, status: ModelStatus) -> AgentTurnResult:
+        error = (
+            f"Model endpoint offline{self._offline_status_detail(status)}"
+            if status.state == "offline"
+            else f"Model endpoint not ready: {self.llm_client.provider.models_endpoint}"
+        )
+        return self._empty_result("error", error)
+
     def _validate_endpoints(self) -> str | None:
         try:
             validate_endpoint_policy(
                 {
                     "agent": {
-                        "base_url": self.llm_client.base_url,
-                        "model_endpoint": self.model_endpoint,
-                        "responses_endpoint": self.llm_client.responses_endpoint,
-                        "models_endpoint": self.models_endpoint,
-                        "allow_cross_host_endpoints": self.allow_cross_host,
+                        "base_url": self.llm_client.provider.base_url,
+                        "model_endpoint": self.llm_client.provider.model_endpoint,
+                        "responses_endpoint": self.llm_client.provider.responses_endpoint,
+                        "models_endpoint": self.llm_client.provider.models_endpoint,
+                        "allow_cross_host_endpoints": self.llm_client.provider.allow_cross_host,
                     }
                 }
             )
@@ -169,21 +153,21 @@ class Agent:
             retrieval_ready = False
             retrieval_reason = str(exc)
         if probe_ready:
-            ready = self.ensure_ready(timeout_s=min(self.readiness_timeout_s, 3.0))
+            ready = self.ensure_ready(timeout_s=min(self.llm_client.provider.readiness_timeout_s, 3.0))
         else:
             ready = self.get_model_status().state == "online"
         backend_info = self.llm_client.backend_profile_info()
         sandbox_preflight = self.skill_runtime.project.sandbox_preflight()
         return {
             "agent": {
-                "base_url": self.llm_client.base_url,
-                "model_endpoint": self.model_endpoint,
-                "responses_endpoint": self.llm_client.responses_endpoint,
-                "models_endpoint": self.models_endpoint,
+                "base_url": self.llm_client.provider.base_url,
+                "model_endpoint": self.llm_client.provider.model_endpoint,
+                "responses_endpoint": self.llm_client.provider.responses_endpoint,
+                "models_endpoint": self.llm_client.provider.models_endpoint,
                 "ready": bool(ready),
                 "endpoint_policy_error": endpoint_error or "",
                 "auth_header_source": self.llm_client.auth_source,
-                "endpoint_mode": self.llm_client.endpoint_mode,
+                "endpoint_mode": self.llm_client.provider.endpoint_mode,
                 "backend_profile_requested": str(backend_info.get("requested", "auto")),
                 "backend_profile_detected": str(backend_info.get("detected", "unknown")),
                 "backend_profile_selected": str(backend_info.get("selected", "unknown")),
@@ -264,66 +248,27 @@ class Agent:
     ) -> AgentTurnResult:
         endpoint_err = self._validate_endpoints()
         if endpoint_err:
-            return self._record_and_return(
-                AgentTurnResult(status="error", content="", reasoning="", skill_exchanges=[], error=endpoint_err)
-            )
+            return self._record_and_return(self._empty_result("error", endpoint_err))
         if self.llm_client.stop_requested(stop_event):
-            return self._record_and_return(AgentTurnResult(status="cancelled", content="", reasoning="", skill_exchanges=[]))
+            return self._record_and_return(self._empty_result("cancelled"))
         status = self.get_model_status()
         if status.state == "offline" and self.llm_client.is_model_status_fresh(status):
             if self.llm_client.should_fail_fast_on_offline_status(status):
-                detail = self._offline_status_detail(status)
-                return self._record_and_return(
-                    AgentTurnResult(
-                        status="error",
-                        content="",
-                        reasoning="",
-                        skill_exchanges=[],
-                        error=f"Model endpoint offline{detail}",
-                    )
-                )
+                return self._record_and_return(self._not_ready_result(status))
             ready = self.ensure_ready(stop_event=stop_event, on_event=on_event)
             if ready is None:
-                return self._record_and_return(AgentTurnResult(status="cancelled", content="", reasoning="", skill_exchanges=[]))
+                return self._record_and_return(self._empty_result("cancelled"))
             if not ready:
-                refreshed = self.get_model_status()
-                detail = self._offline_status_detail(refreshed)
-                return self._record_and_return(
-                    AgentTurnResult(
-                        status="error",
-                        content="",
-                        reasoning="",
-                        skill_exchanges=[],
-                        error=(
-                            f"Model endpoint offline{detail}"
-                            if refreshed.state == "offline"
-                            else f"Model endpoint not ready: {self.models_endpoint}"
-                        ),
-                    )
-                )
+                return self._record_and_return(self._not_ready_result(self.get_model_status()))
         if not self.llm_client.is_model_status_fresh(status):
             if status.state != "unknown":
-                status = self.refresh_model_status(timeout_s=min(self.connect_timeout_s, 1.0), force=True)
+                status = self.refresh_model_status(timeout_s=min(self.llm_client.provider.connect_timeout_s, 1.0), force=True)
             if status.state != "online":
                 ready = self.ensure_ready(stop_event=stop_event, on_event=on_event)
                 if ready is None:
-                    return self._record_and_return(AgentTurnResult(status="cancelled", content="", reasoning="", skill_exchanges=[]))
+                    return self._record_and_return(self._empty_result("cancelled"))
                 if not ready:
-                    status = self.get_model_status()
-                    detail = self._offline_status_detail(status)
-                    return self._record_and_return(
-                        AgentTurnResult(
-                            status="error",
-                            content="",
-                            reasoning="",
-                            skill_exchanges=[],
-                            error=(
-                                f"Model endpoint offline{detail}"
-                                if status.state == "offline"
-                                else f"Model endpoint not ready: {self.models_endpoint}"
-                            ),
-                        )
-                    )
+                    return self._record_and_return(self._not_ready_result(self.get_model_status()))
         return self._record_and_return(
             self.orchestrator.run_turn(
                 history_messages=history_messages,

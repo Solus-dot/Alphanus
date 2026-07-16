@@ -111,7 +111,7 @@ def test_malformed_auth_header_template_emits_telemetry(tmp_path: Path, monkeypa
     )
     client.reload_config({"agent": {"api_key": "env:ALPHANUS_API_KEY", "auth_header_template": "Authorization: Bearer {api_key.missing}"}})
 
-    assert client.auth_header == "Authorization: Bearer secret-token"
+    assert client.provider_config.auth_header == "Authorization: Bearer secret-token"
     events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
     assert any(item.get("event") == "auth_header_template_invalid" for item in events)
 
