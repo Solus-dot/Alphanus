@@ -449,6 +449,21 @@ class RuntimeServer:
     def _emit_completed(self, request_id: str, data: dict[str, Any] | None = None) -> None:
         self.emitter.emit("request.completed", request_id=request_id, data=data or {})
 
+    def _respond(
+        self,
+        event_type: str,
+        request_id: str,
+        data: dict[str, Any],
+        *,
+        status: str = "ok",
+        approval_id: str | None = None,
+    ) -> None:
+        self.emitter.emit(event_type, request_id=request_id, data=data, approval_id=approval_id)
+        self._emit_completed(request_id, {"status": status})
+
+    def _respond_snapshot(self, request_id: str) -> None:
+        self._respond("state.snapshot", request_id, self._snapshot())
+
     def _emit_error(self, request_id: str, message: str, *, category: str = "invalid_request") -> None:
         self.emitter.emit("request.error", request_id=request_id, data={"category": category, "message": message})
         self._emit_completed(request_id, {"status": "error"})
@@ -551,10 +566,10 @@ class RuntimeServer:
         if not minimum <= 1 <= maximum:
             self._emit_error(request_id, "no compatible runtime protocol", category="protocol")
             return
-        self.emitter.emit(
+        self._respond(
             "runtime.ready",
-            request_id=request_id,
-            data={
+            request_id,
+            {
                 "protocol_version": 1,
                 "runtime_version": "0.2.0",
                 "workspace": str(self.agent.skill_runtime.project.project_root),
@@ -575,20 +590,18 @@ class RuntimeServer:
                 "snapshot": self._snapshot(),
             },
         )
-        self._emit_completed(request_id, {"status": "ok"})
 
     def _state_get(self, request_id: str, data: dict[str, Any]) -> None:
         transcript_offset = data.get("transcript_offset")
         tree_offset = data.get("tree_offset")
-        self.emitter.emit(
+        self._respond(
             "state.snapshot",
-            request_id=request_id,
-            data=self._snapshot(
+            request_id,
+            self._snapshot(
                 transcript_offset=int(transcript_offset) if transcript_offset is not None else None,
                 tree_offset=int(tree_offset) if tree_offset is not None else None,
             ),
         )
-        self._emit_completed(request_id, {"status": "ok"})
 
     def _turn_start(self, request_id: str, data: dict[str, Any]) -> None:
         with self._state_lock:
@@ -825,8 +838,7 @@ class RuntimeServer:
         for event, holder in list(self.approvals.values()):
             holder["approved"] = False
             event.set()
-        self.emitter.emit("turn.cancellation_acknowledged", request_id=request_id, data={"active": active})
-        self._emit_completed(request_id, {"status": "ok"})
+        self._respond("turn.cancellation_acknowledged", request_id, {"active": active})
 
     def _approval_resolve(self, request_id: str, data: dict[str, Any]) -> None:
         approval_id = str(data.get("approval_id") or "")
@@ -836,13 +848,12 @@ class RuntimeServer:
         event, holder = pending
         holder["approved"] = bool(data.get("approved", False))
         event.set()
-        self.emitter.emit(
+        self._respond(
             "approval.resolved",
-            request_id=request_id,
+            request_id,
+            {"approved": holder["approved"]},
             approval_id=approval_id,
-            data={"approved": holder["approved"]},
         )
-        self._emit_completed(request_id, {"status": "ok"})
 
     def _require_idle(self) -> None:
         if self.turn_request_id:
@@ -852,21 +863,19 @@ class RuntimeServer:
         offset = max(0, int(data.get("offset", 0)))
         limit = max(1, min(int(data.get("limit", SESSION_PAGE_SIZE)), SESSION_PAGE_SIZE))
         sessions = self.store.list_sessions(limit=limit, offset=offset)
-        self.emitter.emit(
+        self._respond(
             "session.list",
-            request_id=request_id,
-            data={
+            request_id,
+            {
                 "items": [asdict(item) for item in sessions],
                 "offset": offset,
                 "next": offset + len(sessions) if len(sessions) == limit else None,
             },
         )
-        self._emit_completed(request_id, {"status": "ok"})
 
     def _session_search(self, request_id: str, data: dict[str, Any]) -> None:
         results = self.store.search_sessions(str(data.get("query") or ""), limit=min(int(data.get("limit", 80)), 200))
-        self.emitter.emit("session.search", request_id=request_id, data={"items": [asdict(item) for item in results]})
-        self._emit_completed(request_id, {"status": "ok"})
+        self._respond("session.search", request_id, {"items": [asdict(item) for item in results]})
 
     def _session_create(self, request_id: str, data: dict[str, Any]) -> None:
         self._require_idle()
@@ -876,8 +885,7 @@ class RuntimeServer:
             raise ValueError("session title must be at most 200 characters")
         self.session = self._activate(self.store.create_session(title))
         self.pending_attachments.clear()
-        self.emitter.emit("state.snapshot", request_id=request_id, data=self._snapshot())
-        self._emit_completed(request_id, {"status": "ok"})
+        self._respond_snapshot(request_id)
 
     def _session_load(self, request_id: str, data: dict[str, Any]) -> None:
         self._require_idle()
@@ -887,8 +895,7 @@ class RuntimeServer:
         if turn_id and turn_id in self.session.tree.nodes:
             self.session.tree.current_id = turn_id
         self.pending_attachments.clear()
-        self.emitter.emit("state.snapshot", request_id=request_id, data=self._snapshot())
-        self._emit_completed(request_id, {"status": "ok"})
+        self._respond_snapshot(request_id)
 
     def _session_rename(self, request_id: str, data: dict[str, Any]) -> None:
         title = str(data.get("title") or "").strip()
@@ -897,8 +904,7 @@ class RuntimeServer:
         if len(title) > 200:
             raise ValueError("session title must be at most 200 characters")
         self._save(title=title)
-        self.emitter.emit("session.changed", request_id=request_id, data={"session": self._session_meta()})
-        self._emit_completed(request_id, {"status": "ok"})
+        self._respond("session.changed", request_id, {"session": self._session_meta()})
 
     def _session_delete(self, request_id: str, data: dict[str, Any]) -> None:
         self._require_idle()
@@ -907,14 +913,12 @@ class RuntimeServer:
         if session_id == self.session.id:
             remaining = self.store.list_sessions(limit=1)
             self.session = self._activate(self.store.load_session(remaining[0].id) if remaining else self.store.create_session())
-        self.emitter.emit("state.snapshot", request_id=request_id, data=self._snapshot())
-        self._emit_completed(request_id, {"status": "ok"})
+        self._respond_snapshot(request_id)
 
     def _branch_arm(self, request_id: str, data: dict[str, Any]) -> None:
         self.session.tree.arm_branch(str(data.get("label") or ""))
         self._save()
-        self.emitter.emit("state.snapshot", request_id=request_id, data=self._snapshot())
-        self._emit_completed(request_id, {"status": "ok"})
+        self._respond_snapshot(request_id)
 
     def _branch_unbranch(self, request_id: str, _data: dict[str, Any]) -> None:
         if self.session.tree._pending_branch:
@@ -922,16 +926,14 @@ class RuntimeServer:
         elif self.session.tree.unbranch() is None:
             raise ValueError("no branch to leave")
         self._save()
-        self.emitter.emit("state.snapshot", request_id=request_id, data=self._snapshot())
-        self._emit_completed(request_id, {"status": "ok"})
+        self._respond_snapshot(request_id)
 
     def _branch_switch(self, request_id: str, data: dict[str, Any]) -> None:
         index = int(data.get("index", 0))
         if self.session.tree.switch_child(index) is None:
             raise ValueError(f"no child branch at index {index}")
         self._save()
-        self.emitter.emit("state.snapshot", request_id=request_id, data=self._snapshot())
-        self._emit_completed(request_id, {"status": "ok"})
+        self._respond_snapshot(request_id)
 
     def _branch_open(self, request_id: str, data: dict[str, Any]) -> None:
         turn_id = str(data.get("turn_id") or "")
@@ -939,8 +941,7 @@ class RuntimeServer:
             raise ValueError("unknown turn")
         self.session.tree.current_id = turn_id
         self._save()
-        self.emitter.emit("state.snapshot", request_id=request_id, data=self._snapshot())
-        self._emit_completed(request_id, {"status": "ok"})
+        self._respond_snapshot(request_id)
 
     def _attachment_add(self, request_id: str, data: dict[str, Any]) -> None:
         path = Path(str(data.get("path") or "")).expanduser().resolve()
@@ -952,8 +953,7 @@ class RuntimeServer:
         item = (str(path), kind)
         if item not in self.pending_attachments:
             self.pending_attachments.append(item)
-        self.emitter.emit("attachments.changed", request_id=request_id, data={"items": self._snapshot()["pending_attachments"]})
-        self._emit_completed(request_id, {"status": "ok"})
+        self._respond("attachments.changed", request_id, {"items": self._snapshot()["pending_attachments"]})
 
     def _attachment_remove(self, request_id: str, data: dict[str, Any]) -> None:
         target = data.get("index", "last")
@@ -967,16 +967,15 @@ class RuntimeServer:
             if index < 0 or index >= len(self.pending_attachments):
                 raise ValueError("attachment index is out of range")
             self.pending_attachments.pop(index)
-        self.emitter.emit("attachments.changed", request_id=request_id, data={"items": self._snapshot()["pending_attachments"]})
-        self._emit_completed(request_id, {"status": "ok"})
+        self._respond("attachments.changed", request_id, {"items": self._snapshot()["pending_attachments"]})
 
     def _status_refresh(self, request_id: str, _data: dict[str, Any]) -> None:
         timeout = min(float(getattr(self.agent, "connect_timeout_s", 2.0)), 2.0)
         status = self.agent.refresh_model_status(timeout_s=timeout, force=True)
-        self.emitter.emit(
+        self._respond(
             "status.changed",
-            request_id=request_id,
-            data={
+            request_id,
+            {
                 "state": str(status.state),
                 "detail": str(status.last_error or ""),
                 "model_name": str(status.model_name or ""),
@@ -984,16 +983,14 @@ class RuntimeServer:
                 "endpoint": str(status.endpoint or getattr(self.agent, "model_endpoint", "")),
             },
         )
-        self._emit_completed(request_id, {"status": "ok"})
 
     def _config_get(self, request_id: str, _data: dict[str, Any]) -> None:
         config = load_global_config(self.config_path)
-        self.emitter.emit(
+        self._respond(
             "config.value",
-            request_id=request_id,
-            data={"text": config_to_toml(config_for_editor_view(config)), "path": str(self.config_path)},
+            request_id,
+            {"text": config_to_toml(config_for_editor_view(config)), "path": str(self.config_path)},
         )
-        self._emit_completed(request_id, {"status": "ok"})
 
     def _config_apply(self, request_id: str, data: dict[str, Any]) -> None:
         text = str(data.get("text") or "")
@@ -1003,8 +1000,7 @@ class RuntimeServer:
         if not isinstance(parsed, dict):
             raise ValueError("configuration must be a TOML table")
         save_global_config(self.config_path, parsed)
-        self.emitter.emit("config.changed", request_id=request_id, data={"restart_required": True})
-        self._emit_completed(request_id, {"status": "ok"})
+        self._respond("config.changed", request_id, {"restart_required": True})
 
     def _command_execute(self, request_id: str, data: dict[str, Any]) -> None:
         from core.ui_commands import execute_ui_command
@@ -1018,12 +1014,11 @@ class RuntimeServer:
     def _theme_list(self, request_id: str, _data: dict[str, Any]) -> None:
         configured = str(self.agent.config.get("tui", {}).get("theme") or "")
         items = [theme_payload(theme_id) for theme_id in available_theme_ids()]
-        self.emitter.emit(
+        self._respond(
             "theme.list",
-            request_id=request_id,
-            data={"items": items, "active": theme_payload(configured)},
+            request_id,
+            {"items": items, "active": theme_payload(configured)},
         )
-        self._emit_completed(request_id, {"status": "ok"})
 
     def _theme_apply(self, request_id: str, data: dict[str, Any]) -> None:
         theme_id = str(data.get("theme_id") or "").strip()
@@ -1037,8 +1032,7 @@ class RuntimeServer:
         save_global_config(self.config_path, config)
         self.agent.config.setdefault("tui", {})["theme"] = theme_id
         reload_themes()
-        self.emitter.emit("theme.changed", request_id=request_id, data={"theme": theme_payload(theme_id)})
-        self._emit_completed(request_id, {"status": "ok"})
+        self._respond("theme.changed", request_id, {"theme": theme_payload(theme_id)})
 
     def _palette_get(self, request_id: str, _data: dict[str, Any]) -> None:
         from core.ui_commands import palette_command_catalog
@@ -1083,8 +1077,7 @@ class RuntimeServer:
                     "loaded": skill.id in loaded,
                 }
             )
-        self.emitter.emit("palette.items", request_id=request_id, data={"items": items})
-        self._emit_completed(request_id, {"status": "ok"})
+        self._respond("palette.items", request_id, {"items": items})
 
     def _skill_toggle(self, request_id: str, data: dict[str, Any]) -> None:
         skill_id = str(data.get("skill_id") or "").strip()
@@ -1098,8 +1091,7 @@ class RuntimeServer:
             self.session.loaded_skill_ids.append(skill_id)
             loaded = True
         self._save()
-        self.emitter.emit("skill.changed", request_id=request_id, data={"skill_id": skill_id, "loaded": loaded})
-        self._emit_completed(request_id, {"status": "ok"})
+        self._respond("skill.changed", request_id, {"skill_id": skill_id, "loaded": loaded})
 
     def _shutdown(self, request_id: str, _data: dict[str, Any]) -> None:
         self.stop_event.set()

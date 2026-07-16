@@ -332,6 +332,24 @@ def _normalize_fields(
     return values
 
 
+def _normalize_section(
+    values: dict[str, Any],
+    defaults: dict[str, Any],
+    prefix: str,
+    warnings: list[str],
+    *,
+    fields: Iterable[tuple[str, str, float | None, float | None]] = (),
+    choices: Iterable[tuple[str, Iterable[str], bool]] = (),
+    keep_unknown: bool = True,
+) -> dict[str, Any]:
+    normalized = _normalize_fields(values, defaults, prefix, warnings, fields, keep_unknown=keep_unknown)
+    for key, allowed, upper in choices:
+        normalized[key] = _normalize_choice(
+            values.get(key), str(defaults[key]), allowed, path=f"{prefix}.{key}", warnings=warnings, upper=upper
+        )
+    return normalized
+
+
 def _normalize_choice(
     value: Any,
     default: str,
@@ -664,43 +682,55 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         agent_cfg.pop("tool_budgets", None)
     merged["agent"] = agent_cfg
 
-    project_cfg = merged.get("project", {}) if isinstance(merged.get("project"), dict) else {}
-    root_strategy = _normalize_choice(
-        project_cfg.get("root_strategy"),
-        str(DEFAULT_CONFIG["project"]["root_strategy"]),
-        PROJECT_ROOT_STRATEGIES,
-        path="project.root_strategy",
-        warnings=warnings,
-    )
-    project_cfg = {"root_strategy": root_strategy}
-    merged["project"] = project_cfg
-
     simple_sections = {
+        "project": ((), (("root_strategy", PROJECT_ROOT_STRATEGIES, False),), False),
         "memory": (
-            ("min_score_default", "float", 0.0, 1.0),
-            ("recall_min_score_default", "float", 0.0, 1.0),
-            ("replace_min_score_default", "float", 0.0, 1.0),
-            ("backup_revisions", "int", 0, 20),
-            ("auto_capture", "bool", None, None),
+            (
+                ("min_score_default", "float", 0.0, 1.0),
+                ("recall_min_score_default", "float", 0.0, 1.0),
+                ("replace_min_score_default", "float", 0.0, 1.0),
+                ("backup_revisions", "int", 0, 20),
+                ("auto_capture", "bool", None, None),
+            ),
+            (),
+            False,
         ),
-        "context": (("context_limit", "int", 512, 262144), ("keep_last_n", "int", 1, 100), ("safety_margin", "int", 0, 100000)),
+        "context": (
+            (("context_limit", "int", 512, 262144), ("keep_last_n", "int", 1, 100), ("safety_margin", "int", 0, 100000)),
+            (),
+            True,
+        ),
         "skills": (
-            ("strict_capability_policy", "bool", None, None),
-            ("python_executable", "str", None, None),
-            ("paths", "list", None, None),
+            (
+                ("strict_capability_policy", "bool", None, None),
+                ("python_executable", "str", None, None),
+                ("paths", "list", None, None),
+            ),
+            (),
+            False,
         ),
-        "agents": (("enable_skill_agents", "bool", None, None),),
-        "runtime": (("ask_user_tool", "bool", None, None),),
+        "agents": ((("enable_skill_agents", "bool", None, None),), (), True),
+        "runtime": ((("ask_user_tool", "bool", None, None),), (), True),
+        "permissions": (
+            (("network", "bool", None, None),),
+            (("mode", PERMISSION_MODES, False), ("approvals", APPROVAL_MODES, False)),
+            False,
+        ),
+        "sandbox": (
+            (("fail_closed", "bool", None, None),),
+            (("backend", SANDBOX_BACKENDS, False),),
+            False,
+        ),
+        "logging": (
+            (("path", "str", None, None),),
+            (("level", {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}, True), ("format", {"plain", "json"}, False)),
+            True,
+        ),
     }
-    for name, rules in simple_sections.items():
+    for name, (fields, choices, keep_unknown) in simple_sections.items():
         values = merged.get(name, {}) if isinstance(merged.get(name), dict) else {}
-        merged[name] = _normalize_fields(
-            values,
-            DEFAULT_CONFIG[name],
-            name,
-            warnings,
-            rules,
-            keep_unknown=name not in {"memory", "skills"},
+        merged[name] = _normalize_section(
+            values, DEFAULT_CONFIG[name], name, warnings, fields=fields, choices=choices, keep_unknown=keep_unknown
         )
 
     context_cfg = merged["context"]
@@ -708,50 +738,6 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         adjusted = max(0, context_cfg["context_limit"] // 4)
         _warn(warnings, f"context.safety_margin: reduced to {adjusted} because it exceeded context_limit")
         context_cfg["safety_margin"] = adjusted
-
-    raw_permissions_cfg = merged.get("permissions", {}) if isinstance(merged.get("permissions"), dict) else {}
-    permissions_cfg: dict[str, Any] = {}
-    permission_mode = _normalize_choice(
-        raw_permissions_cfg.get("mode"),
-        str(DEFAULT_CONFIG["permissions"]["mode"]),
-        PERMISSION_MODES,
-        path="permissions.mode",
-        warnings=warnings,
-    )
-    approvals = _normalize_choice(
-        raw_permissions_cfg.get("approvals"),
-        str(DEFAULT_CONFIG["permissions"]["approvals"]),
-        APPROVAL_MODES,
-        path="permissions.approvals",
-        warnings=warnings,
-    )
-    permissions_cfg["mode"] = permission_mode
-    permissions_cfg["approvals"] = approvals
-    permissions_cfg["network"] = _coerce_bool(
-        raw_permissions_cfg.get("network"),
-        bool(DEFAULT_CONFIG["permissions"]["network"]),
-        path="permissions.network",
-        warnings=warnings,
-    )
-    merged["permissions"] = permissions_cfg
-
-    raw_sandbox_cfg = merged.get("sandbox", {}) if isinstance(merged.get("sandbox"), dict) else {}
-    sandbox_cfg: dict[str, Any] = {}
-    sandbox_backend = _normalize_choice(
-        raw_sandbox_cfg.get("backend"),
-        str(DEFAULT_CONFIG["sandbox"]["backend"]),
-        SANDBOX_BACKENDS,
-        path="sandbox.backend",
-        warnings=warnings,
-    )
-    sandbox_cfg["backend"] = sandbox_backend
-    sandbox_cfg["fail_closed"] = _coerce_bool(
-        raw_sandbox_cfg.get("fail_closed"),
-        bool(DEFAULT_CONFIG["sandbox"]["fail_closed"]),
-        path="sandbox.fail_closed",
-        warnings=warnings,
-    )
-    merged["sandbox"] = sandbox_cfg
 
     tools_cfg = merged.get("tools", {}) if isinstance(merged.get("tools"), dict) else {}
     merged["tools"] = tools_cfg
@@ -887,32 +873,6 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
     )
     retrieval_cfg["embeddings"] = embeddings_cfg
     merged["retrieval"] = retrieval_cfg
-
-    logging_cfg = merged.get("logging", {}) if isinstance(merged.get("logging"), dict) else {}
-    level = _normalize_choice(
-        logging_cfg.get("level"),
-        str(DEFAULT_CONFIG["logging"]["level"]),
-        {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"},
-        path="logging.level",
-        warnings=warnings,
-        upper=True,
-    )
-    logging_cfg["level"] = level
-    fmt = _normalize_choice(
-        logging_cfg.get("format"),
-        str(DEFAULT_CONFIG["logging"]["format"]),
-        {"plain", "json"},
-        path="logging.format",
-        warnings=warnings,
-    )
-    logging_cfg["format"] = fmt
-    logging_cfg["path"] = _coerce_string(
-        logging_cfg.get("path"),
-        str(DEFAULT_CONFIG["logging"]["path"]),
-        path="logging.path",
-        warnings=warnings,
-    )
-    merged["logging"] = logging_cfg
 
     tui_cfg = merged.get("tui", {}) if isinstance(merged.get("tui"), dict) else {}
     raw_theme = _coerce_string(
