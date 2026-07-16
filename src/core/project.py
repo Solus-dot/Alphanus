@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from core.project_command_policy import ProjectCommandPolicy
+from core.project_command_policy import ProjectCommandPolicy, shell_has_boundary, unwrap_shell_command
 from core.sandbox import SandboxCommand, SandboxConfig, SandboxRunner, shell_tokens
 
 DEFAULT_BLOCKED_PATTERNS = [
@@ -48,42 +48,7 @@ HEAVY_WALK_DIRS = {
 }
 
 
-def shell_has_approval_boundary(command: str) -> bool:
-    quote: str | None = None
-    escaped = False
-    for idx, char in enumerate(command):
-        if escaped:
-            escaped = False
-            continue
-        if char == "\\" and quote != "'":
-            escaped = True
-            continue
-        if quote == "'":
-            if char == "'":
-                quote = None
-            continue
-        if quote == '"':
-            if char == '"':
-                quote = None
-                continue
-            if char == "`":
-                return True
-            if char == "$" and idx + 1 < len(command) and command[idx + 1] == "(":
-                return True
-            continue
-        if char == "'":
-            quote = "'"
-            continue
-        if char == '"':
-            quote = '"'
-            continue
-        if char == "`":
-            return True
-        if char == "$" and idx + 1 < len(command) and command[idx + 1] == "(":
-            return True
-        if quote is None and (char in ";&|<>" or char == "\n"):
-            return True
-    return False
+shell_has_approval_boundary = shell_has_boundary
 
 
 class ProjectRuntime:
@@ -158,38 +123,30 @@ class ProjectRuntime:
         root_parts = self._path_compare_parts(root)
         return len(path_parts) >= len(root_parts) and path_parts[: len(root_parts)] == root_parts
 
-    def _is_outside_project(self, path: Path) -> bool:
+    @staticmethod
+    def _resolve_loose(path: Path) -> Path:
         try:
-            candidate = path.resolve(strict=False)
+            return path.resolve(strict=False)
         except OSError:
-            candidate = Path(os.path.abspath(str(path)))
+            return Path(os.path.abspath(str(path)))
+
+    def _is_outside_project(self, path: Path) -> bool:
+        candidate = self._resolve_loose(path)
         return not self._is_path_equal_or_descendant(candidate, self.project_root)
 
     def _is_protected_state_path(self, path: Path) -> bool:
-        try:
-            candidate = path.resolve(strict=False)
-        except OSError:
-            candidate = Path(os.path.abspath(str(path)))
+        candidate = self._resolve_loose(path)
         if any(part.lower() == ".alphanus" for part in candidate.parts):
             return True
-        try:
-            protected = self.protected_state_dir.resolve(strict=False)
-        except OSError:
-            protected = Path(os.path.abspath(str(self.protected_state_dir)))
+        protected = self._resolve_loose(self.protected_state_dir)
         return self._is_path_equal_or_descendant(candidate, protected)
 
     def _is_protected_project_path(self, path: Path) -> bool:
         if self._is_protected_state_path(path):
             return True
         git_dir = self.project_root / ".git"
-        try:
-            candidate = path.resolve(strict=False)
-        except OSError:
-            candidate = Path(os.path.abspath(str(path)))
-        try:
-            resolved_git = git_dir.resolve(strict=False)
-        except OSError:
-            resolved_git = Path(os.path.abspath(str(git_dir)))
+        candidate = self._resolve_loose(path)
+        resolved_git = self._resolve_loose(git_dir)
         return (
             self._is_path_equal_or_descendant(candidate, resolved_git)
             or any(part.lower() == ".git" for part in candidate.parts)
@@ -218,10 +175,7 @@ class ProjectRuntime:
             pathish = True
         raw = Path(os.path.expanduser(value))
         candidate = raw if raw.is_absolute() else cwd / raw
-        try:
-            return candidate.resolve(strict=False)
-        except OSError:
-            return Path(os.path.abspath(str(candidate)))
+        return self._resolve_loose(candidate)
 
     def _resolve_globbed_command_token_paths(self, token: str, cwd: Path) -> list[Path]:
         value = str(token or "").strip()
@@ -232,43 +186,33 @@ class ProjectRuntime:
         matches = globlib.glob(str(pattern), recursive=True)
         resolved: list[Path] = []
         for match in matches:
-            try:
-                resolved.append(Path(match).resolve(strict=False))
-            except OSError:
-                resolved.append(Path(os.path.abspath(match)))
+            resolved.append(self._resolve_loose(Path(match)))
         return resolved
 
     @staticmethod
     def _text_mentions_protected_state(text: str) -> bool:
         return bool(PROTECTED_STATE_TOKEN_RE.search(str(text)))
 
-    def _command_touches_protected_state(self, argv: list[str], cwd: Path) -> bool:
-        git_subcommand_index = ProjectCommandPolicy.git_subcommand_index(argv) if argv and argv[0] == "git" else -1
+    def _command_touches_path(self, argv: list[str], cwd: Path, predicate, *, inspect_text: bool = False) -> bool:
+        git_subcommand_index = ProjectCommandPolicy.git_subcommand_index(argv) if argv and Path(argv[0]).name == "git" else -1
         for idx, part in enumerate(argv[1:], start=1):
-            if self._text_mentions_protected_state(part):
+            if inspect_text and self._text_mentions_protected_state(part):
                 return True
             if idx == git_subcommand_index:
                 continue
             for expanded in self._resolve_globbed_command_token_paths(part, cwd):
-                if self._is_protected_state_path(expanded):
+                if predicate(expanded):
                     return True
             resolved = self._resolve_command_token_path(part, cwd)
-            if resolved is not None and self._is_protected_state_path(resolved):
+            if resolved is not None and predicate(resolved):
                 return True
         return False
 
+    def _command_touches_protected_state(self, argv: list[str], cwd: Path) -> bool:
+        return self._command_touches_path(argv, cwd, self._is_protected_state_path, inspect_text=True)
+
     def _command_touches_protected_project_path(self, argv: list[str], cwd: Path) -> bool:
-        git_subcommand_index = ProjectCommandPolicy.git_subcommand_index(argv) if argv and Path(argv[0]).name == "git" else -1
-        for idx, part in enumerate(argv[1:], start=1):
-            if idx == git_subcommand_index:
-                continue
-            for expanded in self._resolve_globbed_command_token_paths(part, cwd):
-                if self._is_protected_project_path(expanded):
-                    return True
-            resolved = self._resolve_command_token_path(part, cwd)
-            if resolved is not None and self._is_protected_project_path(resolved):
-                return True
-        return False
+        return self._command_touches_path(argv, cwd, self._is_protected_project_path)
 
     def _shell_command_touches_protected_state(self, command: str, cwd: Path) -> bool:
         if self._text_mentions_protected_state(command):
@@ -1252,23 +1196,9 @@ class ProjectRuntime:
         argv = shell_tokens(command)
         if not argv:
             return True
-        executable_index = 0
-        while executable_index < len(argv):
-            candidate = argv[executable_index]
-            candidate_name = Path(candidate).name
-            if "=" in candidate and not candidate.startswith("-") and candidate.split("=", 1)[0]:
-                executable_index += 1
-                continue
-            if candidate_name in SHELL_WRAPPER_EXECUTABLES:
-                executable_index += 1
-                while executable_index < len(argv) and argv[executable_index].startswith("-"):
-                    executable_index += 1
-                continue
-            break
-        if executable_index >= len(argv):
+        executable, remaining = unwrap_shell_command(argv, SHELL_WRAPPER_EXECUTABLES)
+        if not executable:
             return True
-        executable = Path(argv[executable_index]).name
-        remaining = argv[executable_index + 1 :]
         if executable in NESTED_SHELL_EXECUTABLES and any(part == "/c" or (part.startswith("-") and "c" in part) for part in remaining):
             return True
         if executable in {"chmod", "chown"} and any(part == "-R" or part.startswith("-R") for part in remaining):
@@ -1278,7 +1208,7 @@ class ProjectRuntime:
         ):
             return True
         if executable == "git":
-            subcommand = ProjectCommandPolicy.git_subcommand(argv[executable_index:])
+            subcommand = ProjectCommandPolicy.git_subcommand([executable, *remaining])
             if subcommand == "clean":
                 return True
             if subcommand == "reset" and "--hard" in remaining:

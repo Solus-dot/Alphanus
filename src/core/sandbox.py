@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.project_command_policy import shell_has_boundary, unwrap_shell_command
+
 MAX_SANDBOX_OUTPUT_BYTES = 20000
 MACOS_READ_ROOTS = (
     "/bin",
@@ -85,65 +87,15 @@ def _unique_resolved_paths(paths: tuple[Path, ...]) -> tuple[Path, ...]:
     return tuple(unique)
 
 
-def _has_shell_boundary(command: str) -> bool:
-    quote: str | None = None
-    escaped = False
-    for idx, char in enumerate(command):
-        if escaped:
-            escaped = False
-            continue
-        if char == "\\" and quote != "'":
-            escaped = True
-            continue
-        if quote == "'":
-            if char == "'":
-                quote = None
-            continue
-        if quote == '"':
-            if char == '"':
-                quote = None
-                continue
-            if char == "`":
-                return True
-            if char == "$" and idx + 1 < len(command) and command[idx + 1] == "(":
-                return True
-            continue
-        if char == "'":
-            quote = "'"
-            continue
-        if char == '"':
-            quote = '"'
-            continue
-        if char in {"`", "\n"}:
-            return True
-        if char == "$" and idx + 1 < len(command) and command[idx + 1] == "(":
-            return True
-        if quote is None and char in ";&|<>":
-            return True
-    return False
-
-
 def _is_single_git_command(command: str) -> bool:
-    if _has_shell_boundary(command):
+    if shell_has_boundary(command):
         return False
     try:
         argv = shlex.split(command)
     except ValueError:
         return False
-    executable_index = 0
-    while executable_index < len(argv):
-        candidate = argv[executable_index]
-        candidate_name = Path(candidate).name
-        if "=" in candidate and not candidate.startswith("-") and candidate.split("=", 1)[0]:
-            executable_index += 1
-            continue
-        if candidate_name in SHELL_WRAPPER_EXECUTABLES:
-            executable_index += 1
-            while executable_index < len(argv) and argv[executable_index].startswith("-"):
-                executable_index += 1
-            continue
-        break
-    return executable_index < len(argv) and Path(argv[executable_index]).name == "git"
+    executable, _ = unwrap_shell_command(argv, SHELL_WRAPPER_EXECUTABLES)
+    return executable == "git"
 
 
 def _run_subprocess(argv: list[str], *, cwd: Path, timeout_s: int) -> dict[str, Any]:
