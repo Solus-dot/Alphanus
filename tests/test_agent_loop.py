@@ -938,7 +938,7 @@ def test_desktop_file_write_is_deterministic_even_when_model_classifier_misses_i
     agent = Agent({"agent": {}}, runtime)
     agent.llm_client.enable_structured_classification = True
     mocker.patch.object(
-        agent.classifier,
+        agent.llm_client,
         "call_with_retry",
         return_value=type(
             "Result",

@@ -42,7 +42,7 @@ class FinalizationEngine:
                     self.orchestrator.emit(on_event, event)
 
             try:
-                return self.orchestrator.call_with_retry(
+                return self.orchestrator.llm_client.call_with_retry(
                     finalize_payload,
                     stop_event,
                     forward_finalization_usage,

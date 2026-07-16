@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from agent.llm_client import LLMClient
-from agent.runtime_hooks import TurnRuntimeHooks
 from agent.telemetry import TelemetryEmitter
 from core.message_types import ChatMessage, JsonObject, JSONValue, MessageContentPart
 from core.types import TurnClassification
@@ -64,25 +63,14 @@ class TurnClassifier:
         skill_runtime: SkillRuntime,
         llm_client: LLMClient,
         telemetry: TelemetryEmitter | None = None,
-        runtime_hooks: TurnRuntimeHooks | None = None,
     ) -> None:
         self.config = config
         self.skill_runtime = skill_runtime
         self.llm_client = llm_client
         self.telemetry = telemetry or TelemetryEmitter()
-        self._runtime_hooks = runtime_hooks
 
     def reload_config(self, config: dict[str, Any]) -> None:
         self.config = config
-
-    def bind_runtime_hooks(self, runtime_hooks: TurnRuntimeHooks | None) -> None:
-        self._runtime_hooks = runtime_hooks
-
-    def call_with_retry(self, payload, stop_event, on_event, pass_id):
-        hooks = self._runtime_hooks
-        if hooks is not None:
-            return hooks.call_with_retry(payload, stop_event, on_event, pass_id)
-        return self.llm_client.call_with_retry(payload, stop_event, on_event, pass_id)
 
     @staticmethod
     def message_text(value: JSONValue | list[MessageContentPart]) -> str:
@@ -202,9 +190,7 @@ class TurnClassifier:
             except ValueError:
                 return resolved_str
         known_directory = _WELL_KNOWN_DIRECTORY_RE.search(text or "")
-        has_filesystem_context = bool(
-            _FILESYSTEM_DIRECTORY_CONTEXT_RE.search(text or "") or _PROJECT_FILE_TOKEN_RE.search(text or "")
-        )
+        has_filesystem_context = bool(_FILESYSTEM_DIRECTORY_CONTEXT_RE.search(text or "") or _PROJECT_FILE_TOKEN_RE.search(text or ""))
         if known_directory and has_filesystem_context:
             directory_name = known_directory.group("directory").capitalize()
             resolved = (Path.home() / directory_name).resolve(strict=False)
@@ -489,7 +475,7 @@ class TurnClassifier:
             model_override=self.llm_client.classifier_model if not self.llm_client.classifier_use_primary_model else "",
         )
         try:
-            result = self.call_with_retry(payload, stop_event, None, pass_id=f"{pass_id}_project_action_outcome")
+            result = self.llm_client.call_with_retry(payload, stop_event, None, pass_id=f"{pass_id}_project_action_outcome")
         except Exception as exc:
             self.telemetry.emit("project_action_outcome_classification_failed", error=str(exc))
             return rules_outcome
@@ -589,7 +575,7 @@ class TurnClassifier:
             model_override=self.llm_client.classifier_model if not self.llm_client.classifier_use_primary_model else "",
         )
         try:
-            result = self.call_with_retry(payload, stop_event, None, pass_id="turn_classify")
+            result = self.llm_client.call_with_retry(payload, stop_event, None, pass_id="turn_classify")
         except Exception as exc:
             self.telemetry.emit("turn_classification_failed", error=str(exc))
             return seed

@@ -17,7 +17,6 @@ from typing import Any, cast
 import pytest
 
 from agent.core import Agent
-from agent.runtime_hooks import TurnRuntimeHooks
 from agent.types import ModelStatus, StreamPassResult, ToolCall, TurnClassification
 from core.memory import LexicalMemory
 from core.message_types import ChatMessage
@@ -62,22 +61,6 @@ class ReplayHooks:
             ],
         )
 
-    def build_skill_context(
-        self,
-        user_input: str,
-        branch_labels: list[str],
-        attachments: list[str],
-        history_messages: list[ChatMessage] | None = None,
-        loaded_skill_ids: list[str] | None = None,
-    ) -> SkillContext:
-        return self.agent.classifier.build_skill_context(
-            user_input,
-            branch_labels,
-            attachments,
-            history_messages,
-            loaded_skill_ids,
-        )
-
     def classify_context(self, ctx: SkillContext, stop_event=None) -> TurnClassification:
         raw = self.fixture.get("classification", {})
         return TurnClassification(
@@ -89,9 +72,9 @@ class ReplayHooks:
             source="replay",
         )
 
-    def select_skills(self, ctx: SkillContext, stop_event):
-        selected = [skill for skill in self.agent.skill_runtime.skills_by_ids(self.fixture.get("skills", [])) if skill is not None]
-        return self.classify_context(ctx, stop_event=stop_event), selected
+    def selected_skills(self, _ctx: SkillContext, top_n: int = 3):
+        _ = top_n
+        return self.agent.skill_runtime.skills_by_ids(self.fixture.get("skills", []))
 
 
 def _load_fixture(path: Path) -> dict[str, Any]:
@@ -191,9 +174,9 @@ def test_replay_core_coding_loop(fixture_path: Path, tmp_path: Path) -> None:
     _write_initial_files(project_root, dict(fixture.get("initial_files", {})))
 
     hooks = ReplayHooks(agent, fixture)
-    runtime_hooks = cast(TurnRuntimeHooks, hooks)
-    agent.orchestrator.bind_runtime_hooks(runtime_hooks)
-    agent.classifier.bind_runtime_hooks(runtime_hooks)
+    setattr(agent.llm_client, "call_with_retry", hooks.call_with_retry)
+    setattr(agent.classifier, "classify", hooks.classify_context)
+    setattr(agent.skill_runtime.selector, "select_skills", hooks.selected_skills)
 
     events: list[dict[str, Any]] = []
     stop_event = None

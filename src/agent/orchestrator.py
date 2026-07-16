@@ -13,7 +13,6 @@ from agent.evidence_guard import EvidenceGuard
 from agent.finalization_engine import FinalizationEngine
 from agent.llm_client import LLMClient
 from agent.policies import OutputSanitizer, PromptPolicyRenderer
-from agent.runtime_hooks import TurnRuntimeHooks
 from agent.telemetry import TelemetryEmitter
 from agent.tool_execution_engine import ToolExecutionEngine
 from agent.tool_loop_engine import ToolLoopEngine
@@ -26,7 +25,6 @@ from core.types import (
     ApprovalRequestFn,
     JsonObject,
     ToolCall,
-    TurnClassification,
     TurnState,
     UserInputRequestFn,
     cancelled_turn_result,
@@ -68,7 +66,6 @@ class TurnOrchestrator:
         classifier: TurnClassifier,
         prompt_renderer: PromptPolicyRenderer,
         telemetry: TelemetryEmitter | None = None,
-        runtime_hooks: TurnRuntimeHooks | None = None,
     ) -> None:
         self.skill_runtime = skill_runtime
         self.context_mgr = context_mgr
@@ -76,44 +73,7 @@ class TurnOrchestrator:
         self.classifier = classifier
         self.prompt_renderer = prompt_renderer
         self.telemetry = telemetry or TelemetryEmitter()
-        self._runtime_hooks = runtime_hooks
         self.reload_config(llm_client.config)
-
-    def bind_runtime_hooks(self, runtime_hooks: TurnRuntimeHooks | None) -> None:
-        self._runtime_hooks = runtime_hooks
-
-    def call_with_retry(self, payload: JsonObject, stop_event, on_event, pass_id: str):
-        hooks = self._runtime_hooks
-        if hooks is not None:
-            return hooks.call_with_retry(payload, stop_event, on_event, pass_id)
-        return self.llm_client.call_with_retry(payload, stop_event, on_event, pass_id)
-
-    def build_skill_context(
-        self,
-        user_input: str,
-        branch_labels: list[str],
-        attachments: list[str],
-        history_messages: list[ChatMessage] | None = None,
-        loaded_skill_ids: list[str] | None = None,
-    ):
-        hooks = self._runtime_hooks
-        if hooks is not None:
-            return hooks.build_skill_context(user_input, branch_labels, attachments, history_messages, loaded_skill_ids)
-        return self.classifier.build_skill_context(user_input, branch_labels, attachments, history_messages, loaded_skill_ids)
-
-    def classify_context(self, ctx, stop_event=None):
-        hooks = self._runtime_hooks
-        if hooks is not None:
-            return hooks.classify_context(ctx, stop_event=stop_event)
-        return self.classifier.classify(ctx, stop_event=stop_event)
-
-    def select_skills(self, ctx, stop_event):
-        hooks = self._runtime_hooks
-        if hooks is not None:
-            return hooks.select_skills(ctx, stop_event)
-        classification = self.classify_context(ctx, stop_event=stop_event)
-        selected = self.skill_runtime.select_skills(ctx)
-        return classification, selected
 
     def reload_config(self, config: dict[str, Any]) -> None:
         self.config = config
@@ -680,7 +640,7 @@ class TurnOrchestrator:
         simplified_messages = self._leading_system_messages(model_messages) + [latest_user]
         payload = self.llm_client.build_payload(simplified_messages, thinking=thinking, tools=None)
         self.emit(on_event, {"type": "info", "text": "Retrying image request with simplified multimodal payload..."})
-        return self.call_with_retry(payload, stop_event, on_event, pass_id=f"{pass_id}_vision_retry")
+        return self.llm_client.call_with_retry(payload, stop_event, on_event, pass_id=f"{pass_id}_vision_retry")
 
     @classmethod
     def _friendly_vision_request_error(cls, messages: list[ChatMessage], exc: Exception) -> str:
@@ -797,24 +757,9 @@ class TurnOrchestrator:
     ) -> TurnState:
         branch_labels = branch_labels or []
         attachments = attachments or []
-        ctx = self.build_skill_context(user_input, branch_labels, attachments, history_messages, loaded_skill_ids or [])
-        if ctx is None:
-            ctx = self.classifier.build_skill_context(
-                user_input,
-                branch_labels,
-                attachments,
-                history_messages,
-                loaded_skill_ids or [],
-            )
-        selection = self.select_skills(ctx, stop_event)
-        if not isinstance(selection, tuple) or len(selection) != 2 or not isinstance(selection[1], list):
-            classification = self.classify_context(ctx, stop_event=stop_event)
-            selected = self.skill_runtime.select_skills(ctx)
-        else:
-            classification, selected = selection
-        if classification is None:
-            classification = self.classify_context(ctx, stop_event=stop_event)
-        classification = cast(TurnClassification, classification)
+        ctx = self.classifier.build_skill_context(user_input, branch_labels, attachments, history_messages, loaded_skill_ids or [])
+        classification = self.classifier.classify(ctx, stop_event=stop_event)
+        selected = self.skill_runtime.select_skills(ctx)
         ctx.context_summary = str(context_summary or "").strip()
         relevant_skill_ids = [getattr(skill, "id", "") for skill in selected if getattr(skill, "id", "")]
         if (
@@ -901,7 +846,7 @@ class TurnOrchestrator:
             thinking=False,
             tools=None,
         )
-        result = self.call_with_retry(payload, stop_event, None, pass_id="context_summary")
+        result = self.llm_client.call_with_retry(payload, stop_event, None, pass_id="context_summary")
         if result is None:
             return ""
         if result.finish_reason == "cancelled":
@@ -1012,7 +957,7 @@ class TurnOrchestrator:
         self.emit(on_event, {"type": "pass_start", "pass_id": pass_id})
 
         try:
-            stream_result = self.call_with_retry(payload, stop_event, on_event, pass_id=pass_id)
+            stream_result = self.llm_client.call_with_retry(payload, stop_event, on_event, pass_id=pass_id)
         except Exception as exc:
             if self._latest_user_message_contains_vision_content(model_messages) and (
                 "failed to tokenize prompt" in str(exc or "").strip().lower()
