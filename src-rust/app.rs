@@ -59,6 +59,7 @@ struct TurnView {
     label: String,
     branch_root: bool,
     parent: String,
+    local: bool,
 }
 
 impl TurnView {
@@ -86,6 +87,15 @@ impl TurnView {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             parent: field(value, "parent"),
+            local: false,
+        }
+    }
+
+    fn notice(text: String) -> Self {
+        Self {
+            assistant: text,
+            local: true,
+            ..Self::default()
         }
     }
 }
@@ -207,14 +217,6 @@ enum Popup {
     Fatal,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct CommandMessage {
-    text: String,
-    /// Number of conversation turns that existed when this message arrived.
-    /// This keeps local command output interleaved with persisted turns.
-    turn_position: usize,
-}
-
 struct App {
     backend: Backend,
     python: String,
@@ -248,7 +250,6 @@ struct App {
     context_tokens: Option<u64>,
     context_window: Option<u64>,
     status: String,
-    command_messages: VecDeque<CommandMessage>,
     diagnostics: VecDeque<String>,
     pending_attachments: Vec<Value>,
     approval: Option<Approval>,
@@ -318,7 +319,6 @@ impl App {
             context_tokens: None,
             context_window: None,
             status: "Connecting to Python runtime…".into(),
-            command_messages: VecDeque::new(),
             diagnostics: VecDeque::new(),
             pending_attachments: Vec::new(),
             approval: None,
@@ -664,7 +664,6 @@ impl App {
             !incoming_session_id.is_empty() && incoming_session_id != self.session_id;
         if session_changed {
             self.context_tokens = None;
-            self.command_messages.clear();
             self.transcript_auto_follow = true;
         }
         if let Some(session) = value.get("session") {
@@ -693,15 +692,15 @@ impl App {
                     .into_iter()
                     .filter(|turn| !existing.contains(&turn.id))
                     .collect();
-                let prepended = combined.len();
                 combined.append(&mut self.transcript);
-                let dropped = combined.len().saturating_sub(MAX_TRANSCRIPT_ITEMS);
                 self.transcript = combined;
                 trim_vec(&mut self.transcript, MAX_TRANSCRIPT_ITEMS);
-                let position_shift = prepended.saturating_sub(dropped);
-                shift_command_positions(&mut self.command_messages, position_shift);
             } else {
-                self.transcript = incoming;
+                let mut combined = incoming;
+                if !session_changed {
+                    merge_local_notices(&mut combined, &self.transcript);
+                }
+                self.transcript = combined;
             }
             self.transcript_offset = match (self.transcript_offset, offset) {
                 (Some(current), Some(new)) if !session_changed => Some(current.min(new)),
@@ -792,7 +791,6 @@ impl App {
             "clear" => {
                 self.transcript.clear();
                 self.tree.clear();
-                self.command_messages.clear();
                 self.pending_attachments.clear();
                 self.active_turn_id.clear();
                 self.transcript_offset = Some(0);
@@ -853,16 +851,7 @@ impl App {
             _ => {}
         }
         if !message.is_empty() {
-            let turn_position = self.transcript.len();
-            push_bounded(
-                &mut self.command_messages,
-                CommandMessage {
-                    text: message,
-                    turn_position,
-                },
-                64,
-            );
-            self.transcript_auto_follow = true;
+            self.append_notice(message);
         }
         if value.get("ok").and_then(Value::as_bool) == Some(false) {
             self.status = lines
@@ -879,18 +868,22 @@ impl App {
     }
 
     fn latest_code_block(&self) -> Option<String> {
-        self.transcript.iter().rev().find_map(|turn| {
-            let start = turn.assistant.rfind("```")?;
-            let before = &turn.assistant[..start];
-            let open = before.rfind("```")?;
-            let content = &turn.assistant[open + 3..start];
-            Some(
-                content
-                    .trim_start_matches(|character: char| !character.is_whitespace())
-                    .trim()
-                    .into(),
-            )
-        })
+        self.transcript
+            .iter()
+            .rev()
+            .filter(|turn| !turn.local)
+            .find_map(|turn| {
+                let start = turn.assistant.rfind("```")?;
+                let before = &turn.assistant[..start];
+                let open = before.rfind("```")?;
+                let content = &turn.assistant[open + 3..start];
+                Some(
+                    content
+                        .trim_start_matches(|character: char| !character.is_whitespace())
+                        .trim()
+                        .into(),
+                )
+            })
     }
 
     fn submit(&mut self) {
@@ -1116,15 +1109,12 @@ impl App {
     }
 
     fn show_help(&mut self) {
-        let turn_position = self.transcript.len();
-        push_bounded(
-            &mut self.command_messages,
-            CommandMessage {
-                text: catalog_text(&self.shortcut_catalog, "key"),
-                turn_position,
-            },
-            64,
-        );
+        self.append_notice(catalog_text(&self.shortcut_catalog, "key"));
+    }
+
+    fn append_notice(&mut self, text: String) {
+        self.transcript.push(TurnView::notice(text));
+        trim_vec(&mut self.transcript, MAX_TRANSCRIPT_ITEMS);
         self.transcript_auto_follow = true;
     }
 
@@ -2200,14 +2190,9 @@ fn message_rail_lines(
     output
 }
 
-fn append_command_lines(
-    lines: &mut Vec<Line<'static>>,
-    message: &CommandMessage,
-    app: &App,
-    content_width: u16,
-) {
+fn append_notice_lines(lines: &mut Vec<Line<'static>>, text: &str, app: &App, content_width: u16) {
     let command_lines = trim_message_lines(markdown_lines(
-        &message.text,
+        text,
         app.theme.text,
         app.theme.accent,
         &app.theme.syntax_theme,
@@ -2220,16 +2205,6 @@ fn append_command_lines(
     lines.push(Line::default());
 }
 
-fn command_display_position(message: &CommandMessage, transcript_len: usize) -> usize {
-    message.turn_position.min(transcript_len)
-}
-
-fn shift_command_positions(messages: &mut VecDeque<CommandMessage>, prepended_turns: usize) {
-    for message in messages {
-        message.turn_position = message.turn_position.saturating_add(prepended_turns);
-    }
-}
-
 fn draw_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
     let border = if app.focus == Focus::Transcript {
         app.theme.secondary
@@ -2238,13 +2213,10 @@ fn draw_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     let content_width = area.width.saturating_sub(2).max(1);
     let mut lines = Vec::<Line<'static>>::new();
-    for (turn_index, turn) in app.transcript.iter().enumerate() {
-        for message in app
-            .command_messages
-            .iter()
-            .filter(|message| command_display_position(message, app.transcript.len()) == turn_index)
-        {
-            append_command_lines(&mut lines, message, app, content_width);
+    for turn in &app.transcript {
+        if turn.local {
+            append_notice_lines(&mut lines, &turn.assistant, app, content_width);
+            continue;
         }
         let mut user_lines = Vec::new();
         if !turn.attachments.is_empty() {
@@ -2362,11 +2334,6 @@ fn draw_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
             ));
         }
         lines.push(Line::default());
-    }
-    for message in app.command_messages.iter().filter(|message| {
-        command_display_position(message, app.transcript.len()) == app.transcript.len()
-    }) {
-        append_command_lines(&mut lines, message, app, content_width);
     }
     let title = " Alphanus ";
     let viewport_height = usize::from(area.height.saturating_sub(2));
@@ -3364,6 +3331,23 @@ fn trim_vec<T>(items: &mut Vec<T>, limit: usize) {
     }
 }
 
+fn merge_local_notices(incoming: &mut Vec<TurnView>, existing: &[TurnView]) {
+    let mut turn_position = 0;
+    for notice in existing {
+        if !notice.local {
+            turn_position += 1;
+            continue;
+        }
+        let index = incoming
+            .iter()
+            .enumerate()
+            .filter(|(_, turn)| !turn.local)
+            .nth(turn_position)
+            .map_or(incoming.len(), |(index, _)| index);
+        incoming.insert(index, notice.clone());
+    }
+}
+
 fn append_reasoning(turns: &mut [TurnView], turn_id: &str, reasoning: &str) {
     if reasoning.is_empty() {
         return;
@@ -4181,22 +4165,17 @@ mod tests {
 
     #[test]
     fn command_output_keeps_its_chronological_turn_position() {
-        let before_first_turn = CommandMessage {
-            text: "Conversation cleared".into(),
-            turn_position: 0,
+        let turn = |id: &str| TurnView {
+            id: id.into(),
+            ..TurnView::default()
         };
-        let after_first_turn = CommandMessage {
-            text: "Help".into(),
-            turn_position: 1,
-        };
+        let existing = vec![turn("one"), TurnView::notice("Help".into()), turn("two")];
+        let mut incoming = vec![turn("one"), turn("two")];
 
-        assert_eq!(command_display_position(&before_first_turn, 1), 0);
-        assert_eq!(command_display_position(&after_first_turn, 1), 1);
-        assert_eq!(command_display_position(&after_first_turn, 0), 0);
+        merge_local_notices(&mut incoming, &existing);
 
-        let mut messages = VecDeque::from([after_first_turn]);
-        shift_command_positions(&mut messages, 12);
-        assert_eq!(messages[0].turn_position, 13);
+        assert_eq!(incoming[1].assistant, "Help");
+        assert!(incoming[1].local);
     }
 
     #[test]
