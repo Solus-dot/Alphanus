@@ -3867,7 +3867,7 @@ def test_reload_config_coerces_invalid_numeric_values(runtime: SkillRuntime):
     assert agent.orchestrator.max_action_depth == 10
     assert agent.orchestrator.max_tool_result_chars == 12000
     assert agent.orchestrator.max_reasoning_chars == 0
-    assert agent.orchestrator.context_budget_max_tokens == 1024
+    assert agent.orchestrator.context_budget_max_tokens == 2048
     assert agent.orchestrator.default_tool_budgets["web_search"] == 2
     assert agent.orchestrator.default_tool_budgets["fetch_url"] == 1
     assert agent.orchestrator.default_tool_budgets["recall_memory"] == 1

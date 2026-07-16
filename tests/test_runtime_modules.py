@@ -12,6 +12,7 @@ from agent.llm_client import LLMClient
 from agent.orchestrator import TurnOrchestrator
 from agent.policies import PromptPolicyRenderer
 from agent.telemetry import TelemetryEmitter, configure_logging
+from core.config_model import default_config
 from core.memory import LexicalMemory
 from core.project import ProjectRuntime
 from core.retrieval import SQLiteRetrievalStore
@@ -689,7 +690,7 @@ def test_classifier_clears_local_project_preference_for_action_approvalation_fol
 
 def _orchestrator_runtime(tmp_path: Path) -> tuple[SkillRuntime, TurnClassifier, TurnOrchestrator]:
     runtime = _runtime(tmp_path)
-    cfg = {"agent": {}}
+    cfg = default_config()
     llm_client = LLMClient(cfg)
     classifier = TurnClassifier(cfg, runtime, llm_client)
     orchestrator = TurnOrchestrator(

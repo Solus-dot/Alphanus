@@ -8,15 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from agent.classifier import TurnClassifier
-from agent.config_values import coerce_int, get_json_object
-from agent.context import DEFAULT_CONTEXT_LIMIT, DEFAULT_KEEP_LAST_N, DEFAULT_SAFETY_MARGIN, ContextWindowManager
+from agent.context import ContextWindowManager
 from agent.harness_metrics import HarnessMetrics
 from agent.llm_client import LLMClient
 from agent.orchestrator import TurnOrchestrator, request_user_input_passthrough
 from agent.policies import PromptPolicyRenderer
 from agent.prompts import build_system_prompt
 from agent.telemetry import TelemetryEmitter
-from core.configuration import validate_endpoint_policy
+from core.configuration import normalize_config, validate_endpoint_policy
 from core.message_types import ChatMessage, JsonObject
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
 from core.search_providers import DEFAULT_TAVILY_API_KEY_ENV, SEARCH_PROVIDER_SEARXNG, SEARCH_PROVIDER_TAVILY
@@ -26,6 +25,7 @@ from skills.runtime import SkillRuntime
 
 class Agent:
     def __init__(self, config: dict[str, Any], skill_runtime: SkillRuntime, debug: bool = False) -> None:
+        config, _ = normalize_config(config)
         self.skill_runtime = skill_runtime
         self.debug = debug
         self.telemetry = TelemetryEmitter()
@@ -47,7 +47,7 @@ class Agent:
             prompt_renderer=self.prompt_renderer,
             telemetry=self.telemetry,
         )
-        self.reload_config(config)
+        self._apply_config(config)
 
     @property
     def connect_timeout_s(self) -> float:
@@ -74,13 +74,17 @@ class Agent:
         return self.llm_client.auth_header
 
     def reload_config(self, config: dict[str, Any]) -> None:
+        config, _ = normalize_config(config)
+        self._apply_config(config)
+
+    def _apply_config(self, config: dict[str, Any]) -> None:
         self.config = config
         self.skill_runtime.reload_config(config)
         self.skill_runtime.refresh_process_env()
-        context_cfg = get_json_object(config, "context")
-        self.context_mgr.context_limit = coerce_int(context_cfg.get("context_limit"), DEFAULT_CONTEXT_LIMIT, minimum=1)
-        self.context_mgr.keep_last_n = coerce_int(context_cfg.get("keep_last_n"), DEFAULT_KEEP_LAST_N, minimum=1)
-        self.context_mgr.safety_margin = coerce_int(context_cfg.get("safety_margin"), DEFAULT_SAFETY_MARGIN, minimum=0)
+        context_cfg = config["context"]
+        self.context_mgr.context_limit = int(context_cfg["context_limit"])
+        self.context_mgr.keep_last_n = int(context_cfg["keep_last_n"])
+        self.context_mgr.safety_margin = int(context_cfg["safety_margin"])
         self.system_prompt = build_system_prompt(str(self.skill_runtime.project.project_root))
         self.llm_client.reload_config(config)
         self.classifier.reload_config(config)
@@ -134,9 +138,9 @@ class Agent:
         endpoint_error = self._validate_endpoints()
         project_root = Path(self.skill_runtime.project.project_root)
         memory_stats = self.skill_runtime.memory.stats()
-        permissions_cfg = get_json_object(config_obj, "permissions")
-        sandbox_cfg = get_json_object(config_obj, "sandbox")
-        search_cfg = get_json_object(config_obj, "search")
+        permissions_cfg = config_obj["permissions"]
+        sandbox_cfg = config_obj["sandbox"]
+        search_cfg = config_obj["search"]
         provider = str(search_cfg.get("provider", SEARCH_PROVIDER_SEARXNG)).strip().lower() or SEARCH_PROVIDER_SEARXNG
         fallback_provider = str(search_cfg.get("fallback_provider", SEARCH_PROVIDER_TAVILY)).strip().lower()
         searxng_base_url = str(search_cfg.get("searxng_base_url", "")).strip()
@@ -154,7 +158,7 @@ class Agent:
             )
             if provider == SEARCH_PROVIDER_SEARXNG and fallback_provider == SEARCH_PROVIDER_TAVILY:
                 search_reason = f"missing search.searxng_base_url and env: {tavily_api_key_env}"
-        retrieval_cfg = get_json_object(config_obj, "retrieval")
+        retrieval_cfg = config_obj["retrieval"]
         retrieval_enabled = bool(retrieval_cfg.get("enabled", True))
         try:
             retrieval_stats = SQLiteRetrievalStore(configured_store_path(config_obj)).stats() if retrieval_enabled else {}

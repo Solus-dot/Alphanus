@@ -4,7 +4,6 @@ import os
 from collections.abc import Callable
 from typing import Any, cast
 
-from agent.config_values import coerce_int, get_json_object
 from agent.provider import OpenAICompatibleProvider
 from agent.telemetry import TelemetryEmitter
 from core.config_model import ProviderConfig
@@ -30,7 +29,7 @@ class LLMClient:
 
     def reload_config(self, config: dict[str, Any]) -> None:
         self.config = config
-        agent_cfg = get_json_object(config, "agent")
+        agent_cfg = config["agent"]
         self.provider_config = ProviderConfig.from_config(config, auth_header=self._resolve_auth_header(config))
         self.provider = OpenAICompatibleProvider(
             self.provider_config,
@@ -57,10 +56,13 @@ class LLMClient:
         self.classifier_model = str(agent_cfg.get("classifier_model", "")).strip()
         self.classifier_use_primary_model = bool(agent_cfg.get("classifier_use_primary_model", True))
         self.enable_structured_classification = bool(agent_cfg.get("enable_structured_classification", True))
-        self.max_classifier_tokens = coerce_int(agent_cfg.get("max_classifier_tokens", 256), 256, minimum=32)
+        try:
+            self.max_classifier_tokens = max(32, int(agent_cfg.get("max_classifier_tokens", 256)))
+        except (TypeError, ValueError):
+            self.max_classifier_tokens = 256
 
     def _resolve_auth_header(self, config: dict[str, Any]) -> str | None:
-        agent_cfg = get_json_object(config, "agent")
+        agent_cfg = config["agent"]
         api_key_ref = str(agent_cfg.get("api_key", "")).strip()
         api_key_env = str(agent_cfg.get("api_key_env", "ALPHANUS_API_KEY")).strip() or "ALPHANUS_API_KEY"
         auth_template = (
