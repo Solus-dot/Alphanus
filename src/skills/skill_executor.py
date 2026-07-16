@@ -176,7 +176,7 @@ class SkillExecutor:
         if not script_path.exists():
             raise FileNotFoundError(f"Skill script not found: {rel_script}")
         ext = script_path.suffix.lower()
-        interpreter = runtime._script_interpreter(ext)
+        interpreter = runtime._script_inspector.script_interpreter(ext)
         if not interpreter:
             raise PermissionError(f"Unsupported skill script type: {script_path.suffix}")
         if (
@@ -290,7 +290,7 @@ class SkillExecutor:
         skill = runtime.get_skill(str(args.get("skill_id", "")).strip())
         self._require_bundled_executable_skill(skill)
         entrypoint_name = str(args.get("entrypoint", "")).strip()
-        entrypoint = next((item for item in runtime._skill_entrypoints(skill) if item.name == entrypoint_name), None)
+        entrypoint = next((item for item in skill.entrypoints if item.name == entrypoint_name), None)
         if entrypoint is None:
             raise FileNotFoundError(f"Skill entrypoint not found: {entrypoint_name}")
 

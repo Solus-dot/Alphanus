@@ -301,7 +301,9 @@ class TurnOrchestrator:
                 return cast(JSONValue, {"__omitted_nested__": True, "type": "dict", "key_count": len(value), "keys": keys})
             return str(value)
         if isinstance(value, list):
-            list_out: list[JSONValue] = [self.compact_jsonish(item, depth + 1, max_string_chars=max_string_chars) for item in value[:GENERIC_MAX_LIST_ITEMS]]
+            list_out: list[JSONValue] = [
+                self.compact_jsonish(item, depth + 1, max_string_chars=max_string_chars) for item in value[:GENERIC_MAX_LIST_ITEMS]
+            ]
             if len(value) > GENERIC_MAX_LIST_ITEMS:
                 list_out.append(f"... [{len(value) - GENERIC_MAX_LIST_ITEMS} more items truncated]")
             return list_out
@@ -389,18 +391,14 @@ class TurnOrchestrator:
             for key, value in list(data.items()):
                 if key not in {"hits", "memories"}:
                     data[key] = self.compact_jsonish(value)
-            hits = data.get("hits")
-            if isinstance(hits, list):
-                compacted_hits = [self._compact_memory_item(item) for item in hits[:20]]
-                if len(hits) > 20:
-                    compacted_hits.append(f"... [{len(hits) - 20} more memory hits truncated]")
-                data["hits"] = compacted_hits
-            memories = data.get("memories")
-            if isinstance(memories, list):
-                compacted_memories = [self._compact_memory_item(item) for item in memories[:20]]
-                if len(memories) > 20:
-                    compacted_memories.append(f"... [{len(memories) - 20} more memories truncated]")
-                data["memories"] = compacted_memories
+            for key in ("hits", "memories"):
+                items = data.get(key)
+                if isinstance(items, list):
+                    compacted = [self._compact_memory_item(item) for item in items[:20]]
+                    if len(items) > 20:
+                        label = "memory hits" if key == "hits" else "memories"
+                        compacted.append(f"... [{len(items) - 20} more {label} truncated]")
+                    data[key] = compacted
         return out
 
     def _compact_result_envelope(self, result: JsonObject, *, compact_data: bool = True) -> JsonObject:
@@ -422,31 +420,47 @@ class TurnOrchestrator:
         if truncated:
             data[f"{prefix}_omitted_chars"] = omitted
 
-    def _compact_read_result(self, result: JsonObject) -> JsonObject:
+    def _compact_data_result(
+        self,
+        result: JsonObject,
+        text_limits: dict[str, int],
+        list_fields: dict[str, tuple[int, tuple[str, ...]]] | None = None,
+    ) -> JsonObject:
         out = self._compact_result_envelope(result, compact_data=False)
         data = out.get("data")
         if isinstance(data, dict):
+            lists = list_fields or {}
             for key, value in list(data.items()):
-                if key not in {"content", "files"}:
+                if key not in text_limits and key not in lists:
                     data[key] = self.compact_jsonish(value)
-            self._compact_text_field(data, "content", READ_CONTENT_HISTORY_CHARS, "content")
-            files = data.get("files")
-            if isinstance(files, list):
-                compacted_files = []
-                for item in files[:40]:
-                    if isinstance(item, dict):
-                        row = {
-                            str(key): (value if key == "content" else self.compact_jsonish(value))
-                            for key, value in item.items()
-                        }
-                        self._compact_text_field(row, "content", READ_CONTENT_HISTORY_CHARS, "content")
-                        compacted_files.append(row)
-                    else:
-                        compacted_files.append(self.compact_jsonish(item))
-                if len(files) > 40:
-                    compacted_files.append(f"... [{len(files) - 40} more files truncated]")
-                data["files"] = compacted_files
+            for key, limit in text_limits.items():
+                self._compact_text_field(data, key, limit, key)
+            for key, (limit, item_text_fields) in lists.items():
+                items = data.get(key)
+                if not isinstance(items, list):
+                    continue
+                compacted: list[JSONValue] = []
+                for item in items[:limit]:
+                    row = (
+                        {str(name): value if name in item_text_fields else self.compact_jsonish(value) for name, value in item.items()}
+                        if isinstance(item, dict)
+                        else self.compact_jsonish(item)
+                    )
+                    if isinstance(row, dict):
+                        for field in item_text_fields:
+                            self._compact_text_field(row, field, text_limits.get(field, max(text_limits.values())), field)
+                    compacted.append(row)
+                if len(items) > limit:
+                    compacted.append(f"... [{len(items) - limit} more {key} truncated]")
+                data[key] = compacted
         return out
+
+    def _compact_read_result(self, result: JsonObject) -> JsonObject:
+        return self._compact_data_result(
+            result,
+            {"content": READ_CONTENT_HISTORY_CHARS},
+            {"files": (40, ("content",))},
+        )
 
     def _compact_write_result(self, result: JsonObject) -> JsonObject:
         out = self._compact_result_envelope(result, compact_data=False)
@@ -490,38 +504,18 @@ class TurnOrchestrator:
         return out
 
     def _compact_shell_result(self, result: JsonObject) -> JsonObject:
-        out = self._compact_result_envelope(result, compact_data=False)
-        data = out.get("data")
-        if isinstance(data, dict):
-            for key, value in list(data.items()):
-                if key not in {"stdout", "stderr", "aggregated_output", "output"}:
-                    data[key] = self.compact_jsonish(value)
-            for key in ("stdout", "stderr", "aggregated_output", "output"):
-                self._compact_text_field(data, key, SHELL_OUTPUT_HISTORY_CHARS, key)
-        return out
+        return self._compact_data_result(
+            result,
+            {key: SHELL_OUTPUT_HISTORY_CHARS for key in ("stdout", "stderr", "aggregated_output", "output")},
+        )
 
     def _compact_search_result(self, result: JsonObject) -> JsonObject:
-        out = self._compact_result_envelope(result, compact_data=False)
-        data = out.get("data")
-        if isinstance(data, dict):
-            for key, value in list(data.items()):
-                if key not in {"content", "text", "snippet", "summary", "results"}:
-                    data[key] = self.compact_jsonish(value)
-            for key in ("content", "text", "snippet", "summary"):
-                self._compact_text_field(data, key, SEARCH_TEXT_HISTORY_CHARS, key)
-            results = data.get("results")
-            if isinstance(results, list):
-                compacted_results = []
-                for item in results[:40]:
-                    row = self.compact_jsonish(item, max_string_chars=SEARCH_TEXT_HISTORY_CHARS)
-                    if isinstance(row, dict):
-                        for key in ("content", "text", "snippet", "summary", "line"):
-                            self._compact_text_field(row, key, SEARCH_TEXT_HISTORY_CHARS, key)
-                    compacted_results.append(row)
-                if len(results) > 40:
-                    compacted_results.append(f"... [{len(results) - 40} more results truncated]")
-                data["results"] = compacted_results
-        return out
+        fields = ("content", "text", "snippet", "summary", "line")
+        return self._compact_data_result(
+            result,
+            {key: SEARCH_TEXT_HISTORY_CHARS for key in fields},
+            {"results": (40, fields)},
+        )
 
     def compact_tool_result(self, result: JsonObject) -> JsonObject:
         if self.max_tool_result_chars <= 0:
@@ -652,7 +646,6 @@ class TurnOrchestrator:
             context_summary=context_summary,
         )
 
-
     @staticmethod
     def _message_contains_vision_content(message: ChatMessage) -> bool:
         content = message.get("content")
@@ -734,17 +727,10 @@ class TurnOrchestrator:
             )
         return raw
 
-
-
-
-
-
     def record_tool_effects(self, state: TurnState, call: ToolCall, result: dict[str, object], *, policy_blocked: bool = False) -> None:
         self.tool_execution_engine.record_tool_effects(state, call, result, policy_blocked=policy_blocked)
         if not policy_blocked:
             self.maybe_index_tool_outcome(state, call, result)
-
-
 
     def project_action_outcome(self, state: TurnState, text: str, *, stop_event, pass_id: str) -> str:
         if self.evidence_guard.project_mutation_count(state) > 0:
@@ -770,8 +756,7 @@ class TurnOrchestrator:
         return AgentTurnResult(
             status="error",
             content=(
-                "[agent error] Project action was not completed: no successful mutating project tool ran. "
-                "The assistant draft was rejected."
+                "[agent error] Project action was not completed: no successful mutating project tool ran. The assistant draft was rejected."
             ),
             reasoning=result.reasoning,
             skill_exchanges=result.skill_exchanges,
@@ -807,8 +792,6 @@ class TurnOrchestrator:
             finalization_repair_failed=state.telemetry.finalization_repair_failed,
         )
 
-
-
     def prepare_turn(
         self,
         history_messages: list[ChatMessage],
@@ -833,11 +816,7 @@ class TurnOrchestrator:
                 loaded_skill_ids or [],
             )
         selection = self.select_skills(ctx, stop_event)
-        if (
-            not isinstance(selection, tuple)
-            or len(selection) != 2
-            or not isinstance(selection[1], list)
-        ):
+        if not isinstance(selection, tuple) or len(selection) != 2 or not isinstance(selection[1], list):
             classification = self.classify_context(ctx, stop_event=stop_event)
             selected = self.skill_runtime.select_skills(ctx)
         else:
@@ -939,7 +918,9 @@ class TurnOrchestrator:
         text = (result.content or "").strip()
         return self.truncate_text(text, 2400)
 
-    def _maybe_summarize_history(self, state: TurnState, system_messages: list[ChatMessage], tools: list[dict[str, Any]], stop_event) -> str:
+    def _maybe_summarize_history(
+        self, state: TurnState, system_messages: list[ChatMessage], tools: list[dict[str, Any]], stop_event
+    ) -> str:
         if not self._summary_needed(system_messages + state.dynamic_history, tools):
             return "not_needed"
         summarize, retained = self.context_mgr.split_for_summary(state.dynamic_history)
@@ -1118,8 +1099,6 @@ class TurnOrchestrator:
         )
         return pass_id, system_content, stream_result
 
-
-
     def run_turn(
         self,
         history_messages: list[ChatMessage],
@@ -1159,9 +1138,7 @@ class TurnOrchestrator:
 
         while True:
             if self._is_stop_requested(stop_event):
-                return finish(
-                    cancelled_turn_result(state)
-                )
+                return finish(cancelled_turn_result(state))
             model_phase = self.run_model_pass(state, thinking, stop_event=stop_event, on_event=on_event)
             if isinstance(model_phase, AgentTurnResult):
                 return finish(model_phase)

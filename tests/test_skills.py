@@ -2650,9 +2650,9 @@ Use the bundled helper script when available.
 
     skill = runtime.get_skill("script-check")
     assert skill is not None
-    assert runtime._skill_runnable_scripts(skill) == []
+    assert runtime._script_inspector.skill_runnable_scripts(skill) == []
     assert runtime._reported_skill_scripts(skill) == []
-    assert runtime._blocked_skill_scripts(skill) == [
+    assert runtime._script_inspector.blocked_skill_scripts(skill) == [
         {
             "script": "scripts/helper.py",
             "reason": "missing python modules: definitely_missing_mod_xyz",
@@ -2692,7 +2692,7 @@ Use the bundled helper script when available.
 
     skill = runtime.get_skill("script-check")
     assert skill is not None
-    assert runtime._skill_runnable_scripts(skill) == ["scripts/helper.py"]
+    assert runtime._script_inspector.skill_runnable_scripts(skill) == ["scripts/helper.py"]
     assert runtime._reported_skill_scripts(skill) == ["scripts/helper.py"]
 
 
@@ -2725,22 +2725,22 @@ Use the bundled helper script when available.
     skill = runtime.get_skill("script-check")
     assert skill is not None
     calls = {"count": 0}
-    original = runtime._python_script_missing_modules
+    original = runtime._script_inspector.python_script_missing_modules
 
     def counted(skill_obj, rel_script):
         calls["count"] += 1
         return original(skill_obj, rel_script)
 
-    monkeypatch.setattr(runtime, "_python_script_missing_modules", counted)
+    monkeypatch.setattr(runtime._script_inspector, "python_script_missing_modules", counted)
 
-    assert runtime._skill_runnable_scripts(skill) == ["scripts/helper.py"]
-    assert runtime._skill_runnable_scripts(skill) == ["scripts/helper.py"]
+    assert runtime._script_inspector.skill_runnable_scripts(skill) == ["scripts/helper.py"]
+    assert runtime._script_inspector.skill_runnable_scripts(skill) == ["scripts/helper.py"]
     assert calls["count"] == 0
 
     runtime.load_skills()
     skill = runtime.get_skill("script-check")
     assert skill is not None
-    assert runtime._skill_runnable_scripts(skill) == ["scripts/helper.py"]
+    assert runtime._script_inspector.skill_runnable_scripts(skill) == ["scripts/helper.py"]
     assert calls["count"] == 1
 
 
@@ -2777,8 +2777,8 @@ Use the bundled helper script when available.
 
     skill = runtime.get_skill("script-check")
     assert skill is not None
-    assert runtime._skill_runnable_scripts(skill) == []
-    assert runtime._blocked_skill_scripts(skill) == [
+    assert runtime._script_inspector.skill_runnable_scripts(skill) == []
+    assert runtime._script_inspector.blocked_skill_scripts(skill) == [
         {
             "script": "scripts/helper.py",
             "reason": f"missing interpreter: {missing_python}",
@@ -3087,7 +3087,7 @@ Use helper script.
     skill = runtime.get_skill("broken-script")
     assert skill is not None
 
-    runtime._python_script_missing_modules(skill, "scripts/broken.py")
+    runtime._script_inspector.python_script_missing_modules(skill, "scripts/broken.py")
 
     assert any("script 'scripts/broken.py' import inspection failed: SyntaxError" in warning for warning in skill.validation_warnings)
 

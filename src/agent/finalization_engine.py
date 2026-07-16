@@ -155,7 +155,11 @@ class FinalizationEngine:
                 causes.append("tool_failure")
             if state.search_mode:
                 causes.append("search_evidence=insufficient")
-            if state.requires_project_action and not self.orchestrator._is_plan_mode(state) and self.orchestrator.evidence_guard.project_mutation_count(state) == 0:
+            if (
+                state.requires_project_action
+                and not self.orchestrator._is_plan_mode(state)
+                and self.orchestrator.evidence_guard.project_mutation_count(state) == 0
+            ):
                 causes.append("project_action=not_completed")
             if state.completion.tool_counts:
                 causes.append("finalization=blocked_markup_after_tools")
@@ -187,52 +191,34 @@ class FinalizationEngine:
                 journal=journal,
             )
 
-        state.telemetry.finalization_attempts += 1
-        first = finalize_once(extra_rules, "final")
-        if isinstance(first, AgentTurnResult):
-            return first
-        first_result = coerce_result(first, state.full_reasoning)
-        if first_result.status != "done":
-            return first_result
-        leaked_markup = self.orchestrator.sanitizer.contains_tool_markup(first_result.content)
-        if first_result.content.strip() and not leaked_markup:
-            return first_result
-        state.telemetry.finalization_attempts += 1
-        state.telemetry.finalization_repairs += 1
-        second = finalize_once(
-            correction_rules(
+        reasoning = state.full_reasoning
+        rules = extra_rules
+        for attempt, suffix in enumerate(("final", "repair", "repair2")):
+            state.telemetry.finalization_attempts += 1
+            if attempt:
+                state.telemetry.finalization_repairs += 1
+            streamed = finalize_once(rules, suffix)
+            if isinstance(streamed, AgentTurnResult):
+                return streamed
+            result = coerce_result(streamed, reasoning)
+            if result.status != "done":
+                return result
+            leaked_markup = self.orchestrator.sanitizer.contains_tool_markup(result.content)
+            if result.content.strip() and not leaked_markup:
+                return result
+            reasoning = result.reasoning
+            reason = (
                 "The previous finalization emitted tool markup."
                 if leaked_markup
                 else "The previous finalization did not produce a usable user-facing answer."
-            ),
-            "repair",
-        )
-        if isinstance(second, AgentTurnResult):
-            return second
-        second_result = coerce_result(second, first_result.reasoning)
-        if second_result.status != "done":
-            return second_result
-        if second_result.content.strip() and not self.orchestrator.sanitizer.contains_tool_markup(second_result.content):
-            return second_result
-
-        state.telemetry.finalization_attempts += 1
-        state.telemetry.finalization_repairs += 1
-        third = finalize_once(
-            correction_rules("The previous finalization still emitted tool markup or empty content.")
-            + "\n"
-            + "- The final answer must be plain text only, 1-3 sentences, and directly address the user.",
-            "repair2",
-        )
-        if isinstance(third, AgentTurnResult):
-            return third
-        third_result = coerce_result(third, second_result.reasoning)
-        if third_result.status != "done":
-            return third_result
-        if third_result.content.strip() and not self.orchestrator.sanitizer.contains_tool_markup(third_result.content):
-            return third_result
-
+            )
+            if attempt == 1:
+                reason = "The previous finalization still emitted tool markup or empty content."
+            rules = correction_rules(reason)
+            if attempt == 1:
+                rules += "\n- The final answer must be plain text only, 1-3 sentences, and directly address the user."
         state.telemetry.finalization_repair_failed = True
-        return failed_finalization_result(third_result.reasoning)
+        return failed_finalization_result(reasoning)
 
     def finalize_response(
         self,
@@ -284,7 +270,11 @@ class FinalizationEngine:
             )
             return "finalized", finalized
 
-        if not self.orchestrator._is_plan_mode(state) and state.requires_project_action and self.orchestrator.evidence_guard.project_mutation_count(state) == 0:
+        if (
+            not self.orchestrator._is_plan_mode(state)
+            and state.requires_project_action
+            and self.orchestrator.evidence_guard.project_mutation_count(state) == 0
+        ):
             if not final.strip():
                 if not state.forced_action_retry:
                     state.forced_action_retry = True

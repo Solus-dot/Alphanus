@@ -300,7 +300,7 @@ class SkillRuntime:
 
     def _refresh_skill_runtime_indexes(self) -> None:
         for skill in self.enabled_skills():
-            self._skill_runnable_scripts(skill)
+            self._script_inspector.skill_runnable_scripts(skill)
         self._rebuild_skill_alias_index()
 
     @staticmethod
@@ -704,7 +704,7 @@ class SkillRuntime:
             tag_text = f" tags: {tags}." if tags else ""
             tools = ", ".join(skill.allowed_tools[:4])
             tool_text = f" tools: {tools}." if tools else ""
-            entrypoints = ", ".join(entry.name for entry in self._skill_entrypoints(skill)[:3])
+            entrypoints = ", ".join(entry.name for entry in skill.entrypoints[:3])
             entrypoint_text = f" entrypoints: {entrypoints}." if entrypoints else ""
             produces = ", ".join(skill.produces[:3])
             produce_text = f" produces: {produces}." if produces else ""
@@ -790,37 +790,6 @@ class SkillRuntime:
                     return resolved
         return None
 
-    @staticmethod
-    def _is_skill_script_candidate(relpath: str) -> bool:
-        return SkillScriptInspector.is_skill_script_candidate(relpath)
-
-    def _skill_runnable_scripts(self, skill: SkillManifest) -> list[str]:
-        return self._script_inspector.skill_runnable_scripts(skill)
-
-    def _script_block_reason(self, skill: SkillManifest, rel_script: str) -> str:
-        return self._script_inspector.script_block_reason(skill, rel_script)
-
-    def _blocked_skill_scripts(self, skill: SkillManifest) -> list[dict[str, str]]:
-        return self._script_inspector.blocked_skill_scripts(skill)
-
-    def _script_is_cli_entry(self, skill: SkillManifest, rel_script: str) -> bool:
-        return self._script_inspector.script_is_cli_entry(skill, rel_script)
-
-    def _script_has_local_module(self, skill: SkillManifest, script_path: Path, module_name: str) -> bool:
-        return self._script_inspector.script_has_local_module(skill, script_path, module_name)
-
-    def _python_script_missing_modules(self, skill: SkillManifest, rel_script: str) -> list[str]:
-        return self._script_inspector.python_script_missing_modules(skill, rel_script)
-
-    def _script_interpreter(self, ext: str) -> list[str] | None:
-        return self._script_inspector.script_interpreter(ext)
-
-    def _python_module_available(self, module_name: str) -> bool:
-        return self._script_inspector.python_module_available(module_name)
-
-    def _skill_entrypoints(self, skill: SkillManifest) -> list[SkillEntrypointDef]:
-        return list(getattr(skill, "entrypoints", []) or [])
-
     def _reported_skill_tools(self, skill: SkillManifest) -> list[str]:
         if not getattr(skill, "execution_allowed", True):
             return []
@@ -829,12 +798,12 @@ class SkillRuntime:
     def _reported_skill_scripts(self, skill: SkillManifest) -> list[str]:
         if not getattr(skill, "execution_allowed", True):
             return []
-        return self._skill_runnable_scripts(skill)
+        return self._script_inspector.skill_runnable_scripts(skill)
 
     def _reported_skill_entrypoints(self, skill: SkillManifest) -> list[SkillEntrypointDef]:
         if not getattr(skill, "execution_allowed", True):
             return []
-        return self._skill_entrypoints(skill)
+        return skill.entrypoints
 
     def _exposed_relevant_skill_scripts(self, skill: SkillManifest) -> list[str]:
         if skill.allowed_tools and _RUN_SKILL_TOOL_NAME not in skill.allowed_tools:

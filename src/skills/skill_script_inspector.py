@@ -42,12 +42,12 @@ class SkillScriptInspector:
 
         runnable: list[str] = []
         for rel in skill.bundled_files:
-            if not runtime._is_skill_script_candidate(rel):
+            if not self.is_skill_script_candidate(rel):
                 continue
-            if not runtime._script_is_cli_entry(skill, rel):
+            if not self.script_is_cli_entry(skill, rel):
                 continue
             ext = Path(rel).suffix.lower()
-            interpreter = runtime._script_interpreter(ext)
+            interpreter = self.script_interpreter(ext)
             if not interpreter:
                 continue
             if (
@@ -56,7 +56,7 @@ class SkillScriptInspector:
                 and shutil.which(interpreter[0]) is None
             ):
                 continue
-            if runtime._python_script_missing_modules(skill, rel):
+            if self.python_script_missing_modules(skill, rel):
                 continue
             runnable.append(rel)
         deduped = tuple(sorted(dict.fromkeys(runnable)))
@@ -73,7 +73,7 @@ class SkillScriptInspector:
         if not script_path.exists():
             return "script file is missing"
         ext = script_path.suffix.lower()
-        interpreter = runtime._script_interpreter(ext)
+        interpreter = self.script_interpreter(ext)
         if not interpreter:
             return f"unsupported script type: {script_path.suffix}"
         if (
@@ -82,20 +82,19 @@ class SkillScriptInspector:
             and shutil.which(interpreter[0]) is None
         ):
             return f"missing interpreter: {interpreter[0]}"
-        missing_modules = runtime._python_script_missing_modules(skill, rel_script)
+        missing_modules = self.python_script_missing_modules(skill, rel_script)
         if missing_modules:
             return f"missing python modules: {', '.join(missing_modules)}"
         return ""
 
     def blocked_skill_scripts(self, skill: SkillManifest) -> list[dict[str, str]]:
-        runtime = self.runtime
         blocked: list[dict[str, str]] = []
-        for rel in sorted(rel for rel in skill.bundled_files if runtime._is_skill_script_candidate(rel)):
-            if not runtime._script_is_cli_entry(skill, rel):
+        for rel in sorted(rel for rel in skill.bundled_files if self.is_skill_script_candidate(rel)):
+            if not self.script_is_cli_entry(skill, rel):
                 continue
             if Path(rel).suffix.lower() not in SCRIPT_INTERPRETER_BY_EXT:
                 continue
-            reason = runtime._script_block_reason(skill, rel)
+            reason = self.script_block_reason(skill, rel)
             if reason:
                 blocked.append({"script": rel, "reason": reason})
         return blocked
@@ -158,9 +157,9 @@ class SkillScriptInspector:
         for name in sorted(imported):
             if name in stdlib:
                 continue
-            if runtime._script_has_local_module(skill, script_path, name):
+            if self.script_has_local_module(skill, script_path, name):
                 continue
-            if not runtime._python_module_available(name):
+            if not self.python_module_available(name):
                 missing.append(name)
         return missing
 

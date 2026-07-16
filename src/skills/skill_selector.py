@@ -48,7 +48,7 @@ class SkillSelector:
             skill.categories,
             skill.produces,
             skill.allowed_tools,
-            [entry.name for entry in self.runtime._skill_entrypoints(skill)],
+            [entry.name for entry in skill.entrypoints],
         )
 
         score += 4 * len(user_tokens & skill_tokens)
