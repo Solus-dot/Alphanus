@@ -58,7 +58,7 @@ class SessionSearchResult:
 class SessionStore:
     """Transactional v1 session store with indexed, bounded search."""
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, project_root: str | Path, storage_dir: str | Path | None = None) -> None:
         self.project_root = Path(project_root)
@@ -111,8 +111,19 @@ class SessionStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_session_search_body ON session_search(body);
                 CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS session_turns (
+                    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    turn_id TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY(session_id, turn_id)
+                );
                 """
             )
+            legacy_rows = self._connection.execute(
+                "SELECT id,tree_json FROM sessions WHERE id NOT IN (SELECT session_id FROM session_turns)"
+            ).fetchall()
+            for row in legacy_rows:
+                self._sync_tree(str(row["id"]), ConvTree.from_dict(json.loads(row["tree_json"])))
             self._connection.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (self.SCHEMA_VERSION, _utc_now_iso()),
@@ -172,11 +183,47 @@ class SessionStore:
             for row in rows
         ]
 
-    def _index_session(self, session: ChatSession) -> None:
-        self._connection.execute("DELETE FROM session_search WHERE session_id=?", (session.id,))
-        docs: list[tuple[str, str, str, str, int]] = [(session.id, "", "title", session.title.casefold(), 0)]
-        for turn in session.tree.nodes.values():
-            if turn.id == "root":
+    def _sync_tree(self, session_id: str, tree: ConvTree) -> tuple[set[str], set[str]]:
+        tree_data = tree.to_dict()
+        nodes = tree_data["nodes"]
+        assert isinstance(nodes, dict)
+        serialized = {str(turn_id): json.dumps(payload, ensure_ascii=False) for turn_id, payload in nodes.items()}
+        serialized[""] = json.dumps({key: value for key, value in tree_data.items() if key != "nodes"}, ensure_ascii=False)
+        existing = {
+            str(row["turn_id"]): str(row["payload_json"])
+            for row in self._connection.execute(
+                "SELECT turn_id,payload_json FROM session_turns WHERE session_id=?", (session_id,)
+            )
+        }
+        changed = {turn_id for turn_id, payload in serialized.items() if existing.get(turn_id) != payload}
+        removed = set(existing) - set(serialized)
+        self._connection.executemany(
+            "INSERT INTO session_turns(session_id,turn_id,payload_json) VALUES (?,?,?) "
+            "ON CONFLICT(session_id,turn_id) DO UPDATE SET payload_json=excluded.payload_json",
+            ((session_id, turn_id, serialized[turn_id]) for turn_id in changed),
+        )
+        self._connection.executemany(
+            "DELETE FROM session_turns WHERE session_id=? AND turn_id=?",
+            ((session_id, turn_id) for turn_id in removed),
+        )
+        return changed, removed
+
+    def _index_session(self, session: ChatSession, changed: set[str], removed: set[str]) -> None:
+        self._connection.executemany(
+            "DELETE FROM session_search WHERE session_id=? AND turn_id=?",
+            ((session.id, turn_id) for turn_id in changed | removed),
+        )
+        self._connection.execute(
+            "INSERT INTO session_search(session_id,turn_id,kind,body,rank) VALUES (?,?,?,?,0) "
+            "ON CONFLICT(session_id,turn_id,kind) DO UPDATE SET body=excluded.body",
+            (session.id, "", "title", session.title.casefold()),
+        )
+        docs: list[tuple[str, str, str, str, int]] = []
+        for turn_id in changed:
+            if not turn_id:
+                continue
+            turn = session.tree.nodes[turn_id]
+            if turn_id == "root":
                 continue
             docs.extend(
                 [
@@ -242,14 +289,14 @@ class SessionStore:
             self._connection.execute(
                 "INSERT INTO sessions(id,title,created_at,updated_at,tree_json,loaded_skill_ids_json,collaboration_mode,context_summary,turn_count,branch_count,deleted_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,NULL) ON CONFLICT(id) DO UPDATE SET title=excluded.title,updated_at=excluded.updated_at,"
-                "tree_json=excluded.tree_json,loaded_skill_ids_json=excluded.loaded_skill_ids_json,collaboration_mode=excluded.collaboration_mode,"
+                "loaded_skill_ids_json=excluded.loaded_skill_ids_json,collaboration_mode=excluded.collaboration_mode,"
                 "context_summary=excluded.context_summary,turn_count=excluded.turn_count,branch_count=excluded.branch_count,deleted_at=NULL",
                 (
                     session.id,
                     session.title,
                     session.created_at,
                     session.updated_at,
-                    json.dumps(session.tree.to_dict(), ensure_ascii=False),
+                    "{}",
                     json.dumps(session.loaded_skill_ids),
                     session.collaboration_mode,
                     session.context_summary,
@@ -257,7 +304,8 @@ class SessionStore:
                     branch_count,
                 ),
             )
-            self._index_session(session)
+            changed, removed = self._sync_tree(session.id, session.tree)
+            self._index_session(session, changed, removed)
             if activate:
                 self._activate(session.id)
 
@@ -295,12 +343,18 @@ class SessionStore:
         row = self._connection.execute("SELECT * FROM sessions WHERE id=? AND deleted_at IS NULL", (session_id,)).fetchone()
         if row is None:
             raise FileNotFoundError(session_id)
+        turns = self._connection.execute("SELECT turn_id,payload_json FROM session_turns WHERE session_id=?", (session_id,)).fetchall()
+        payloads = {turn["turn_id"]: json.loads(turn["payload_json"]) for turn in turns}
+        state = payloads.pop("", None)
+        if not isinstance(state, dict) or not payloads:
+            raise ValueError(f"Session '{session_id}' has incomplete tree data")
+        tree_data = {**state, "nodes": payloads}
         session = ChatSession(
             row["id"],
             row["title"],
             row["created_at"],
             row["updated_at"],
-            ConvTree.from_dict(json.loads(row["tree_json"])),
+            ConvTree.from_dict(tree_data),
             json.loads(row["loaded_skill_ids_json"]),
             row["collaboration_mode"],
             row["context_summary"],

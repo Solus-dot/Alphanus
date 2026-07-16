@@ -43,10 +43,6 @@ def _as_tool_name_list(value: Any) -> list[str]:
     return [str(value).strip()] if str(value).strip() else []
 
 
-def _coerce_bool(value: Any, default: bool) -> bool:
-    return coerce_bool(value, default)
-
-
 def extract_skill_doc(skill_doc: Path, include_prompt: bool = True) -> tuple[dict[str, Any], str | None]:
     text = skill_doc.read_text(encoding="utf-8")
     lines = text.splitlines()
@@ -94,7 +90,6 @@ class SkillManifest:
     availability_code: str = "ready"
     availability_reason: str = ""
     execution_allowed: bool = True
-    adapter: str = "agentskills"
     validation_errors: list[str] = field(default_factory=list)
     validation_warnings: list[str] = field(default_factory=list)
     frontmatter: dict[str, Any] = field(default_factory=dict)
@@ -148,25 +143,6 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         "env": _as_str_list(requirements_raw.get("env")),
         "commands": _as_str_list(requirements_raw.get("commands") or requirements_raw.get("binaries") or requirements_raw.get("bins")),
     }
-    adapter = str(frontmatter.get("format") or metadata_raw.get("format") or "agentskills").strip() or "agentskills"
-    vendor_requires: dict[str, Any] = {}
-    for vendor_key in ("openclaw", "claude", "opencode"):
-        candidate = metadata_raw.get(vendor_key)
-        if isinstance(candidate, dict):
-            raw_requires = candidate.get("requires")
-            vendor_requires = raw_requires if isinstance(raw_requires, dict) else {}
-            if vendor_requires:
-                adapter = vendor_key
-                break
-    if vendor_requires:
-        requirements["os"] = _dedupe(requirements["os"] + _as_str_list(vendor_requires.get("os")))
-        requirements["env"] = _dedupe(requirements["env"] + _as_str_list(vendor_requires.get("env")))
-        requirements["commands"] = _dedupe(
-            requirements["commands"]
-            + _as_str_list(vendor_requires.get("commands") or vendor_requires.get("bins") or vendor_requires.get("binaries"))
-            + _as_str_list(vendor_requires.get("anyBins"))
-        )
-
     tools_cfg_raw = frontmatter.get("tools", {})
     if tools_cfg_raw is None:
         tools_cfg_raw = {}
@@ -190,7 +166,7 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         or metadata_tools_raw.get("required-tools")
         or tools_cfg_raw.get("required-tools")
     )
-    disable_model_invocation = _coerce_bool(
+    disable_model_invocation = coerce_bool(
         frontmatter.get(
             "disable-model-invocation",
             metadata_raw.get(
@@ -200,12 +176,12 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         ),
         False,
     )
-    user_invocable = _coerce_bool(
+    user_invocable = coerce_bool(
         frontmatter.get("user-invocable", metadata_raw.get("user-invocable")),
         True,
     )
 
-    enabled = _coerce_bool(metadata_raw.get("enabled", frontmatter.get("enabled")), True)
+    enabled = coerce_bool(metadata_raw.get("enabled", frontmatter.get("enabled")), True)
 
     return SkillManifest(
         id=skill_id,
@@ -223,7 +199,6 @@ def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool
         required_tools=required_tools,
         disable_model_invocation=disable_model_invocation,
         user_invocable=user_invocable,
-        adapter=adapter,
         validation_warnings=warnings,
         frontmatter=dict(frontmatter),
         metadata=dict(metadata_raw),

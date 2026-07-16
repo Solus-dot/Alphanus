@@ -11,7 +11,6 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
 
-from core.config_model import SkillsConfig
 from core.memory import LexicalMemory
 from core.message_types import ApprovalRequestFn, JSONValue, UserInputRequestFn
 from core.project import ProjectRuntime
@@ -123,11 +122,7 @@ class SkillRuntime:
         self.project = project
         self.memory = memory
         self.config = {}
-        self.runtime_config = SkillsConfig()
         self.debug = debug
-        self.skills_cfg = {}
-        self.tools_cfg = {}
-        self.python_executable = sys.executable
         self.ToolExecutionEnv = ToolExecutionEnv
         self.reload_config(config or {})
         self.generation = 0
@@ -145,7 +140,6 @@ class SkillRuntime:
         self._enabled_skills_cache: tuple[SkillManifest, ...] | None = None
         self._skill_catalog_cache: dict[int, str] = {}
         self._tools_schema_cache: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
-        self._python_module_probe_cache: dict[str, bool] = {}
         self._tool_schema_builder = SkillToolSchemaBuilder(self)
         self._inventory_loader = SkillInventoryLoader(self)
         self._skill_executor = SkillExecutor(
@@ -163,9 +157,6 @@ class SkillRuntime:
     def reload_config(self, config: dict | None) -> None:
         self.config = config or {}
         self.skills_cfg = self.config.get("skills", {}) if isinstance(self.config.get("skills"), dict) else {}
-        self.tools_cfg = self.config.get("tools", {}) if isinstance(self.config.get("tools"), dict) else {}
-        self.runtime_config = SkillsConfig.from_config(self.config)
-        self.python_executable = self.runtime_config.python_executable
         raw_paths = self.skills_cfg.get("paths", [])
         config_paths = raw_paths if isinstance(raw_paths, list) else []
         self.extra_skill_dirs = list(self._configured_extra_skill_dirs)
@@ -197,7 +188,7 @@ class SkillRuntime:
         return SkillDiscovery.discover_skill_roots(roots)
 
     def _discover_skill_dirs(self, root: Path) -> list[Path]:
-        return SkillDiscovery.discover_skill_dirs(root, is_relative_to=self._is_relative_to)
+        return SkillDiscovery.discover_skill_dirs(root)
 
     @staticmethod
     def _load_module(path: Path, module_name: str):
@@ -273,7 +264,6 @@ class SkillRuntime:
         manifest.bundled_files = self._bundled_files_for_path(child)
         reviewed_root = self.bundled_skills_dir or (Path(__file__).resolve().parents[2] / "bundled-skills")
         manifest.execution_allowed = child.resolve().is_relative_to(reviewed_root.resolve())
-        manifest.adapter = str(manifest.adapter or "agentskills")
         return manifest
 
     def _ensure_skill_prompt(self, manifest: SkillManifest) -> str:
@@ -422,14 +412,6 @@ class SkillRuntime:
             aliases.update({"linux", "posix"})
         return aliases
 
-    @staticmethod
-    def _is_relative_to(path: Path, root: Path) -> bool:
-        try:
-            path.relative_to(root)
-            return True
-        except ValueError:
-            return False
-
     def _check_skill_availability(self, manifest: SkillManifest) -> tuple[bool, str, str]:
         requirements = manifest.requirements if isinstance(manifest.requirements, dict) else {}
 
@@ -508,43 +490,30 @@ class SkillRuntime:
             )
         return list(self._list_skills_cache)
 
-    def skill_source_label(self, skill: SkillManifest) -> str:
+    def _skill_location(self, skill: SkillManifest) -> tuple[str, str]:
         path = skill.path or skill.doc_path
         if not path:
-            return ""
+            return "unknown", ""
         try:
             resolved = path.resolve()
-            if self._is_relative_to(resolved, self.skills_dir.resolve()):
-                return f"skills/{resolved.relative_to(self.skills_dir.resolve())}"
-            for root in self.extra_skill_dirs:
-                if self._is_relative_to(resolved, root.resolve()):
-                    return f"configured/{resolved.relative_to(root.resolve())}"
-            if self.bundled_skills_dir is not None and self._is_relative_to(resolved, self.bundled_skills_dir.resolve()):
-                return f"bundled-skills/{resolved.relative_to(self.bundled_skills_dir.resolve())}"
-            if self._is_relative_to(resolved, self.project.project_root.resolve()):
-                return f"project/{resolved.relative_to(self.project.project_root.resolve())}"
-            return str(resolved.relative_to(self.skills_dir.parent))
+            locations = [(self.skills_dir, "user/skills", "skills")]
+            locations.extend((root, "configured", "configured") for root in self.extra_skill_dirs)
+            if self.bundled_skills_dir is not None:
+                locations.append((self.bundled_skills_dir, "bundled", "bundled-skills"))
+            locations.append((self.project.project_root, "project", "project"))
+            for root, provenance, prefix in locations:
+                root = root.resolve()
+                if resolved.is_relative_to(root):
+                    return provenance, f"{prefix}/{resolved.relative_to(root)}"
+            return "external", str(resolved)
         except Exception:
-            return str(path)
+            return "external", str(path)
+
+    def skill_source_label(self, skill: SkillManifest) -> str:
+        return self._skill_location(skill)[1]
 
     def skill_provenance_label(self, skill: SkillManifest) -> str:
-        path = skill.path or skill.doc_path
-        if not path:
-            return "unknown"
-        try:
-            resolved = path.resolve()
-            if self._is_relative_to(resolved, self.skills_dir.resolve()):
-                return "user/skills"
-            for root in self.extra_skill_dirs:
-                if self._is_relative_to(resolved, root.resolve()):
-                    return "configured"
-            if self.bundled_skills_dir is not None and self._is_relative_to(resolved, self.bundled_skills_dir.resolve()):
-                return "bundled"
-            if self._is_relative_to(resolved, self.project.project_root.resolve()):
-                return "project"
-            return "external"
-        except Exception:
-            return "external"
+        return self._skill_location(skill)[0]
 
     @staticmethod
     def skill_status_label(skill: SkillManifest) -> tuple[str, str]:
@@ -648,7 +617,7 @@ class SkillRuntime:
                 "available": bool(skill.available),
                 "provenance": self.skill_provenance_label(skill),
                 "execution_allowed": bool(skill.execution_allowed),
-                "adapter": skill.adapter,
+                "adapter": "agentskills",
                 "status": self.skill_status_label(skill)[0],
                 "source": self.skill_source_label(skill),
                 "availability_code": skill.availability_code or "ready",
@@ -877,7 +846,7 @@ class SkillRuntime:
         if not skill.path:
             raise FileNotFoundError(f"Skill root unavailable: {skill.id}")
         target = (skill.path / relpath).resolve()
-        if not self._is_relative_to(target, skill.path.resolve()):
+        if not target.is_relative_to(skill.path.resolve()):
             raise PermissionError("Skill file path escapes skill root")
         if not target.exists() or not target.is_file():
             raise FileNotFoundError(f"Skill file not found: {relpath}")

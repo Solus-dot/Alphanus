@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from pathlib import Path
 
 from skills.skill_parser import SKILL_DOC
@@ -22,7 +21,7 @@ class SkillDiscovery:
         return roots
 
     @staticmethod
-    def discover_skill_dirs(root: Path, *, is_relative_to: Callable[[Path, Path], bool]) -> list[Path]:
+    def discover_skill_dirs(root: Path) -> list[Path]:
         if not root.exists():
             return []
         candidates: list[Path] = []
@@ -39,7 +38,7 @@ class SkillDiscovery:
             skill_dir = skill_doc.parent.resolve()
             if ".git" in skill_dir.parts:
                 continue
-            if not is_relative_to(skill_dir, resolved_root):
+            if not skill_dir.is_relative_to(resolved_root):
                 continue
             rel = skill_doc.relative_to(resolved_root)
             if len(rel.parts) > 5:

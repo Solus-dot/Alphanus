@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -48,7 +49,47 @@ def test_schema_and_wal_are_enabled(tmp_path: Path) -> None:
     store.bootstrap()
     connection = sqlite3.connect(store.database_path)
     assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-    assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 1
+    assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 2
+    assert connection.execute("SELECT COUNT(*) FROM session_turns").fetchone()[0] == 2
+
+
+def test_session_turn_updates_are_incremental(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path, tmp_path / "sessions")
+    session = store.bootstrap()
+    turn = session.tree.add_turn("hello")
+    session.tree.complete_turn(turn.id, "first")
+    store.save_tree(session.id, session.title, session.tree)
+    with store._connection:
+        store._connection.executescript(
+            "CREATE TABLE write_audit(turn_id TEXT);"
+            "CREATE TRIGGER audit_turn_update AFTER UPDATE ON session_turns "
+            "BEGIN INSERT INTO write_audit VALUES (NEW.turn_id); END;"
+        )
+    session.tree.complete_turn(turn.id, "second")
+    store.save_tree(session.id, session.title, session.tree)
+    writes = store._connection.execute("SELECT turn_id FROM write_audit").fetchall()
+    assert [row[0] for row in writes] == [turn.id]
+
+
+def test_v1_tree_json_is_normalized_during_schema_migration(tmp_path: Path) -> None:
+    directory = tmp_path / "sessions"
+    store = SessionStore(tmp_path, directory)
+    session = store.bootstrap()
+    turn = session.tree.add_turn("legacy")
+    session.tree.complete_turn(turn.id, "restored")
+    tree_json = json.dumps(session.tree.to_dict())
+    session_id = session.id
+    store.close()
+    connection = sqlite3.connect(directory / "sessions.db")
+    with connection:
+        connection.execute("DELETE FROM session_turns WHERE session_id=?", (session_id,))
+        connection.execute("DELETE FROM schema_migrations WHERE version=2")
+        connection.execute("UPDATE sessions SET tree_json=? WHERE id=?", (tree_json, session_id))
+    connection.close()
+
+    migrated = SessionStore(tmp_path, directory)
+    loaded = migrated.load_session(session_id, activate=False)
+    assert loaded.tree.nodes[turn.id].assistant_content == "restored"
 
 
 def test_legacy_unversioned_sessions_are_rejected(tmp_path: Path) -> None:
