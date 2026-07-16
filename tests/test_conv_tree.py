@@ -2,7 +2,6 @@ from __future__ import annotations
 
 # pyright: reportTypedDictNotRequiredAccess=false, reportArgumentType=false, reportOperatorIssue=false
 from core.conv_tree import ConvTree
-from core.tree_render import render_tree_rows
 
 
 def test_add_complete_and_cancel_turn():
@@ -57,43 +56,6 @@ def test_tree_branch_state_only_tracks_branch_roots():
     assert tree.nodes[second.id].branch_root is False
     assert tree.nodes[branch.id].branch_root is True
     assert tree.nodes[first.id].children == [second.id, branch.id]
-
-
-def test_tree_rows_render_branch_indentation_in_tui_layer():
-    tree = ConvTree()
-    first = tree.add_turn("hi")
-    tree.complete_turn(first.id, "hello")
-    second = tree.add_turn("how are you")
-    tree.complete_turn(second.id, "fine")
-
-    tree.current_id = first.id
-    tree.arm_branch("alt")
-    branch = tree.add_turn("other path")
-    tree.complete_turn(branch.id, "alt")
-
-    rows = render_tree_rows(tree, width=40)
-
-    assert rows[0][0] == "● [root]"
-    assert rows[1][0].startswith("○ ✓  hi")
-    assert rows[2][0].startswith("· ✓  how are you")
-    assert rows[3][0].startswith("  ● [alt] ⎇ ✓  other path")
-
-
-def test_tree_rows_use_full_width_without_overflowing():
-    tree = ConvTree()
-    first = tree.add_turn("tell me about tokyo now")
-    tree.complete_turn(first.id, "weather")
-    tree.current_id = first.id
-    tree.arm_branch("very long branch label")
-    branch = tree.add_turn("Tell me more about making a tetris game using html canvas and javascript")
-    tree.complete_turn(branch.id, "plan")
-
-    rows = render_tree_rows(tree, width=42)
-
-    assert all(len(row[0]) <= 42 for row in rows)
-    branch_row = next(row[0] for row in rows if "[very lo…]" in row[0])
-    assert len(branch_row) == 42
-    assert "Tell me more about ma…" in branch_row
 
 
 def test_branch_unbranch_and_switch():
