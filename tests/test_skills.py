@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-import skills.skill_process_env as skill_process_env_module
 from core.memory import LexicalMemory
 from core.project import ProjectRuntime
 from skills.runtime import SkillContext, SkillRuntime
@@ -211,6 +210,7 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         debug=True,
@@ -300,6 +300,7 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
@@ -411,6 +412,7 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
@@ -479,6 +481,7 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
@@ -499,191 +502,6 @@ def execute(tool_name, args, env):
 
     assert runtime.optional_tool_names([], ctx=ctx) == []
     assert runtime.core_tool_names_for_turn([], ctx=ctx) == ["create_file"]
-
-
-def test_tools_for_turn_includes_generic_script_runner_for_selected_script_skill(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "script-only" / "scripts").mkdir(parents=True)
-
-    (skills / "script-only" / "SKILL.md").write_text(
-        """
----
-name: script-only
-description: ships a helper script for structured tasks
-version: 1.0.0
----
-Use the helper script when available.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "script-only" / "scripts" / "helper.py").write_text(
-        "if __name__ == '__main__':\n    print('ok')\n",
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-
-    skill = runtime.get_skill("script-only")
-    assert skill is not None
-    assert set(_tool_names(runtime, [skill])) == (_always_available_tool_names() | {"run_skill"})
-
-
-def test_tools_for_turn_includes_generic_entrypoint_runner_for_structured_skill(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "report-pdf" / "scripts").mkdir(parents=True)
-
-    (skills / "report-pdf" / "SKILL.md").write_text(
-        """
----
-name: report-pdf
-description: Create report PDFs with a declared workflow.
-produces:
-  - .pdf
-execution:
-  entrypoints:
-    - name: create_report
-      description: Create a PDF report artifact.
-      intents: [create]
-      produces: [.pdf]
-      command: python3 {skill_root}/scripts/create_report.py {project_root}/{filename}
-      parameters:
-        type: object
-        properties:
-          filename:
-            type: string
-        required:
-          - filename
----
-Create PDFs with the declared entrypoint.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "report-pdf" / "scripts" / "create_report.py").write_text(
-        "from pathlib import Path\nimport sys\nPath(sys.argv[1]).write_text('pdf', encoding='utf-8')\n",
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-    skill = runtime.get_skill("report-pdf")
-    assert skill is not None
-    ctx = SkillContext(
-        user_input="Create a report PDF and save it as report.pdf",
-        branch_labels=[],
-        attachments=[],
-        project_root=str(ws),
-        memory_hits=[],
-    )
-
-    assert set(_tool_names(runtime, [skill], ctx=ctx)) == (_always_available_tool_names() | {"run_skill"})
-
-
-def test_root_level_skill_helper_script_is_exposed(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "research-helper").mkdir(parents=True)
-
-    (skills / "research-helper" / "SKILL.md").write_text(
-        """
----
-name: research-helper
-description: ships a helper validator at the skill root
-version: 1.0.0
----
-Use validate_json.py when available.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "research-helper" / "validate_json.py").write_text(
-        "if __name__ == '__main__':\n    print('ok')\n",
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-
-    skill = runtime.get_skill("research-helper")
-    assert skill is not None
-    assert set(_tool_names(runtime, [skill])) == (_always_available_tool_names() | {"run_skill"})
-    assert runtime._reported_skill_scripts(skill) == ["validate_json.py"]
-
-
-def test_entrypoint_skill_stays_runnable_without_artifact_heuristics(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "preview-pdf" / "scripts").mkdir(parents=True)
-
-    (skills / "preview-pdf" / "SKILL.md").write_text(
-        """
----
-name: preview-pdf
-description: Build binary report artifacts.
-produces:
-  - .pdf
-execution:
-  entrypoints:
-    - name: create_preview
-      description: Create the PDF artifact for later review.
-      intents: [create]
-      produces: [.pdf]
-      command: python3 {skill_root}/scripts/create_preview.py {project_root}/{filename}
-      parameters:
-        type: object
-        properties:
-          filename:
-            type: string
-        required:
-          - filename
----
-Create PDFs through the declared entrypoint.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "preview-pdf" / "scripts" / "create_preview.py").write_text(
-        "from pathlib import Path\nimport sys\nPath(sys.argv[1]).write_text('pdf', encoding='utf-8')\n",
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-    skill = runtime.get_skill("preview-pdf")
-    assert skill is not None
-    ctx = SkillContext(
-        user_input="Create preview.pdf and review it after generation",
-        branch_labels=[],
-        attachments=[],
-        project_root=str(ws),
-        memory_hits=[],
-    )
-
-    assert set(_tool_names(runtime, [skill], ctx=ctx)) == (_always_available_tool_names() | {"run_skill"})
 
 
 def test_core_tool_executes_with_selected_skill(tmp_path: Path):
@@ -731,6 +549,7 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
@@ -801,6 +620,7 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         debug=True,
@@ -865,6 +685,7 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         debug=False,
@@ -948,6 +769,7 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
@@ -1000,6 +822,7 @@ Search the internet.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
@@ -1052,6 +875,7 @@ Design well.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
@@ -1104,6 +928,7 @@ Design well.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
@@ -1261,6 +1086,7 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
@@ -1300,6 +1126,7 @@ Utilities.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
@@ -1336,6 +1163,7 @@ Search.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         config={},
@@ -1372,6 +1200,7 @@ Binary required.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
@@ -1380,29 +1209,6 @@ Binary required.
     assert skill is not None
     assert skill.available is False
     assert "definitely-not-a-real-binary-xyz" in skill.availability_reason
-
-
-def test_runtime_env_exposes_global_npm_root_as_node_path(tmp_path: Path, monkeypatch):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-
-    monkeypatch.setattr(skill_process_env_module.shutil, "which", lambda name: "/opt/homebrew/bin/npm" if name == "npm" else None)
-    monkeypatch.setattr(
-        skill_process_env_module,
-        "run_bounded_process",
-        lambda *args, **kwargs: {"returncode": 0, "stdout": "/opt/homebrew/lib/node_modules\n", "stderr": ""},
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-
-    assert runtime._proc_env_base["NODE_PATH"] == "/opt/homebrew/lib/node_modules"
 
 
 def test_reload_preserves_manual_skill_toggle(tmp_path: Path):
@@ -1426,6 +1232,7 @@ Toggle.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
@@ -1466,6 +1273,7 @@ Closing note.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
@@ -1504,6 +1312,7 @@ Body
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
@@ -1545,6 +1354,7 @@ Beta
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
@@ -1599,6 +1409,7 @@ def execute(tool_name, args, env):
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
@@ -1607,77 +1418,6 @@ def execute(tool_name, args, env):
     assert listed[0].available is False
     assert listed[0].execution_allowed is False
     assert listed[0].validation_errors == ["missing required tools: create_file"]
-
-
-def test_command_definition_manifest_registers_and_executes(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "echo-skill" / "scripts").mkdir(parents=True)
-
-    (skills / "echo-skill" / "SKILL.md").write_text(
-        """
----
-name: echo-skill
-description: echo
-version: 1.0.0
-tools:
-  allowed-tools:
-    - echo_text
-  definitions:
-    - name: echo_text
-      capability: utility_echo
-      description: Echo text.
-      command: python3 scripts/echo_text.py {text}
-      parameters:
-        type: object
-        properties:
-          text:
-            type: string
-        required:
-          - text
----
-Echo
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "echo-skill" / "scripts" / "echo_text.py").write_text(
-        """
-import json
-import sys
-
-def main():
-    out = {"ok": True, "data": {"text": sys.argv[1]}, "error": None, "meta": {}}
-    print(json.dumps(out))
-    return 0
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"permissions": {"mode": "danger-full-access", "approvals": "on-boundary", "network": False}},
-    )
-    skill = runtime.get_skill("echo-skill")
-    assert skill is not None
-
-    ctx = SkillContext(
-        user_input="echo this",
-        branch_labels=[],
-        attachments=[],
-        project_root=str(ws),
-        memory_hits=[],
-    )
-    out = runtime.execute_tool_call("echo_text", {"text": "hello"}, selected=[skill], ctx=ctx)
-    assert out["ok"] is True
-    assert out["data"]["text"] == "hello"
 
 
 def test_skill_prompt_is_loaded_lazily(tmp_path: Path):
@@ -1705,6 +1445,7 @@ Loaded on demand
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
@@ -1742,507 +1483,13 @@ Hooked skill.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
     skill = runtime.get_skill("hooked-skill")
     assert skill is not None
     assert skill.validation_errors == []
-    assert runtime._reported_skill_scripts(skill) == []
-
-
-def test_bundled_scripts_without_tool_definitions_use_generic_script_runner(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "script-only" / "scripts").mkdir(parents=True)
-
-    (skills / "script-only" / "SKILL.md").write_text(
-        """
----
-name: script-only
-description: ships a helper script but no executable tool contract
-version: 1.0.0
----
-Use the helper script if your runtime knows how.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "script-only" / "scripts" / "helper.py").write_text(
-        "if __name__ == '__main__':\n    print('ok')\n",
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-    skill = runtime.get_skill("script-only")
-    assert skill is not None
-
-    assert set(_tool_names(runtime, [skill])) == (_always_available_tool_names() | {"run_skill"})
-    assert runtime._reported_skill_scripts(skill) == ["scripts/helper.py"]
-
-
-def test_generic_script_runner_executes_selected_skill_script(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "script-only" / "scripts").mkdir(parents=True)
-
-    (skills / "script-only" / "SKILL.md").write_text(
-        """
----
-name: script-only
-description: helper script execution
-version: 1.0.0
----
-Use helper.py when needed.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "script-only" / "scripts" / "helper.py").write_text(
-        """
-import json
-import os
-import sys
-
-def main():
-    payload = json.loads(os.getenv("ALPHANUS_TOOL_ARGS_JSON") or "{}")
-    print(json.dumps({"stdout": sys.stdin.read(), "payload": payload}))
-
-if __name__ == "__main__":
-    main()
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-    skill = runtime.get_skill("script-only")
-    assert skill is not None
-    ctx = SkillContext(
-        user_input="run the bundled helper",
-        branch_labels=[],
-        attachments=[],
-        project_root=str(ws),
-        memory_hits=[],
-    )
-
-    assert set(_tool_names(runtime, [skill], ctx=ctx)) == (_always_available_tool_names() | {"run_skill"})
-
-    out = runtime.execute_tool_call(
-        "run_skill",
-        {"script": "helper.py", "stdin": "hello", "params": {"mode": "demo"}},
-        selected=[skill],
-        ctx=ctx,
-    )
-
-    assert out["ok"] is True
-    assert out["data"]["skill_id"] == "script-only"
-    assert out["data"]["script"] == "scripts/helper.py"
-    assert out["data"]["stdout"] == "hello"
-    assert out["data"]["payload"] == {"mode": "demo"}
-
-    invalid_args = runtime.execute_tool_call(
-        "run_skill",
-        {"script": "helper.py", "args": {"mode": "demo"}},
-        selected=[skill],
-        ctx=ctx,
-    )
-    assert invalid_args["ok"] is False
-    assert invalid_args["error"]["code"] == "E_VALIDATION"
-    assert "Unexpected arguments: args" in invalid_args["error"]["message"]
-
-
-def test_generic_script_runner_respects_allowed_tools_policy(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "script-wrapper" / "scripts").mkdir(parents=True)
-
-    (skills / "script-wrapper" / "SKILL.md").write_text(
-        """
----
-name: script-wrapper
-description: Expose only a narrow wrapper tool.
-allowed-tools: wrapped_tool
----
-Do not expose the raw script runner.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "script-wrapper" / "scripts" / "helper.py").write_text("print('ok')\n", encoding="utf-8")
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-    skill = runtime.get_skill("script-wrapper")
-    assert skill is not None
-    ctx = SkillContext(
-        user_input="run the helper script",
-        branch_labels=[],
-        attachments=[],
-        project_root=str(ws),
-        memory_hits=[],
-    )
-
-    assert set(_tool_names(runtime, [skill], ctx=ctx)) == _always_available_tool_names()
-
-    out = runtime.execute_tool_call(
-        "run_skill",
-        {"script": "helper.py"},
-        selected=[skill],
-        ctx=ctx,
-    )
-    assert out["ok"] is False
-    assert out["error"]["code"] == "E_POLICY"
-
-
-def test_generic_entrypoint_runner_executes_structured_workflow(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "report-pdf" / "scripts").mkdir(parents=True)
-
-    (skills / "report-pdf" / "SKILL.md").write_text(
-        """
----
-name: report-pdf
-description: Create report PDFs with a declared workflow.
-produces:
-  - .pdf
-execution:
-  entrypoints:
-    - name: create_report
-      description: Create a PDF report artifact.
-      intents: [create]
-      produces: [.pdf]
-      install:
-        - python3 -c "print('install-ok')"
-      verify:
-        - python3 -c "print('verify-ok')"
-      command: python3 {skill_root}/scripts/create_report.py {project_root}/{filename}
-      parameters:
-        type: object
-        properties:
-          filename:
-            type: string
-        required:
-          - filename
----
-Create PDFs with the declared entrypoint.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "report-pdf" / "scripts" / "create_report.py").write_text(
-        "from pathlib import Path\nimport sys\nPath(sys.argv[1]).write_text('artifact', encoding='utf-8')\nprint('done')\n",
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"permissions": {"mode": "danger-full-access", "approvals": "on-boundary", "network": False}},
-    )
-    skill = runtime.get_skill("report-pdf")
-    assert skill is not None
-    ctx = SkillContext(
-        user_input="Create a report PDF and save it as report.pdf",
-        branch_labels=[],
-        attachments=[],
-        project_root=str(ws),
-        memory_hits=[],
-    )
-
-    assert set(_tool_names(runtime, [skill], ctx=ctx)) == (_always_available_tool_names() | {"run_skill"})
-
-    out = runtime.execute_tool_call(
-        "run_skill",
-        {"entrypoint": "create_report", "params": {"filename": "report.pdf"}},
-        selected=[skill],
-        ctx=ctx,
-    )
-
-    assert out["ok"] is True
-    assert out["data"]["skill_id"] == "report-pdf"
-    assert out["data"]["entrypoint"] == "create_report"
-    assert (ws / "report.pdf").read_text(encoding="utf-8") == "artifact"
-
-
-def test_run_skill_supports_compact_execution_command_manifest(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "compact-report" / "scripts").mkdir(parents=True)
-
-    (skills / "compact-report" / "SKILL.md").write_text(
-        """
----
-name: compact-report
-description: Compact execution manifest.
-produces:
-  - .txt
-execution:
-  command: python3 {skill_root}/scripts/create_report.py {project_root}/{filename}
-  cwd: project
-  timeout_s: 20
-  parameters:
-    type: object
-    properties:
-      filename:
-        type: string
-    required:
-      - filename
----
-Generate the report through the compact execution contract.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "compact-report" / "scripts" / "create_report.py").write_text(
-        "from pathlib import Path\nimport sys\nPath(sys.argv[1]).write_text('compact', encoding='utf-8')\n",
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"permissions": {"mode": "danger-full-access", "approvals": "on-boundary", "network": False}},
-    )
-    skill = runtime.get_skill("compact-report")
-    assert skill is not None
-    ctx = SkillContext(
-        user_input="create compact-report.txt",
-        branch_labels=[],
-        attachments=[],
-        project_root=str(ws),
-        memory_hits=[],
-    )
-
-    assert set(_tool_names(runtime, [skill], ctx=ctx)) == (_always_available_tool_names() | {"run_skill"})
-
-    out = runtime.execute_tool_call(
-        "run_skill",
-        {"entrypoint": "run", "params": {"filename": "compact-report.txt"}},
-        selected=[skill],
-        ctx=ctx,
-    )
-
-    assert out["ok"] is True
-    assert out["data"]["entrypoint"] == "run"
-    assert (ws / "compact-report.txt").read_text(encoding="utf-8") == "compact"
-
-
-def test_frontmatter_metadata_command_tool_is_supported(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "meta-skill" / "scripts").mkdir(parents=True)
-
-    (skills / "meta-skill" / "SKILL.md").write_text(
-        """
----
-name: meta-skill
-description: metadata format
-allowed-tools: echo_text
-metadata:
-  version: "1.0.0"
-  categories:
-    - custom
-  tags:
-    - echo
-  triggers:
-    keywords:
-      - echo
-  tools:
-    definitions:
-      - name: echo_text
-        capability: utility_echo
-        description: Echo text.
-        command: python3 scripts/echo_text.py {text}
-        parameters:
-          type: object
-          properties:
-            text:
-              type: string
-          required:
-            - text
----
-Echo
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "meta-skill" / "scripts" / "echo_text.py").write_text(
-        """
-import json
-import sys
-
-def main():
-    print(json.dumps({"text": sys.argv[1]}))
-    return 0
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"permissions": {"mode": "danger-full-access", "approvals": "on-boundary", "network": False}},
-    )
-    skill = runtime.get_skill("meta-skill")
-    assert skill is not None
-    ctx = SkillContext(
-        user_input="echo",
-        branch_labels=[],
-        attachments=[],
-        project_root=str(ws),
-        memory_hits=[],
-    )
-    out = runtime.execute_tool_call("echo_text", {"text": "hello"}, selected=[skill], ctx=ctx)
-    assert out["ok"] is True
-    assert out["data"]["text"] == "hello"
-
-
-def test_command_definition_non_json_output_returns_stdout(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "bad-output" / "scripts").mkdir(parents=True)
-
-    (skills / "bad-output" / "SKILL.md").write_text(
-        """
----
-name: bad-output
-description: invalid output
-version: 1.0.0
-tools:
-  allowed-tools:
-    - bad_tool
-  definitions:
-    - name: bad_tool
-      capability: utility_bad
-      description: Emit invalid output.
-      command: python3 scripts/bad_tool.py
-      parameters:
-        type: object
-        properties: {}
----
-Bad output
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "bad-output" / "scripts" / "bad_tool.py").write_text(
-        """
-print("definitely not json")
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"permissions": {"mode": "danger-full-access", "approvals": "on-boundary", "network": False}},
-    )
-    skill = runtime.get_skill("bad-output")
-    assert skill is not None
-
-    ctx = SkillContext(
-        user_input="bad",
-        branch_labels=[],
-        attachments=[],
-        project_root=str(ws),
-        memory_hits=[],
-    )
-    out = runtime.execute_tool_call("bad_tool", {}, selected=[skill], ctx=ctx)
-    assert out["ok"] is True
-    assert "definitely not json" in out["data"]["stdout"]
-
-
-def test_command_tool_timeout_definition_reports_timeout(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "slow-skill" / "scripts").mkdir(parents=True)
-
-    (skills / "slow-skill" / "SKILL.md").write_text(
-        """
----
-name: slow-skill
-description: timeout test
-version: 1.0.0
-tools:
-  allowed-tools:
-    - slow_tool
-  definitions:
-    - name: slow_tool
-      capability: utility_wait
-      description: Sleep long enough to hit timeout.
-      command: python3 scripts/slow_tool.py
-      timeout-s: 1
-      parameters:
-        type: object
-        properties: {}
----
-Slow
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "slow-skill" / "scripts" / "slow_tool.py").write_text(
-        """
-import time
-
-time.sleep(2)
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"permissions": {"mode": "danger-full-access", "approvals": "on-boundary", "network": False}},
-    )
-    skill = runtime.get_skill("slow-skill")
-    assert skill is not None
-    ctx = SkillContext(
-        user_input="wait",
-        branch_labels=[],
-        attachments=[],
-        project_root=str(ws),
-        memory_hits=[],
-    )
-    out = runtime.execute_tool_call("slow_tool", {}, selected=[skill], ctx=ctx)
-    assert out["ok"] is False
-    assert out["error"]["code"] == "E_TIMEOUT"
 
 
 def test_skill_health_report_includes_provenance(tmp_path: Path):
@@ -2265,6 +1512,7 @@ Hello
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
@@ -2272,101 +1520,6 @@ Hello
 
     assert report[0]["provenance"] == "user/skills"
     assert report[0]["availability_code"] == "ready"
-
-
-def test_bundled_skill_inside_project_repo_is_executable(tmp_path: Path):
-    home = tmp_path / "home"
-    repo = home / "Desktop" / "Alphanus"
-    skills = repo / "skills"
-    skill_dir = skills / "repo-helper"
-    home.mkdir()
-    skill_dir.mkdir(parents=True)
-
-    (skill_dir / "SKILL.md").write_text(
-        """
----
-name: repo-helper
-description: bundled repo helper
-version: 1.0.0
-tools:
-  allowed-tools:
-    - echo_text
----
-Bundled repo helper.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skill_dir / "tools.py").write_text(
-        """
-TOOL_SPECS = {
-  "echo_text": {
-    "capability": "utility_echo",
-    "description": "Echo text",
-    "parameters": {
-      "type": "object",
-      "properties": {"text": {"type": "string"}},
-      "required": ["text"]
-    }
-  }
-}
-
-def execute(tool_name, args, env):
-    return {"ok": True, "data": {"text": args["text"]}, "error": None, "meta": {}}
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(repo)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-
-    skill = runtime.get_skill("repo-helper")
-    assert skill is not None
-    assert runtime.skill_provenance_label(skill) == "user/skills"
-    assert skill.execution_allowed is True
-    assert skill.available is True
-    assert set(_tool_names(runtime, [skill])) == (_always_available_tool_names() | {"echo_text"})
-
-
-def test_bundled_skill_under_home_outside_project_is_executable(tmp_path: Path):
-    home = tmp_path / "home"
-    repo = home / "Desktop" / "Alphanus"
-    project_root = home / "projects" / "demo"
-    skills = repo / "skills"
-    skill_dir = skills / "repo-helper"
-    home.mkdir()
-    project_root.mkdir(parents=True)
-    skill_dir.mkdir(parents=True)
-
-    (skill_dir / "SKILL.md").write_text(
-        """
----
-name: repo-helper
-description: bundled repo helper
-version: 1.0.0
----
-Bundled repo helper.
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(project_root)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-
-    skill = runtime.get_skill("repo-helper")
-    assert skill is not None
-    assert runtime.skill_provenance_label(skill) == "user/skills"
-    assert skill.execution_allowed is True
-    assert skill.available is True
-    report = runtime.skill_health_report()
-    skill_report = next(item for item in report if item["id"] == "repo-helper")
-    assert skill_report["provenance"] == "user/skills"
-    assert skill_report["execution_allowed"] is True
 
 
 def test_home_skill_root_is_not_discovered(tmp_path: Path):
@@ -2585,6 +1738,7 @@ Ask for clarification when needed.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
@@ -2618,173 +1772,6 @@ Ask for clarification when needed.
     assert out["data"]["options"] == ["a", "b"]
 
 
-def test_blocked_python_scripts_are_reported_from_runtime_metadata(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "script-check" / "scripts").mkdir(parents=True)
-    (skills / "script-check" / "SKILL.md").write_text(
-        """
----
-name: script-check
-description: helper with optional scripts
-version: 1.0.0
----
-Use the bundled helper script when available.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "script-check" / "scripts" / "helper.py").write_text(
-        "import definitely_missing_mod_xyz\n\nif __name__ == '__main__':\n    print('ok')\n",
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-
-    skill = runtime.get_skill("script-check")
-    assert skill is not None
-    assert runtime._script_inspector.skill_runnable_scripts(skill) == []
-    assert runtime._reported_skill_scripts(skill) == []
-    assert runtime._script_inspector.blocked_skill_scripts(skill) == [
-        {
-            "script": "scripts/helper.py",
-            "reason": "missing python modules: definitely_missing_mod_xyz",
-        }
-    ]
-    assert set(_tool_names(runtime, [skill])) == _always_available_tool_names()
-
-
-def test_python_script_without_main_guard_stays_exposed(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "script-check" / "scripts").mkdir(parents=True)
-    (skills / "script-check" / "SKILL.md").write_text(
-        """
----
-name: script-check
-description: helper with optional scripts
-version: 1.0.0
----
-Use the bundled helper script when available.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "script-check" / "scripts" / "helper.py").write_text(
-        "print('ok')\n",
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-
-    skill = runtime.get_skill("script-check")
-    assert skill is not None
-    assert runtime._script_inspector.skill_runnable_scripts(skill) == ["scripts/helper.py"]
-    assert runtime._reported_skill_scripts(skill) == ["scripts/helper.py"]
-
-
-def test_runnable_scripts_cache_reuses_scan_and_invalidates_on_reload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "script-check" / "scripts").mkdir(parents=True)
-    (skills / "script-check" / "SKILL.md").write_text(
-        """
----
-name: script-check
-description: helper with optional scripts
-version: 1.0.0
----
-Use the bundled helper script when available.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "script-check" / "scripts" / "helper.py").write_text("print('ok')\n", encoding="utf-8")
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-
-    skill = runtime.get_skill("script-check")
-    assert skill is not None
-    calls = {"count": 0}
-    original = runtime._script_inspector.python_script_missing_modules
-
-    def counted(skill_obj, rel_script):
-        calls["count"] += 1
-        return original(skill_obj, rel_script)
-
-    monkeypatch.setattr(runtime._script_inspector, "python_script_missing_modules", counted)
-
-    assert runtime._script_inspector.skill_runnable_scripts(skill) == ["scripts/helper.py"]
-    assert runtime._script_inspector.skill_runnable_scripts(skill) == ["scripts/helper.py"]
-    assert calls["count"] == 0
-
-    runtime.load_skills()
-    skill = runtime.get_skill("script-check")
-    assert skill is not None
-    assert runtime._script_inspector.skill_runnable_scripts(skill) == ["scripts/helper.py"]
-    assert calls["count"] == 1
-
-
-def test_configured_python_executable_controls_script_availability(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "script-check" / "scripts").mkdir(parents=True)
-    (skills / "script-check" / "SKILL.md").write_text(
-        """
----
-name: script-check
-description: helper with optional scripts
-version: 1.0.0
----
-Use the bundled helper script when available.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "script-check" / "scripts" / "helper.py").write_text(
-        "if __name__ == '__main__':\n    print('ok')\n",
-        encoding="utf-8",
-    )
-
-    missing_python = tmp_path / "missing-python"
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"skills": {"python_executable": str(missing_python)}},
-    )
-
-    skill = runtime.get_skill("script-check")
-    assert skill is not None
-    assert runtime._script_inspector.skill_runnable_scripts(skill) == []
-    assert runtime._script_inspector.blocked_skill_scripts(skill) == [
-        {
-            "script": "scripts/helper.py",
-            "reason": f"missing interpreter: {missing_python}",
-        }
-    ]
-
-
 def test_skill_view_uses_single_active_skill_when_file_path_is_provided(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
@@ -2807,6 +1794,7 @@ Read the bundled README when needed.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
@@ -2857,6 +1845,7 @@ echo {skill_id}
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
@@ -2907,6 +1896,7 @@ Use the bundled helper script when available.
 
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
@@ -2942,153 +1932,6 @@ Use the bundled helper script when available.
     assert calls["count"] == 1
     assert docx_tools == png_tools
     assert docx_tools[0]["ctx"] == "set up report.docx"
-
-
-def test_skill_tool_definition_invalid_timeout_is_reported(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "timeout-skill").mkdir(parents=True)
-    (skills / "timeout-skill" / "SKILL.md").write_text(
-        """
----
-name: timeout-skill
-description: exposes command tool
-version: 1.0.0
-tools:
-  definitions:
-    - name: timeout_tool
-      command: "echo ok"
-      timeout_s: nope
-      parameters:
-        type: object
-        properties: {}
----
-Use timeout tool.
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-    skill = runtime.get_skill("timeout-skill")
-
-    assert skill is not None
-    assert any("invalid timeout 'nope'" in warning for warning in skill.validation_warnings)
-
-
-def test_skill_tool_definition_unsupported_runtime_is_ignored(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "strict-tool").mkdir(parents=True)
-    (skills / "strict-tool" / "SKILL.md").write_text(
-        """
----
-name: strict-tool
-description: unsupported command runtime
-version: 1.0.0
-tools:
-  definitions:
-    - name: unsupported_tool
-      tool: unsupported_runner
-      command: "echo ok"
-      parameters:
-        type: object
-        properties: {}
----
-Use strict tool.
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-    skill = runtime.get_skill("strict-tool")
-
-    assert skill is not None
-    assert runtime.tool_registration("unsupported_tool") is None
-    assert any("uses unsupported runtime tool 'unsupported_runner'; ignored" in warning for warning in skill.validation_warnings)
-
-
-def test_skill_entrypoint_unsupported_runtime_is_rejected(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "strict-entrypoint").mkdir(parents=True)
-    (skills / "strict-entrypoint" / "SKILL.md").write_text(
-        """
----
-name: strict-entrypoint
-description: unsupported entrypoint runtime
-version: 1.0.0
-execution:
-  entrypoints:
-    - name: unsupported_entrypoint
-      tool: unsupported_runner
-      command: "echo ok"
-      parameters:
-        type: object
-        properties: {}
----
-Use strict entrypoint.
-""".strip(),
-        encoding="utf-8",
-    )
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-
-    assert runtime.get_skill("strict-entrypoint") is None
-    assert runtime.tool_registration("unsupported_entrypoint") is None
-
-
-def test_python_script_parse_failure_is_reported_as_validation_warning(tmp_path: Path):
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "broken-script" / "scripts").mkdir(parents=True)
-    (skills / "broken-script" / "SKILL.md").write_text(
-        """
----
-name: broken-script
-description: has a broken helper script
-version: 1.0.0
----
-Use helper script.
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "broken-script" / "scripts" / "broken.py").write_text("def nope(:\n", encoding="utf-8")
-
-    runtime = SkillRuntime(
-        skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-    )
-    skill = runtime.get_skill("broken-script")
-    assert skill is not None
-
-    runtime._script_inspector.python_script_missing_modules(skill, "scripts/broken.py")
-
-    assert any("script 'scripts/broken.py' import inspection failed: SyntaxError" in warning for warning in skill.validation_warnings)
 
 
 def test_unexpected_tool_exception_message_preserves_exception_type(tmp_path: Path):
@@ -3128,6 +1971,7 @@ def execute(tool_name, args, env):
     )
     runtime = SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
         debug=False,

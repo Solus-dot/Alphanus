@@ -6,9 +6,8 @@ from skills.skill_parser import SkillManifest
 
 
 class SkillToolSchemaBuilder:
-    def __init__(self, runtime: Any, *, run_skill_tool_name: str) -> None:
+    def __init__(self, runtime: Any) -> None:
         self.runtime = runtime
-        self.run_skill_tool_name = run_skill_tool_name
 
     @staticmethod
     def cache_key(names: list[str], selected: list[SkillManifest], *, generation: int) -> tuple[Any, ...]:
@@ -23,79 +22,18 @@ class SkillToolSchemaBuilder:
             active_skill_ids,
         )
 
-    def dynamic_run_skill_schema(self, selected: list[SkillManifest]) -> dict[str, Any]:
-        executable_skills = [
-            skill
-            for skill in selected
-            if not skill.disable_model_invocation
-            and (self.runtime._exposed_relevant_skill_entrypoints(skill) or self.runtime._exposed_relevant_skill_scripts(skill))
-        ]
-        properties: dict[str, Any] = {
-            "skill_id": {"type": "string"},
-            "entrypoint": {"type": "string"},
-            "script": {"type": "string"},
-            "params": {"type": "object"},
-            "argv": {"type": "array", "items": {"type": "string"}},
-            "stdin": {"type": "string"},
-            "timeout_s": {"type": "integer"},
-        }
-        if len(executable_skills) > 1:
-            properties["skill_id"] = {"type": "string", "enum": [skill.id for skill in executable_skills]}
-
-        entrypoint_names = sorted(
-            dict.fromkeys(
-                entrypoint.name
-                for skill in executable_skills
-                for entrypoint in self.runtime._exposed_relevant_skill_entrypoints(skill)
-            )
-        )
-        if entrypoint_names:
-            properties["entrypoint"] = {"type": "string", "enum": entrypoint_names}
-
-        script_names = sorted(
-            dict.fromkeys(
-                rel_script for skill in executable_skills for rel_script in self.runtime._exposed_relevant_skill_scripts(skill)
-            )
-        )
-        if script_names:
-            properties["script"] = {"type": "string", "enum": script_names}
-
-        required = ["skill_id"] if len(executable_skills) > 1 else []
-        return {
-            "type": "object",
-            "properties": properties,
-            "required": required,
-            "additionalProperties": False,
-        }
-
     def build(self, names: list[str], selected: list[SkillManifest] | None = None, ctx: Any | None = None) -> list[dict[str, Any]]:
         _ = ctx
         tools = []
         for name in names:
             reg = self.runtime._tool_registry[name]
-            parameters = reg.parameters
-            description = reg.description
-            if reg.name == self.run_skill_tool_name and selected is not None:
-                parameters = self.dynamic_run_skill_schema(selected)
-                available_paths: list[str] = []
-                for skill in selected:
-                    if skill.disable_model_invocation:
-                        continue
-                    for entrypoint in self.runtime._exposed_relevant_skill_entrypoints(skill):
-                        available_paths.append(f"{skill.id}:{entrypoint.name}")
-                    for rel_script in self.runtime._exposed_relevant_skill_scripts(skill):
-                        available_paths.append(f"{skill.id}:{rel_script}")
-                if available_paths:
-                    description = (
-                        f"{reg.description} Available executable paths: {', '.join(sorted(dict.fromkeys(available_paths))[:8])}."
-                    )
             tools.append(
                 {
                     "type": "function",
                     "function": {
                         "name": reg.name,
-                        "description": description,
-                        "parameters": parameters,
+                        "description": reg.description,
+                        "parameters": reg.parameters,
                     },
                 }
             )

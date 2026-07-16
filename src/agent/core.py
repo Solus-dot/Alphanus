@@ -56,7 +56,6 @@ class Agent:
     def _apply_config(self, config: dict[str, Any]) -> None:
         self.config = config
         self.skill_runtime.reload_config(config)
-        self.skill_runtime.refresh_process_env()
         context_cfg = config["context"]
         self.context_mgr.context_limit = int(context_cfg["context_limit"])
         self.context_mgr.keep_last_n = int(context_cfg["keep_last_n"])

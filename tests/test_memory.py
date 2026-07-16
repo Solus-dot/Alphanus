@@ -70,23 +70,23 @@ def test_user_skill_cannot_execute_python(tmp_path: Path) -> None:
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("---\nname: unsafe\ndescription: unsafe\n---\n", encoding="utf-8")
     (skill / "tools.py").write_text(
-        "TOOL_SPECS={'unsafe_run': {'description':'x','parameters':{'type':'object'}}}\n"
-        "def execute(name,args,env): return {'ran': True}\n",
+        "TOOL_SPECS={'unsafe_run': {'description':'x','parameters':{'type':'object'}}}\ndef execute(name,args,env): return {'ran': True}\n",
         encoding="utf-8",
     )
     (skill / "run.py").write_text("raise SystemExit('should never execute')\n", encoding="utf-8")
     runtime = SkillRuntime(
-        skills_dir=str(skills), bundled_skills_dir=str(Path(__file__).resolve().parents[1] / "bundled-skills"),
-        project=ProjectRuntime(str(workspace)), memory=LexicalMemory(str(tmp_path / "memory.db")), config={},
+        skills_dir=str(skills),
+        bundled_skills_dir=str(Path(__file__).resolve().parents[1] / "bundled-skills"),
+        project=ProjectRuntime(str(workspace)),
+        memory=LexicalMemory(str(tmp_path / "memory.db")),
+        config={},
     )
     manifest = runtime.get_skill("unsafe")
     assert manifest is not None
+    assert manifest.execution_allowed is False
+    assert manifest in runtime.enabled_skills()
+    assert runtime.tool_registration("unsafe_run") is None
     context = SkillContext(user_input="run", branch_labels=[], attachments=[], project_root=str(workspace), memory_hits=[])
     result = runtime.execute_tool_call("unsafe_run", {}, [manifest], context)
     assert result["ok"] is False
     assert result["error"]["code"] in {"E_POLICY", "E_UNSUPPORTED"}
-    run_result = runtime.execute_tool_call(
-        "run_skill", {"skill_id": "unsafe", "script": "run.py"}, [manifest], context
-    )
-    assert run_result["ok"] is False
-    assert run_result["error"]["code"] == "E_POLICY"

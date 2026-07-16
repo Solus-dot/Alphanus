@@ -1,16 +1,8 @@
 from __future__ import annotations
 
-import json
-import re
-import shlex
-import shutil
 import subprocess
-import sys
 import time
-from pathlib import Path
 from typing import Any, cast
-
-from core.sandbox import run_bounded_process
 
 
 class SkillExecutor:
@@ -21,7 +13,6 @@ class SkillExecutor:
         skills_list_tool_name: str,
         skill_view_tool_name: str,
         request_user_input_tool_name: str,
-        run_skill_tool_name: str,
         ok_fn,
         err_fn,
         protocol_error_cls,
@@ -30,23 +21,16 @@ class SkillExecutor:
         self._skills_list_tool_name = skills_list_tool_name
         self._skill_view_tool_name = skill_view_tool_name
         self._request_user_input_tool_name = request_user_input_tool_name
-        self._run_skill_tool_name = run_skill_tool_name
         self._ok = ok_fn
         self._err = err_fn
         self._protocol_error_cls = protocol_error_cls
 
     def _require_bundled_executable_skill(self, skill) -> None:
         """Reject executable code whose target is outside the reviewed bundle."""
-        runtime = self.runtime
         if skill is None or not skill.path:
             raise FileNotFoundError("Selected skill root is unavailable")
-        bundled_root = runtime.bundled_skills_dir
-        if bundled_root is None:
-            return
-        try:
-            skill.path.resolve().relative_to(bundled_root.resolve())
-        except ValueError as exc:
-            raise PermissionError(f"Executable user skill '{skill.id}' is disabled; only reviewed bundled skills may execute") from exc
+        if not skill.execution_allowed:
+            raise PermissionError(f"Executable user skill '{skill.id}' is disabled; only reviewed bundled skills may execute")
 
     def execute_registered_tool(self, reg, args: dict[str, Any], env, ctx) -> Any:
         runtime = self.runtime
@@ -61,54 +45,11 @@ class SkillExecutor:
         skill = runtime.get_skill(str(getattr(reg, "skill_id", "")).strip())
         if skill is not None:
             self._require_bundled_executable_skill(skill)
-        if reg.name == self._run_skill_tool_name:
-            return self.execute_run_skill_tool(args, env)
-        if str(getattr(reg, "command_template", "")).strip():
-            return self.execute_registered_command_tool(reg, args, env)
         if reg.module is None and reg.module_path:
             reg.module = runtime._load_module(reg.module_path, reg.module_name or f"alphanus_tools_{reg.skill_id}")
         if reg.module is None or not hasattr(reg.module, "execute"):
             raise self._protocol_error_cls(f"Tool '{reg.name}' has no callable execute() handler")
         return reg.module.execute(reg.name, args, env)
-
-    def execute_registered_command_tool(self, reg, args: dict[str, Any], env) -> dict[str, Any]:
-        runtime = self.runtime
-        skill = runtime.get_skill(str(getattr(reg, "skill_id", "")).strip())
-        if skill is None or not skill.path:
-            raise FileNotFoundError("Selected skill root is unavailable")
-        template_values: dict[str, Any] = {
-            "project_root": str(runtime.project.project_root),
-            "skill_root": str(skill.path),
-        }
-        template_values.update(args)
-        command = self.resolve_entrypoint_placeholders(str(reg.command_template), template_values)
-        timeout_s = max(1, int(getattr(reg, "timeout_s", 30) or 30))
-        cwd_mode = str(getattr(reg, "cwd", "skill")).strip().lower() or "skill"
-        command_cwd = str(skill.path) if cwd_mode == "skill" else str(runtime.project.project_root)
-        run_data = self.run_shell_workflow_command(command, env, timeout_s, cwd=command_cwd)
-        stdout = str(run_data.get("stdout", "") or "").strip()
-        if stdout:
-            candidate = stdout.splitlines()[-1].strip()
-            try:
-                parsed = json.loads(candidate)
-            except json.JSONDecodeError:
-                parsed = None
-            if isinstance(parsed, dict):
-                if {"ok", "data", "error"}.issubset(parsed.keys()):
-                    return parsed
-                parsed.setdefault("skill_id", skill.id)
-                parsed.setdefault("tool_name", reg.name)
-                parsed.setdefault("command", command)
-                return parsed
-        return {
-            "skill_id": skill.id,
-            "tool_name": reg.name,
-            "command": command,
-            "stdout": run_data.get("stdout", ""),
-            "stderr": run_data.get("stderr", ""),
-            "returncode": run_data.get("returncode", 0),
-            "cwd": run_data.get("cwd", ""),
-        }
 
     def execute_tool_call(
         self,
@@ -156,171 +97,6 @@ class SkillExecutor:
             if detail:
                 message = f"{message}: {detail}"
             return self._err("E_IO", message, int((time.perf_counter() - start) * 1000))
-
-    def execute_run_skill_tool(self, args: dict[str, Any], env) -> dict[str, Any]:
-        if str(args.get("entrypoint", "")).strip():
-            return self.execute_skill_entrypoint_tool(args, env)
-        if str(args.get("script", "")).strip():
-            return self.execute_skill_script_tool(args, env)
-        raise ValueError("run_skill requires an entrypoint or script")
-
-    def execute_skill_script_tool(self, args: dict[str, Any], _env) -> dict[str, Any]:
-        runtime = self.runtime
-        skill = runtime.get_skill(str(args.get("skill_id", "")).strip())
-        self._require_bundled_executable_skill(skill)
-
-        rel_script = str(args.get("script", "")).strip()
-        script_path = (skill.path / rel_script).resolve()
-        if not runtime._is_relative_to(script_path, skill.path.resolve()):
-            raise PermissionError("Skill script path escapes skill root")
-        if not script_path.exists():
-            raise FileNotFoundError(f"Skill script not found: {rel_script}")
-        ext = script_path.suffix.lower()
-        interpreter = runtime._script_inspector.script_interpreter(ext)
-        if not interpreter:
-            raise PermissionError(f"Unsupported skill script type: {script_path.suffix}")
-        if (
-            not Path(interpreter[0]).exists()
-            and interpreter[0] != Path(sys.executable).resolve().as_posix()
-            and shutil.which(interpreter[0]) is None
-        ):
-            raise FileNotFoundError(f"Missing interpreter for skill script: {interpreter[0]}")
-        interpreter_cmd = cast(tuple[str, ...], interpreter)
-
-        raw_argv = args.get("argv")
-        argv = [str(item) for item in raw_argv] if isinstance(raw_argv, list) else []
-        proc_env = dict(runtime._proc_env_base)
-        proc_env["ALPHANUS_SELECTED_SKILL_ID"] = skill.id
-        proc_env["ALPHANUS_SKILL_ROOT"] = str(skill.path)
-        proc_env["ALPHANUS_SKILL_SCRIPT"] = rel_script
-        params_payload = args.get("params")
-        if not isinstance(params_payload, dict):
-            params_payload = {}
-        proc_env["ALPHANUS_TOOL_ARGS_JSON"] = json.dumps(params_payload, ensure_ascii=False)
-        proc = run_bounded_process(
-            list(interpreter_cmd) + [str(script_path)] + argv,
-            cwd=skill.path,
-            timeout_s=max(1, int(args.get("timeout_s", 30))),
-            env=proc_env,
-            stdin=str(args.get("stdin") or ""),
-        )
-        if proc["returncode"] != 0:
-            msg = (proc["stderr"] or proc["stdout"] or f"Skill script failed with exit code {proc['returncode']}").strip()
-            lowered = msg.lower()
-            if "permissionerror" in lowered or "operation not permitted" in lowered:
-                raise PermissionError(msg)
-            if "filenotfounderror" in lowered or "no such file or directory" in lowered:
-                raise FileNotFoundError(msg)
-            raise RuntimeError(msg)
-
-        out = str(proc["stdout"] or "").strip()
-        if not out:
-            return {
-                "skill_id": skill.id,
-                "script": rel_script,
-                "stdout": "",
-            }
-        candidate = out.splitlines()[-1].strip()
-        try:
-            parsed = json.loads(candidate)
-        except json.JSONDecodeError:
-            return {
-                "skill_id": skill.id,
-                "script": rel_script,
-                "stdout": out,
-                "stderr": str(proc["stderr"] or "").strip(),
-            }
-        if isinstance(parsed, dict):
-            parsed.setdefault("skill_id", skill.id)
-            parsed.setdefault("script", rel_script)
-            return parsed
-        return {"skill_id": skill.id, "script": rel_script, "value": parsed}
-
-    @staticmethod
-    def resolve_entrypoint_placeholders(template: str, values: dict[str, Any]) -> str:
-        def repl(match: re.Match[str]) -> str:
-            key = match.group(1)
-            if key not in values:
-                raise ValueError(f"Missing template value: {key}")
-            return shlex.quote(str(values[key]))
-
-        return re.sub(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", repl, template)
-
-    def run_shell_workflow_command(self, command: str, env, timeout_s: int, cwd: str | None = None) -> dict[str, Any]:
-        approved = False
-        if env.project.shell_command_requires_approval(command) and env.project.permission_mode != "danger-full-access":
-            if not env.request_approval:
-                raise PermissionError("Approval callback is required")
-            approved = bool(
-                env.request_approval(
-                    {
-                        "kind": "shell_command",
-                        "command": command,
-                        "cwd": str(cwd or env.project.project_root),
-                        "reason": "Command crosses the project-write approval boundary.",
-                    }
-                )
-            )
-            if not approved:
-                raise PermissionError("Shell command rejected by user")
-        result = env.project.run_shell_command(
-            command,
-            timeout_s=max(1, int(timeout_s)),
-            cwd=cwd,
-            allowed_cwd_roots=[cwd] if cwd else None,
-            approved=approved,
-        )
-        if not result.get("ok"):
-            error = result.get("error") or {}
-            message = str(error.get("message", "Shell workflow command failed"))
-            code = str(error.get("code", ""))
-            if code == "E_POLICY":
-                raise PermissionError(message)
-            if code == "E_TIMEOUT":
-                raise TimeoutError(message)
-            raise RuntimeError(message)
-        return result["data"]
-
-    def execute_skill_entrypoint_tool(self, args: dict[str, Any], env) -> dict[str, Any]:
-        runtime = self.runtime
-        skill = runtime.get_skill(str(args.get("skill_id", "")).strip())
-        self._require_bundled_executable_skill(skill)
-        entrypoint_name = str(args.get("entrypoint", "")).strip()
-        entrypoint = next((item for item in skill.entrypoints if item.name == entrypoint_name), None)
-        if entrypoint is None:
-            raise FileNotFoundError(f"Skill entrypoint not found: {entrypoint_name}")
-
-        raw_params = args.get("params")
-        params = raw_params if isinstance(raw_params, dict) else {}
-        template_values: dict[str, Any] = {
-            "project_root": str(runtime.project.project_root),
-            "skill_root": str(skill.path),
-        }
-        template_values.update(params)
-        timeout_s = max(1, int(args.get("timeout_s", entrypoint.timeout_s)))
-
-        install_results: list[dict[str, Any]] = []
-        verify_results: list[dict[str, Any]] = []
-        command_cwd = str(skill.path) if entrypoint.cwd == "skill" else str(runtime.project.project_root)
-        for template in entrypoint.install:
-            command = self.resolve_entrypoint_placeholders(template, template_values)
-            install_results.append(self.run_shell_workflow_command(command, env, timeout_s, cwd=command_cwd))
-        for template in entrypoint.verify:
-            command = self.resolve_entrypoint_placeholders(template, template_values)
-            verify_results.append(self.run_shell_workflow_command(command, env, timeout_s, cwd=command_cwd))
-        command = self.resolve_entrypoint_placeholders(entrypoint.command, template_values)
-        run_data = self.run_shell_workflow_command(command, env, timeout_s, cwd=command_cwd)
-        return {
-            "skill_id": skill.id,
-            "entrypoint": entrypoint.name,
-            "command": command,
-            "install_results": install_results,
-            "verify_results": verify_results,
-            "stdout": run_data.get("stdout", ""),
-            "stderr": run_data.get("stderr", ""),
-            "returncode": run_data.get("returncode", 0),
-            "cwd": run_data.get("cwd", ""),
-        }
 
     def normalize_result(self, result: Any, duration_ms: int) -> dict[str, Any]:
         if isinstance(result, dict) and {"ok", "data", "error"}.issubset(result.keys()):

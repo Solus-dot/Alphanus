@@ -20,9 +20,6 @@ class EvidenceGuard:
         if record.name == "shell_command":
             meta = record.result.get("meta")
             return bool(isinstance(meta, dict) and meta.get("project_changed"))
-        if record.name == "run_skill":
-            meta = record.result.get("meta")
-            return bool(isinstance(meta, dict) and meta.get("project_changed"))
         reg = self.skill_runtime.tool_registration(record.name)
         capability = str(getattr(reg, "capability", "") or "").strip().lower()
         return capability.startswith("project_") and self.skill_runtime.tool_is_mutating(record.name)

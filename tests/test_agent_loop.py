@@ -107,6 +107,7 @@ def execute(tool_name, args, env):
 
     return SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )

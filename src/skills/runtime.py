@@ -19,11 +19,8 @@ from core.tool_results import ToolResult, error_result, ok_result
 from skills.skill_discovery import SkillDiscovery
 from skills.skill_executor import SkillExecutor
 from skills.skill_inventory import SkillInventoryLoader
-from skills.skill_parser import SKILL_DOC, SkillEntrypointDef, SkillManifest, extract_skill_doc, parse_agentskill_manifest
-from skills.skill_process_env import SkillProcessEnvBuilder
+from skills.skill_parser import SKILL_DOC, SkillManifest, extract_skill_doc, parse_agentskill_manifest
 from skills.skill_registry import SkillRegistry
-from skills.skill_run_validation import SkillRunValidator
-from skills.skill_script_inspector import SkillScriptInspector
 from skills.skill_selector import SkillSelector
 from skills.skill_tool_schema import SkillToolSchemaBuilder
 
@@ -43,7 +40,6 @@ _CORE_TOOL_NAMES = frozenset(
     }
 )
 
-_RUN_SKILL_TOOL_NAME = "run_skill"
 _REQUEST_USER_INPUT_TOOL_NAME = "request_user_input"
 _SKILLS_LIST_TOOL_NAME = "skills_list"
 _SKILL_VIEW_TOOL_NAME = "skill_view"
@@ -108,9 +104,6 @@ class RegisteredTool:
     module: object | None = None
     module_path: Path | None = None
     module_name: str = ""
-    cwd: str = ""
-    command_template: str = ""
-    timeout_s: int = 30
 
 
 class SkillRuntime:
@@ -151,24 +144,19 @@ class SkillRuntime:
         self._list_skills_cache: tuple[SkillManifest, ...] | None = None
         self._enabled_skills_cache: tuple[SkillManifest, ...] | None = None
         self._skill_catalog_cache: dict[int, str] = {}
-        self._runnable_scripts_cache: dict[tuple[str, str], tuple[str, ...]] = {}
         self._tools_schema_cache: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
         self._python_module_probe_cache: dict[str, bool] = {}
-        self._script_inspector = SkillScriptInspector(self)
-        self._tool_schema_builder = SkillToolSchemaBuilder(self, run_skill_tool_name=_RUN_SKILL_TOOL_NAME)
+        self._tool_schema_builder = SkillToolSchemaBuilder(self)
         self._inventory_loader = SkillInventoryLoader(self)
         self._skill_executor = SkillExecutor(
             self,
             skills_list_tool_name=_SKILLS_LIST_TOOL_NAME,
             skill_view_tool_name=_SKILL_VIEW_TOOL_NAME,
             request_user_input_tool_name=_REQUEST_USER_INPUT_TOOL_NAME,
-            run_skill_tool_name=_RUN_SKILL_TOOL_NAME,
             ok_fn=_ok,
             err_fn=_err,
             protocol_error_cls=ToolProtocolError,
         )
-        self._run_validator = SkillRunValidator(self)
-        self._proc_env_base = self._build_proc_env_base()
         self.selector = SkillSelector(self)
         self.load_skills()
 
@@ -199,21 +187,8 @@ class SkillRuntime:
             network=bool(permissions_cfg.get("network", False)),
         )
 
-    def refresh_process_env(self) -> None:
-        self._proc_env_base = self._build_proc_env_base()
-
     def is_read_only_mode(self) -> bool:
         return self.permission_mode == "read-only"
-
-    def _build_proc_env_base(self) -> dict[str, str]:
-        return SkillProcessEnvBuilder.build_base_env(
-            project_root=self.project.project_root,
-            memory_path=self.memory.storage_path,
-            python_executable=self.python_executable,
-            skills_dir=self.skills_dir,
-            bundled_skills_dir=self.bundled_skills_dir,
-            config=self.config,
-        )
 
     def _discover_skill_roots(self) -> list[Path]:
         roots = [self.skills_dir, *self.extra_skill_dirs]
@@ -296,7 +271,8 @@ class SkillRuntime:
             return None
         manifest = parse_agentskill_manifest(child, skill_doc, include_prompt=False)
         manifest.bundled_files = self._bundled_files_for_path(child)
-        manifest.execution_allowed = True
+        reviewed_root = self.bundled_skills_dir or (Path(__file__).resolve().parents[2] / "bundled-skills")
+        manifest.execution_allowed = child.resolve().is_relative_to(reviewed_root.resolve())
         manifest.adapter = str(manifest.adapter or "agentskills")
         return manifest
 
@@ -317,12 +293,9 @@ class SkillRuntime:
         self._list_skills_cache = None
         self._enabled_skills_cache = None
         self._skill_catalog_cache = {}
-        self._runnable_scripts_cache = {}
         self._tools_schema_cache = {}
 
     def _refresh_skill_runtime_indexes(self) -> None:
-        for skill in self.enabled_skills():
-            self._script_inspector.skill_runnable_scripts(skill)
         self._rebuild_skill_alias_index()
 
     @staticmethod
@@ -437,25 +410,6 @@ class SkillRuntime:
             },
             required=["question"],
         )
-        register(
-            _RUN_SKILL_TOOL_NAME,
-            "skill",
-            "skill_executor",
-            "Run the selected skill's single declared executable path. Use either an entrypoint or a bundled script, not both.",
-            True,
-            ("run",),
-            {
-                "skill_id": {"type": "string"},
-                "entrypoint": {"type": "string"},
-                "script": {"type": "string"},
-                "params": {"type": "object"},
-                "argv": {"type": "array", "items": {"type": "string"}},
-                "stdin": {"type": "string"},
-                "timeout_s": {"type": "integer"},
-            },
-            additionalProperties=False,
-        )
-
     def load_skills(self) -> None:
         self._inventory_loader.load_skills()
 
@@ -525,49 +479,8 @@ class SkillRuntime:
                     spec,
                     module_path=tools_path,
                     module_name=module_name,
-                    cwd=str(manifest.path),
                 ):
                     local_registered.append(tool_name)
-
-        for definition in list(getattr(manifest, "tool_definitions", []) or []):
-            if not isinstance(definition, dict):
-                continue
-            tool_name = str(definition.get("name", "")).strip()
-            if not tool_name:
-                continue
-            spec = definition.get("spec")
-            if not isinstance(spec, dict):
-                continue
-            command_template = str(definition.get("command", "")).strip()
-            if not command_template:
-                continue
-            cwd = str(definition.get("cwd", "skill")).strip().lower() or "skill"
-            if cwd not in {"project", "skill"}:
-                self._append_unique(manifest.validation_warnings, f"tool '{tool_name}' has unsupported cwd '{cwd}'; defaulting to skill")
-                cwd = "skill"
-            timeout_raw = definition.get("timeout_s", 30)
-            try:
-                timeout_s = int(timeout_raw)
-            except (TypeError, ValueError):
-                self._append_unique(
-                    manifest.validation_warnings, f"tool '{tool_name}' has invalid timeout {timeout_raw!r}; defaulting to 30"
-                )
-                timeout_s = 30
-            if timeout_s <= 0:
-                self._append_unique(
-                    manifest.validation_warnings, f"tool '{tool_name}' has non-positive timeout {timeout_s}; defaulting to 30"
-                )
-                timeout_s = 30
-            if self._register_tool(
-                tool_name,
-                manifest,
-                spec,
-                soft=True,
-                cwd=cwd,
-                command_template=command_template,
-                timeout_s=timeout_s,
-            ):
-                local_registered.append(tool_name)
 
         if manifest.required_tools:
             local_set = set(local_registered)
@@ -644,7 +557,7 @@ class SkillRuntime:
     def enabled_skills(self) -> list[SkillManifest]:
         if self._enabled_skills_cache is None:
             self._enabled_skills_cache = tuple(
-                skill for skill in self.skills.values() if skill.enabled and skill.available and skill.execution_allowed
+                skill for skill in self.skills.values() if skill.enabled and skill.available
             )
         return list(self._enabled_skills_cache)
 
@@ -656,7 +569,7 @@ class SkillRuntime:
             if not key or key in seen:
                 continue
             skill = self.skills.get(key)
-            if not skill or not skill.enabled or not skill.available or not skill.execution_allowed:
+            if not skill or not skill.enabled or not skill.available:
                 continue
             out.append(skill)
             seen.add(key)
@@ -716,15 +629,13 @@ class SkillRuntime:
             tag_text = f" tags: {tags}." if tags else ""
             tools = ", ".join(skill.allowed_tools[:4])
             tool_text = f" tools: {tools}." if tools else ""
-            entrypoints = ", ".join(entry.name for entry in skill.entrypoints[:3])
-            entrypoint_text = f" entrypoints: {entrypoints}." if entrypoints else ""
             produces = ", ".join(skill.produces[:3])
             produce_text = f" produces: {produces}." if produces else ""
             tier = self.skill_provenance_label(skill)
             location = self.skill_source_label(skill)
             location_text = f" location: {location}." if location else ""
             lines.append(
-                f"- {skill.id}: {skill.description}. source: {tier}.{tag_text}{produce_text}{tool_text}{entrypoint_text}{location_text}"
+                f"- {skill.id}: {skill.description}. source: {tier}.{tag_text}{produce_text}{tool_text}{location_text}"
             )
         return "\n".join(lines)
 
@@ -743,8 +654,8 @@ class SkillRuntime:
                 "availability_code": skill.availability_code or "ready",
                 "availability_reason": skill.availability_reason or "ready",
                 "tools": self._reported_skill_tools(skill),
-                "scripts": self._reported_skill_scripts(skill),
-                "entrypoints": [entry.name for entry in self._reported_skill_entrypoints(skill)],
+                "scripts": [],
+                "entrypoints": [],
                 "user_invocable": bool(skill.user_invocable),
                 "model_invocable": not bool(skill.disable_model_invocation),
                 "validation_errors": list(skill.validation_errors),
@@ -807,26 +718,6 @@ class SkillRuntime:
             return []
         return sorted(reg.name for reg in self._tool_registry.values() if reg.skill_id == skill.id)
 
-    def _reported_skill_scripts(self, skill: SkillManifest) -> list[str]:
-        if not getattr(skill, "execution_allowed", True):
-            return []
-        return self._script_inspector.skill_runnable_scripts(skill)
-
-    def _reported_skill_entrypoints(self, skill: SkillManifest) -> list[SkillEntrypointDef]:
-        if not getattr(skill, "execution_allowed", True):
-            return []
-        return skill.entrypoints
-
-    def _exposed_relevant_skill_scripts(self, skill: SkillManifest) -> list[str]:
-        if skill.allowed_tools and _RUN_SKILL_TOOL_NAME not in skill.allowed_tools:
-            return []
-        return self._reported_skill_scripts(skill)
-
-    def _exposed_relevant_skill_entrypoints(self, skill: SkillManifest) -> list[SkillEntrypointDef]:
-        if skill.allowed_tools and _RUN_SKILL_TOOL_NAME not in skill.allowed_tools:
-            return []
-        return self._reported_skill_entrypoints(skill)
-
     def select_skills(self, ctx: SkillContext, top_n: int = 3) -> list[SkillManifest]:
         return self.selector.select_skills(ctx, top_n=top_n)
 
@@ -841,8 +732,6 @@ class SkillRuntime:
         capability = str(reg.capability or "").strip().lower()
         if reg.name in {_SKILLS_LIST_TOOL_NAME, _SKILL_VIEW_TOOL_NAME, _REQUEST_USER_INPUT_TOOL_NAME}:
             return True
-        if reg.name == _RUN_SKILL_TOOL_NAME:
-            return mode in {"project-write", "danger-full-access"}
         if capability == "run_shell_command":
             return mode == "project-write"
         if capability.startswith(("web_", "utility_")):
@@ -875,7 +764,7 @@ class SkillRuntime:
         reg = self.tool_registration(tool_name)
         if reg is None:
             normalized_name = str(tool_name).strip()
-            return normalized_name not in (_CORE_TOOL_NAMES | _ALWAYS_AVAILABLE_TOOL_NAMES | {_RUN_SKILL_TOOL_NAME, "shell_command"})
+            return normalized_name not in (_CORE_TOOL_NAMES | _ALWAYS_AVAILABLE_TOOL_NAMES | {"shell_command"})
         capability = str(reg.capability or "").strip().lower()
         # local_search is a read-only, project-root-scoped capability. Blocking
         # it here makes the bundled local-search skill unusable precisely when a
@@ -1047,16 +936,6 @@ class SkillRuntime:
         selected_map = {skill.id: skill for skill in selected}
         allowed: list[str] = []
         for tool_name, reg in self._tool_registry.items():
-            if tool_name == _RUN_SKILL_TOOL_NAME:
-                if not self._tool_allowed_for_permission_mode(reg):
-                    continue
-                if any(
-                    (self._exposed_relevant_skill_entrypoints(skill) or self._exposed_relevant_skill_scripts(skill))
-                    for skill in selected
-                    if not skill.disable_model_invocation
-                ):
-                    allowed.append(tool_name)
-                continue
             if reg.skill_id == "__runtime__":
                 continue
             if not self._tool_allowed_for_permission_mode(reg):
@@ -1221,8 +1100,6 @@ class SkillRuntime:
         selected: list[SkillManifest],
     ) -> dict[str, Any]:
         validated = self._validate_tool_args(reg, args)
-        if reg.name == _RUN_SKILL_TOOL_NAME:
-            validated = self._run_validator.validate_run_skill_args(validated, selected)
         return validated
 
     def execute_tool_call(

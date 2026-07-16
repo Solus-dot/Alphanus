@@ -64,6 +64,7 @@ def execute(tool_name, args, env):
     )
     return SkillRuntime(
         skills_dir=str(skills),
+        bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
     )
@@ -796,39 +797,6 @@ def test_orchestrator_records_project_evidence_and_policy_blocks(tmp_path: Path)
     assert evidence["has_successful_mutation"] is True
     assert "shell_command" in evidence["successful_mutating_tools"]
     assert "shell_command" in evidence["policy_blocked_tools"]
-
-
-def test_orchestrator_counts_run_skill_project_changes_as_mutations(tmp_path: Path) -> None:
-    _runtime, orchestrator, state = _turn_state(
-        tmp_path,
-        user_input="create a report through the selected skill",
-        time_sensitive=False,
-        project_action=True,
-    )
-    call = ToolCall(
-        stream_id="call_1",
-        index=0,
-        id="call_1",
-        name="run_skill",
-        arguments={"skill_id": "reporter", "entrypoint": "create_report"},
-    )
-
-    orchestrator.record_tool_effects(
-        state,
-        call,
-        {
-            "ok": True,
-            "data": {"stdout": "", "stderr": "", "returncode": 0},
-            "error": None,
-            "meta": {"project_changed": True},
-        },
-    )
-
-    evidence = orchestrator.evidence_guard.project_action_evidence(state)
-
-    assert orchestrator.evidence_guard.project_mutation_count(state) == 1
-    assert evidence["has_successful_mutation"] is True
-    assert "run_skill" in evidence["successful_mutating_tools"]
 
 
 def _patch_project_tool_runtime(mocker, runtime: SkillRuntime, *, read_ok: bool = True) -> None:
