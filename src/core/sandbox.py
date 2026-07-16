@@ -98,7 +98,14 @@ def _is_single_git_command(command: str) -> bool:
     return executable == "git"
 
 
-def _run_subprocess(argv: list[str], *, cwd: Path, timeout_s: int) -> dict[str, Any]:
+def run_bounded_process(
+    argv: list[str],
+    *,
+    cwd: Path,
+    timeout_s: int,
+    env: dict[str, str] | None = None,
+    stdin: str = "",
+) -> dict[str, Any]:
     start = time.perf_counter()
     safe_env = {
         key: value for key, value in os.environ.items() if key in {"HOME", "LANG", "LC_ALL", "PATH", "SHELL", "TERM", "TMPDIR", "TZ"}
@@ -107,10 +114,10 @@ def _run_subprocess(argv: list[str], *, cwd: Path, timeout_s: int) -> dict[str, 
         argv,
         shell=False,
         cwd=str(cwd),
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.PIPE if stdin else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env=safe_env,
+        env=env or safe_env,
         start_new_session=True,
     )
     captured = {"stdout": bytearray(), "stderr": bytearray()}
@@ -133,6 +140,9 @@ def _run_subprocess(argv: list[str], *, cwd: Path, timeout_s: int) -> dict[str, 
     ]
     for reader in readers:
         reader.start()
+    if stdin and proc.stdin is not None:
+        proc.stdin.write(stdin.encode("utf-8"))
+        proc.stdin.close()
     try:
         proc.wait(timeout=timeout_s)
     except subprocess.TimeoutExpired:
@@ -215,7 +225,7 @@ class SandboxRunner:
         return "unsupported"
 
     def _run_unsandboxed(self, spec: SandboxCommand) -> dict[str, Any]:
-        return _run_subprocess([_shell(), "-c", spec.command], cwd=spec.cwd, timeout_s=spec.timeout_s)
+        return run_bounded_process([_shell(), "-c", spec.command], cwd=spec.cwd, timeout_s=spec.timeout_s)
 
     def _run_macos(self, spec: SandboxCommand) -> dict[str, Any]:
         sandbox_exec = shutil.which("sandbox-exec")
@@ -236,7 +246,7 @@ class SandboxRunner:
                     "-c",
                     spec.command,
                 ]
-                return _run_subprocess(argv, cwd=spec.cwd, timeout_s=spec.timeout_s)
+                return run_bounded_process(argv, cwd=spec.cwd, timeout_s=spec.timeout_s)
         finally:
             try:
                 profile_path.unlink()
@@ -346,7 +356,7 @@ class SandboxRunner:
                 root_text = str(root)
                 argv.extend(["--ro-bind", root_text, root_text])
         argv.extend(["--chdir", cwd, _shell(), "-c", spec.command])
-        return _run_subprocess(argv, cwd=spec.project_root, timeout_s=spec.timeout_s)
+        return run_bounded_process(argv, cwd=spec.project_root, timeout_s=spec.timeout_s)
 
     @staticmethod
     def _setup_error(message: str) -> dict[str, Any]:

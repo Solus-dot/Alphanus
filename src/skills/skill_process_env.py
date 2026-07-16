@@ -4,9 +4,10 @@ import json
 import logging
 import os
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
+
+from core.sandbox import run_bounded_process
 
 
 class SkillProcessEnvBuilder:
@@ -41,16 +42,11 @@ class SkillProcessEnvBuilder:
         npm_path = shutil.which("npm")
         if npm_path:
             try:
-                proc = subprocess.run(
-                    [npm_path, "root", "-g"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
+                proc = run_bounded_process([npm_path, "root", "-g"], cwd=project_root, timeout_s=5)
             except Exception as exc:
                 logging.debug("npm root probe failed: %s", exc)
                 proc = None
-            node_root = (proc.stdout or "").strip() if proc and proc.returncode == 0 else ""
+            node_root = str(proc["stdout"] or "").strip() if proc and proc["returncode"] == 0 else ""
             if node_root:
                 existing_node_path = env.get("NODE_PATH", "")
                 env["NODE_PATH"] = node_root if not existing_node_path else node_root + os.pathsep + existing_node_path

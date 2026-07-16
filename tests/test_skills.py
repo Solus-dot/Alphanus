@@ -1389,13 +1389,12 @@ def test_runtime_env_exposes_global_npm_root_as_node_path(tmp_path: Path, monkey
     home.mkdir()
     ws.mkdir()
 
-    class _Proc:
-        returncode = 0
-        stdout = "/opt/homebrew/lib/node_modules\n"
-        stderr = ""
-
     monkeypatch.setattr(skill_process_env_module.shutil, "which", lambda name: "/opt/homebrew/bin/npm" if name == "npm" else None)
-    monkeypatch.setattr(skill_process_env_module.subprocess, "run", lambda *args, **kwargs: _Proc())
+    monkeypatch.setattr(
+        skill_process_env_module,
+        "run_bounded_process",
+        lambda *args, **kwargs: {"returncode": 0, "stdout": "/opt/homebrew/lib/node_modules\n", "stderr": ""},
+    )
 
     runtime = SkillRuntime(
         skills_dir=str(skills),

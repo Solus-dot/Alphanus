@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from core.sandbox import run_bounded_process
 from skills.skill_parser import SkillManifest
 
 SCRIPT_INTERPRETER_BY_EXT = {
@@ -186,19 +187,18 @@ class SkillScriptInspector:
             return available
 
         try:
-            proc = subprocess.run(
+            proc = run_bounded_process(
                 [
                     python_exec,
                     "-c",
                     "import importlib.util,sys; raise SystemExit(0 if importlib.util.find_spec(sys.argv[1]) else 1)",
                     module_name,
                 ],
-                capture_output=True,
-                text=True,
-                timeout=5,
+                cwd=runtime.project.project_root,
+                timeout_s=5,
                 env=runtime._proc_env_base,
             )
-            available = proc.returncode == 0
+            available = proc["returncode"] == 0
         except (OSError, subprocess.SubprocessError):
             available = False
         runtime._python_module_probe_cache[module_name] = available

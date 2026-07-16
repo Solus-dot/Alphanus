@@ -1,8 +1,30 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
-from core.sandbox import SandboxCommand, SandboxConfig, SandboxRunner
+import pytest
+
+from core.sandbox import MAX_SANDBOX_OUTPUT_BYTES, SandboxCommand, SandboxConfig, SandboxRunner, run_bounded_process
+
+
+def test_bounded_process_caps_output_and_accepts_stdin(tmp_path: Path) -> None:
+    result = run_bounded_process(
+        [sys.executable, "-c", "import sys; print(sys.stdin.read()); sys.stderr.write('e' * 25000)"],
+        cwd=tmp_path,
+        timeout_s=5,
+        stdin="hello",
+    )
+
+    assert result["stdout"].strip() == "hello"
+    assert len(result["stderr"].encode()) == MAX_SANDBOX_OUTPUT_BYTES
+    assert result["stderr_truncated"] is True
+
+
+def test_bounded_process_times_out_process_group(tmp_path: Path) -> None:
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_bounded_process([sys.executable, "-c", "import time; time.sleep(60)"], cwd=tmp_path, timeout_s=1)
 
 
 def test_preflight_success_message_does_not_describe_available_backend_as_missing(monkeypatch) -> None:
@@ -32,7 +54,7 @@ def test_linux_backend_unshares_network_only_when_disabled(tmp_path: Path, monke
             "duration_ms": 1,
         }
 
-    monkeypatch.setattr("core.sandbox._run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr("core.sandbox.run_bounded_process", fake_run_subprocess)
 
     runner.run(
         SandboxCommand(

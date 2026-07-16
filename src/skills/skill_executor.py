@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
+from core.sandbox import run_bounded_process
+
 
 class SkillExecutor:
     def __init__(
@@ -44,9 +46,7 @@ class SkillExecutor:
         try:
             skill.path.resolve().relative_to(bundled_root.resolve())
         except ValueError as exc:
-            raise PermissionError(
-                f"Executable user skill '{skill.id}' is disabled; only reviewed bundled skills may execute"
-            ) from exc
+            raise PermissionError(f"Executable user skill '{skill.id}' is disabled; only reviewed bundled skills may execute") from exc
 
     def execute_registered_tool(self, reg, args: dict[str, Any], env, ctx) -> Any:
         runtime = self.runtime
@@ -197,19 +197,15 @@ class SkillExecutor:
         if not isinstance(params_payload, dict):
             params_payload = {}
         proc_env["ALPHANUS_TOOL_ARGS_JSON"] = json.dumps(params_payload, ensure_ascii=False)
-        proc = subprocess.run(
+        proc = run_bounded_process(
             list(interpreter_cmd) + [str(script_path)] + argv,
-            cwd=str(skill.path),
-            capture_output=True,
-            text=True,
-            input=str(args.get("stdin") or ""),
-            timeout=max(1, int(args.get("timeout_s", 30))),
+            cwd=skill.path,
+            timeout_s=max(1, int(args.get("timeout_s", 30))),
             env=proc_env,
+            stdin=str(args.get("stdin") or ""),
         )
-        if proc.returncode != 0:
-            stderr = (proc.stderr or "").strip()
-            stdout = (proc.stdout or "").strip()
-            msg = stderr or stdout or f"Skill script failed with exit code {proc.returncode}"
+        if proc["returncode"] != 0:
+            msg = (proc["stderr"] or proc["stdout"] or f"Skill script failed with exit code {proc['returncode']}").strip()
             lowered = msg.lower()
             if "permissionerror" in lowered or "operation not permitted" in lowered:
                 raise PermissionError(msg)
@@ -217,7 +213,7 @@ class SkillExecutor:
                 raise FileNotFoundError(msg)
             raise RuntimeError(msg)
 
-        out = (proc.stdout or "").strip()
+        out = str(proc["stdout"] or "").strip()
         if not out:
             return {
                 "skill_id": skill.id,
@@ -232,7 +228,7 @@ class SkillExecutor:
                 "skill_id": skill.id,
                 "script": rel_script,
                 "stdout": out,
-                "stderr": (proc.stderr or "").strip(),
+                "stderr": str(proc["stderr"] or "").strip(),
             }
         if isinstance(parsed, dict):
             parsed.setdefault("skill_id", skill.id)
