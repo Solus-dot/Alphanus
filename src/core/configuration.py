@@ -194,54 +194,33 @@ def _coerce_string_list(value: Any, default: Iterable[str], *, path: str, warnin
     return out
 
 
-def _normalize_fields(
-    values: dict[str, Any],
-    defaults: dict[str, Any],
-    prefix: str,
-    warnings: list[str],
-    rules: Iterable[tuple[str, str, float | None, float | None]],
-    *,
-    keep_unknown: bool = True,
+def _normalize_model(
+    values: dict[str, Any], model_type: Any, prefix: str, warnings: list[str], *, exclude: Iterable[str] = ()
 ) -> dict[str, Any]:
-    source = values
-    values = values if keep_unknown else {}
-    for key, kind, minimum, maximum in rules:
-        options = {"path": f"{prefix}.{key}", "warnings": warnings}
+    defaults = model_type().model_dump()
+    normalized = dict(values) if model_type.model_config.get("extra") == "allow" else {}
+    excluded = set(exclude)
+    for key, field in model_type.model_fields.items():
+        if key in excluded or key not in defaults:
+            continue
         default = defaults[key]
-        if kind == "bool":
-            values[key] = _coerce_bool(source.get(key), bool(default), **options)
-        elif kind == "int":
-            values[key] = _coerce_int(
-                source.get(key),
-                int(default),
-                minimum=None if minimum is None else int(minimum),
-                maximum=None if maximum is None else int(maximum),
-                **options,
-            )
-        elif kind == "float":
-            values[key] = _coerce_float(source.get(key), float(default), minimum=minimum, maximum=maximum, **options)
-        elif kind == "list":
-            values[key] = _coerce_string_list(source.get(key), default, **options)
-        else:
-            values[key] = _coerce_string(source.get(key), str(default), allow_empty=kind != "required", **options)
-    return values
-
-
-def _normalize_section(
-    values: dict[str, Any],
-    defaults: dict[str, Any],
-    prefix: str,
-    warnings: list[str],
-    *,
-    fields: Iterable[tuple[str, str, float | None, float | None]] = (),
-    choices: Iterable[tuple[str, Iterable[str], bool]] = (),
-    keep_unknown: bool = True,
-) -> dict[str, Any]:
-    normalized = _normalize_fields(values, defaults, prefix, warnings, fields, keep_unknown=keep_unknown)
-    for key, allowed, upper in choices:
-        normalized[key] = _normalize_choice(
-            values.get(key), str(defaults[key]), allowed, path=f"{prefix}.{key}", warnings=warnings, upper=upper
-        )
+        options = {"path": f"{prefix}.{key}", "warnings": warnings}
+        minimum = maximum = None
+        for constraint in field.metadata:
+            minimum = getattr(constraint, "ge", minimum)
+            maximum = getattr(constraint, "le", maximum)
+        value = values.get(key)
+        kind = field.annotation if field.annotation in {bool, int, float, str, list} else type(default)
+        if kind is bool:
+            normalized[key] = _coerce_bool(value, default, **options)
+        elif kind is int:
+            normalized[key] = _coerce_int(value, default, minimum=minimum, maximum=maximum, **options)
+        elif kind is float:
+            normalized[key] = _coerce_float(value, default, minimum=minimum, maximum=maximum, **options)
+        elif kind is list:
+            normalized[key] = _coerce_string_list(value, default, **options)
+        elif kind is str:
+            normalized[key] = _coerce_string(value, default, **options)
     return normalized
 
 
@@ -377,6 +356,26 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
     if not isinstance(raw_config, dict):
         raise ValueError("Global config must be a JSON object")
 
+    from core.config_model import (
+        AgentConfig,
+        AgentsConfig,
+        ContextConfig,
+        EmbeddingsConfig,
+        LoggingConfig,
+        MemoryConfig,
+        PermissionsConfig,
+        ProjectConfig,
+        RetrievalConfig,
+        RuntimeConfig,
+        SandboxConfig,
+        SearchConfig,
+        SkillsConfig,
+        TreeCompactionConfig,
+        UiConfig,
+        UiTimingConfig,
+        validated_config,
+    )
+
     warnings: list[str] = []
     sanitized_input, stripped = strip_secret_fields(raw_config)
     legacy_errors = _legacy_config_errors(sanitized_input)
@@ -505,24 +504,6 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         _warn(warnings, "agent.auth_header_template: missing '{api_key}' placeholder, using default")
         auth_template = str(default_agent.get("auth_header_template", "Authorization: Bearer {api_key}"))
     agent_cfg["auth_header_template"] = auth_template
-    _normalize_fields(
-        agent_cfg,
-        default_agent,
-        "agent",
-        warnings,
-        (
-            ("connect_timeout_s", "float", 0.1, 60.0),
-            ("request_timeout_s", "float", 5.0, 600.0),
-            ("readiness_timeout_s", "float", 1.0, 300.0),
-            ("readiness_poll_s", "float", 0.05, 10.0),
-            ("per_turn_retries", "int", 0, 5),
-            ("retry_backoff_s", "float", 0.0, 30.0),
-            ("enable_thinking", "bool", None, None),
-            ("tls_verify", "bool", None, None),
-            ("allow_cross_host_endpoints", "bool", None, None),
-            ("ca_bundle_path", "str", None, None),
-        ),
-    )
     raw_max_tokens = agent_cfg.get("max_tokens")
     if raw_max_tokens is None:
         agent_cfg["max_tokens"] = None
@@ -538,24 +519,7 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
             maximum=131072,
         )
         agent_cfg["max_tokens"] = parsed_max_tokens if parsed_max_tokens > 0 else None
-    _normalize_fields(
-        agent_cfg,
-        default_agent,
-        "agent",
-        warnings,
-        (
-            ("context_budget_max_tokens", "int", 256, 262144),
-            ("max_action_depth", "int", 1, 100),
-            ("max_tool_result_chars", "int", 500, 200000),
-            ("max_reasoning_chars", "int", 0, 200000),
-            ("compact_tool_results_in_history", "bool", None, None),
-            ("compact_tool_result_tools", "list", None, None),
-            ("classifier_model", "str", None, None),
-            ("classifier_use_primary_model", "bool", None, None),
-            ("enable_structured_classification", "bool", None, None),
-            ("max_classifier_tokens", "int", 32, 4096),
-        ),
-    )
+    agent_cfg = _normalize_model(agent_cfg, AgentConfig, "agent", warnings)
     raw_budgets = agent_cfg.get("tool_budgets")
     if isinstance(raw_budgets, dict):
         clean_budgets: dict[str, int] = {}
@@ -578,55 +542,27 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
     merged["agent"] = agent_cfg
 
     simple_sections = {
-        "project": ((), (("root_strategy", PROJECT_ROOT_STRATEGIES, False),), False),
-        "memory": (
-            (
-                ("min_score_default", "float", 0.0, 1.0),
-                ("recall_min_score_default", "float", 0.0, 1.0),
-                ("replace_min_score_default", "float", 0.0, 1.0),
-                ("backup_revisions", "int", 0, 20),
-                ("auto_capture", "bool", None, None),
-            ),
-            (),
-            False,
-        ),
-        "context": (
-            (("context_limit", "int", 512, 262144), ("keep_last_n", "int", 1, 100), ("safety_margin", "int", 0, 100000)),
-            (),
-            True,
-        ),
-        "skills": (
-            (
-                ("strict_capability_policy", "bool", None, None),
-                ("python_executable", "str", None, None),
-                ("paths", "list", None, None),
-            ),
-            (),
-            False,
-        ),
-        "agents": ((("enable_skill_agents", "bool", None, None),), (), True),
-        "runtime": ((("ask_user_tool", "bool", None, None),), (), True),
-        "permissions": (
-            (("network", "bool", None, None),),
-            (("mode", PERMISSION_MODES, False), ("approvals", APPROVAL_MODES, False)),
-            False,
-        ),
-        "sandbox": (
-            (("fail_closed", "bool", None, None),),
-            (("backend", SANDBOX_BACKENDS, False),),
-            False,
-        ),
+        "project": (ProjectConfig, (("root_strategy", PROJECT_ROOT_STRATEGIES, False),)),
+        "memory": (MemoryConfig, ()),
+        "context": (ContextConfig, ()),
+        "skills": (SkillsConfig, ()),
+        "agents": (AgentsConfig, ()),
+        "runtime": (RuntimeConfig, ()),
+        "permissions": (PermissionsConfig, (("mode", PERMISSION_MODES, False), ("approvals", APPROVAL_MODES, False))),
+        "sandbox": (SandboxConfig, (("backend", SANDBOX_BACKENDS, False),)),
         "logging": (
-            (("path", "str", None, None),),
+            LoggingConfig,
             (("level", {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}, True), ("format", {"plain", "json"}, False)),
-            True,
         ),
     }
-    for name, (fields, choices, keep_unknown) in simple_sections.items():
+    for name, (model_type, choices) in simple_sections.items():
         values = merged.get(name, {}) if isinstance(merged.get(name), dict) else {}
-        merged[name] = _normalize_section(
-            values, DEFAULT_CONFIG[name], name, warnings, fields=fields, choices=choices, keep_unknown=keep_unknown
-        )
+        normalized = _normalize_model(values, model_type, name, warnings)
+        for key, allowed, upper in choices:
+            normalized[key] = _normalize_choice(
+                values.get(key), str(DEFAULT_CONFIG[name][key]), allowed, path=f"{name}.{key}", warnings=warnings, upper=upper
+            )
+        merged[name] = normalized
 
     context_cfg = merged["context"]
     if context_cfg["safety_margin"] >= context_cfg["context_limit"]:
@@ -694,38 +630,20 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         warnings=warnings,
     )
     search_cfg.update(
-        _normalize_fields(
+        _normalize_model(
             raw_search_cfg,
-            DEFAULT_CONFIG["search"],
+            SearchConfig,
             "search",
             warnings,
-            (
-                ("request_timeout_s", "float", 1.0, None),
-                ("request_retries", "int", 0, None),
-                ("request_retry_backoff_s", "float", 0.0, None),
-                ("fetch_max_redirects", "int", 0, None),
-                ("cache_first", "bool", None, None),
-                ("min_usable_results", "int", 1, None),
-                ("fetch_min_chars", "int", 1, None),
-            ),
-            keep_unknown=False,
+            exclude=("provider", "fallback_provider", "provider_chain", "searxng_base_url", "tavily_api_key_env"),
         )
     )
     merged["search"] = search_cfg
 
     retrieval_cfg = merged.get("retrieval", {}) if isinstance(merged.get("retrieval"), dict) else {}
     retrieval_default = DEFAULT_CONFIG["retrieval"]
-    _normalize_fields(
-        retrieval_cfg,
-        retrieval_default,
-        "retrieval",
-        warnings,
-        (
-            ("enabled", "bool", None, None),
-            ("web_ttl_hours", "float", 0.0, None),
-            ("max_chunks_per_record", "int", 1, None),
-            ("pre_context_top_k", "int", 0, 10),
-        ),
+    retrieval_cfg = _normalize_model(
+        retrieval_cfg, RetrievalConfig, "retrieval", warnings, exclude=("store_path", "embeddings")
     )
     raw_store_path = retrieval_cfg.get("store_path")
     retrieval_cfg["store_path"] = (
@@ -740,19 +658,7 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
     )
     embeddings_cfg = retrieval_cfg.get("embeddings", {}) if isinstance(retrieval_cfg.get("embeddings"), dict) else {}
     embeddings_default = retrieval_default["embeddings"]
-    _normalize_fields(
-        embeddings_cfg,
-        embeddings_default,
-        "retrieval.embeddings",
-        warnings,
-        (
-            ("enabled", "bool", None, None),
-            ("base_url", "str", None, None),
-            ("model", "str", None, None),
-            ("dimensions", "int", 0, None),
-            ("batch_size", "int", 1, None),
-        ),
-    )
+    embeddings_cfg = _normalize_model(embeddings_cfg, EmbeddingsConfig, "retrieval.embeddings", warnings)
     if embeddings_cfg["base_url"]:
         embeddings_cfg["base_url"] = _normalize_base_url(
             embeddings_cfg["base_url"],
@@ -790,51 +696,21 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         else:
             _warn(warnings, f"tui.theme: empty value, using {resolved_theme!r}")
     tui_cfg["theme"] = resolved_theme
-    _normalize_fields(
-        tui_cfg,
-        DEFAULT_CONFIG["tui"],
-        "tui",
-        warnings,
-        (("chat_log_max_lines", "int", 1000, 200000),),
-    )
+    tui_cfg = _normalize_model(tui_cfg, UiConfig, "tui", warnings, exclude=("theme", "timing", "tree_compaction"))
+    tui_cfg["theme"] = resolved_theme
     timing_cfg = tui_cfg.get("timing", {})
     if not isinstance(timing_cfg, dict):
         _warn(warnings, "tui.timing: expected object, using defaults")
         timing_cfg = {}
-    default_timing = DEFAULT_CONFIG["tui"]["timing"]
-    _normalize_fields(
-        timing_cfg,
-        default_timing,
-        "tui.timing",
-        warnings,
-        (
-            ("stream_drain_interval_s", "float", 0.001, 1.0),
-            ("scroll_interval_s", "float", 0.001, 1.0),
-            ("action_approval_timeout_s", "float", 1.0, 600.0),
-        ),
-    )
+    timing_cfg = _normalize_model(timing_cfg, UiTimingConfig, "tui.timing", warnings)
     tui_cfg["timing"] = timing_cfg
     tree_cfg = tui_cfg.get("tree_compaction", {})
     if not isinstance(tree_cfg, dict):
         _warn(warnings, "tui.tree_compaction: expected object, using defaults")
         tree_cfg = {}
-    default_tree = DEFAULT_CONFIG["tui"]["tree_compaction"]
-    _normalize_fields(
-        tree_cfg,
-        default_tree,
-        "tui.tree_compaction",
-        warnings,
-        (
-            ("enabled", "bool", None, None),
-            ("inactive_assistant_char_limit", "int", 1000, 200000),
-            ("inactive_tool_argument_char_limit", "int", 500, 100000),
-            ("inactive_tool_content_char_limit", "int", 1000, 200000),
-        ),
-    )
+    tree_cfg = _normalize_model(tree_cfg, TreeCompactionConfig, "tui.tree_compaction", warnings)
     tui_cfg["tree_compaction"] = tree_cfg
     merged["tui"] = tui_cfg
-
-    from core.config_model import validated_config
 
     return validated_config(merged), warnings
 
