@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Final
 
 from core.backend_profiles import (
@@ -25,26 +25,12 @@ class BackendCapabilities:
     strict_model_integrity: bool = False
 
     def to_json(self) -> dict[str, object]:
-        return {
-            "supports_chat": self.supports_chat,
-            "supports_responses": self.supports_responses,
-            "supports_tools": self.supports_tools,
-            "supports_multimodal_input": self.supports_multimodal_input,
-            "strip_stream_options": self.strip_stream_options,
-            "strip_chat_template_kwargs": self.strip_chat_template_kwargs,
-            "flatten_chat_image_url": self.flatten_chat_image_url,
-            "responses_input_blocks": self.responses_input_blocks,
-            "strict_model_integrity": self.strict_model_integrity,
-        }
+        return asdict(self)
 
 
 _DEFAULT_CAPABILITIES: Final[BackendCapabilities] = BackendCapabilities()
 _PROFILE_CAPABILITIES: Final[dict[str, BackendCapabilities]] = {
     "mlx_vlm": BackendCapabilities(
-        supports_chat=True,
-        supports_responses=True,
-        supports_tools=True,
-        supports_multimodal_input=True,
         strip_stream_options=True,
         strip_chat_template_kwargs=True,
         flatten_chat_image_url=True,
@@ -52,41 +38,24 @@ _PROFILE_CAPABILITIES: Final[dict[str, BackendCapabilities]] = {
         strict_model_integrity=True,
     ),
     "llamacpp": BackendCapabilities(
-        supports_chat=True,
         supports_responses=False,
-        supports_tools=True,
-        supports_multimodal_input=True,
-        strip_stream_options=False,
         strip_chat_template_kwargs=True,
         strict_model_integrity=True,
     ),
     "ollama": BackendCapabilities(
-        supports_chat=True,
         supports_responses=False,
-        supports_tools=True,
-        supports_multimodal_input=True,
         strip_stream_options=True,
         strip_chat_template_kwargs=True,
-        strict_model_integrity=False,
     ),
     "vllm": BackendCapabilities(
-        supports_chat=True,
         supports_responses=False,
-        supports_tools=True,
-        supports_multimodal_input=True,
-        strip_stream_options=False,
         strip_chat_template_kwargs=True,
-        strict_model_integrity=False,
     ),
     "lmstudio": BackendCapabilities(
-        supports_chat=True,
         supports_responses=False,
-        supports_tools=True,
-        supports_multimodal_input=True,
         strip_stream_options=True,
         strip_chat_template_kwargs=True,
         flatten_chat_image_url=True,
-        strict_model_integrity=False,
     ),
 }
 _ENDPOINT_FINGERPRINTS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
@@ -217,9 +186,7 @@ def rewrite_payload_for_profile(
     if capabilities.strip_chat_template_kwargs and "chat_template_kwargs" in out:
         template_kwargs = out.get("chat_template_kwargs")
         keep_disabled_thinking = (
-            isinstance(template_kwargs, dict)
-            and template_kwargs.get("enable_thinking") is False
-            and len(template_kwargs) == 1
+            isinstance(template_kwargs, dict) and template_kwargs.get("enable_thinking") is False and len(template_kwargs) == 1
         )
         if not keep_disabled_thinking:
             out.pop("chat_template_kwargs", None)

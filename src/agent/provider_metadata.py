@@ -1,11 +1,31 @@
 from __future__ import annotations
 
 import urllib.parse
+from collections.abc import Callable, Iterable
 
 from core.endpoint_modes import LOCAL_PROPS_PATH, LOCAL_SLOTS_PATH, OPENAI_MODELS_PATH
 
 
 class ProviderMetadataExtractor:
+    @staticmethod
+    def _walk(payload: object, keys: Iterable[str], convert: Callable[[object], object | None]) -> object | None:
+        visited: set[int] = set()
+
+        def walk(item: object) -> object | None:
+            if not isinstance(item, (dict, list)) or id(item) in visited:
+                return None
+            visited.add(id(item))
+            if isinstance(item, dict):
+                for key in keys:
+                    if (value := convert(item.get(key))) is not None:
+                        return value
+                children = item.values()
+            else:
+                children = item
+            return next((value for child in children if (value := walk(child)) is not None), None)
+
+        return walk(payload)
+
     @staticmethod
     def extract_model_name(payload: object) -> str | None:
         keys = (
@@ -17,7 +37,6 @@ class ProviderMetadataExtractor:
             "loaded_model",
             "default_model",
         )
-        visited: set[int] = set()
 
         def candidate(value: object) -> str | None:
             if not isinstance(value, str):
@@ -25,37 +44,8 @@ class ProviderMetadataExtractor:
             text = value.strip()
             return text or None
 
-        def walk(item: object) -> str | None:
-            if isinstance(item, dict):
-                marker = id(item)
-                if marker in visited:
-                    return None
-                visited.add(marker)
-                for key in keys:
-                    picked = candidate(item.get(key))
-                    if picked:
-                        return picked
-                for value in item.values():
-                    if isinstance(value, (dict, list)):
-                        picked = walk(value)
-                        if picked:
-                            return picked
-                return None
-            if isinstance(item, list):
-                marker = id(item)
-                if marker in visited:
-                    return None
-                visited.add(marker)
-                for value in item:
-                    picked = walk(value)
-                    if picked:
-                        return picked
-                return None
-            return None
-
-        if isinstance(payload, (dict, list)):
-            return walk(payload)
-        return None
+        result = ProviderMetadataExtractor._walk(payload, keys, candidate)
+        return result if isinstance(result, str) else None
 
     @staticmethod
     def extract_model_context_window(payload: object) -> int | None:
@@ -69,7 +59,6 @@ class ProviderMetadataExtractor:
             "n_ctx_slot",
             "n_ctx_train",
         )
-        visited: set[int] = set()
 
         def candidate_int(value: object) -> int | None:
             if isinstance(value, bool):
@@ -87,73 +76,24 @@ class ProviderMetadataExtractor:
                 return parsed if parsed > 0 else None
             return None
 
-        def from_item(item: object) -> int | None:
-            if isinstance(item, dict):
-                marker = id(item)
-                if marker in visited:
-                    return None
-                visited.add(marker)
-                for key in context_keys:
-                    picked = candidate_int(item.get(key))
-                    if picked is not None:
-                        return picked
-                for value in item.values():
-                    picked = from_item(value)
-                    if picked is not None:
-                        return picked
-                return None
-            if isinstance(item, list):
-                marker = id(item)
-                if marker in visited:
-                    return None
-                visited.add(marker)
-                for value in item:
-                    picked = from_item(value)
-                    if picked is not None:
-                        return picked
-                return None
-            return None
+        search_root = payload.get("data", payload) if isinstance(payload, dict) else payload
+        result = ProviderMetadataExtractor._walk(search_root, context_keys, candidate_int)
+        if result is None and search_root is not payload:
+            result = ProviderMetadataExtractor._walk(payload, context_keys, candidate_int)
+        return result if isinstance(result, int) else None
 
-        if isinstance(payload, dict):
-            data = payload.get("data")
-            if isinstance(data, list):
-                for item in data:
-                    picked = from_item(item)
-                    if picked is not None:
-                        return picked
-            elif data is not None:
-                picked = from_item(data)
-                if picked is not None:
-                    return picked
-            return from_item(payload)
-
-        if isinstance(payload, list):
-            for item in payload:
-                picked = from_item(item)
-                if picked is not None:
-                    return picked
-        return None
+    @staticmethod
+    def _metadata_endpoint(models_endpoint: str, target_path: str) -> str:
+        parsed = urllib.parse.urlparse(models_endpoint)
+        path = parsed.path or ""
+        suffix = OPENAI_MODELS_PATH if path.endswith(OPENAI_MODELS_PATH) else "/models" if path.endswith("/models") else ""
+        path = f"{path[: -len(suffix)]}{target_path}" if suffix else target_path
+        return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
 
     @staticmethod
     def props_endpoint_from_models_endpoint(models_endpoint: str) -> str:
-        parsed = urllib.parse.urlparse(models_endpoint)
-        path = parsed.path or ""
-        if path.endswith(OPENAI_MODELS_PATH):
-            path = path[: -len(OPENAI_MODELS_PATH)] + LOCAL_PROPS_PATH
-        elif path.endswith("/models"):
-            path = path[: -len("/models")] + LOCAL_PROPS_PATH
-        else:
-            path = LOCAL_PROPS_PATH
-        return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
+        return ProviderMetadataExtractor._metadata_endpoint(models_endpoint, LOCAL_PROPS_PATH)
 
     @staticmethod
     def slots_endpoint_from_models_endpoint(models_endpoint: str) -> str:
-        parsed = urllib.parse.urlparse(models_endpoint)
-        path = parsed.path or ""
-        if path.endswith(OPENAI_MODELS_PATH):
-            path = path[: -len(OPENAI_MODELS_PATH)] + LOCAL_SLOTS_PATH
-        elif path.endswith("/models"):
-            path = path[: -len("/models")] + LOCAL_SLOTS_PATH
-        else:
-            path = LOCAL_SLOTS_PATH
-        return urllib.parse.urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
+        return ProviderMetadataExtractor._metadata_endpoint(models_endpoint, LOCAL_SLOTS_PATH)
