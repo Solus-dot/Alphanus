@@ -67,6 +67,25 @@ class ToolLoopEngine:
     ) -> None:
         self.orchestrator._policy_block_tool(state=state, call=call, pass_id=pass_id, code=code, message=message, on_event=on_event)
 
+    @staticmethod
+    def _error_result(state: TurnState, error: str) -> tuple[str, AgentTurnResult]:
+        return "result", AgentTurnResult(
+            status="error",
+            content="",
+            reasoning=state.full_reasoning,
+            skill_exchanges=state.skill_exchanges,
+            error=error,
+        )
+
+    def _cancelled_after_tool(self, state: TurnState, call, stop_event, on_event) -> tuple[str, AgentTurnResult] | None:
+        if not self.orchestrator._is_stop_requested(stop_event):
+            return None
+        self.orchestrator.emit(
+            on_event,
+            {"type": "info", "text": f"Cancellation requested after completed tool '{call.name}'. Stopping turn."},
+        )
+        return "result", cancelled_turn_result(state)
+
     def _maybe_block_repeated_inspection(
         self,
         *,
@@ -180,16 +199,7 @@ class ToolLoopEngine:
                 cancelled_turn_result(state),
             )
         if not stream_result.tool_calls:
-            return (
-                "result",
-                AgentTurnResult(
-                    status="error",
-                    content="",
-                    reasoning=state.full_reasoning,
-                    skill_exchanges=state.skill_exchanges,
-                    error="finish_reason tool_calls without tool calls",
-                ),
-            )
+            return self._error_result(state, "finish_reason tool_calls without tool calls")
 
         assistant_msg = {
             "role": "assistant",
@@ -241,16 +251,7 @@ class ToolLoopEngine:
                         ),
                     ),
                 )
-            return (
-                "result",
-                AgentTurnResult(
-                    status="error",
-                    content="",
-                    reasoning=state.full_reasoning,
-                    skill_exchanges=state.skill_exchanges,
-                    error=f"Max skill action depth ({self.orchestrator.max_action_depth}) exceeded",
-                ),
-            )
+            return self._error_result(state, f"Max skill action depth ({self.orchestrator.max_action_depth}) exceeded")
         state.action_depth += 1
 
         for call in stream_result.tool_calls:
@@ -306,16 +307,7 @@ class ToolLoopEngine:
             force_finalize_reason = self.orchestrator.policy_engine.tool_budget_reason(state, call) or ""
             if force_finalize_reason:
                 if not state.search_mode:
-                    return (
-                        "result",
-                        AgentTurnResult(
-                            status="error",
-                            content="",
-                            reasoning=state.full_reasoning,
-                            skill_exchanges=state.skill_exchanges,
-                            error=force_finalize_reason,
-                        ),
-                    )
+                    return self._error_result(state, force_finalize_reason)
                 break
 
             if self.orchestrator._normalize_collaboration_mode(
@@ -328,18 +320,8 @@ class ToolLoopEngine:
                     message=(f"{call.name} is not allowed in plan mode; use non-mutating inspection tools or switch to execute mode."),
                     on_event=on_event,
                 )
-                if self.orchestrator._is_stop_requested(stop_event):
-                    self.orchestrator.emit(
-                        on_event,
-                        {
-                            "type": "info",
-                            "text": f"Cancellation requested after completed tool '{call.name}'. Stopping turn.",
-                        },
-                    )
-                    return (
-                        "result",
-                        cancelled_turn_result(state),
-                    )
+                if cancelled := self._cancelled_after_tool(state, call, stop_event, on_event):
+                    return cancelled
                 continue
 
             if state.prefer_local_project_tools and self.orchestrator.skill_runtime.tool_is_blocked_for_local_project(call.name):
@@ -357,18 +339,8 @@ class ToolLoopEngine:
                     message=message,
                     on_event=on_event,
                 )
-                if self.orchestrator._is_stop_requested(stop_event):
-                    self.orchestrator.emit(
-                        on_event,
-                        {
-                            "type": "info",
-                            "text": f"Cancellation requested after completed tool '{call.name}'. Stopping turn.",
-                        },
-                    )
-                    return (
-                        "result",
-                        cancelled_turn_result(state),
-                    )
+                if cancelled := self._cancelled_after_tool(state, call, stop_event, on_event):
+                    return cancelled
                 continue
 
             if state.search_mode and call.name == "fetch_url":
@@ -422,18 +394,8 @@ class ToolLoopEngine:
                     "finished_at": time.time(),
                 },
             )
-            if self.orchestrator._is_stop_requested(stop_event):
-                self.orchestrator.emit(
-                    on_event,
-                    {
-                        "type": "info",
-                        "text": f"Cancellation requested after completed tool '{call.name}'. Stopping turn.",
-                    },
-                )
-                return (
-                    "result",
-                    cancelled_turn_result(state),
-                )
+            if cancelled := self._cancelled_after_tool(state, call, stop_event, on_event):
+                return cancelled
             if call.name == "skill_view" and result.get("ok"):
                 state.selected = self.orchestrator.skill_runtime.select_skills(state.ctx)
                 self.orchestrator.policy_engine.refresh_search_tools_enabled(state)
@@ -529,6 +491,8 @@ class ToolLoopEngine:
         if force_finalize_reason:
             return (
                 "finalized",
-                self.orchestrator.finalization_engine.finalize_turn(system_content, state, stop_event, on_event, pass_id, force_finalize_reason),
+                self.orchestrator.finalization_engine.finalize_turn(
+                    system_content, state, stop_event, on_event, pass_id, force_finalize_reason
+                ),
             )
         return "continue", None

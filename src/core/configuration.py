@@ -675,40 +675,39 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
     project_cfg = {"root_strategy": root_strategy}
     merged["project"] = project_cfg
 
-    raw_memory_cfg = merged.get("memory", {}) if isinstance(merged.get("memory"), dict) else {}
-    memory_cfg = _normalize_fields(
-        raw_memory_cfg,
-        DEFAULT_CONFIG["memory"],
-        "memory",
-        warnings,
-        (
+    simple_sections = {
+        "memory": (
             ("min_score_default", "float", 0.0, 1.0),
             ("recall_min_score_default", "float", 0.0, 1.0),
             ("replace_min_score_default", "float", 0.0, 1.0),
             ("backup_revisions", "int", 0, 20),
             ("auto_capture", "bool", None, None),
         ),
-        keep_unknown=False,
-    )
-    merged["memory"] = memory_cfg
-
-    context_cfg = merged.get("context", {}) if isinstance(merged.get("context"), dict) else {}
-    _normalize_fields(
-        context_cfg,
-        DEFAULT_CONFIG["context"],
-        "context",
-        warnings,
-        (
-            ("context_limit", "int", 512, 262144),
-            ("keep_last_n", "int", 1, 100),
-            ("safety_margin", "int", 0, 100000),
+        "context": (("context_limit", "int", 512, 262144), ("keep_last_n", "int", 1, 100), ("safety_margin", "int", 0, 100000)),
+        "skills": (
+            ("strict_capability_policy", "bool", None, None),
+            ("python_executable", "str", None, None),
+            ("paths", "list", None, None),
         ),
-    )
+        "agents": (("enable_skill_agents", "bool", None, None),),
+        "runtime": (("ask_user_tool", "bool", None, None),),
+    }
+    for name, rules in simple_sections.items():
+        values = merged.get(name, {}) if isinstance(merged.get(name), dict) else {}
+        merged[name] = _normalize_fields(
+            values,
+            DEFAULT_CONFIG[name],
+            name,
+            warnings,
+            rules,
+            keep_unknown=name not in {"memory", "skills"},
+        )
+
+    context_cfg = merged["context"]
     if context_cfg["safety_margin"] >= context_cfg["context_limit"]:
         adjusted = max(0, context_cfg["context_limit"] // 4)
         _warn(warnings, f"context.safety_margin: reduced to {adjusted} because it exceeded context_limit")
         context_cfg["safety_margin"] = adjusted
-    merged["context"] = context_cfg
 
     raw_permissions_cfg = merged.get("permissions", {}) if isinstance(merged.get("permissions"), dict) else {}
     permissions_cfg: dict[str, Any] = {}
@@ -753,29 +752,6 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         warnings=warnings,
     )
     merged["sandbox"] = sandbox_cfg
-
-    raw_skills_cfg = merged.get("skills", {}) if isinstance(merged.get("skills"), dict) else {}
-    skills_cfg = _normalize_fields(
-        raw_skills_cfg,
-        DEFAULT_CONFIG["skills"],
-        "skills",
-        warnings,
-        (
-            ("strict_capability_policy", "bool", None, None),
-            ("python_executable", "str", None, None),
-            ("paths", "list", None, None),
-        ),
-        keep_unknown=False,
-    )
-    merged["skills"] = skills_cfg
-
-    agents_cfg = merged.get("agents", {}) if isinstance(merged.get("agents"), dict) else {}
-    _normalize_fields(agents_cfg, DEFAULT_CONFIG["agents"], "agents", warnings, (("enable_skill_agents", "bool", None, None),))
-    merged["agents"] = agents_cfg
-
-    runtime_cfg = merged.get("runtime", {}) if isinstance(merged.get("runtime"), dict) else {}
-    _normalize_fields(runtime_cfg, DEFAULT_CONFIG["runtime"], "runtime", warnings, (("ask_user_tool", "bool", None, None),))
-    merged["runtime"] = runtime_cfg
 
     tools_cfg = merged.get("tools", {}) if isinstance(merged.get("tools"), dict) else {}
     merged["tools"] = tools_cfg

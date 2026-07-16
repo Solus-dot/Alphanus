@@ -707,6 +707,17 @@ class TurnOrchestrator:
             )
         return raw
 
+    def _model_error(self, state: TurnState, messages: list[ChatMessage], exc: Exception, on_event) -> AgentTurnResult:
+        message = self._friendly_vision_request_error(messages, exc)
+        self.emit(on_event, {"type": "error", "text": message})
+        return AgentTurnResult(
+            status="error",
+            content="",
+            reasoning=state.full_reasoning,
+            skill_exchanges=state.skill_exchanges,
+            error=message,
+        )
+
     def record_tool_effects(self, state: TurnState, call: ToolCall, result: dict[str, object], *, policy_blocked: bool = False) -> None:
         self.tool_execution_engine.record_tool_effects(state, call, result, policy_blocked=policy_blocked)
         if not policy_blocked:
@@ -922,6 +933,12 @@ class TurnOrchestrator:
         state.dynamic_history = retained
         return status
 
+    def _system_content(self, state: TurnState) -> tuple[str, str]:
+        snapshot = self.policy_engine.build_policy_snapshot(state)
+        content = self.prompt_renderer.compose_system_content(state.selected, state.ctx)
+        rules = self.prompt_renderer.render_policy_rules(snapshot)
+        return content + ("\n\n" + rules if rules else ""), rules
+
     def run_model_pass(
         self,
         state: TurnState,
@@ -947,19 +964,11 @@ class TurnOrchestrator:
                 and isinstance(item.get("function"), dict)
                 and self._tool_allowed_in_plan_mode(str(item["function"].get("name", "")).strip())
             ]
-        policy_snapshot = self.policy_engine.build_policy_snapshot(state)
-        system_content = self.prompt_renderer.compose_system_content(state.selected, state.ctx)
-        policy_rules = self.prompt_renderer.render_policy_rules(policy_snapshot)
-        if policy_rules:
-            system_content += "\n\n" + policy_rules
+        system_content, policy_rules = self._system_content(state)
         system_messages: list[ChatMessage] = [cast(ChatMessage, {"role": "system", "content": system_content})]
         summary_status = self._maybe_summarize_history(state, system_messages, tools, stop_event)
         if summary_status in {"model", "fallback"}:
-            policy_snapshot = self.policy_engine.build_policy_snapshot(state)
-            system_content = self.prompt_renderer.compose_system_content(state.selected, state.ctx)
-            policy_rules = self.prompt_renderer.render_policy_rules(policy_snapshot)
-            if policy_rules:
-                system_content += "\n\n" + policy_rules
+            system_content, policy_rules = self._system_content(state)
             system_messages = [cast(ChatMessage, {"role": "system", "content": system_content})]
         messages_before = system_messages + state.dynamic_history
         tool_schema_tokens = self.context_mgr.estimate_json_tokens(tools)
@@ -1017,35 +1026,11 @@ class TurnOrchestrator:
                         pass_id=pass_id,
                     )
                 except Exception as retry_exc:
-                    message = self._friendly_vision_request_error(model_messages, retry_exc)
-                    self.emit(on_event, {"type": "error", "text": message})
-                    return AgentTurnResult(
-                        status="error",
-                        content="",
-                        reasoning=state.full_reasoning,
-                        skill_exchanges=state.skill_exchanges,
-                        error=message,
-                    )
+                    return self._model_error(state, model_messages, retry_exc, on_event)
                 if stream_result is None:
-                    message = self._friendly_vision_request_error(model_messages, exc)
-                    self.emit(on_event, {"type": "error", "text": message})
-                    return AgentTurnResult(
-                        status="error",
-                        content="",
-                        reasoning=state.full_reasoning,
-                        skill_exchanges=state.skill_exchanges,
-                        error=message,
-                    )
+                    return self._model_error(state, model_messages, exc, on_event)
             else:
-                message = self._friendly_vision_request_error(model_messages, exc)
-                self.emit(on_event, {"type": "error", "text": message})
-                return AgentTurnResult(
-                    status="error",
-                    content="",
-                    reasoning=state.full_reasoning,
-                    skill_exchanges=state.skill_exchanges,
-                    error=message,
-                )
+                return self._model_error(state, model_messages, exc, on_event)
 
         if stream_result is None:
             return cancelled_turn_result(state)
