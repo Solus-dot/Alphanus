@@ -32,7 +32,6 @@ from core.types import (
     cancelled_turn_result,
 )
 from skills.runtime import SkillRuntime
-from skills.skill_parser import SkillManifest
 
 _AUTO_MEMORY_PATTERNS = (
     re.compile(r"\b(?:i|we)\s+(?:prefer|like|use|work with)\s+([^.\n]{3,160})", re.IGNORECASE),
@@ -627,25 +626,6 @@ class TurnOrchestrator:
             },
         )
 
-    def build_turn_state(
-        self,
-        ctx,
-        selected: list[SkillManifest],
-        history_messages: list[ChatMessage],
-        classification,
-        *,
-        collaboration_mode: str = "execute",
-        context_summary: str = "",
-    ) -> TurnState:
-        return self.policy_engine.build_turn_state(
-            ctx,
-            selected,
-            history_messages,
-            classification,
-            collaboration_mode=self._normalize_collaboration_mode(collaboration_mode),
-            context_summary=context_summary,
-        )
-
     @staticmethod
     def _message_contains_vision_content(message: ChatMessage) -> bool:
         content = message.get("content")
@@ -833,12 +813,12 @@ class TurnOrchestrator:
         ):
             relevant_skill_ids.append("project-ops")
         ctx.relevant_skill_ids = relevant_skill_ids
-        return self.build_turn_state(
+        return self.policy_engine.build_turn_state(
             ctx,
             selected,
             history_messages,
             classification,
-            collaboration_mode=collaboration_mode,
+            collaboration_mode=self._normalize_collaboration_mode(collaboration_mode),
             context_summary=ctx.context_summary,
         )
 

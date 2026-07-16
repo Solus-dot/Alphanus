@@ -108,9 +108,7 @@ def test_malformed_auth_header_template_emits_telemetry(tmp_path: Path, monkeypa
         {"agent": {"api_key": "env:ALPHANUS_API_KEY", "auth_header_template": "Authorization: Bearer {api_key.missing}"}},
         telemetry=TelemetryEmitter(logger),
     )
-    client.reload_config(
-        {"agent": {"api_key": "env:ALPHANUS_API_KEY", "auth_header_template": "Authorization: Bearer {api_key.missing}"}}
-    )
+    client.reload_config({"agent": {"api_key": "env:ALPHANUS_API_KEY", "auth_header_template": "Authorization: Bearer {api_key.missing}"}})
 
     assert client.auth_header == "Authorization: Bearer secret-token"
     events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
@@ -713,7 +711,7 @@ def _turn_state(tmp_path: Path, *, user_input: str, time_sensitive: bool, projec
         prefer_local_project_tools=project_action,
         source="rules",
     )
-    state = orchestrator.build_turn_state(ctx, [], [], classification)
+    state = orchestrator.policy_engine.build_turn_state(ctx, [], [], classification)
     return runtime, orchestrator, state
 
 

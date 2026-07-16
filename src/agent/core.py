@@ -15,7 +15,6 @@ from agent.llm_client import LLMClient
 from agent.orchestrator import TurnOrchestrator, request_user_input_passthrough
 from agent.policies import PromptPolicyRenderer
 from agent.prompts import build_system_prompt
-from agent.runtime_hooks import AgentTurnRuntimeHooks
 from agent.telemetry import TelemetryEmitter
 from core.config_model import TypedConfigV2
 from core.configuration import validate_endpoint_policy
@@ -49,9 +48,6 @@ class Agent:
             prompt_renderer=self.prompt_renderer,
             telemetry=self.telemetry,
         )
-        self._runtime_hooks = AgentTurnRuntimeHooks(self)
-        self.classifier.bind_runtime_hooks(self._runtime_hooks)
-        self.orchestrator.bind_runtime_hooks(self._runtime_hooks)
         self.reload_config(config)
 
     @property
@@ -90,7 +86,6 @@ class Agent:
         self.llm_client.reload_config(config)
         self.typed_config = TypedConfigV2.from_normalized_config(config, auth_header=self.llm_client.auth_header)
         self.classifier.reload_config(config)
-        self.classifier.bind_runtime_hooks(self._runtime_hooks)
         self.prompt_renderer.system_prompt = self.system_prompt
         self.prompt_renderer.skill_runtime = self.skill_runtime
         self.prompt_renderer.context_limit = self.context_mgr.context_limit
@@ -99,7 +94,6 @@ class Agent:
         self.orchestrator.llm_client = self.llm_client
         self.orchestrator.classifier = self.classifier
         self.orchestrator.prompt_renderer = self.prompt_renderer
-        self.orchestrator.bind_runtime_hooks(self._runtime_hooks)
         self.orchestrator.reload_config(config)
         self.model_endpoint = self.llm_client.model_endpoint
         self.models_endpoint = self.llm_client.models_endpoint
@@ -160,12 +154,16 @@ class Agent:
         searxng_base_url = str(search_cfg.get("searxng_base_url", "")).strip()
         tavily_api_key_env = str(search_cfg.get("tavily_api_key_env", DEFAULT_TAVILY_API_KEY_ENV)).strip() or DEFAULT_TAVILY_API_KEY_ENV
         tavily_ready = bool(os.environ.get(tavily_api_key_env, "").strip())
-        search_ready = (provider == SEARCH_PROVIDER_SEARXNG and bool(searxng_base_url)) or provider == SEARCH_PROVIDER_TAVILY and tavily_ready
+        search_ready = (
+            (provider == SEARCH_PROVIDER_SEARXNG and bool(searxng_base_url)) or provider == SEARCH_PROVIDER_TAVILY and tavily_ready
+        )
         if provider == SEARCH_PROVIDER_SEARXNG and fallback_provider == SEARCH_PROVIDER_TAVILY:
             search_ready = bool(searxng_base_url) or tavily_ready
         search_reason = ""
         if not search_ready:
-            search_reason = f"missing env: {tavily_api_key_env}" if provider == SEARCH_PROVIDER_TAVILY else "missing search.searxng_base_url"
+            search_reason = (
+                f"missing env: {tavily_api_key_env}" if provider == SEARCH_PROVIDER_TAVILY else "missing search.searxng_base_url"
+            )
             if provider == SEARCH_PROVIDER_SEARXNG and fallback_provider == SEARCH_PROVIDER_TAVILY:
                 search_reason = f"missing search.searxng_base_url and env: {tavily_api_key_env}"
         retrieval_cfg = get_json_object(config_obj, "retrieval")
@@ -314,42 +312,26 @@ class Agent:
         if not self.llm_client.is_model_status_fresh(status):
             if status.state != "unknown":
                 status = self.refresh_model_status(timeout_s=min(self.connect_timeout_s, 1.0), force=True)
-                if status.state == "online":
+            if status.state != "online":
+                ready = self.ensure_ready(stop_event=stop_event, on_event=on_event)
+                if ready is None:
+                    return self._record_and_return(AgentTurnResult(status="cancelled", content="", reasoning="", skill_exchanges=[]))
+                if not ready:
+                    status = self.get_model_status()
+                    detail = self._offline_status_detail(status)
                     return self._record_and_return(
-                        self.orchestrator.run_turn(
-                            history_messages=history_messages,
-                            user_input=user_input,
-                            thinking=thinking,
-                            branch_labels=branch_labels,
-                            attachments=attachments,
-                            loaded_skill_ids=loaded_skill_ids,
-                            context_summary=context_summary,
-                            collaboration_mode=collaboration_mode,
-                            stop_event=stop_event,
-                            on_event=on_event,
-                            request_approval=request_approval,
-                            request_user_input=request_user_input_passthrough,
+                        AgentTurnResult(
+                            status="error",
+                            content="",
+                            reasoning="",
+                            skill_exchanges=[],
+                            error=(
+                                f"Model endpoint offline{detail}"
+                                if status.state == "offline"
+                                else f"Model endpoint not ready: {self.models_endpoint}"
+                            ),
                         )
                     )
-            ready = self.ensure_ready(stop_event=stop_event, on_event=on_event)
-            if ready is None:
-                return self._record_and_return(AgentTurnResult(status="cancelled", content="", reasoning="", skill_exchanges=[]))
-            if not ready:
-                status = self.get_model_status()
-                detail = self._offline_status_detail(status)
-                return self._record_and_return(
-                    AgentTurnResult(
-                        status="error",
-                        content="",
-                        reasoning="",
-                        skill_exchanges=[],
-                        error=(
-                            f"Model endpoint offline{detail}"
-                            if status.state == "offline"
-                            else f"Model endpoint not ready: {self.models_endpoint}"
-                        ),
-                    )
-                )
         return self._record_and_return(
             self.orchestrator.run_turn(
                 history_messages=history_messages,
