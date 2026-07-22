@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import re
 import time
@@ -14,6 +13,7 @@ from agent.policies import OutputSanitizer, PromptPolicyRenderer
 from agent.provider import LLMClient
 from agent.telemetry import TelemetryEmitter
 from agent.tool_execution_engine import ToolExecutionEngine
+from agent.tool_history import ToolHistoryCompactor
 from agent.tool_loop_engine import ToolLoopEngine
 from agent.turn_journal import TurnJournalBuilder
 from agent.turn_policy_engine import TurnPolicyEngine
@@ -40,21 +40,6 @@ _AUTO_MEMORY_SECRET_RE = re.compile(r"\b(?:password|secret|token|api[_ -]?key|cr
 _TOOL_OUTCOME_SKIP = frozenset(
     "web_search fetch_url retrieve_knowledge retrieval_stats forget_retrieval_record recall_memory list_memories".split()
 )
-_WRITE_HISTORY_FIELDS = frozenset(
-    "filepath basename created edited changed write_verified sha256 bytes_written chars_written bytes_before bytes_after line_count "
-    "line_count_before line_count_after changed_lines edit_mode replacements_applied section_scoped resolved_start_line resolved_end_line "
-    "total_line_count_before total_line_count_after content_preview content_preview_truncated preview_chars preview_omitted_chars diff "
-    "diff_truncated diff_omitted_chars".split()
-)
-GENERIC_HISTORY_STRING_CHARS = 12000
-MEMORY_TEXT_HISTORY_CHARS = 4000
-MEMORY_METADATA_HISTORY_CHARS = 1000
-READ_CONTENT_HISTORY_CHARS = 64000
-SHELL_OUTPUT_HISTORY_CHARS = 12000
-SEARCH_TEXT_HISTORY_CHARS = 4000
-GENERIC_MAX_DEPTH = 8
-GENERIC_MAX_LIST_ITEMS = 80
-GENERIC_MAX_DICT_KEYS = 120
 
 
 class TurnOrchestrator:
@@ -79,10 +64,8 @@ class TurnOrchestrator:
         self.config = config_schema(config)
         agent_cfg = self.config.agent
         self.max_action_depth = agent_cfg.max_action_depth
-        self.max_tool_result_chars = agent_cfg.max_tool_result_chars
         self.max_reasoning_chars = agent_cfg.max_reasoning_chars
-        self.compact_tool_results_in_history = agent_cfg.compact_tool_results_in_history
-        self.compact_tool_result_tools = {name.strip() for name in agent_cfg.compact_tool_result_tools if name.strip()}
+        self.history = ToolHistoryCompactor(agent_cfg)
         self.context_budget_max_tokens = agent_cfg.context_budget_max_tokens
         self.default_tool_budgets = {"web_search": 2, "fetch_url": 2, "recall_memory": 2}
         for key, value in (agent_cfg.tool_budgets or {}).items():
@@ -163,8 +146,8 @@ class TurnOrchestrator:
     def maybe_index_tool_outcome(self, state: TurnState, call: ToolCall, result: dict[str, object]) -> None:
         if not self.config.retrieval.enabled or call.name in _TOOL_OUTCOME_SKIP or not result.get("ok"):
             return
-        text = f"Tool {call.name} succeeded.\nArguments: {self.safe_json_dumps(call.arguments)}\nResult: {self.safe_json_dumps(result)}"
-        text = self.truncate_text(text, 2400)
+        text = f"Tool {call.name} succeeded.\nArguments: {self.history.dumps(call.arguments)}\nResult: {self.history.dumps(result)}"
+        text = self.history.truncate(text, 2400)
         if _AUTO_MEMORY_SECRET_RE.search(text):
             return
         try:
@@ -196,282 +179,6 @@ class TurnOrchestrator:
 
     def _is_stop_requested(self, stop_event) -> bool:
         return self.llm_client.stop_requested(stop_event)
-
-    @staticmethod
-    def safe_json_dumps(value: object) -> str:
-        return json.dumps(value, ensure_ascii=False, default=str)
-
-    @staticmethod
-    def truncate_text(text: str, limit: int) -> str:
-        if limit <= 0 or len(text) <= limit:
-            return text
-        clipped = text[:limit]
-        remaining = len(text) - limit
-        return f"{clipped}\n...[truncated {remaining} chars]"
-
-    @staticmethod
-    def truncate_middle_text(text: str, limit: int) -> tuple[str, bool, int]:
-        if limit <= 0 or len(text) <= limit:
-            return text, False, 0
-        if limit <= 32:
-            omitted = len(text) - limit
-            return text[:limit], True, omitted
-        marker_budget = 32
-        text_budget = max(2, limit - marker_budget)
-        head_len = max(1, text_budget // 2)
-        tail_len = max(1, text_budget - head_len)
-        omitted = len(text) - head_len - tail_len
-        marker = f"\n...[{omitted} chars truncated]...\n"
-        if len(marker) + head_len + tail_len > limit:
-            text_budget = max(2, limit - len(marker))
-            head_len = max(1, text_budget // 2)
-            tail_len = max(1, text_budget - head_len)
-            omitted = len(text) - head_len - tail_len
-            marker = f"\n...[{omitted} chars truncated]...\n"
-        return text[:head_len] + marker + text[-tail_len:], True, omitted
-
-    def compact_jsonish(self, value: object, depth: int = 0, *, max_string_chars: int | None = None) -> JSONValue:
-        string_limit = self.max_tool_result_chars if max_string_chars is None else max(0, int(max_string_chars))
-        if isinstance(value, str):
-            return self.truncate_middle_text(value, string_limit)[0]
-        if value is None or isinstance(value, (bool, int, float)):
-            return value
-        if depth >= GENERIC_MAX_DEPTH:
-            if isinstance(value, list):
-                return {"__omitted_nested__": True, "type": "list", "item_count": len(value)}
-            if isinstance(value, dict):
-                keys = [str(key) for key in list(value.keys())[:20]]
-                return cast(JSONValue, {"__omitted_nested__": True, "type": "dict", "key_count": len(value), "keys": keys})
-            return str(value)
-        if isinstance(value, list):
-            list_out: list[JSONValue] = [
-                self.compact_jsonish(item, depth + 1, max_string_chars=max_string_chars) for item in value[:GENERIC_MAX_LIST_ITEMS]
-            ]
-            if len(value) > GENERIC_MAX_LIST_ITEMS:
-                list_out.append(f"... [{len(value) - GENERIC_MAX_LIST_ITEMS} more items truncated]")
-            return list_out
-        if isinstance(value, dict):
-            dict_out: JsonObject = {}
-            items = list(value.items())
-            for key, item in items[:GENERIC_MAX_DICT_KEYS]:
-                dict_out[str(key)] = self.compact_jsonish(item, depth + 1, max_string_chars=max_string_chars)
-            if len(items) > GENERIC_MAX_DICT_KEYS:
-                dict_out["__truncated_keys__"] = len(items) - GENERIC_MAX_DICT_KEYS
-            return dict_out
-        return str(value)
-
-    def clone_jsonish(self, value: object) -> JSONValue:
-        if isinstance(value, list):
-            return [self.clone_jsonish(item) for item in value]
-        if isinstance(value, dict):
-            return {str(key): self.clone_jsonish(item) for key, item in value.items()}
-        if value is None or isinstance(value, (str, bool, int, float)):
-            return value
-        return str(value)
-
-    def _compact_simple_metadata(self, value: object) -> JSONValue:
-        if not isinstance(value, dict):
-            return self.compact_jsonish(value, max_string_chars=MEMORY_METADATA_HISTORY_CHARS)
-        out: JsonObject = {}
-        for key, item in list(value.items())[:40]:
-            if isinstance(item, (str, int, float, bool)) or item is None:
-                out[str(key)] = self.compact_jsonish(item, max_string_chars=MEMORY_METADATA_HISTORY_CHARS)
-            elif isinstance(item, list):
-                out[str(key)] = [
-                    self.compact_jsonish(child, max_string_chars=MEMORY_METADATA_HISTORY_CHARS)
-                    for child in item[:20]
-                    if isinstance(child, (str, int, float, bool)) or child is None
-                ]
-                if len(item) > 20:
-                    out[str(key)].append(f"... [{len(item) - 20} more items truncated]")  # type: ignore[union-attr]
-            elif isinstance(item, dict):
-                out[str(key)] = {
-                    str(child_key): self.compact_jsonish(child_value, max_string_chars=MEMORY_METADATA_HISTORY_CHARS)
-                    for child_key, child_value in list(item.items())[:20]
-                    if isinstance(child_value, (str, int, float, bool)) or child_value is None
-                }
-        if len(value) > 40:
-            out["__truncated_keys__"] = len(value) - 40
-        return out
-
-    def _compact_memory_item(self, item: object) -> JSONValue:
-        if not isinstance(item, dict):
-            return self.compact_jsonish(item, max_string_chars=MEMORY_TEXT_HISTORY_CHARS)
-        keep = {
-            "id",
-            "text",
-            "type",
-            "memory_type",
-            "score",
-            "importance",
-            "timestamp",
-            "created_at",
-            "last_accessed",
-            "access_count",
-            "metadata",
-        }
-        out: JsonObject = {}
-        for key in keep:
-            if key not in item:
-                continue
-            value = item[key]
-            if key == "text" and isinstance(value, str):
-                text, truncated, omitted = self.truncate_middle_text(value, MEMORY_TEXT_HISTORY_CHARS)
-                out[key] = text
-                out["text_truncated"] = truncated
-                if truncated:
-                    out["text_omitted_chars"] = omitted
-            elif key == "metadata":
-                out[key] = self._compact_simple_metadata(value)
-            else:
-                out[key] = self.compact_jsonish(value, max_string_chars=MEMORY_METADATA_HISTORY_CHARS)
-        return out
-
-    def _compact_memory_result(self, result: JsonObject) -> JsonObject:
-        out = self._compact_result_envelope(result, compact_data=False)
-        data = out.get("data")
-        if isinstance(data, dict):
-            for key, value in list(data.items()):
-                if key not in {"hits", "memories"}:
-                    data[key] = self.compact_jsonish(value)
-            for key in ("hits", "memories"):
-                items = data.get(key)
-                if isinstance(items, list):
-                    compacted = [self._compact_memory_item(item) for item in items[:20]]
-                    if len(items) > 20:
-                        label = "memory hits" if key == "hits" else "memories"
-                        compacted.append(f"... [{len(items) - 20} more {label} truncated]")
-                    data[key] = compacted
-        return out
-
-    def _compact_result_envelope(self, result: JsonObject, *, compact_data: bool = True) -> JsonObject:
-        out: JsonObject = {}
-        for key, value in result.items():
-            if key == "data":
-                out[key] = cast(JSONValue, self.compact_jsonish(value) if compact_data else self.clone_jsonish(value))
-            else:
-                out[key] = cast(JSONValue, self.compact_jsonish(value, max_string_chars=GENERIC_HISTORY_STRING_CHARS))
-        return out
-
-    def _compact_text_field(self, data: JsonObject, key: str, limit: int, prefix: str) -> None:
-        value = data.get(key)
-        if not isinstance(value, str):
-            return
-        text, truncated, omitted = self.truncate_middle_text(value, limit)
-        data[key] = text
-        data[f"{prefix}_truncated"] = bool(data.get(f"{prefix}_truncated", False) or truncated)
-        if truncated:
-            data[f"{prefix}_omitted_chars"] = omitted
-
-    def _compact_data_result(
-        self,
-        result: JsonObject,
-        text_limits: dict[str, int],
-        list_fields: dict[str, tuple[int, tuple[str, ...]]] | None = None,
-    ) -> JsonObject:
-        out = self._compact_result_envelope(result, compact_data=False)
-        data = out.get("data")
-        if isinstance(data, dict):
-            lists = list_fields or {}
-            for key, value in list(data.items()):
-                if key not in text_limits and key not in lists:
-                    data[key] = self.compact_jsonish(value)
-            for key, limit in text_limits.items():
-                self._compact_text_field(data, key, limit, key)
-            for key, (limit, item_text_fields) in lists.items():
-                items = data.get(key)
-                if not isinstance(items, list):
-                    continue
-                compacted: list[JSONValue] = []
-                for item in items[:limit]:
-                    row = (
-                        {str(name): value if name in item_text_fields else self.compact_jsonish(value) for name, value in item.items()}
-                        if isinstance(item, dict)
-                        else self.compact_jsonish(item)
-                    )
-                    if isinstance(row, dict):
-                        for field in item_text_fields:
-                            self._compact_text_field(row, field, text_limits.get(field, max(text_limits.values())), field)
-                    compacted.append(row)
-                if len(items) > limit:
-                    compacted.append(f"... [{len(items) - limit} more {key} truncated]")
-                data[key] = compacted
-        return out
-
-    def _compact_read_result(self, result: JsonObject) -> JsonObject:
-        return self._compact_data_result(
-            result,
-            {"content": READ_CONTENT_HISTORY_CHARS},
-            {"files": (40, ("content",))},
-        )
-
-    def _compact_write_result(self, result: JsonObject) -> JsonObject:
-        out = self._compact_result_envelope(result, compact_data=False)
-        data = out.get("data")
-        if isinstance(data, dict):
-            trimmed = {key: value for key, value in data.items() if key in _WRITE_HISTORY_FIELDS}
-            self._compact_text_field(trimmed, "content_preview", 1200, "content_preview")
-            self._compact_text_field(trimmed, "diff", 12000, "diff")
-            out["data"] = cast(JSONValue, trimmed)
-        return out
-
-    def _compact_shell_result(self, result: JsonObject) -> JsonObject:
-        return self._compact_data_result(
-            result,
-            {key: SHELL_OUTPUT_HISTORY_CHARS for key in ("stdout", "stderr", "aggregated_output", "output")},
-        )
-
-    def _compact_search_result(self, result: JsonObject) -> JsonObject:
-        fields = ("content", "text", "snippet", "summary", "line")
-        return self._compact_data_result(
-            result,
-            {key: SEARCH_TEXT_HISTORY_CHARS for key in fields},
-            {"results": (40, fields)},
-        )
-
-    def compact_tool_result(self, result: JsonObject) -> JsonObject:
-        if self.max_tool_result_chars <= 0:
-            return result
-        compacted = self.compact_jsonish(result)
-        if isinstance(compacted, dict):
-            return cast(JsonObject, compacted)
-        return {"value": cast(JSONValue, compacted)}
-
-    def tool_result_for_history(self, tool_name: str, result: JsonObject) -> JsonObject:
-        if not self.compact_tool_results_in_history:
-            return result
-        if self.compact_tool_result_tools and tool_name not in self.compact_tool_result_tools:
-            return result
-        if self.max_tool_result_chars <= 0:
-            return result
-        if tool_name in {"recall_memory", "list_memories"}:
-            return self._compact_memory_result(result)
-        if tool_name in {"read_file", "read_files"}:
-            return self._compact_read_result(result)
-        if tool_name in {"create_file", "edit_file"}:
-            return self._compact_write_result(result)
-        if tool_name == "shell_command":
-            return self._compact_shell_result(result)
-        if tool_name in {"find_files", "search_code", "web_search", "fetch_url", "search_local_files", "retrieve_knowledge"}:
-            return self._compact_search_result(result)
-        return self.compact_tool_result(result)
-
-    def tool_call_args_for_history(self, args: JsonObject) -> JsonObject:
-        if not isinstance(args, dict):
-            return {}
-        out: JsonObject = {}
-        for key, value in args.items():
-            if isinstance(value, str):
-                if len(value) <= 1200:
-                    out[key] = value
-                elif key in {"content", "old_string", "new_string"}:
-                    omitted = len(value) - 1200
-                    out[key] = value[:1200] + f"\n...[history excerpt; {omitted} chars omitted]"
-                else:
-                    out[key] = value[:1200] + f"...[truncated {len(value) - 1200} chars]"
-            else:
-                out[key] = cast(JSONValue, self.compact_jsonish(value))
-        return out
 
     @staticmethod
     def _normalize_collaboration_mode(value: str) -> str:
@@ -520,7 +227,7 @@ class TurnOrchestrator:
             "role": "tool",
             "tool_call_id": call.id,
             "name": call.name,
-            "content": self.safe_json_dumps(self.tool_result_for_history(call.name, result)),
+            "content": self.history.dumps(self.history.result(call.name, result)),
         }
         tool_chat_message = cast(ChatMessage, tool_message)
         state.dynamic_history.append(tool_chat_message)
@@ -809,7 +516,7 @@ class TurnOrchestrator:
         if result.finish_reason == "cancelled":
             return ""
         text = (result.content or "").strip()
-        return self.truncate_text(text, 2400)
+        return self.history.truncate(text, 2400)
 
     def _maybe_summarize_history(
         self, state: TurnState, system_messages: list[ChatMessage], tools: list[dict[str, Any]], stop_event

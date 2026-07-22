@@ -2566,7 +2566,7 @@ def test_prompt_policy_renderer_uses_configured_context_limit_for_skill_budget(m
 def test_large_tool_call_args_are_compacted_in_history(runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     large = "x" * 5000
-    compacted = agent.orchestrator.tool_call_args_for_history({"filepath": "a.txt", "content": large})
+    compacted = agent.orchestrator.history.arguments({"filepath": "a.txt", "content": large})
 
     assert compacted["filepath"] == "a.txt"
     assert compacted["content"].startswith("x" * 1200)
@@ -2577,7 +2577,7 @@ def test_large_tool_call_args_are_compacted_in_history(runtime: SkillRuntime):
 def test_large_non_content_tool_call_args_still_use_generic_truncation(runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     large = "x" * 5000
-    compacted = agent.orchestrator.tool_call_args_for_history({"query": large})
+    compacted = agent.orchestrator.history.arguments({"query": large})
 
     assert compacted["query"].startswith("x" * 1200)
     assert "[truncated 3800 chars]" in compacted["query"]
@@ -2593,7 +2593,7 @@ def test_tool_result_compaction_preserves_nested_scalars(runtime: SkillRuntime):
         "meta": {},
     }
 
-    compacted = agent.orchestrator.compact_tool_result(result)
+    compacted = agent.orchestrator.history.compact_result(result)
 
     assert compacted["data"]["a"]["b"]["c"]["d"]["value"] == "keep me"
 
@@ -2602,7 +2602,7 @@ def test_tool_result_compaction_middle_truncates_long_strings(runtime: SkillRunt
     agent = Agent({"agent": {"max_tool_result_chars": 120}}, runtime)
     value = "BEGIN-" + ("x" * 500) + "-END"
 
-    compacted = agent.orchestrator.compact_tool_result({"ok": True, "data": {"content": value}, "error": None, "meta": {}})
+    compacted = agent.orchestrator.history.compact_result({"ok": True, "data": {"content": value}, "error": None, "meta": {}})
 
     content = compacted["data"]["content"]
     assert content.startswith("BEGIN-")
@@ -2631,7 +2631,7 @@ def test_memory_tool_history_compaction_keeps_recalled_text(runtime: SkillRuntim
         "meta": {},
     }
 
-    compacted = agent.orchestrator.tool_result_for_history("recall_memory", result)
+    compacted = agent.orchestrator.history.result("recall_memory", result)
 
     hit = compacted["data"]["hits"][0]
     assert hit["id"] == 42
@@ -2651,7 +2651,7 @@ def test_memory_tool_history_compaction_uses_memory_cap_before_generic_cap(runti
         "meta": {},
     }
 
-    compacted = agent.orchestrator.tool_result_for_history("recall_memory", result)
+    compacted = agent.orchestrator.history.result("recall_memory", result)
 
     text = compacted["data"]["hits"][0]["text"]
     assert text.startswith("name: ")
@@ -2669,7 +2669,7 @@ def test_memory_tool_history_compaction_clips_long_memory_text(runtime: SkillRun
         "meta": {},
     }
 
-    compacted = agent.orchestrator.tool_result_for_history("list_memories", result)
+    compacted = agent.orchestrator.history.result("list_memories", result)
 
     memory = compacted["data"]["memories"][0]
     assert memory["id"] == 1
@@ -2689,7 +2689,7 @@ def test_read_tool_history_compaction_keeps_large_bounded_content(runtime: Skill
         "meta": {},
     }
 
-    compacted = agent.orchestrator.tool_result_for_history("read_file", result)
+    compacted = agent.orchestrator.history.result("read_file", result)
 
     compacted_content = compacted["data"]["content"]
     assert compacted_content.startswith("BEGIN\n")
@@ -2721,7 +2721,7 @@ def test_read_files_history_compaction_uses_read_cap_before_generic_cap(runtime:
         "meta": {},
     }
 
-    compacted = agent.orchestrator.tool_result_for_history("read_files", result)
+    compacted = agent.orchestrator.history.result("read_files", result)
 
     file_result = compacted["data"]["files"][0]
     assert file_result["content"] == content
@@ -2748,7 +2748,7 @@ def test_write_tool_history_compaction_keeps_evidence_not_full_content(runtime: 
         "meta": {},
     }
 
-    compacted = agent.orchestrator.tool_result_for_history("create_file", result)
+    compacted = agent.orchestrator.history.result("create_file", result)
 
     assert compacted["data"]["sha256"] == "abc123"
     assert compacted["data"]["bytes_written"] == 50000
@@ -3579,7 +3579,7 @@ def test_reload_config_coerces_invalid_numeric_values(runtime: SkillRuntime):
     assert agent.context_mgr.safety_margin == 0
     assert agent.llm_client.max_classifier_tokens == 256
     assert agent.orchestrator.max_action_depth == 10
-    assert agent.orchestrator.max_tool_result_chars == 12000
+    assert agent.orchestrator.history.max_chars == 12000
     assert agent.orchestrator.max_reasoning_chars == 0
     assert agent.orchestrator.context_budget_max_tokens == 2048
     assert agent.orchestrator.default_tool_budgets["web_search"] == 2

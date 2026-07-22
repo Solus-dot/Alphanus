@@ -210,7 +210,7 @@ class ToolLoopEngine:
                     "type": "function",
                     "function": {
                         "name": call.name,
-                        "arguments": self.orchestrator.safe_json_dumps(self.orchestrator.tool_call_args_for_history(call.arguments)),
+                        "arguments": self.orchestrator.history.dumps(self.orchestrator.history.arguments(call.arguments)),
                     },
                 }
                 for call in stream_result.tool_calls
@@ -324,7 +324,9 @@ class ToolLoopEngine:
                     return cancelled
                 continue
 
-            if state.classification.prefer_local_project_tools and self.orchestrator.skill_runtime.tool_is_blocked_for_local_project(call.name):
+            if state.classification.prefer_local_project_tools and self.orchestrator.skill_runtime.tool_is_blocked_for_local_project(
+                call.name
+            ):
                 if ":" in call.name or "." in call.name:
                     message = (
                         f"{call.name} is not exposed in this turn. Load the matching skill with skill_view(name), "
@@ -375,7 +377,7 @@ class ToolLoopEngine:
                 "role": "tool",
                 "tool_call_id": call.id,
                 "name": call.name,
-                "content": self.orchestrator.safe_json_dumps(self.orchestrator.tool_result_for_history(call.name, result)),
+                "content": self.orchestrator.history.dumps(self.orchestrator.history.result(call.name, result)),
             }
             tool_chat_message = cast(ChatMessage, tool_message)
             state.dynamic_history.append(tool_chat_message)
