@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from core.config_model import config_schema
 from core.message_types import JSONValue
 from core.runtime_protocol import (
     MAX_RUNTIME_FRAME_BYTES,
@@ -30,7 +31,7 @@ class _RuntimeMemory:
 
 class _RuntimeAgent:
     def __init__(self, root: Path) -> None:
-        self.config: dict[str, object] = {"tui": {"theme": "classic"}}
+        self.config = config_schema({"tui": {"theme": "classic"}})
         self.skill_runtime = SimpleNamespace(
             project=SimpleNamespace(project_root=root),
             skills_by_ids=lambda _ids: [],
@@ -119,6 +120,7 @@ def test_runtime_server_handshake_and_shutdown(tmp_path: Path) -> None:
 
     requests = [
         {"protocol_version": 1, "type": "hello", "request_id": "hello", "data": {"min_protocol": 1, "max_protocol": 1}},
+        {"protocol_version": 1, "type": "theme.list", "request_id": "themes", "data": {}},
         {"protocol_version": 1, "type": "shutdown", "request_id": "bye", "data": {}},
     ]
     output = io.StringIO()
@@ -133,8 +135,14 @@ def test_runtime_server_handshake_and_shutdown(tmp_path: Path) -> None:
     assert server.serve() == 0
     frames = [json.loads(line) for line in output.getvalue().splitlines()]
     assert any(frame["type"] == "runtime.ready" for frame in frames)
+    themes = next(frame for frame in frames if frame["type"] == "theme.list")
+    assert themes["data"]["active"]["id"] == "classic"
     completed = [frame for frame in frames if frame["type"] == "request.completed"]
-    assert [(frame["request_id"], frame["data"]["status"]) for frame in completed] == [("hello", "ok"), ("bye", "ok")]
+    assert [(frame["request_id"], frame["data"]["status"]) for frame in completed] == [
+        ("hello", "ok"),
+        ("themes", "ok"),
+        ("bye", "ok"),
+    ]
 
 
 def test_runtime_snapshot_uses_latest_bounded_page(tmp_path: Path) -> None:

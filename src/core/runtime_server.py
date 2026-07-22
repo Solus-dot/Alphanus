@@ -734,11 +734,7 @@ class RuntimeServer:
                 approval_id=approval_id,
                 data={"request": _bounded_event_data(request)},
             )
-            timeout = float(
-                self.agent.config.get("tui", {}).get("timing", {}).get("action_approval_timeout_s", 60.0)
-                if isinstance(self.agent.config, dict)
-                else 60.0
-            )
+            timeout = self.agent.config.tui.timing.action_approval_timeout_s
             event.wait(max(1.0, timeout))
             self.approvals.pop(approval_id, None)
             return bool(holder["approved"]) and not self.stop_event.is_set()
@@ -989,7 +985,7 @@ class RuntimeServer:
         self._emit_completed(request_id, {"status": "ok" if result.get("ok", True) else "error"})
 
     def _theme_list(self, request_id: str, _data: dict[str, Any]) -> None:
-        configured = str(self.agent.config.get("tui", {}).get("theme") or "")
+        configured = self.agent.config.tui.theme
         items = [theme_payload(theme_id) for theme_id in available_theme_ids()]
         self._respond(
             "theme.list",
