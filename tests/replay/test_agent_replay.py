@@ -17,11 +17,10 @@ from typing import Any, cast
 import pytest
 
 from agent.core import Agent
-from agent.types import ModelStatus, StreamPassResult, ToolCall, TurnClassification
 from core.memory import LexicalMemory
 from core.message_types import ChatMessage
 from core.project import ProjectRuntime
-from core.types import JsonObject
+from core.types import JsonObject, ModelStatus, StreamPassResult, ToolCall, TurnClassification
 from skills.runtime import SkillContext, SkillRuntime
 
 FIXTURE_DIR = Path(__file__).with_name("fixtures")

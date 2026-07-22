@@ -9,6 +9,7 @@ source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "tomli-w" },
 ]
 
 [package.optional-dependencies]
@@ -50,6 +51,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.12.9" },
     { name = "setuptools-rust", marker = "extra == 'dev'", specifier = ">=1.11" },
+    { name = "tomli-w", specifier = ">=1.2,<2" },
     { name = "vulture", marker = "extra == 'dev'", specifier = ">=2.11" },
 ]
 provides-extras = ["desktop", "dev"]

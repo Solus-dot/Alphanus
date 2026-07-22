@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import copy
-import json
 import re
 import tomllib
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+import tomli_w
 
 from core.backend_profiles import AUTO_BACKEND_PROFILE, VALID_BACKEND_PROFILES
 from core.coercion import parse_bool
@@ -759,38 +760,17 @@ def load_global_config(path: Path, *, warnings: list[str] | None = None) -> dict
     return normalized
 
 
-def _toml_value(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, str):
-        return json.dumps(value, ensure_ascii=False)
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return str(value)
+def _toml_ready(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _toml_ready(item) for key, item in value.items() if item is not None}
     if isinstance(value, list):
-        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
-    raise TypeError(f"Unsupported TOML value: {type(value).__name__}")
+        return [_toml_ready(item) for item in value]
+    return value
 
 
 def config_to_toml(config: dict[str, Any]) -> str:
     """Serialize the normalized, JSON-shaped configuration used by Alphanus."""
-    lines = [f"config_version = {CONFIG_VERSION}", ""]
-
-    def emit_table(prefix: tuple[str, ...], table: dict[str, Any]) -> None:
-        scalar_items = [(key, value) for key, value in table.items() if not isinstance(value, dict)]
-        nested_items = [(key, value) for key, value in table.items() if isinstance(value, dict)]
-        if prefix:
-            lines.append("[" + ".".join(prefix) + "]")
-        for key, value in scalar_items:
-            if key == "config_version" or value is None:
-                continue
-            lines.append(f"{key} = {_toml_value(value)}")
-        if prefix or scalar_items:
-            lines.append("")
-        for key, value in nested_items:
-            emit_table((*prefix, key), value)
-
-    emit_table((), config)
-    return "\n".join(lines).rstrip() + "\n"
+    return tomli_w.dumps(_toml_ready(config))
 
 
 def save_global_config(path: Path, config: Mapping[str, Any]) -> None:

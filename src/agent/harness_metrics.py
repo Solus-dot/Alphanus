@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from agent.types import AgentTurnResult
+from core.types import AgentTurnResult
 
 
 @dataclass(slots=True)

@@ -8,9 +8,9 @@ from types import SimpleNamespace
 import pytest
 
 import alphanus_cli
-from agent.types import AgentTurnResult
 from core.configuration import load_global_config
 from core.headless_protocol import EXIT_INVALID_INPUT, EXIT_POLICY_DENIED, EXIT_SUCCESS
+from core.types import AgentTurnResult
 
 
 def _paths(tmp_path: Path) -> SimpleNamespace:

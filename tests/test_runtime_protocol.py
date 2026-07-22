@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.types import ModelStatus
 from core.message_types import JSONValue
 from core.runtime_protocol import (
     MAX_RUNTIME_FRAME_BYTES,
@@ -17,6 +16,7 @@ from core.runtime_protocol import (
     decode_runtime_frame,
 )
 from core.themes import ThemeLoadError, _read, available_theme_ids, reload_themes, theme_payload
+from core.types import ModelStatus
 from core.ui_commands import command_catalog
 
 

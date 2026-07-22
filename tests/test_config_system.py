@@ -195,6 +195,16 @@ def test_save_global_config_roundtrips_versioned_toml(tmp_path: Path) -> None:
     assert cfg.stat().st_mode & 0o777 == 0o600
 
 
+def test_config_writer_supports_nested_tables_and_quoted_multiline_values(tmp_path: Path) -> None:
+    cfg = tmp_path / "config" / "config.toml"
+    normalized, _ = normalize_config({"tools": {"custom": {"label": "first\nsecond", "flags": ["a", "b"]}}})
+
+    save_global_config(cfg, normalized)
+
+    loaded = load_global_config(cfg)
+    assert loaded["tools"]["custom"] == {"label": "first\nsecond", "flags": ["a", "b"]}
+
+
 def test_validate_endpoint_policy_allows_same_host_different_ports() -> None:
     config = {
         "agent": {

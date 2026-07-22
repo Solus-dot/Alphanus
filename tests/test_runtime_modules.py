@@ -17,7 +17,7 @@ from core.memory import LexicalMemory
 from core.project import ProjectRuntime
 from core.retrieval import SQLiteRetrievalStore
 from core.streaming import StreamError
-from core.types import AgentTurnResult, ModelStatus, StreamPassResult, ToolCall, TurnClassification
+from core.types import AgentTurnResult, ModelStatus, StreamPassResult, ToolCall, ToolExecutionRecord, TurnClassification
 from skills.runtime import SkillContext, SkillRuntime
 
 
@@ -797,6 +797,31 @@ def test_orchestrator_records_project_evidence_and_policy_blocks(tmp_path: Path)
     assert evidence["has_successful_mutation"] is True
     assert "shell_command" in evidence["successful_mutating_tools"]
     assert "shell_command" in evidence["policy_blocked_tools"]
+
+
+def test_evidence_aggregates_the_whole_turn_but_bounds_recent_details(tmp_path: Path) -> None:
+    _runtime, orchestrator, state = _turn_state(
+        tmp_path,
+        user_input="create a file",
+        time_sensitive=False,
+        project_action=True,
+    )
+    state.evidence.append(
+        ToolExecutionRecord(
+            name="shell_command",
+            args={"command": "touch notes.txt"},
+            result={"ok": True, "data": {}, "error": None, "meta": {"project_changed": True}},
+        )
+    )
+    state.evidence.extend(
+        ToolExecutionRecord(name="skill_view", args={}, result={"ok": True, "data": {}, "error": None, "meta": {}})
+        for _ in range(12)
+    )
+
+    evidence = orchestrator.evidence_guard.project_action_evidence(state)
+
+    assert evidence["successful_mutating_tools"] == ["shell_command"]
+    assert len(evidence["recent_tools"]) == 12
 
 
 def _patch_project_tool_runtime(mocker, runtime: SkillRuntime, *, read_ok: bool = True) -> None:

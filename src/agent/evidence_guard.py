@@ -42,7 +42,7 @@ class EvidenceGuard:
         successful_action_labels: list[str] = []
         policy_blocked_tools: list[JSONValue] = []
         recent_tools: list[JSONValue] = []
-        for record in state.evidence[-12:]:
+        for record in state.evidence:
             ok = bool(record.result.get("ok"))
             mutating = self.tool_counts_as_project_mutation(record)
             reg = self.skill_runtime.tool_registration(record.name)
@@ -86,6 +86,6 @@ class EvidenceGuard:
             "successful_non_mutating_tools": successful_non_mutating_tools,
             "successful_action_labels": cast(JSONValue, successful_action_labels),
             "policy_blocked_tools": policy_blocked_tools,
-            "recent_tools": recent_tools,
+            "recent_tools": recent_tools[-12:],
         }
         return payload

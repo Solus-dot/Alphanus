@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from agent.harness_metrics import HarnessMetrics
-from agent.types import AgentTurnResult
+from core.types import AgentTurnResult
 
 
 def _result(status: str, journal: dict | None = None) -> AgentTurnResult:
