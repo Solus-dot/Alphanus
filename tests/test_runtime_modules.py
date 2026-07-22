@@ -717,6 +717,12 @@ def _turn_state(tmp_path: Path, *, user_input: str, time_sensitive: bool, projec
     return runtime, orchestrator, state
 
 
+def _reload_retrieval(orchestrator: TurnOrchestrator, **updates: object) -> None:
+    config = orchestrator.config.model_dump()
+    config["retrieval"].update(updates)
+    orchestrator.reload_config(config)
+
+
 def test_orchestrator_policy_snapshot_captures_forced_flags_and_shell_exposure(mocker, tmp_path: Path) -> None:
     runtime, orchestrator, state = _turn_state(
         tmp_path,
@@ -865,7 +871,7 @@ def test_tool_loop_repeated_successful_read_is_blocked_then_stopped(mocker, tmp_
         time_sensitive=False,
         project_action=False,
     )
-    orchestrator.config["retrieval"] = {"enabled": False}
+    _reload_retrieval(orchestrator, enabled=False)
     _patch_project_tool_runtime(mocker, runtime)
     call = ToolCall(stream_id="s1", index=0, id="call_1", name="read_file", arguments={"filepath": "README.md"})
 
@@ -912,7 +918,7 @@ def test_tool_loop_max_depth_adds_synthetic_tool_result(mocker, tmp_path: Path) 
         time_sensitive=False,
         project_action=False,
     )
-    orchestrator.config["retrieval"] = {"enabled": False}
+    _reload_retrieval(orchestrator, enabled=False)
     _patch_project_tool_runtime(mocker, runtime)
     state.action_depth = orchestrator.max_action_depth
     call = ToolCall(stream_id="s1", index=0, id="call_1", name="read_file", arguments={"filepath": "README.md"})
@@ -940,7 +946,7 @@ def test_tool_loop_stalled_project_mutation_blocks_extra_inspection(mocker, tmp_
         time_sensitive=False,
         project_action=True,
     )
-    orchestrator.config["retrieval"] = {"enabled": False}
+    _reload_retrieval(orchestrator, enabled=False)
     _patch_project_tool_runtime(mocker, runtime)
 
     for idx, args in enumerate(
@@ -994,7 +1000,7 @@ def test_tool_loop_stalled_inspection_does_not_skip_later_edit_in_same_pass(mock
         time_sensitive=False,
         project_action=True,
     )
-    orchestrator.config["retrieval"] = {"enabled": False}
+    _reload_retrieval(orchestrator, enabled=False)
     _patch_project_tool_runtime(mocker, runtime)
 
     for idx, args in enumerate(
@@ -1451,7 +1457,7 @@ def test_policy_retrieval_injects_time_sensitive_context(tmp_path: Path) -> None
         time_sensitive=True,
         project_action=False,
     )
-    orchestrator.config["retrieval"] = {"store_path": str(db_path), "pre_context_top_k": 2}
+    _reload_retrieval(orchestrator, store_path=str(db_path), pre_context_top_k=2)
     events: list[dict[str, object]] = []
 
     orchestrator.inject_policy_retrieval_context(state, on_event=events.append)
@@ -1478,7 +1484,7 @@ def test_policy_retrieval_skips_non_time_sensitive_turns(tmp_path: Path) -> None
         time_sensitive=False,
         project_action=False,
     )
-    orchestrator.config["retrieval"] = {"store_path": str(db_path), "pre_context_top_k": 2}
+    _reload_retrieval(orchestrator, store_path=str(db_path), pre_context_top_k=2)
 
     orchestrator.inject_policy_retrieval_context(state)
 
@@ -1493,7 +1499,7 @@ def test_auto_memory_capture_stores_safe_preference(tmp_path: Path) -> None:
         time_sensitive=False,
         project_action=False,
     )
-    orchestrator.config["retrieval"] = {"store_path": str(db_path)}
+    _reload_retrieval(orchestrator, store_path=str(db_path))
 
     orchestrator.maybe_auto_capture_memory(
         state,
@@ -1515,7 +1521,7 @@ def test_auto_memory_capture_respects_disabled_retrieval(tmp_path: Path) -> None
         time_sensitive=False,
         project_action=False,
     )
-    orchestrator.config["retrieval"] = {"enabled": False, "store_path": str(db_path)}
+    _reload_retrieval(orchestrator, enabled=False, store_path=str(db_path))
 
     orchestrator.maybe_auto_capture_memory(
         state,
@@ -1550,7 +1556,7 @@ def test_successful_tool_outcome_is_indexed_for_retrieval(tmp_path: Path) -> Non
         time_sensitive=False,
         project_action=False,
     )
-    orchestrator.config["retrieval"] = {"store_path": str(db_path)}
+    _reload_retrieval(orchestrator, store_path=str(db_path))
     call = ToolCall(stream_id="call_1", index=0, id="call_1", name="read_file", arguments={"filepath": "README.md"})
 
     orchestrator.record_tool_effects(
@@ -1572,7 +1578,7 @@ def test_failed_tool_outcome_is_not_indexed(tmp_path: Path) -> None:
         time_sensitive=False,
         project_action=False,
     )
-    orchestrator.config["retrieval"] = {"store_path": str(db_path)}
+    _reload_retrieval(orchestrator, store_path=str(db_path))
     call = ToolCall(stream_id="call_1", index=0, id="call_1", name="read_file", arguments={"filepath": "README.md"})
 
     orchestrator.record_tool_effects(

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
 
+from core.config_model import ConfigSchema, config_schema
 from core.memory import LexicalMemory
 from core.message_types import ApprovalRequestFn, JSONValue, UserInputRequestFn
 from core.project import ProjectRuntime
@@ -111,7 +112,7 @@ class SkillRuntime:
         skills_dir: str,
         project: ProjectRuntime,
         memory: LexicalMemory,
-        config: dict | None = None,
+        config: ConfigSchema | dict[str, Any] | None = None,
         bundled_skills_dir: str | None = None,
         extra_skill_dirs: list[str] | None = None,
         debug: bool = False,
@@ -121,7 +122,6 @@ class SkillRuntime:
         self._configured_extra_skill_dirs = [Path(item).expanduser().resolve() for item in extra_skill_dirs or [] if str(item).strip()]
         self.project = project
         self.memory = memory
-        self.config = {}
         self.debug = debug
         self.ToolExecutionEnv = ToolExecutionEnv
         self.reload_config(config or {})
@@ -154,11 +154,10 @@ class SkillRuntime:
         self.selector = SkillSelector(self)
         self.load_skills()
 
-    def reload_config(self, config: dict | None) -> None:
-        self.config = config or {}
-        self.skills_cfg = self.config.get("skills", {}) if isinstance(self.config.get("skills"), dict) else {}
-        raw_paths = self.skills_cfg.get("paths", [])
-        config_paths = raw_paths if isinstance(raw_paths, list) else []
+    def reload_config(self, config: ConfigSchema | dict[str, Any] | None) -> None:
+        self.config_model = config_schema(config)
+        self.config = self.config_model.model_dump()
+        config_paths = self.config_model.skills.paths
         self.extra_skill_dirs = list(self._configured_extra_skill_dirs)
         for raw_path in config_paths:
             text = str(raw_path).strip()
@@ -166,8 +165,7 @@ class SkillRuntime:
                 path = Path(os.path.expanduser(text)).resolve()
                 if path not in self.extra_skill_dirs and path != self.skills_dir and path != self.bundled_skills_dir:
                     self.extra_skill_dirs.append(path)
-        permissions_cfg = self.config.get("permissions", {}) if isinstance(self.config.get("permissions"), dict) else {}
-        permission_mode = str(permissions_cfg.get("mode", "project-write")).strip().lower()
+        permission_mode = self.config_model.permissions.mode.strip().lower()
         if permission_mode not in {"read-only", "project-write", "danger-full-access"}:
             permission_mode = "project-write"
         self.permission_mode = permission_mode
@@ -175,7 +173,7 @@ class SkillRuntime:
         self.project.sandbox_config = replace(
             self.project.sandbox_config,
             mode=permission_mode,
-            network=bool(permissions_cfg.get("network", False)),
+            network=self.config_model.permissions.network,
         )
 
     def is_read_only_mode(self) -> bool:
@@ -938,15 +936,13 @@ class SkillRuntime:
             }
             safe_names = set(turn_core_names)
             safe_names.update({_SKILLS_LIST_TOOL_NAME, _SKILL_VIEW_TOOL_NAME})
-            runtime_cfg = self.config.get("runtime", {}) if isinstance(self.config.get("runtime"), dict) else {}
-            if bool(runtime_cfg.get("ask_user_tool", True)):
+            if self.config_model.runtime.ask_user_tool:
                 safe_names.add(_REQUEST_USER_INPUT_TOOL_NAME)
             return sorted(name for name in safe_names if name in self._tool_registry)
 
         names = set(self.model_exposed_tool_names())
         names.update(self.optional_tool_names(selected, ctx=ctx))
-        runtime_cfg = self.config.get("runtime", {}) if isinstance(self.config.get("runtime"), dict) else {}
-        if not bool(runtime_cfg.get("ask_user_tool", True)):
+        if not self.config_model.runtime.ask_user_tool:
             names.discard(_REQUEST_USER_INPUT_TOOL_NAME)
         return sorted(name for name in names if name in self._tool_registry)
 

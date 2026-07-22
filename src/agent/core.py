@@ -15,6 +15,7 @@ from agent.policies import PromptPolicyRenderer
 from agent.prompts import build_system_prompt
 from agent.provider import LLMClient
 from agent.telemetry import TelemetryEmitter
+from core.config_model import ConfigSchema, config_schema
 from core.configuration import normalize_config, validate_endpoint_policy
 from core.message_types import ChatMessage, JsonObject
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
@@ -53,19 +54,17 @@ class Agent:
         config, _ = normalize_config(config)
         self._apply_config(config)
 
-    def _apply_config(self, config: dict[str, Any]) -> None:
-        self.config = config
-        self.skill_runtime.reload_config(config)
-        context_cfg = config["context"]
-        self.context_mgr.context_limit = int(context_cfg["context_limit"])
-        self.context_mgr.keep_last_n = int(context_cfg["keep_last_n"])
-        self.context_mgr.safety_margin = int(context_cfg["safety_margin"])
+    def _apply_config(self, config: ConfigSchema | dict[str, Any]) -> None:
+        self.config = config_schema(config)
+        self.skill_runtime.reload_config(self.config)
+        self.context_mgr.context_limit = self.config.context.context_limit
+        self.context_mgr.keep_last_n = self.config.context.keep_last_n
+        self.context_mgr.safety_margin = self.config.context.safety_margin
         self.system_prompt = build_system_prompt(str(self.skill_runtime.project.project_root))
-        self.llm_client.reload_config(config)
-        self.classifier.reload_config(config)
+        self.llm_client.reload_config(self.config)
         self.prompt_renderer.system_prompt = self.system_prompt
         self.prompt_renderer.context_limit = self.context_mgr.context_limit
-        self.orchestrator.reload_config(config)
+        self.orchestrator.reload_config(self.config)
 
     def ensure_ready(
         self, stop_event=None, on_event: Callable[[dict[str, Any]], None] | None = None, timeout_s: float | None = None
@@ -111,17 +110,17 @@ class Agent:
         return None
 
     def doctor_report(self, *, probe_ready: bool = True) -> dict[str, object]:
-        config_obj = self.config if isinstance(self.config, dict) else {}
+        config_obj: ConfigSchema = self.config
         endpoint_error = self._validate_endpoints()
         project_root = Path(self.skill_runtime.project.project_root)
         memory_stats = self.skill_runtime.memory.stats()
-        permissions_cfg = config_obj["permissions"]
-        sandbox_cfg = config_obj["sandbox"]
-        search_cfg = config_obj["search"]
-        provider = str(search_cfg.get("provider", SEARCH_PROVIDER_SEARXNG)).strip().lower() or SEARCH_PROVIDER_SEARXNG
-        fallback_provider = str(search_cfg.get("fallback_provider", SEARCH_PROVIDER_TAVILY)).strip().lower()
-        searxng_base_url = str(search_cfg.get("searxng_base_url", "")).strip()
-        tavily_api_key_env = str(search_cfg.get("tavily_api_key_env", DEFAULT_TAVILY_API_KEY_ENV)).strip() or DEFAULT_TAVILY_API_KEY_ENV
+        permissions_cfg = config_obj.permissions
+        sandbox_cfg = config_obj.sandbox
+        search_cfg = config_obj.search
+        provider = search_cfg.provider.strip().lower() or SEARCH_PROVIDER_SEARXNG
+        fallback_provider = search_cfg.fallback_provider.strip().lower()
+        searxng_base_url = search_cfg.searxng_base_url.strip()
+        tavily_api_key_env = search_cfg.tavily_api_key_env.strip() or DEFAULT_TAVILY_API_KEY_ENV
         tavily_ready = bool(os.environ.get(tavily_api_key_env, "").strip())
         search_ready = (
             (provider == SEARCH_PROVIDER_SEARXNG and bool(searxng_base_url)) or provider == SEARCH_PROVIDER_TAVILY and tavily_ready
@@ -135,8 +134,7 @@ class Agent:
             )
             if provider == SEARCH_PROVIDER_SEARXNG and fallback_provider == SEARCH_PROVIDER_TAVILY:
                 search_reason = f"missing search.searxng_base_url and env: {tavily_api_key_env}"
-        retrieval_cfg = config_obj["retrieval"]
-        retrieval_enabled = bool(retrieval_cfg.get("enabled", True))
+        retrieval_enabled = config_obj.retrieval.enabled
         try:
             retrieval_stats = SQLiteRetrievalStore(configured_store_path(config_obj)).stats() if retrieval_enabled else {}
             retrieval_ready = retrieval_enabled
@@ -170,10 +168,10 @@ class Agent:
                 "backend_incompatibility_last": str(backend_info.get("incompatibility_last", "")),
                 "compatibility_profile": self.llm_client.compatibility_profile(),
                 "fallback_events": self.llm_client.fallback_events(),
-                "permission_mode": str(permissions_cfg.get("mode", "project-write")),
-                "approvals": str(permissions_cfg.get("approvals", "on-boundary")),
-                "network": bool(permissions_cfg.get("network", False)),
-                "sandbox_backend": str(sandbox_cfg.get("backend", "auto")),
+                "permission_mode": permissions_cfg.mode,
+                "approvals": permissions_cfg.approvals,
+                "network": permissions_cfg.network,
+                "sandbox_backend": sandbox_cfg.backend,
             },
             "project": {
                 "path": str(project_root),

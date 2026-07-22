@@ -17,6 +17,7 @@ from agent.tool_execution_engine import ToolExecutionEngine
 from agent.tool_loop_engine import ToolLoopEngine
 from agent.turn_journal import TurnJournalBuilder
 from agent.turn_policy_engine import TurnPolicyEngine
+from core.config_model import ConfigSchema, config_schema
 from core.message_types import ChatMessage, JSONValue
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
 from core.types import (
@@ -74,25 +75,18 @@ class TurnOrchestrator:
         self.telemetry = telemetry or TelemetryEmitter()
         self.reload_config(llm_client.config)
 
-    def reload_config(self, config: dict[str, Any]) -> None:
-        self.config = config
-        agent_cfg = config["agent"]
-        self.max_action_depth = int(agent_cfg["max_action_depth"])
-        self.max_tool_result_chars = int(agent_cfg["max_tool_result_chars"])
-        self.max_reasoning_chars = int(agent_cfg["max_reasoning_chars"])
-        self.compact_tool_results_in_history = bool(agent_cfg.get("compact_tool_results_in_history", True))
-        compact_tools = agent_cfg.get("compact_tool_result_tools", [])
-        if isinstance(compact_tools, list):
-            self.compact_tool_result_tools = {str(name).strip() for name in compact_tools if str(name).strip()}
-        else:
-            self.compact_tool_result_tools = set()
-        self.context_budget_max_tokens = int(agent_cfg["context_budget_max_tokens"])
+    def reload_config(self, config: ConfigSchema | dict[str, Any]) -> None:
+        self.config = config_schema(config)
+        agent_cfg = self.config.agent
+        self.max_action_depth = agent_cfg.max_action_depth
+        self.max_tool_result_chars = agent_cfg.max_tool_result_chars
+        self.max_reasoning_chars = agent_cfg.max_reasoning_chars
+        self.compact_tool_results_in_history = agent_cfg.compact_tool_results_in_history
+        self.compact_tool_result_tools = {name.strip() for name in agent_cfg.compact_tool_result_tools if name.strip()}
+        self.context_budget_max_tokens = agent_cfg.context_budget_max_tokens
         self.default_tool_budgets = {"web_search": 2, "fetch_url": 2, "recall_memory": 2}
-        budgets = agent_cfg.get("tool_budgets", {})
-        if isinstance(budgets, dict):
-            for key, value in budgets.items():
-                tool_name = str(key)
-                self.default_tool_budgets[tool_name] = int(value)
+        for key, value in (agent_cfg.tool_budgets or {}).items():
+            self.default_tool_budgets[str(key)] = int(value)
         self.sanitizer = OutputSanitizer(self.max_reasoning_chars)
         self.policy_engine = TurnPolicyEngine(self.skill_runtime, self.default_tool_budgets)
         self.evidence_guard = EvidenceGuard(self.skill_runtime)
@@ -102,10 +96,10 @@ class TurnOrchestrator:
         self.finalization_engine = FinalizationEngine(self)
 
     def inject_policy_retrieval_context(self, state: TurnState, on_event: Callable[[JsonObject], None] | None = None) -> None:
-        retrieval_cfg = self.config["retrieval"]
-        if not bool(retrieval_cfg.get("enabled", True)) or not state.classification.time_sensitive:
+        retrieval_cfg = self.config.retrieval
+        if not retrieval_cfg.enabled or not state.classification.time_sensitive:
             return
-        top_k = int(retrieval_cfg["pre_context_top_k"])
+        top_k = retrieval_cfg.pre_context_top_k
         if top_k <= 0:
             return
         try:
@@ -141,8 +135,7 @@ class TurnOrchestrator:
     def maybe_auto_capture_memory(self, state: TurnState, result: AgentTurnResult) -> None:
         if result.status != "done":
             return
-        memory_cfg = self.config["memory"]
-        if not bool(memory_cfg.get("auto_capture", True)):
+        if not self.config.memory.auto_capture:
             return
         text = self._auto_memory_text(state.ctx.user_input)
         if not text:
@@ -156,8 +149,7 @@ class TurnOrchestrator:
             importance=0.55,
         )
         self.skill_runtime.memory.flush()
-        retrieval_cfg = self.config["retrieval"]
-        if bool(retrieval_cfg.get("enabled", True)):
+        if self.config.retrieval.enabled:
             SQLiteRetrievalStore(configured_store_path(self.config)).upsert_record(
                 record_type="memory_fact",
                 source=f"memory:{item['id']}",
@@ -169,8 +161,7 @@ class TurnOrchestrator:
         self._trace_add(state, "memory", {"status": "auto_captured", "memory_id": item["id"], "text": text})
 
     def maybe_index_tool_outcome(self, state: TurnState, call: ToolCall, result: dict[str, object]) -> None:
-        retrieval_cfg = self.config["retrieval"]
-        if not bool(retrieval_cfg.get("enabled", True)) or call.name in _TOOL_OUTCOME_SKIP or not result.get("ok"):
+        if not self.config.retrieval.enabled or call.name in _TOOL_OUTCOME_SKIP or not result.get("ok"):
             return
         text = f"Tool {call.name} succeeded.\nArguments: {self.safe_json_dumps(call.arguments)}\nResult: {self.safe_json_dumps(result)}"
         text = self.truncate_text(text, 2400)

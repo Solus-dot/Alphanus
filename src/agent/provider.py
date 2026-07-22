@@ -31,7 +31,7 @@ from agent.provider_metadata import ProviderMetadataExtractor
 from agent.provider_payload import ProviderPayloadAdapter
 from agent.provider_stream_parser import ProviderStreamParser
 from agent.telemetry import TelemetryEmitter
-from core.config_model import AgentConfig
+from core.config_model import AgentConfig, ConfigSchema, config_schema
 from core.endpoint_modes import CONCRETE_ENDPOINT_MODES, ENDPOINT_MODE_AUTO, ENDPOINT_MODE_CHAT, ENDPOINT_MODE_RESPONSES, ENDPOINT_MODES
 from core.message_types import ChatMessage, ToolCallDelta
 from core.streaming import build_ssl_context
@@ -777,7 +777,7 @@ class OpenAICompatibleProvider:
 class LLMClient(OpenAICompatibleProvider):
     """Configured provider used by classification and turn execution."""
 
-    def __init__(self, config: dict[str, Any], debug: bool = False, telemetry: TelemetryEmitter | None = None) -> None:
+    def __init__(self, config: ConfigSchema | dict[str, Any], debug: bool = False, telemetry: TelemetryEmitter | None = None) -> None:
         self.debug = debug
         self.telemetry = telemetry or TelemetryEmitter()
         self.api_key = ""
@@ -791,13 +791,12 @@ class LLMClient(OpenAICompatibleProvider):
         )
         self._load_classifier_config(config)
 
-    def _client_config(self, config: dict[str, Any]) -> AgentConfig:
-        self.config = config
-        agent = config.get("agent")
-        agent = agent if isinstance(agent, dict) else {}
-        api_key_ref = str(agent.get("api_key", "")).strip()
-        api_key_env = str(agent.get("api_key_env", "ALPHANUS_API_KEY")).strip() or "ALPHANUS_API_KEY"
-        template = str(agent.get("auth_header_template", "Authorization: Bearer {api_key}")).strip()
+    def _client_config(self, config: ConfigSchema | dict[str, Any]) -> AgentConfig:
+        self.config = config_schema(config)
+        agent = self.config.agent
+        api_key_ref = agent.api_key.strip()
+        api_key_env = agent.api_key_env.strip() or "ALPHANUS_API_KEY"
+        template = agent.auth_header_template.strip()
         explicit_header = os.environ.get("ALPHANUS_AUTH_HEADER", "").strip()
         if api_key_ref.lower().startswith("env:"):
             name = api_key_ref[4:].strip()
@@ -813,19 +812,18 @@ class LLMClient(OpenAICompatibleProvider):
                 rendered = f"Authorization: Bearer {key}"
             if ":" in rendered:
                 self.auth_source = "api_key"
-                return AgentConfig.from_config(config, auth_header=rendered)
+                return agent.model_copy(update={"auth_header": rendered})
         self.auth_source = "env" if explicit_header else "none"
-        return AgentConfig.from_config(config, auth_header=explicit_header)
+        return agent.model_copy(update={"auth_header": explicit_header or None})
 
-    def _load_classifier_config(self, config: dict[str, Any]) -> None:
-        agent = config.get("agent")
-        parsed = AgentConfig.model_validate(agent if isinstance(agent, dict) else {})
+    def _load_classifier_config(self, config: ConfigSchema | dict[str, Any]) -> None:
+        parsed = config_schema(config).agent
         self.classifier_model = parsed.classifier_model.strip()
         self.classifier_use_primary_model = parsed.classifier_use_primary_model
         self.enable_structured_classification = parsed.enable_structured_classification
         self.max_classifier_tokens = parsed.max_classifier_tokens
 
-    def reload_config(self, config: dict[str, Any]) -> None:
+    def reload_config(self, config: ConfigSchema | dict[str, Any]) -> None:
         provider_config = self._client_config(config)
         self._apply_provider_config(provider_config)
         self._load_classifier_config(config)

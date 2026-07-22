@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.config_model import ConfigSchema
+
 
 def default_retrieval_store_path() -> Path:
     root = os.environ.get("ALPHANUS_APP_ROOT", "").strip()
@@ -17,9 +19,8 @@ def default_retrieval_store_path() -> Path:
     return state_root / "retrieval" / "index.sqlite"
 
 
-def configured_store_path(config: dict[str, Any] | None) -> Path:
-    retrieval = config.get("retrieval", {}) if isinstance(config, dict) else {}
-    raw = retrieval.get("store_path") if isinstance(retrieval, dict) else ""
+def configured_store_path(config: ConfigSchema | dict[str, Any] | None) -> Path:
+    raw = config.retrieval.store_path if isinstance(config, ConfigSchema) else (config or {}).get("retrieval", {}).get("store_path", "")
     return Path(os.path.expanduser(str(raw))).resolve() if raw else default_retrieval_store_path()
 
 

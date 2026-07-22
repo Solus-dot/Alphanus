@@ -1,18 +1,13 @@
 from __future__ import annotations
 
-import sys
-from typing import Any, ClassVar, Self
+from collections.abc import Mapping
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.endpoint_modes import ENDPOINT_MODE_CHAT
 from core.search_providers import DEFAULT_TAVILY_API_KEY_ENV, SEARCH_PROVIDER_SEARXNG, SEARCH_PROVIDER_TAVILY
 from core.theme_catalog import DEFAULT_THEME_ID
-
-
-def _section(config: dict[str, Any], key: str) -> dict[str, Any]:
-    value = config.get(key)
-    return value if isinstance(value, dict) else {}
 
 
 class ConfigSection(BaseModel):
@@ -24,11 +19,6 @@ class ClosedConfigSection(ConfigSection):
 
 
 class AgentConfig(ConfigSection):
-    _transport_fields: ClassVar[frozenset[str]] = frozenset(
-        "provider base_url model_endpoint responses_endpoint models_endpoint endpoint_mode backend_profile tls_verify ca_bundle_path "
-        "allow_cross_host_endpoints request_timeout_s readiness_timeout_s readiness_poll_s connect_timeout_s per_turn_retries "
-        "retry_backoff_s max_tokens api_key api_key_env auth_header_template".split()
-    )
     provider: str = "openai-compatible"
     base_url: str = "http://127.0.0.1:8080"
     model_endpoint: str = "http://127.0.0.1:8080/v1/chat/completions"
@@ -71,13 +61,6 @@ class AgentConfig(ConfigSection):
     def default_max_tokens(self) -> int | None:
         return self.max_tokens
 
-    @classmethod
-    def from_config(cls, config: dict[str, Any], *, auth_header: str | None = None) -> Self:
-        section = _section(config, "agent")
-        values = {key: value for key, value in section.items() if key in cls._transport_fields}
-        return cls.model_validate({**values, "auth_header": (auth_header or "").strip() or None})
-
-
 class ProjectConfig(ClosedConfigSection):
     root_strategy: str = "git-or-cwd"
 
@@ -111,12 +94,6 @@ class SkillsConfig(ClosedConfigSection):
     strict_capability_policy: bool = False
     python_executable: str = ""
     paths: list[str] = Field(default_factory=list)
-
-    @classmethod
-    def from_config(cls, config: dict[str, Any]) -> Self:
-        section = _section(config, "skills")
-        return cls.model_validate({**section, "python_executable": str(section.get("python_executable") or sys.executable)})
-
 
 class AgentsConfig(ConfigSection):
     enable_skill_agents: bool = True
@@ -184,11 +161,6 @@ class UiConfig(ConfigSection):
     timing: UiTimingConfig = Field(default_factory=lambda: UiTimingConfig())
     tree_compaction: TreeCompactionConfig = Field(default_factory=lambda: TreeCompactionConfig())
 
-    @classmethod
-    def from_config(cls, config: dict[str, Any]) -> Self:
-        return cls.model_validate(_section(config, "tui"))
-
-
 class ConfigSchema(ConfigSection):
     config_version: int = 1
     agent: AgentConfig = Field(default_factory=lambda: AgentConfig())
@@ -207,8 +179,14 @@ class ConfigSchema(ConfigSection):
     tui: UiConfig = Field(default_factory=lambda: UiConfig())
 
 
+def config_schema(config: ConfigSchema | Mapping[str, Any] | None = None) -> ConfigSchema:
+    if isinstance(config, ConfigSchema):
+        return config
+    return ConfigSchema.model_validate(dict(config or {}))
+
+
 def validated_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
-    model = ConfigSchema.model_validate(config) if config is not None else ConfigSchema()
+    model = config_schema(config)
     output = model.model_dump(exclude={"agent": {"auth_header"}})
     if model.agent.tool_budgets is None:
         output["agent"].pop("tool_budgets", None)

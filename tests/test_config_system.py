@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from core.config_model import AgentConfig, SkillsConfig, UiConfig
+from core.config_model import config_schema
 from core.configuration import (
     DEFAULT_CONFIG,
     ConfigMigrationError,
@@ -296,9 +296,10 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
         }
     )
 
-    provider = AgentConfig.from_config(normalized, auth_header="Authorization: Bearer demo")
-    skills = SkillsConfig.from_config(normalized)
-    ui = UiConfig.from_config(normalized)
+    schema = config_schema(normalized)
+    provider = schema.agent.model_copy(update={"auth_header": "Authorization: Bearer demo"})
+    skills = schema.skills
+    ui = schema.tui
 
     assert provider.connect_timeout_s == 3.0
     assert provider.per_turn_retries == 2
@@ -315,7 +316,7 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
 def test_tui_chat_log_max_lines_zero_is_clamped_for_bounded_memory() -> None:
     normalized, _warnings = normalize_config({"tui": {"chat_log_max_lines": 0}})
 
-    ui = UiConfig.from_config(normalized)
+    ui = config_schema(normalized).tui
 
     assert normalized["tui"]["chat_log_max_lines"] == 1000
     assert ui.chat_log_max_lines == 1000
@@ -324,7 +325,7 @@ def test_tui_chat_log_max_lines_zero_is_clamped_for_bounded_memory() -> None:
 def test_tui_stream_drain_default_is_terminal_friendly() -> None:
     normalized, _warnings = normalize_config({})
 
-    ui = UiConfig.from_config(normalized)
+    ui = config_schema(normalized).tui
 
     assert normalized["tui"]["timing"]["stream_drain_interval_s"] == 0.033
     assert ui.timing.stream_drain_interval_s == 0.033
@@ -377,7 +378,7 @@ def test_normalize_config_accepts_loadable_custom_theme(tmp_path: Path, monkeypa
     themes.reload_themes()
     try:
         normalized, warnings = normalize_config({"tui": {"theme": "custom-oxide"}})
-        ui = UiConfig.from_config(normalized)
+        ui = config_schema(normalized).tui
     finally:
         themes.reload_themes()
 

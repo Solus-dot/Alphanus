@@ -59,18 +59,14 @@ _FILESYSTEM_DIRECTORY_CONTEXT_RE = re.compile(
 class TurnClassifier:
     def __init__(
         self,
-        config: dict[str, Any],
+        _config: dict[str, Any],
         skill_runtime: SkillRuntime,
         llm_client: LLMClient,
         telemetry: TelemetryEmitter | None = None,
     ) -> None:
-        self.config = config
         self.skill_runtime = skill_runtime
         self.llm_client = llm_client
         self.telemetry = telemetry or TelemetryEmitter()
-
-    def reload_config(self, config: dict[str, Any]) -> None:
-        self.config = config
 
     @staticmethod
     def message_text(value: JSONValue | list[MessageContentPart]) -> str:

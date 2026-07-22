@@ -121,9 +121,9 @@ def _build_agent(tmp_path: Path, fixture: dict[str, Any]) -> Agent:
             "agent": {
                 "model_endpoint": "http://127.0.0.1:8080/v1/chat/completions",
                 "models_endpoint": "http://127.0.0.1:8080/v1/models",
-                "request_timeout_s": 1,
+                "request_timeout_s": 5,
                 "readiness_timeout_s": 1,
-                "readiness_poll_s": 0.01,
+                "readiness_poll_s": 0.05,
                 "enable_thinking": True,
                 "tls_verify": True,
                 "max_tokens": 256,
