@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# Assertions deliberately narrow recursive JSONValue payloads at runtime.
 # pyright: reportAttributeAccessIssue=false, reportArgumentType=false, reportIndexIssue=false, reportOptionalMemberAccess=false, reportOptionalSubscript=false, reportOperatorIssue=false, reportCallIssue=false
 import io
 import json
@@ -18,6 +19,7 @@ from core.memory import LexicalMemory
 from core.project import ProjectRuntime
 from core.types import ModelStatus, TurnClassification, TurnPolicySnapshot
 from skills.runtime import SkillContext, SkillRuntime
+from tests.support import build_skill_runtime
 
 pytestmark = pytest.mark.usefixtures("disable_model_classification")
 
@@ -26,6 +28,23 @@ TEST_MODEL_ENDPOINT = f"{TEST_BASE_URL}/v1/chat/completions"
 TEST_MODELS_ENDPOINT = f"{TEST_BASE_URL}/v1/models"
 TEST_SLOTS_ENDPOINT = f"{TEST_BASE_URL}/slots"
 TEST_PROPS_ENDPOINT = f"{TEST_BASE_URL}/props"
+
+
+def agent_config(*, sections=None, **overrides):
+    agent = {
+        "model_endpoint": TEST_MODEL_ENDPOINT,
+        "models_endpoint": TEST_MODELS_ENDPOINT,
+        "request_timeout_s": 5,
+        "readiness_timeout_s": 1,
+        "readiness_poll_s": 0.05,
+        "enable_thinking": True,
+        "tls_verify": True,
+        "max_tokens": 256,
+    }
+    agent.update(overrides)
+    config = {"agent": agent}
+    config.update(sections or {})
+    return config
 
 
 class FakeResponse:
@@ -48,15 +67,9 @@ class FakeResponse:
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> SkillRuntime:
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "project-ops").mkdir(parents=True)
-
-    (skills / "project-ops" / "SKILL.md").write_text(
-        """
+    return build_skill_runtime(
+        tmp_path,
+        manifest="""
 ---
 name: project-ops
 description: project
@@ -67,11 +80,8 @@ tools:
     - create_file
 ---
 project
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "project-ops" / "tools.py").write_text(
-        """
+""",
+        tools="""
 TOOL_SPECS = {
   "create_directory": {
     "capability": "project_write",
@@ -101,31 +111,12 @@ def execute(tool_name, args, env):
         path = env.project.create_file(args["filepath"], args["content"])
         return {"ok": True, "data": {"filepath": path}, "error": None, "meta": {}}
     return {"ok": False, "data": None, "error": {"code": "E_UNSUPPORTED", "message": "nope"}, "meta": {}}
-""".strip(),
-        encoding="utf-8",
-    )
-
-    return SkillRuntime(
-        skills_dir=str(skills),
-        bundled_skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+""",
     )
 
 
 def test_agent_records_model_usage_from_stream(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-        }
-    }
+    cfg = agent_config()
     agent = Agent(cfg, runtime)
 
     def fake_urlopen(req, timeout=None, context=None):
@@ -154,18 +145,7 @@ def test_agent_records_model_usage_from_stream(mocker, runtime: SkillRuntime):
 
 
 def test_agent_journal_contains_turn_trace_payload_and_tools(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-        }
-    }
+    cfg = agent_config()
     agent = Agent(cfg, runtime)
 
     chat_reqs = []
@@ -218,19 +198,7 @@ def test_agent_journal_contains_turn_trace_payload_and_tools(mocker, runtime: Sk
 
 
 def test_image_turn_without_selected_skill_tools_omits_tool_schemas(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-            "enable_structured_classification": True,
-        }
-    }
+    cfg = agent_config(enable_structured_classification=True)
     agent = Agent(cfg, runtime)
     requests = []
 
@@ -282,19 +250,7 @@ def test_image_turn_keeps_model_exposed_core_tools_for_project_actions(
     runtime: SkillRuntime,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-            "enable_structured_classification": True,
-        }
-    }
+    cfg = agent_config(enable_structured_classification=True)
     agent = Agent(cfg, runtime)
     requests = []
 
@@ -361,19 +317,7 @@ def test_leading_system_messages_stop_at_first_non_system(runtime: SkillRuntime)
 
 
 def test_image_turn_reports_clear_error_when_backend_rejects_multimodal_prompt(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-            "enable_structured_classification": True,
-        }
-    }
+    cfg = agent_config(enable_structured_classification=True)
     agent = Agent(cfg, runtime)
 
     def fake_urlopen(req, timeout=None, context=None):
@@ -411,19 +355,7 @@ def test_image_turn_reports_clear_error_when_backend_rejects_multimodal_prompt(m
 
 
 def test_image_turn_reports_mmproj_hint_when_backend_has_no_image_support(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-            "enable_structured_classification": True,
-        }
-    }
+    cfg = agent_config(enable_structured_classification=True)
     agent = Agent(cfg, runtime)
 
     def fake_urlopen(req, timeout=None, context=None):
@@ -464,19 +396,7 @@ def test_image_turn_reports_mmproj_hint_when_backend_has_no_image_support(mocker
 
 
 def test_image_turn_retries_with_latest_user_only_after_tokenize_failure(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-            "enable_structured_classification": True,
-        }
-    }
+    cfg = agent_config(enable_structured_classification=True)
     agent = Agent(cfg, runtime)
     requests = []
 
@@ -533,19 +453,7 @@ def test_image_turn_retries_with_latest_user_only_after_tokenize_failure(mocker,
 
 
 def test_agent_run_turn_exercises_structured_classification_path(mocker, runtime: SkillRuntime, monkeypatch: pytest.MonkeyPatch):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-            "enable_structured_classification": True,
-        }
-    }
+    cfg = agent_config(enable_structured_classification=True)
     agent = Agent(cfg, runtime)
     requests = []
 
@@ -591,18 +499,7 @@ def test_agent_run_turn_exercises_structured_classification_path(mocker, runtime
 
 
 def test_agent_requests_final_answer_if_post_tool_content_empty(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-        }
-    }
+    cfg = agent_config()
     agent = Agent(cfg, runtime)
 
     chat_reqs = []
@@ -668,18 +565,7 @@ def test_agent_requests_final_answer_if_post_tool_content_empty(mocker, runtime:
 
 
 def test_agent_does_not_finish_after_helper_file_for_opaque_artifact_request(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-        }
-    }
+    cfg = agent_config()
     agent = Agent(cfg, runtime)
     chat_reqs = []
 
@@ -2035,18 +1921,7 @@ def test_explicit_external_path_supports_quoted_paths_with_spaces(runtime: Skill
 
 
 def test_finalization_retries_when_model_leaks_tool_markup(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-        }
-    }
+    cfg = agent_config()
     agent = Agent(cfg, runtime)
 
     chat_reqs = []
@@ -2113,18 +1988,7 @@ def test_finalization_retries_when_model_leaks_tool_markup(mocker, runtime: Skil
 
 
 def test_finalization_sanitizes_failed_tool_error_context(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-        }
-    }
+    cfg = agent_config()
     agent = Agent(cfg, runtime)
 
     chat_payloads = []
@@ -2203,18 +2067,7 @@ def test_finalization_sanitizes_failed_tool_error_context(mocker, runtime: Skill
 
 
 def test_finalization_uses_fallback_when_markup_repeats(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-        }
-    }
+    cfg = agent_config()
     agent = Agent(cfg, runtime)
 
     history = [
@@ -2318,18 +2171,7 @@ def execute(tool_name, args, env):
     )
     runtime.load_skills()
 
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-        }
-    }
+    cfg = agent_config()
     agent = Agent(cfg, runtime)
     mocker.patch.object(
         agent.classifier,
@@ -2420,18 +2262,7 @@ def execute(tool_name, args, env):
     )
     runtime.load_skills()
 
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-        }
-    }
+    cfg = agent_config()
     agent = Agent(cfg, runtime)
 
     chat_reqs = []
@@ -2516,18 +2347,7 @@ def execute(tool_name, args, env):
     )
     runtime.load_skills()
 
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-        },
-    }
+    cfg = agent_config()
     agent = Agent(cfg, runtime)
 
     chat_reqs = []
@@ -2604,18 +2424,7 @@ def execute(tool_name, args, env):
     )
     runtime.load_skills()
 
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-        },
-    }
+    cfg = agent_config()
     agent = Agent(cfg, runtime)
     mocker.patch.object(agent.classifier, "classify", return_value=TurnClassification(time_sensitive=True))
 
@@ -2948,18 +2757,7 @@ def test_write_tool_history_compaction_keeps_evidence_not_full_content(runtime: 
 
 
 def test_agent_transport_error_marks_error(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-        }
-    }
+    cfg = agent_config()
     agent = Agent(cfg, runtime)
 
     def fake_urlopen(req, timeout=None, context=None):
@@ -2981,18 +2779,7 @@ def test_agent_transport_error_marks_error(mocker, runtime: SkillRuntime):
 
 
 def test_agent_infers_tool_calls_when_finish_reason_missing(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-        }
-    }
+    cfg = agent_config()
     agent = Agent(cfg, runtime)
 
     chat_reqs = []
@@ -3035,18 +2822,7 @@ def test_agent_infers_tool_calls_when_finish_reason_missing(mocker, runtime: Ski
 
 
 def test_agent_emits_unique_tool_stream_ids_per_pass(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-        }
-    }
+    cfg = agent_config()
     agent = Agent(cfg, runtime)
 
     chat_reqs = []
@@ -3100,18 +2876,7 @@ def test_agent_emits_unique_tool_stream_ids_per_pass(mocker, runtime: SkillRunti
 
 
 def test_tool_result_history_compacted_by_default(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-        }
-    }
+    cfg = agent_config()
     agent = Agent(cfg, runtime)
     huge_text = "x" * 24000
 
@@ -3163,19 +2928,7 @@ def test_tool_result_history_compacted_by_default(mocker, runtime: SkillRuntime)
 
 
 def test_tool_result_history_compaction_can_be_disabled(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-            "compact_tool_results_in_history": False,
-        }
-    }
+    cfg = agent_config(compact_tool_results_in_history=False)
     agent = Agent(cfg, runtime)
     huge_text = "x" * 24000
 
@@ -3516,17 +3269,7 @@ def test_doctor_report_supports_searxng_provider(mocker, runtime: SkillRuntime):
 
 
 def test_refresh_model_status_reads_first_model_id(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-        }
-    }
+    cfg = agent_config(max_tokens=None)
     agent = Agent(cfg, runtime)
 
     def fake_urlopen(req, timeout=None, context=None):
@@ -3541,17 +3284,7 @@ def test_refresh_model_status_reads_first_model_id(mocker, runtime: SkillRuntime
 
 
 def test_refresh_model_status_reads_model_id_and_context_window(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-        }
-    }
+    cfg = agent_config(max_tokens=None)
     agent = Agent(cfg, runtime)
 
     seen_urls: list[str] = []
@@ -3587,17 +3320,7 @@ def test_select_skills_returns_only_explicitly_loaded_skills(runtime: SkillRunti
 
 
 def test_refresh_model_status_falls_back_to_slots_for_context_window(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-        }
-    }
+    cfg = agent_config(max_tokens=None)
     agent = Agent(cfg, runtime)
     seen_urls: list[str] = []
 
@@ -3620,17 +3343,7 @@ def test_refresh_model_status_falls_back_to_slots_for_context_window(mocker, run
 
 
 def test_refresh_model_status_falls_back_to_props_after_slots_miss(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-        }
-    }
+    cfg = agent_config(max_tokens=None)
     agent = Agent(cfg, runtime)
     seen_urls: list[str] = []
 
@@ -4289,18 +4002,7 @@ Use scripts/convert.py when needed.
 
 
 def test_reasoning_tokens_strip_think_markers_in_journal_and_output(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-        }
-    }
+    cfg = agent_config()
     agent = Agent(cfg, runtime)
 
     def fake_urlopen(req, timeout=None, context=None):

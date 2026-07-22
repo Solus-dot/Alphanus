@@ -13,23 +13,17 @@ from agent.policies import PromptPolicyRenderer
 from agent.provider import LLMClient
 from agent.telemetry import TelemetryEmitter, configure_logging
 from core.config_model import default_config
-from core.memory import LexicalMemory
-from core.project import ProjectRuntime
 from core.retrieval import SQLiteRetrievalStore
 from core.streaming import StreamError
 from core.types import AgentTurnResult, ModelStatus, StreamPassResult, ToolCall, ToolExecutionRecord, TurnClassification
 from skills.runtime import SkillContext, SkillRuntime
+from tests.support import build_skill_runtime
 
 
 def _runtime(tmp_path: Path) -> SkillRuntime:
-    home = tmp_path / "home"
-    ws = home / "ws"
-    skills = tmp_path / "skills"
-    home.mkdir()
-    ws.mkdir()
-    (skills / "project-ops").mkdir(parents=True)
-    (skills / "project-ops" / "SKILL.md").write_text(
-        """
+    return build_skill_runtime(
+        tmp_path,
+        manifest="""
 ---
 name: project-ops
 description: project
@@ -40,11 +34,8 @@ tools:
     - create_file
 ---
 project
-""".strip(),
-        encoding="utf-8",
-    )
-    (skills / "project-ops" / "tools.py").write_text(
-        """
+""",
+        tools="""
 TOOL_SPECS = {
   "create_directory": {
     "capability": "project_write",
@@ -59,14 +50,7 @@ TOOL_SPECS = {
 
 def execute(tool_name, args, env):
     return {"ok": True, "data": {"filepath": env.project.create_directory(args["path"])}, "error": None, "meta": {}}
-""".strip(),
-        encoding="utf-8",
-    )
-    return SkillRuntime(
-        skills_dir=str(skills),
-        bundled_skills_dir=str(skills),
-        project=ProjectRuntime(str(ws)),
-        memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+""",
     )
 
 
