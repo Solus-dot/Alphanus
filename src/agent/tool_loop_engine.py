@@ -13,23 +13,7 @@ from core.types import AgentTurnResult, ApprovalRequestFn, TurnState, UserInputR
 
 class ToolLoopEngine:
     INSPECTION_LOOP_TOOLS = {"read_file", "read_files", "list_files", "project_tree", "find_files", "search_code"}
-    MUTATION_INTENT_TERMS = {
-        "add",
-        "capitalize",
-        "change",
-        "create",
-        "delete",
-        "edit",
-        "fix",
-        "modify",
-        "move",
-        "remove",
-        "rename",
-        "replace",
-        "save",
-        "update",
-        "write",
-    }
+    MUTATION_INTENT_TERMS = frozenset("add capitalize change create delete edit fix modify move remove rename replace save update write".split())  # fmt: skip
 
     def __init__(self, orchestrator) -> None:
         self.orchestrator = orchestrator
@@ -41,6 +25,14 @@ class ToolLoopEngine:
         except TypeError:
             args = json.dumps({key: str(value) for key, value in call.arguments.items()}, sort_keys=True, separators=(",", ":"))
         return f"{call.name}:{args}"
+
+    @staticmethod
+    def _approval_was_denied(result: dict[str, object]) -> bool:
+        error = result.get("error")
+        message = str(error.get("message", "")) if isinstance(error, dict) else ""
+        return (
+            not result.get("ok") and isinstance(error, dict) and error.get("code") == "E_POLICY" and "rejected by user" in message.lower()
+        )
 
     def _is_non_mutating_project_inspection(self, state: TurnState, tool_name: str) -> bool:
         if tool_name not in self.INSPECTION_LOOP_TOOLS:
@@ -382,7 +374,8 @@ class ToolLoopEngine:
             tool_chat_message = cast(ChatMessage, tool_message)
             state.dynamic_history.append(tool_chat_message)
             state.skill_exchanges.append(tool_chat_message)
-            self.orchestrator.record_tool_effects(state, call, result)
+            approval_denied = self._approval_was_denied(result)
+            self.orchestrator.record_tool_effects(state, call, result, policy_blocked=approval_denied)
             self._record_loop_progress_after_result(state, call, result)
             self.orchestrator._trace_add(
                 state,
@@ -392,12 +385,25 @@ class ToolLoopEngine:
                     "id": call.id,
                     "name": call.name,
                     "result": result,
-                    "policy_blocked": False,
+                    "policy_blocked": approval_denied,
                     "finished_at": time.time(),
                 },
             )
             if cancelled := self._cancelled_after_tool(state, call, stop_event, on_event):
                 return cancelled
+            if approval_denied:
+                return (
+                    "finalized",
+                    self.orchestrator.finalization_engine.finalize_turn(
+                        system_content,
+                        state,
+                        stop_event,
+                        on_event,
+                        pass_id,
+                        "The user denied the requested approval. Stop the action loop immediately, say plainly that "
+                        "the action was not performed, and do not attempt the same intent through another tool.",
+                    ),
+                )
             if call.name == "skill_view" and result.get("ok"):
                 state.selected = self.orchestrator.skill_runtime.select_skills(state.ctx)
                 self.orchestrator.policy_engine.refresh_search_tools_enabled(state)

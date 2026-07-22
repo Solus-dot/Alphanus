@@ -72,6 +72,18 @@ def test_resolve_project_root_uses_override(tmp_path: Path) -> None:
     assert alphanus_cli.resolve_project_root({}, override=str(target)) == target.resolve()
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--project-root", "/tmp/workspace", "run"],
+        ["run", "--project-root", "/tmp/workspace"],
+    ],
+)
+def test_parser_preserves_project_root_on_either_side_of_subcommand(argv: list[str]) -> None:
+    args = alphanus_cli._build_parser().parse_args(argv)
+    assert args.project_root == "/tmp/workspace"
+
+
 def test_doctor_json_ok_matches_nonzero_exit_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     output = io.StringIO()
     report = {

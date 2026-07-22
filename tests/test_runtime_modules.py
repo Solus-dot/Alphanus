@@ -12,6 +12,7 @@ from agent.orchestrator import TurnOrchestrator
 from agent.policies import PromptPolicyRenderer
 from agent.provider import LLMClient
 from agent.telemetry import TelemetryEmitter, configure_logging
+from agent.tool_loop_engine import ToolLoopEngine
 from core.config_model import default_config
 from core.retrieval import SQLiteRetrievalStore
 from core.streaming import StreamError
@@ -52,6 +53,14 @@ def execute(tool_name, args, env):
     return {"ok": True, "data": {"filepath": env.project.create_directory(args["path"])}, "error": None, "meta": {}}
 """,
     )
+
+
+def test_tool_loop_recognizes_explicit_user_approval_denial() -> None:
+    assert ToolLoopEngine._approval_was_denied({"ok": False, "error": {"code": "E_POLICY", "message": "Shell command rejected by user"}})
+    assert not ToolLoopEngine._approval_was_denied(
+        {"ok": False, "error": {"code": "E_POLICY", "message": "Shell command requires approval"}}
+    )
+    assert not ToolLoopEngine._approval_was_denied({"ok": True, "error": None})
 
 
 def test_telemetry_emits_json_lines_to_configured_log_file(tmp_path: Path) -> None:
@@ -804,8 +813,7 @@ def test_evidence_aggregates_the_whole_turn_but_bounds_recent_details(tmp_path: 
         )
     )
     state.evidence.extend(
-        ToolExecutionRecord(name="skill_view", args={}, result={"ok": True, "data": {}, "error": None, "meta": {}})
-        for _ in range(12)
+        ToolExecutionRecord(name="skill_view", args={}, result={"ok": True, "data": {}, "error": None, "meta": {}}) for _ in range(12)
     )
 
     evidence = orchestrator.evidence_guard.project_action_evidence(state)

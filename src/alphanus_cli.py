@@ -126,25 +126,24 @@ def _as_object(value: Any) -> dict[str, Any]:
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    project_root_help = "Project root for this run (defaults to enclosing git root, then cwd)"
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--debug", action="store_true", help="Enable verbose debug logs")
-    common.add_argument(
-        "--project-root",
-        type=str,
-        default="",
-        help="Project root for this run (defaults to enclosing git root, then cwd)",
-    )
+    common.add_argument("--project-root", type=str, default="", help=project_root_help)
+    command_common = argparse.ArgumentParser(add_help=False)
+    command_common.add_argument("--debug", action="store_true", default=argparse.SUPPRESS, help="Enable verbose debug logs")
+    command_common.add_argument("--project-root", type=str, default=argparse.SUPPRESS, help=project_root_help)
     parser = argparse.ArgumentParser(description="Alphanus", parents=[common])
     subparsers = parser.add_subparsers(dest="command", metavar="{run,exec,init,doctor,retrieval}")
 
-    subparsers.add_parser("run", help="Launch the TUI", parents=[common])
+    subparsers.add_parser("run", help="Launch the TUI", parents=[command_common])
 
-    runtime_parser = subparsers.add_parser("_runtime", help=argparse.SUPPRESS, parents=[common])
+    runtime_parser = subparsers.add_parser("_runtime", help=argparse.SUPPRESS, parents=[command_common])
     runtime_parser.add_argument("--stdio", action="store_true", default=True, help=argparse.SUPPRESS)
     choices = getattr(subparsers, "_choices_actions", [])
     choices[:] = [choice for choice in choices if getattr(choice, "dest", "") != "_runtime"]
 
-    exec_parser = subparsers.add_parser("exec", help="Run one turn using the versioned JSONL protocol", parents=[common])
+    exec_parser = subparsers.add_parser("exec", help="Run one turn using the versioned JSONL protocol", parents=[command_common])
     exec_parser.add_argument("prompt", nargs="?", default="", help="Prompt text; reads stdin when omitted")
     exec_parser.add_argument("--input", choices=("text", "jsonl"), default="text", help="Input framing")
     exec_parser.add_argument(
@@ -155,7 +154,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     exec_parser.add_argument("--no-thinking", action="store_true", help="Disable model reasoning mode")
 
-    init_parser = subparsers.add_parser("init", help="Initialize ~/.alphanus config and env", parents=[common])
+    init_parser = subparsers.add_parser("init", help="Initialize ~/.alphanus config and env", parents=[command_common])
     init_parser.add_argument(
         "section",
         nargs="?",
@@ -198,21 +197,16 @@ def _build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--searxng-base-url", type=str, default="", help="SearXNG base URL")
     init_parser.add_argument("--tavily-api-key", type=str, default="", help=argparse.SUPPRESS)
     init_parser.add_argument("--tavily-api-key-env", type=str, default="", help="Environment variable name for Tavily API key")
-    init_parser.add_argument(
-        "--theme",
-        type=str,
-        default="",
-        help="Theme id",
-    )
+    init_parser.add_argument("--theme", type=str, default="", help="Theme id")
 
     doctor_parser = subparsers.add_parser(
         "doctor",
         help="Validate config, env, endpoint, and project readiness",
-        parents=[common],
+        parents=[command_common],
     )
     doctor_parser.add_argument("--json", action="store_true", help="Emit doctor report as JSON")
 
-    retrieval_parser = subparsers.add_parser("retrieval", help="Inspect or reset the local retrieval store", parents=[common])
+    retrieval_parser = subparsers.add_parser("retrieval", help="Inspect or reset the local retrieval store", parents=[command_common])
     retrieval_subparsers = retrieval_parser.add_subparsers(dest="retrieval_command")
     retrieval_subparsers.add_parser("stats", help="Show retrieval store statistics")
     reset_parser = retrieval_subparsers.add_parser("reset", help="Delete the retrieval SQLite database")
