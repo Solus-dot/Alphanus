@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-# pyright: reportAttributeAccessIssue=false, reportArgumentType=false, reportTypedDictNotRequiredAccess=false, reportOptionalMemberAccess=false
+from typing import Any, cast
+
 from agent.context import ContextWindowManager
 from core.configuration import DEFAULT_CONFIG, deep_merge
 
 
 def test_prune_keeps_single_leading_system_message():
     mgr = ContextWindowManager(context_limit=80, keep_last_n=2, safety_margin=0)
-    messages = [
+    messages: Any = [
         {"role": "system", "content": "base prompt"},
         {"role": "user", "content": "x" * 60},
         {"role": "assistant", "content": "y" * 60},
@@ -15,14 +16,14 @@ def test_prune_keeps_single_leading_system_message():
         {"role": "assistant", "content": "w" * 60},
     ]
 
-    pruned = mgr.prune(messages, max_tokens=40)
+    pruned = cast(Any, mgr.prune(messages, max_tokens=40))
     assert pruned[0]["role"] == "system"
     assert sum(1 for msg in pruned if msg.get("role") == "system") == 1
 
 
 def test_estimate_tokens_floors_after_aggregating_whole_prompt():
     mgr = ContextWindowManager()
-    messages = [
+    messages: Any = [
         {"role": "user", "content": "ab"},
         {"role": "assistant", "content": "cd"},
         {"role": "user", "content": "ef"},
@@ -45,7 +46,7 @@ def test_deep_merge_does_not_mutate_default_config():
 
 def test_prune_keeps_required_assistant_for_tool_message():
     mgr = ContextWindowManager(context_limit=140, keep_last_n=2, safety_margin=0)
-    messages = [
+    messages: Any = [
         {"role": "system", "content": "base prompt"},
         {"role": "user", "content": "write file"},
         {
@@ -62,7 +63,7 @@ def test_prune_keeps_required_assistant_for_tool_message():
         {"role": "tool", "tool_call_id": "call_1", "name": "create_file", "content": '{"ok": true}'},
     ]
 
-    pruned = mgr.prune(messages, max_tokens=120)
+    pruned = cast(Any, mgr.prune(messages, max_tokens=120))
     roles = [msg.get("role") for msg in pruned]
     assert roles[0] == "system"
     if "tool" in roles:
@@ -71,7 +72,7 @@ def test_prune_keeps_required_assistant_for_tool_message():
 
 def test_prune_hard_fallback_enforces_budget():
     mgr = ContextWindowManager(context_limit=90, keep_last_n=2, safety_margin=0)
-    messages = [
+    messages: Any = [
         {"role": "system", "content": "base prompt"},
         {"role": "user", "content": "run the tool"},
         {
@@ -93,7 +94,7 @@ def test_prune_hard_fallback_enforces_budget():
         },
     ]
 
-    pruned = mgr.prune(messages, max_tokens=40)
+    pruned = cast(Any, mgr.prune(messages, max_tokens=40))
     assert mgr.estimate_tokens(pruned) + 40 <= mgr.context_limit - mgr.safety_margin
 
 
@@ -106,7 +107,7 @@ def test_default_config_keeps_transcript_unlimited_and_tree_compaction_enabled()
 
 def test_prune_keeps_at_least_one_user_message_when_tool_bundle_is_large():
     mgr = ContextWindowManager(context_limit=900, keep_last_n=10, safety_margin=0)
-    messages = [{"role": "system", "content": "base prompt"}]
+    messages: Any = [{"role": "system", "content": "base prompt"}]
     messages.append(
         {
             "role": "user",
@@ -141,13 +142,13 @@ def test_prune_keeps_at_least_one_user_message_when_tool_bundle_is_large():
             }
         )
 
-    pruned = mgr.prune(messages, max_tokens=200)
+    pruned = cast(Any, mgr.prune(messages, max_tokens=200))
     assert any(msg.get("role") == "user" for msg in pruned)
 
 
 def test_prune_preserves_latest_multimodal_user_message_under_hard_budget():
     mgr = ContextWindowManager(context_limit=8192, keep_last_n=10, safety_margin=500)
-    messages = [{"role": "system", "content": "x" * 7771}]
+    messages: Any = [{"role": "system", "content": "x" * 7771}]
 
     for idx in range(12):
         messages.append({"role": "assistant", "content": "y" * 400})
@@ -162,7 +163,7 @@ def test_prune_preserves_latest_multimodal_user_message_under_hard_budget():
         }
     )
 
-    pruned = mgr.prune(messages, max_tokens=2048)
+    pruned = cast(Any, mgr.prune(messages, max_tokens=2048))
 
     assert len(pruned) >= 2
     assert pruned[-1]["role"] == "user"
@@ -172,7 +173,7 @@ def test_prune_preserves_latest_multimodal_user_message_under_hard_budget():
 
 def test_prune_preserves_multimodal_structure_in_final_hard_fallback():
     mgr = ContextWindowManager(context_limit=120, keep_last_n=1, safety_margin=0)
-    messages = [
+    messages: Any = [
         {"role": "system", "content": "x" * 1000},
         {"role": "assistant", "content": "y" * 500},
         {
@@ -184,7 +185,7 @@ def test_prune_preserves_multimodal_structure_in_final_hard_fallback():
         },
     ]
 
-    pruned = mgr.prune(messages, max_tokens=40)
+    pruned = cast(Any, mgr.prune(messages, max_tokens=40))
 
     assert len(pruned) == 2
     assert pruned[-1]["role"] == "user"
@@ -194,7 +195,7 @@ def test_prune_preserves_multimodal_structure_in_final_hard_fallback():
 
 def test_split_for_summary_keeps_recent_tool_dependencies() -> None:
     mgr = ContextWindowManager(context_limit=1000, keep_last_n=2, safety_margin=0)
-    messages = [{"role": "user", "content": f"old {idx}"} for idx in range(4)]
+    messages: Any = [{"role": "user", "content": f"old {idx}"} for idx in range(4)]
     messages.extend(
         [
             {
@@ -206,7 +207,7 @@ def test_split_for_summary_keeps_recent_tool_dependencies() -> None:
         ]
     )
 
-    summarized, retained = mgr.split_for_summary(messages)
+    summarized, retained = cast(Any, mgr.split_for_summary(messages))
 
     assert summarized
     assert retained[-1]["role"] == "tool"

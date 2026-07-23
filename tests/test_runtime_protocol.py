@@ -178,7 +178,8 @@ def test_runtime_snapshot_uses_latest_bounded_page(tmp_path: Path) -> None:
 
 
 def test_runtime_snapshot_bounds_one_pathological_turn_and_emits_it(tmp_path: Path) -> None:
-    from core.runtime_server import TRANSCRIPT_PAGE_BYTES, RuntimeServer, _encoded_size
+    from core.runtime_server import RuntimeServer
+    from core.runtime_views import TRANSCRIPT_PAGE_BYTES, _encoded_size
 
     output = io.StringIO()
     server = RuntimeServer(

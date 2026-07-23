@@ -175,16 +175,18 @@ class SkillRuntime:
             roots.append(self.bundled_skills_dir)
         return SkillDiscovery.discover_skill_roots(roots)
 
-    def _discover_skill_dirs(self, root: Path) -> list[Path]:
-        return SkillDiscovery.discover_skill_dirs(root)
-
     @staticmethod
     def _load_module(path: Path, module_name: str):
-        spec = importlib.util.spec_from_file_location(module_name, str(path))
+        spec = importlib.util.spec_from_file_location(module_name, str(path), submodule_search_locations=[str(path.parent)])
         if spec is None or spec.loader is None:
             return None
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(module_name, None)
+            raise
         return module
 
     @staticmethod

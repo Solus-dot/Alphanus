@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import sys
 import urllib.error
 from email.message import Message
 from pathlib import Path
@@ -34,9 +35,10 @@ class _Headers:
 
 def _load_search_module():
     path = Path(__file__).resolve().parents[1] / "bundled-skills" / "search-ops" / "tools.py"
-    spec = importlib.util.spec_from_file_location("search_ops_test", str(path))
+    spec = importlib.util.spec_from_file_location("search_ops_test", str(path), submodule_search_locations=[str(path.parent)])
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -102,10 +104,10 @@ def test_http_response_reader_rejects_declared_and_streamed_oversize_bodies():
             return self.payload[:size]
 
     limit = 32
-    with pytest.raises(module.SearchError, match="exceeds byte limit"):
-        module._decode_response(_Response(b"small", declared=limit + 1), limit)
-    with pytest.raises(module.SearchError, match="exceeds byte limit"):
-        module._decode_response(_Response(b"x" * (limit + 1)), limit)
+    with pytest.raises(module._search_engine.SearchError, match="exceeds byte limit"):
+        module._search_engine._decode_response(_Response(b"small", declared=limit + 1), limit)
+    with pytest.raises(module._search_engine.SearchError, match="exceeds byte limit"):
+        module._search_engine._decode_response(_Response(b"x" * (limit + 1)), limit)
 
 
 def test_web_search_calls_searxng_and_normalizes_results(mocker):
@@ -205,7 +207,7 @@ def test_fetch_url_extracts_title_and_text(mocker):
         def geturl(self):
             return "https://example.com/final"
 
-    mocker.patch.object(module, "_open_no_redirect", return_value=_Resp(html))
+    mocker.patch.object(module._search_engine, "_open_no_redirect", return_value=_Resp(html))
     out = module.execute("fetch_url", {"url": "https://example.com/page", "max_chars": 1000}, env=_env())
     assert out["title"] == "Example Page"
     assert out["final_url"] == "https://example.com/final"
@@ -240,7 +242,7 @@ def test_fetch_url_marks_short_extraction_unusable(mocker):
 
     env = _env()
     env.config["search"]["fetch_min_chars"] = 100
-    mocker.patch.object(module, "_open_no_redirect", return_value=_Resp())
+    mocker.patch.object(module._search_engine, "_open_no_redirect", return_value=_Resp())
 
     out = module.execute("fetch_url", {"url": "https://example.com/tiny"}, env=env)
 
@@ -275,7 +277,7 @@ def test_fetch_url_respects_disabled_retrieval(mocker, tmp_path: Path):
         def geturl(self):
             return "https://example.com/no-index"
 
-    mocker.patch.object(module, "_open_no_redirect", return_value=_Resp())
+    mocker.patch.object(module._search_engine, "_open_no_redirect", return_value=_Resp())
 
     out = module.execute("fetch_url", {"url": "https://example.com/no-index"}, env=env)
     stats = module.execute("retrieval_stats", {}, env=env)
@@ -332,7 +334,7 @@ def test_fetch_url_indexes_embeddings_and_retrieve_uses_dense_query(mocker, tmp_
         embedding_calls.append(json.loads(req.data.decode("utf-8")))
         return _EmbeddingResp([1.0, 0.0])
 
-    mocker.patch.object(module, "_open_no_redirect", return_value=_FetchResp())
+    mocker.patch.object(module._search_engine, "_open_no_redirect", return_value=_FetchResp())
     mocker.patch.object(module.urllib.request, "urlopen", side_effect=fake_urlopen)
 
     fetched = module.execute("fetch_url", {"url": "https://example.com/vector"}, env=env)
@@ -354,7 +356,7 @@ def test_web_search_does_not_fall_back_without_fallback_provider(mocker):
 def test_web_search_uses_fresh_cached_web_record_before_provider(mocker, tmp_path: Path):
     module = _load_search_module()
     env = _env_with_search_store(tmp_path / "retrieval.sqlite")
-    store = module._retrieval_store(env)
+    store = module._search_engine._retrieval_store(env)
     store.upsert_record(
         record_type="web_page",
         source="https://docs.example.com/status",
@@ -380,7 +382,7 @@ def test_web_search_uses_fresh_cached_web_record_before_provider(mocker, tmp_pat
 def test_web_search_returns_stale_cache_as_degraded_when_provider_fails(mocker, tmp_path: Path):
     module = _load_search_module()
     env = _env_with_search_store(tmp_path / "retrieval.sqlite")
-    store = module._retrieval_store(env)
+    store = module._search_engine._retrieval_store(env)
     store.upsert_record(
         record_type="web_page",
         source="https://example.com/old",
@@ -407,7 +409,7 @@ def test_web_search_deduplicates_cached_chunks_before_cache_first_decision(mocke
     module = _load_search_module()
     env = _env_with_search_store(tmp_path / "retrieval.sqlite")
     env.config["search"]["min_usable_results"] = 2
-    store = module._retrieval_store(env)
+    store = module._search_engine._retrieval_store(env)
     store.upsert_record(
         record_type="web_page",
         source="https://docs.example.com/status",
@@ -453,7 +455,7 @@ def test_web_search_deduplicates_cached_chunks_before_cache_first_decision(mocke
 def test_web_search_preserves_stale_cache_metadata_when_provider_succeeds(mocker, tmp_path: Path):
     module = _load_search_module()
     env = _env_with_search_store(tmp_path / "retrieval.sqlite")
-    store = module._retrieval_store(env)
+    store = module._search_engine._retrieval_store(env)
     store.upsert_record(
         record_type="web_page",
         source="https://example.com/old",
@@ -742,7 +744,7 @@ def test_fetch_url_blocks_private_network_hosts(mocker):
         called["value"] = True
         raise AssertionError("open_no_redirect should not be called for private hosts")
 
-    mocker.patch.object(module, "_open_no_redirect", side_effect=fake_open_no_redirect)
+    mocker.patch.object(module._search_engine, "_open_no_redirect", side_effect=fake_open_no_redirect)
 
     with pytest.raises(RuntimeError, match="private or local network URL"):
         module.execute("fetch_url", {"url": "http://127.0.0.1/admin"}, env=_env())
@@ -764,7 +766,7 @@ def test_fetch_url_blocks_redirect_to_private_network_host(mocker):
             fp=io.BytesIO(b""),
         )
 
-    mocker.patch.object(module, "_open_no_redirect", side_effect=fake_open_no_redirect)
+    mocker.patch.object(module._search_engine, "_open_no_redirect", side_effect=fake_open_no_redirect)
 
     with pytest.raises(RuntimeError, match="private or local network URL"):
         module.execute("fetch_url", {"url": "https://example.com/start"}, env=_env())
@@ -815,7 +817,7 @@ def test_fetch_url_follows_safe_redirect_chain(mocker):
             return _Resp(html, "https://example.com/final")
         raise AssertionError(f"Unexpected URL: {req.full_url}")
 
-    mocker.patch.object(module, "_open_no_redirect", side_effect=fake_open_no_redirect)
+    mocker.patch.object(module._search_engine, "_open_no_redirect", side_effect=fake_open_no_redirect)
 
     out = module.execute("fetch_url", {"url": "https://example.com/start", "max_chars": 1000}, env=_env())
 
@@ -862,7 +864,7 @@ def test_fetch_url_extracts_metadata_and_headings(mocker):
         def geturl(self):
             return "https://example.com/final?utm_source=test"
 
-    mocker.patch.object(module, "_open_no_redirect", return_value=_Resp(html))
+    mocker.patch.object(module._search_engine, "_open_no_redirect", return_value=_Resp(html))
     out = module.execute("fetch_url", {"url": "https://example.com/page", "max_chars": 1000}, env=_env())
 
     assert out["description"] == "A useful page for testing."
@@ -905,7 +907,7 @@ def test_fetch_url_preserves_div_and_section_body_text(mocker):
         def geturl(self):
             return "https://example.com/article"
 
-    mocker.patch.object(module, "_open_no_redirect", return_value=_Resp(html))
+    mocker.patch.object(module._search_engine, "_open_no_redirect", return_value=_Resp(html))
     out = module.execute("fetch_url", {"url": "https://example.com/article", "max_chars": 1000}, env=_env())
 
     assert "Situation Report" in out["content"]
@@ -916,8 +918,8 @@ def test_fetch_url_preserves_div_and_section_body_text(mocker):
 def test_source_type_does_not_treat_unofficial_or_officials_as_official():
     module = _load_search_module()
 
-    assert module._source_type("mirror.example.com", "Unofficial mirror", "") == "community"
-    assert module._source_type("news.example.com", "Officials warn about shortages", "") != "official"
+    assert module._search_engine._source_type("mirror.example.com", "Unofficial mirror", "") == "community"
+    assert module._search_engine._source_type("news.example.com", "Officials warn about shortages", "") != "official"
 
 
 def test_search_ops_skill_loads_and_executes_from_repo(tmp_path: Path, mocker):

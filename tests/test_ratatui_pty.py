@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import importlib.util
 import os
 import pty
 import select
@@ -18,8 +19,8 @@ from core.configuration import DEFAULT_CONFIG, save_global_config
 
 @pytest.mark.integration
 def test_ratatui_starts_handshakes_and_restores_terminal(tmp_path: Path) -> None:
-    extension = next((Path(__file__).parents[1] / "src").glob("_alphanus_tui*.so"), None)
-    if extension is None:
+    extension = importlib.util.find_spec("_alphanus_tui")
+    if extension is None or extension.origin is None:
         pytest.skip("Ratatui extension is not built in this source checkout")
 
     state_root = tmp_path / "state"

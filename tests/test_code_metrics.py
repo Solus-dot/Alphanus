@@ -23,7 +23,9 @@ def test_production_code_budget_is_reproducible() -> None:
     assert budget["final_maximum"] <= int(budget["baseline"] * 0.85)
     assert metrics["tests"] > 0
     assert "src-rust/app.rs" in metrics["production_files"]
-    assert "tests/test_agent_loop.py" in metrics["test_files"]
+    assert "tests/test_agent_streaming.py" in metrics["test_files"]
+    assert budget["production_module_exceptions"] == {}
+    assert budget["test_module_exceptions"] == {}
     assert budget["production_module_maximum"] == 800
     assert budget["test_module_maximum"] == 1200
 

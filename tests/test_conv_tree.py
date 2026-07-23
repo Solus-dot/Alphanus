@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-# pyright: reportTypedDictNotRequiredAccess=false, reportArgumentType=false, reportOperatorIssue=false
+from typing import Any, cast
+
 from core.conv_tree import ConvTree
 
 
@@ -115,7 +116,7 @@ def test_history_messages_include_skill_exchanges():
     tree.append_skill_exchange(turn.id, {"role": "tool", "tool_call_id": "x", "name": "read_file", "content": "{}"})
     tree.complete_turn(turn.id, "done")
 
-    msgs = tree.history_messages()
+    msgs = cast(Any, tree.history_messages())
     assert msgs[0]["role"] == "user"
     assert msgs[1]["role"] == "assistant"
     assert msgs[2]["role"] == "tool"
@@ -136,11 +137,11 @@ def test_history_messages_refresh_when_switching_current_branch():
     tree.complete_turn(right.id, "right-done")
 
     tree.current_id = left.id
-    left_msgs = tree.history_messages()
+    left_msgs = cast(Any, tree.history_messages())
     assert left_msgs[-1]["content"] == "left-done"
 
     tree.current_id = right.id
-    right_msgs = tree.history_messages()
+    right_msgs = cast(Any, tree.history_messages())
     assert right_msgs[-1]["content"] == "right-done"
 
 
@@ -236,7 +237,7 @@ def test_dict_roundtrip_preserves_ordered_activity_trace():
 
 def test_user_text_strips_inline_attachment_blocks():
     tree = ConvTree()
-    content = [
+    content: Any = [
         {
             "type": "text",
             "text": "[File: foo.py]\n```py\nprint('x')\n```\n\nPlease refactor this.",
@@ -248,7 +249,7 @@ def test_user_text_strips_inline_attachment_blocks():
 
 def test_attachment_summary_is_preserved_while_hidden_from_user_text():
     tree = ConvTree()
-    content = [
+    content: Any = [
         {
             "type": "text",
             "text": "[Attachments: foo.py (text), chart.png (image)]\n\n[File: foo.py]\n```py\nprint('x')\n```\n\nPlease refactor this.",
@@ -299,7 +300,7 @@ def test_inactive_branch_compaction_truncates_large_payloads_only_when_inactive(
     tree.complete_turn(a.id, "z" * 120)
 
     # Still active branch: no compaction should apply yet.
-    active_args = tree.nodes[a.id].skill_exchanges[0]["tool_calls"][0]["function"]["arguments"]
+    active_args = cast(Any, tree.nodes[a.id].skill_exchanges)[0]["tool_calls"][0]["function"]["arguments"]
     assert "...[compacted]" not in active_args
 
     # Move back and open sibling branch, making branch-a inactive.
@@ -309,7 +310,8 @@ def test_inactive_branch_compaction_truncates_large_payloads_only_when_inactive(
 
     inactive_node = tree.nodes[a.id]
     assert "...[compacted]" in (inactive_node.assistant_content or "")
-    compacted_args = inactive_node.skill_exchanges[0]["tool_calls"][0]["function"]["arguments"]
-    compacted_tool_content = inactive_node.skill_exchanges[1]["content"]
+    exchanges = cast(Any, inactive_node.skill_exchanges)
+    compacted_args = exchanges[0]["tool_calls"][0]["function"]["arguments"]
+    compacted_tool_content = exchanges[1]["content"]
     assert "...[compacted]" in compacted_args
     assert "...[compacted]" in compacted_tool_content

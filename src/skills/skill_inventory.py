@@ -1,6 +1,5 @@
-from __future__ import annotations
-
 from core.skill_types import SkillManifest
+from skills.skill_discovery import SkillDiscovery
 
 
 class SkillInventoryLoader:
@@ -26,7 +25,7 @@ class SkillInventoryLoader:
         for root in runtime.skill_roots:
             if not root.exists():
                 continue
-            for child in runtime._discover_skill_dirs(root):
+            for child in SkillDiscovery.discover_skill_dirs(root):
                 manifest: SkillManifest | None = None
                 try:
                     manifest = runtime._load_manifest(child)

@@ -5,14 +5,6 @@
   "required_reduction_percent": 15,
   "production_module_maximum": 800,
   "test_module_maximum": 1200,
-  "production_module_exceptions": {
-    "bundled-skills/search-ops/tools.py": 1121,
-    "src-rust/app/render.rs": 1205,
-    "src/core/project.py": 1159,
-    "src/core/runtime_server.py": 991
-  },
-  "test_module_exceptions": {
-    "tests/test_agent_loop.py": 3484,
-    "tests/test_runtime_modules.py": 1761
-  }
+  "production_module_exceptions": {},
+  "test_module_exceptions": {}
 }
