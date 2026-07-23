@@ -16,7 +16,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from alphanus_paths import get_app_paths
+from alphanus.paths import get_app_paths
 from core.backend_profiles import BACKEND_PROFILE_LABELS, VALID_BACKEND_PROFILES
 from core.configuration import (
     DEFAULT_CONFIG,
@@ -938,9 +938,9 @@ def _run_retrieval(args: Any) -> int:
 
 def _run_tui(args: Any) -> int:
     try:
-        import _alphanus_tui
+        _alphanus_tui = importlib.import_module("_alphanus_tui")
     except ImportError as exc:
-        spec = importlib.machinery.PathFinder.find_spec("_alphanus_tui", [str(Path(__file__).resolve().parent)])
+        spec = importlib.machinery.PathFinder.find_spec("_alphanus_tui", [str(Path(__file__).resolve().parents[1])])
         if spec is not None and spec.loader is not None:
             _alphanus_tui = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(_alphanus_tui)

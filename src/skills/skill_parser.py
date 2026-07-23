@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from core.coercion import coerce_bool
+from core.skill_types import SkillManifest
 
 SKILL_DOC = "SKILL.md"
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
@@ -67,35 +67,6 @@ def extract_skill_doc(skill_doc: Path, include_prompt: bool = True) -> tuple[dic
     else:
         raise ValueError("SKILL.md frontmatter must be a mapping")
     return frontmatter, prompt
-
-
-@dataclass(slots=True)
-class SkillManifest:
-    id: str
-    version: str
-    description: str
-    enabled: bool
-    requirements: dict[str, list[str]] = field(default_factory=dict)
-    prompt: str | None = None
-    path: Path | None = None
-    doc_path: Path | None = None
-    tags: list[str] = field(default_factory=list)
-    categories: list[str] = field(default_factory=list)
-    produces: list[str] = field(default_factory=list)
-    allowed_tools: list[str] = field(default_factory=list)
-    required_tools: list[str] = field(default_factory=list)
-    disable_model_invocation: bool = False
-    user_invocable: bool = True
-    available: bool = True
-    availability_code: str = "ready"
-    availability_reason: str = ""
-    execution_allowed: bool = True
-    validation_errors: list[str] = field(default_factory=list)
-    validation_warnings: list[str] = field(default_factory=list)
-    frontmatter: dict[str, Any] = field(default_factory=dict)
-    metadata: dict[str, Any] = field(default_factory=dict)
-    bundled_files: list[str] = field(default_factory=list)
-    aliases: list[str] = field(default_factory=list)
 
 
 def parse_agentskill_manifest(child: Path, skill_doc: Path, include_prompt: bool = False) -> SkillManifest:

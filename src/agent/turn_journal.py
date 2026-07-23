@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import cast
 
-from agent.file_audit import build_file_audit_from_evidence
+from core.file_audit import build_file_audit_from_evidence
 from core.message_types import JsonObject, JSONValue
 from core.types import AgentTurnResult, TurnState
 

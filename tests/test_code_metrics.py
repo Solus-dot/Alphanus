@@ -24,3 +24,13 @@ def test_production_code_budget_is_reproducible() -> None:
     assert metrics["tests"] > 0
     assert "src-rust/app.rs" in metrics["production_files"]
     assert "tests/test_agent_loop.py" in metrics["test_files"]
+    assert budget["production_module_maximum"] == 800
+    assert budget["test_module_maximum"] == 1200
+
+
+def test_module_size_exceptions_cannot_hide_growth() -> None:
+    metrics = _metrics_module()
+
+    assert metrics._oversized_files({"large.py": 801}, 800, {}) == ["large.py: 801 > 800"]
+    assert metrics._oversized_files({"large.py": 801}, 800, {"large.py": 801}) == []
+    assert metrics._oversized_files({"large.py": 802}, 800, {"large.py": 801}) == ["large.py: 802 > 800"]

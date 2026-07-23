@@ -1,0 +1,1 @@
+"""Alphanus application package."""

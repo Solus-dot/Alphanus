@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from alphanus_paths import APP_ROOT_ENV_VAR, DEFAULT_APP_DIRNAME, get_app_paths
+from alphanus.paths import APP_ROOT_ENV_VAR, DEFAULT_APP_DIRNAME, get_app_paths
 
 
 def test_get_app_paths_uses_repo_root_inside_checkout(monkeypatch) -> None:
@@ -32,9 +32,9 @@ def test_get_app_paths_falls_back_to_user_dir_outside_checkout(tmp_path: Path, m
     monkeypatch.delenv(APP_ROOT_ENV_VAR, raising=False)
     monkeypatch.chdir(outside)
 
-    import alphanus_paths
+    from alphanus import paths as alphanus_paths
 
-    monkeypatch.setattr(alphanus_paths, "__file__", str(tmp_path / "site-packages" / "alphanus_paths.py"))
+    monkeypatch.setattr(alphanus_paths, "__file__", str(tmp_path / "site-packages" / "alphanus" / "paths.py"))
 
     paths = alphanus_paths.get_app_paths()
 

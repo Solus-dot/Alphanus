@@ -20,8 +20,7 @@ from core.message_types import (
 from core.message_types import (
     UserInputRequestFn as UserInputRequestFn,
 )
-from skills.runtime import SkillContext
-from skills.skill_parser import SkillManifest
+from core.skill_types import SkillContext, SkillManifest
 
 
 @dataclass(slots=True)

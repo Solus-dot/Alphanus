@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-alphanus = "alphanus_cli:main"
+alphanus = "alphanus.cli:main"
 
 [project.optional-dependencies]
 desktop = [
@@ -66,8 +66,7 @@ ignore = ["E501"]
 
 [tool.setuptools]
 package-dir = {"" = "src", "alphanus_bundled" = "bundled-skills"}
-packages = ["agent", "core", "skills", "alphanus_bundled"]
-py-modules = ["alphanus_cli", "alphanus_paths"]
+packages = ["alphanus", "agent", "core", "skills", "alphanus_bundled"]
 include-package-data = false
 
 [tool.setuptools.package-data]

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from skills.skill_parser import SkillManifest
+from core.skill_types import SkillManifest
 
 
 class SkillRegistry:

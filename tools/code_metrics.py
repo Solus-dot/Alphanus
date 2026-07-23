@@ -122,6 +122,14 @@ def report() -> dict[str, object]:
     }
 
 
+def _oversized_files(files: dict[str, int], limit: int, exceptions: dict[str, int]) -> list[str]:
+    return [
+        f"{path}: {count} > {limit}"
+        for path, count in sorted(files.items())
+        if count > limit and count > int(exceptions.get(path, 0))
+    ]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="fail when the current production budget is exceeded")
@@ -140,6 +148,21 @@ def main() -> int:
     maximum = int(budget["current_maximum"])
     if current > maximum:
         print(f"production code budget exceeded: {current} > {maximum}")
+        return 1
+    production_oversized = _oversized_files(
+        cast(dict[str, int], measured["production_files"]),
+        int(budget["production_module_maximum"]),
+        cast(dict[str, int], budget.get("production_module_exceptions", {})),
+    )
+    test_oversized = _oversized_files(
+        cast(dict[str, int], measured["test_files"]),
+        int(budget["test_module_maximum"]),
+        cast(dict[str, int], budget.get("test_module_exceptions", {})),
+    )
+    if production_oversized or test_oversized:
+        print("module size budget exceeded:")
+        for violation in (*production_oversized, *test_oversized):
+            print(f"  {violation}")
         return 1
     return 0
 

@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from agent.file_audit import build_file_audit_from_skill_exchanges
 from core.conv_tree import ConvTree
+from core.file_audit import build_file_audit_from_skill_exchanges
 from core.secure_io import atomic_write_text
 
 COMMAND_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (

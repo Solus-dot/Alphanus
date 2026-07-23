@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from skills.skill_parser import SkillManifest
+from core.skill_types import SkillManifest
 
 
 class SkillInventoryLoader:

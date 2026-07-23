@@ -8,7 +8,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from alphanus_paths import APP_ROOT_ENV_VAR, DEFAULT_APP_DIRNAME
+from alphanus.paths import APP_ROOT_ENV_VAR, DEFAULT_APP_DIRNAME
 from core.theme_catalog import BUILTIN_THEME_IDS, DEFAULT_THEME_ID, normalize_theme_id
 
 _THEME_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")

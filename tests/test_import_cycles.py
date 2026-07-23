@@ -4,7 +4,7 @@ import ast
 from pathlib import Path
 
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
-WATCHED_PACKAGES = {"core", "agent"}
+WATCHED_PACKAGES = {"core", "agent", "skills", "alphanus"}
 
 
 def _module_name(path: Path) -> str:
@@ -82,3 +82,17 @@ def test_core_and_agent_import_graph_is_acyclic() -> None:
     cycles = _find_cycles(graph)
 
     assert cycles == [], f"unexpected import cycles: {cycles}"
+
+
+def test_core_does_not_import_application_or_skill_implementations() -> None:
+    violations: list[str] = []
+    for path in (SRC_ROOT / "core").glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            module = node.module if isinstance(node, ast.ImportFrom) else ""
+            names = [alias.name for alias in node.names] if isinstance(node, ast.Import) else []
+            imported = [module] if module else names
+            if any(name == "agent" or name.startswith("agent.") or name == "skills" or name.startswith("skills.") for name in imported):
+                violations.append(f"{path.name}:{getattr(node, 'lineno', 0)}")
+
+    assert violations == [], f"core dependency direction violations: {violations}"

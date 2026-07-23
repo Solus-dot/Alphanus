@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import alphanus_cli
+from alphanus import cli as alphanus_cli
 from core.configuration import load_global_config
 from core.headless_protocol import EXIT_INVALID_INPUT, EXIT_POLICY_DENIED, EXIT_SUCCESS
 from core.types import AgentTurnResult

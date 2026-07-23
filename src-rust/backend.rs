@@ -105,7 +105,7 @@ impl Backend {
                 };
                 runtime.block_on(async move {
                     let mut command = Command::new(&python);
-                    command.arg("-m").arg("alphanus_cli").arg("_runtime");
+                    command.arg("-m").arg("alphanus.cli").arg("_runtime");
                     if let Some(root) = project_root {
                         command.arg("--project-root").arg(root);
                     }

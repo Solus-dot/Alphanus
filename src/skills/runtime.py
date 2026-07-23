@@ -7,7 +7,7 @@ import os
 import re
 import shutil
 import sys
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -15,11 +15,12 @@ from core.config_model import ConfigSchema, config_schema
 from core.memory import LexicalMemory
 from core.message_types import ApprovalRequestFn, JSONValue, UserInputRequestFn
 from core.project import ProjectRuntime
+from core.skill_types import SkillContext, SkillManifest
 from core.tool_results import ToolResult, error_result, ok_result
 from skills.skill_discovery import SkillDiscovery
 from skills.skill_executor import SkillExecutor
 from skills.skill_inventory import SkillInventoryLoader
-from skills.skill_parser import SKILL_DOC, SkillManifest, extract_skill_doc, parse_agentskill_manifest
+from skills.skill_parser import SKILL_DOC, extract_skill_doc, parse_agentskill_manifest
 from skills.skill_registry import SkillRegistry
 from skills.skill_selector import SkillSelector
 from skills.skill_tool_schema import SkillToolSchemaBuilder
@@ -43,13 +44,7 @@ _CORE_TOOL_NAMES = frozenset(
 _REQUEST_USER_INPUT_TOOL_NAME = "request_user_input"
 _SKILLS_LIST_TOOL_NAME = "skills_list"
 _SKILL_VIEW_TOOL_NAME = "skill_view"
-_ALWAYS_AVAILABLE_TOOL_NAMES = frozenset(
-    {
-        _SKILLS_LIST_TOOL_NAME,
-        _SKILL_VIEW_TOOL_NAME,
-        _REQUEST_USER_INPUT_TOOL_NAME,
-    }
-)
+_ALWAYS_AVAILABLE_TOOL_NAMES = frozenset({_SKILLS_LIST_TOOL_NAME, _SKILL_VIEW_TOOL_NAME, _REQUEST_USER_INPUT_TOOL_NAME})
 
 
 class ToolProtocolError(RuntimeError):
@@ -62,23 +57,6 @@ def _ok(data: object, duration_ms: int) -> ToolResult:
 
 def _err(code: str, message: str, duration_ms: int) -> ToolResult:
     return error_result(code, message, duration_ms=duration_ms)
-
-
-@dataclass(slots=True)
-class SkillContext:
-    user_input: str
-    branch_labels: list[str]
-    attachments: list[str]
-    project_root: str
-    memory_hits: list[dict[str, JSONValue]]
-    retrieval_hits: list[dict[str, JSONValue]] = field(default_factory=list)
-    loaded_skill_ids: list[str] = field(default_factory=list)
-    recent_routing_hint: str = ""
-    sticky_skill_ids: list[str] = field(default_factory=list)
-    explicit_skill_id: str = ""
-    explicit_skill_args: str = ""
-    context_summary: str = ""
-    relevant_skill_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agent.file_audit import build_file_audit_from_evidence, build_file_audit_from_skill_exchanges
+from core.file_audit import build_file_audit_from_evidence, build_file_audit_from_skill_exchanges
 from core.types import ToolExecutionRecord
 
 

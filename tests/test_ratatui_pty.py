@@ -29,7 +29,7 @@ def test_ratatui_starts_handshakes_and_restores_terminal(tmp_path: Path) -> None
     env = os.environ.copy()
     env.update({"ALPHANUS_APP_ROOT": str(state_root), "TERM": "xterm-256color"})
     process = subprocess.Popen(
-        [sys.executable, "-m", "alphanus_cli", "--project-root", str(tmp_path)],
+        [sys.executable, "-m", "alphanus.cli", "--project-root", str(tmp_path)],
         stdin=slave,
         stdout=slave,
         stderr=slave,
