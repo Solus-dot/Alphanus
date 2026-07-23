@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
@@ -6,7 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, Receiver};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
@@ -14,7 +13,6 @@ use crate::protocol::{BackendEvent, EventFrame, Request, MAX_FRAME_BYTES};
 
 const EVENT_CAPACITY: usize = 2048;
 const COMMAND_CAPACITY: usize = 256;
-const DIAGNOSTIC_BYTES: usize = 64 * 1024;
 
 pub struct Backend {
     commands: mpsc::Sender<Request>,
@@ -69,6 +67,22 @@ async fn read_bounded_line<R: AsyncBufRead + Unpin>(
     String::from_utf8(bytes)
         .map(Some)
         .map_err(|_| "runtime frame is not valid UTF-8".into())
+}
+
+async fn write_request<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    request: &Request,
+) -> Result<(), String> {
+    let encoded = serde_json::to_vec(request)
+        .map_err(|error| format!("failed to encode request: {error}"))?;
+    if encoded.len() > MAX_FRAME_BYTES {
+        return Err("outbound runtime frame exceeds 1 MiB".into());
+    }
+    writer
+        .write_all(&[encoded.as_slice(), b"\n"].concat())
+        .await
+        .map_err(|error| error.to_string())?;
+    writer.flush().await.map_err(|error| error.to_string())
 }
 
 #[cfg(unix)]
@@ -139,49 +153,29 @@ impl Backend {
                     let stderr_tx = event_tx.clone();
                     tokio::spawn(async move {
                         let mut lines = BufReader::new(stderr).lines();
-                        let mut retained = VecDeque::<String>::new();
-                        let mut retained_bytes = 0usize;
                         while let Ok(Some(line)) = lines.next_line().await {
-                            retained_bytes += line.len();
-                            retained.push_back(line.clone());
-                            while retained_bytes > DIAGNOSTIC_BYTES {
-                                if let Some(old) = retained.pop_front() {
-                                    retained_bytes = retained_bytes.saturating_sub(old.len());
-                                } else {
-                                    break;
-                                }
-                            }
                             let clipped = if line.len() > 4096 { format!("{}…", &line[..4096]) } else { line };
                             let _ = stderr_tx.send(BackendEvent::Diagnostic(clipped));
                         }
                     });
 
                     let mut stdout = BufReader::new(stdout);
+                    let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
+                    let mut last_frame = Instant::now();
                     loop {
                         tokio::select! {
                             command = command_rx.recv() => {
                                 let Some(command) = command else { break; };
-                                match serde_json::to_vec(&command) {
-                                    Ok(encoded) if encoded.len() <= MAX_FRAME_BYTES => {
-                                        if stdin.write_all(&encoded).await.is_err()
-                                            || stdin.write_all(b"\n").await.is_err()
-                                            || stdin.flush().await.is_err()
-                                        {
-                                            break;
-                                        }
-                                    }
-                                    Ok(_) => {
-                                        let _ = event_tx.send(BackendEvent::ProtocolError("outbound runtime frame exceeds 1 MiB".into()));
-                                    }
-                                    Err(error) => {
-                                        let _ = event_tx.send(BackendEvent::ProtocolError(format!("failed to encode request: {error}")));
-                                    }
+                                if let Err(error) = write_request(&mut stdin, &command).await {
+                                    let _ = event_tx.send(BackendEvent::ProtocolError(error));
+                                    break;
                                 }
                             }
                             line = read_bounded_line(&mut stdout) => {
                                 match line {
                                     Ok(Some(line)) => match EventFrame::decode(&line) {
                                         Ok(frame) => {
+                                            last_frame = Instant::now();
                                             if event_tx.send(BackendEvent::Frame(frame)).is_err() { break; }
                                         }
                                         Err(error) => {
@@ -192,6 +186,16 @@ impl Backend {
                                     Err(error) => {
                                         let _ = event_tx.send(BackendEvent::ProtocolError(error));
                                     }
+                                }
+                            }
+                            _ = heartbeat.tick() => {
+                                if last_frame.elapsed() >= Duration::from_secs(15) {
+                                    let _ = event_tx.send(BackendEvent::ProtocolError("runtime heartbeat timed out".into()));
+                                    break;
+                                }
+                                let request = Request::new("heartbeat", serde_json::json!({}));
+                                if write_request(&mut stdin, &request).await.is_err() {
+                                    break;
                                 }
                             }
                         }

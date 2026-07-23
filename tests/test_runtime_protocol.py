@@ -120,6 +120,7 @@ def test_runtime_server_handshake_and_shutdown(tmp_path: Path) -> None:
 
     requests = [
         {"protocol_version": 1, "type": "hello", "request_id": "hello", "data": {"min_protocol": 1, "max_protocol": 1}},
+        {"protocol_version": 1, "type": "heartbeat", "request_id": "heartbeat", "data": {}},
         {"protocol_version": 1, "type": "theme.list", "request_id": "themes", "data": {}},
         {"protocol_version": 1, "type": "shutdown", "request_id": "bye", "data": {}},
     ]
@@ -135,11 +136,13 @@ def test_runtime_server_handshake_and_shutdown(tmp_path: Path) -> None:
     assert server.serve() == 0
     frames = [json.loads(line) for line in output.getvalue().splitlines()]
     assert any(frame["type"] == "runtime.ready" for frame in frames)
+    assert any(frame["type"] == "runtime.heartbeat" for frame in frames)
     themes = next(frame for frame in frames if frame["type"] == "theme.list")
     assert themes["data"]["active"]["id"] == "classic"
     completed = [frame for frame in frames if frame["type"] == "request.completed"]
     assert [(frame["request_id"], frame["data"]["status"]) for frame in completed] == [
         ("hello", "ok"),
+        ("heartbeat", "ok"),
         ("themes", "ok"),
         ("bye", "ok"),
     ]

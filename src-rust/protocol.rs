@@ -94,4 +94,11 @@ mod tests {
         let value = "x".repeat(MAX_FRAME_BYTES + 1);
         assert!(EventFrame::decode(&value).is_err());
     }
+
+    #[test]
+    fn heartbeat_uses_private_protocol_version() {
+        let request = Request::new("heartbeat", json!({}));
+        assert_eq!(request.protocol_version, VERSION);
+        assert_eq!(request.kind, "heartbeat");
+    }
 }

@@ -32,9 +32,7 @@ MAX_PERSISTED_REASONING_CHARS = 512 * 1024
 TOOL_PREVIEW_CHARS = 8_000
 TOOL_PREVIEW_LINES = 140
 _REQUEST_TYPES = frozenset(
-    "hello state.get turn.start turn.cancel approval.resolve session.list session.search session.create session.load "
-    "session.rename session.delete branch.arm branch.unbranch branch.switch branch.open attachment.add attachment.remove "
-    "status.refresh config.get config.apply command.execute theme.list theme.apply palette.get skill.toggle shutdown".split()
+    "hello heartbeat state.get turn.start turn.cancel approval.resolve session.list session.search session.create session.load session.rename session.delete branch.arm branch.unbranch branch.switch branch.open attachment.add attachment.remove status.refresh config.get config.apply command.execute theme.list theme.apply palette.get skill.toggle shutdown".split()
 )
 
 
@@ -566,6 +564,9 @@ class RuntimeServer:
                 "snapshot": self._snapshot(),
             },
         )
+
+    def _heartbeat(self, request_id: str, _data: dict[str, Any]) -> None:
+        self._respond("runtime.heartbeat", request_id, {})
 
     def _state_get(self, request_id: str, data: dict[str, Any]) -> None:
         transcript_offset = data.get("transcript_offset")

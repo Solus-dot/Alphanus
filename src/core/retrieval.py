@@ -45,10 +45,6 @@ def configured_store_path(config: ConfigSchema | dict[str, Any] | None) -> Path:
 @dataclass(frozen=True, slots=True)
 class RetrievalRecord:
     id: int
-    record_type: str
-    source: str
-    title: str
-    content_hash: str
 
 
 class SQLiteRetrievalStore:
@@ -177,7 +173,7 @@ class SQLiteRetrievalStore:
                     "INSERT INTO chunks_fts(rowid, text, title, source, record_type) VALUES (?, ?, ?, ?, ?)",
                     (int(cur.lastrowid), chunk, title, source, record_type),
                 )
-        return RetrievalRecord(record_id, record_type, source, title, content_hash)
+        return RetrievalRecord(record_id)
 
     def search(self, query: str, *, top_k: int = 5, sources: list[str] | None = None) -> list[dict[str, Any]]:
         clean = " ".join(str(query or "").split())
