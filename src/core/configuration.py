@@ -19,6 +19,7 @@ from core.endpoint_modes import (
     OPENAI_MODELS_PATH,
     OPENAI_RESPONSES_PATH,
 )
+from core.errors import ConfigurationError
 from core.search_providers import SEARCH_FALLBACK_NONE, SEARCH_FALLBACK_PROVIDERS, SEARCH_PROVIDERS
 from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
 
@@ -217,7 +218,7 @@ def _normalize_choice(
     return choice
 
 
-class ConfigMigrationError(ValueError):
+class ConfigMigrationError(ConfigurationError):
     pass
 
 

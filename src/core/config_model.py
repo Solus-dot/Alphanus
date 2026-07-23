@@ -44,6 +44,7 @@ class AgentConfig(ConfigSection):
     max_action_depth: int = Field(default=10, ge=1, le=100)
     max_tool_result_chars: int = Field(default=12000, ge=500, le=200000)
     max_reasoning_chars: int = Field(default=20000, ge=0, le=200000)
+    recent_tool_detail_limit: int = Field(default=12, ge=1, le=100)
     compact_tool_results_in_history: bool = True
     compact_tool_result_tools: list[str] = Field(default_factory=list)
     classifier_model: str = ""
@@ -52,14 +53,6 @@ class AgentConfig(ConfigSection):
     max_classifier_tokens: int = Field(default=256, ge=32, le=4096)
     tool_budgets: dict[str, int] | None = None
     auth_header: str | None = Field(default=None, exclude=True)
-
-    @property
-    def allow_cross_host(self) -> bool:
-        return self.allow_cross_host_endpoints
-
-    @property
-    def default_max_tokens(self) -> int | None:
-        return self.max_tokens
 
 class ProjectConfig(ClosedConfigSection):
     root_strategy: str = "git-or-cwd"
@@ -71,6 +64,7 @@ class MemoryConfig(ClosedConfigSection):
     replace_min_score_default: float = Field(default=0.72, ge=0, le=1)
     backup_revisions: int = Field(default=2, ge=0, le=20)
     auto_capture: bool = True
+    auto_capture_importance: float = Field(default=0.55, ge=0, le=1)
 
 
 class ContextConfig(ConfigSection):
@@ -94,6 +88,7 @@ class SkillsConfig(ClosedConfigSection):
     strict_capability_policy: bool = False
     python_executable: str = ""
     paths: list[str] = Field(default_factory=list)
+
 
 class AgentsConfig(ConfigSection):
     enable_skill_agents: bool = True
@@ -160,6 +155,7 @@ class UiConfig(ConfigSection):
     chat_log_max_lines: int | None = Field(default=10000, ge=1000, le=200000)
     timing: UiTimingConfig = Field(default_factory=lambda: UiTimingConfig())
     tree_compaction: TreeCompactionConfig = Field(default_factory=lambda: TreeCompactionConfig())
+
 
 class ConfigSchema(ConfigSection):
     config_version: int = 1

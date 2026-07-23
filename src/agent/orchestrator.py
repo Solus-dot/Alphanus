@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, cast
 
 from agent.classifier import TurnClassifier
@@ -60,7 +60,7 @@ class TurnOrchestrator:
         self.telemetry = telemetry or TelemetryEmitter()
         self.reload_config(llm_client.config)
 
-    def reload_config(self, config: ConfigSchema | dict[str, Any]) -> None:
+    def reload_config(self, config: ConfigSchema | Mapping[str, Any]) -> None:
         self.config = config_schema(config)
         agent_cfg = self.config.agent
         self.max_action_depth = agent_cfg.max_action_depth
@@ -72,7 +72,7 @@ class TurnOrchestrator:
             self.default_tool_budgets[str(key)] = int(value)
         self.sanitizer = OutputSanitizer(self.max_reasoning_chars)
         self.policy_engine = TurnPolicyEngine(self.skill_runtime, self.default_tool_budgets)
-        self.evidence_guard = EvidenceGuard(self.skill_runtime)
+        self.evidence_guard = EvidenceGuard(self.skill_runtime, agent_cfg.recent_tool_detail_limit)
         self.tool_execution_engine = ToolExecutionEngine()
         self.tool_loop = ToolLoopEngine(self)
         self.turn_journal = TurnJournalBuilder()
@@ -129,7 +129,7 @@ class TurnOrchestrator:
             text,
             memory_type="preference" if re.search(r"\b(?:prefer|preferred|favorite|go-to|like)\b", text, re.IGNORECASE) else "project",
             metadata={"source": "auto_capture", "turn_id": state.telemetry.turn_id},
-            importance=0.55,
+            importance=self.config.memory.auto_capture_importance,
         )
         self.skill_runtime.memory.flush()
         if self.config.retrieval.enabled:

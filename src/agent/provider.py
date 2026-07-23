@@ -7,7 +7,7 @@ import socket
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
@@ -103,14 +103,14 @@ class OpenAICompatibleProvider:
         self.backend_profile_requested = normalize_backend_profile(config.backend_profile)
         self.tls_verify = config.tls_verify
         self.ca_bundle_path = config.ca_bundle_path
-        self.allow_cross_host = config.allow_cross_host
+        self.allow_cross_host = config.allow_cross_host_endpoints
         self.request_timeout_s = config.request_timeout_s
         self.readiness_timeout_s = config.readiness_timeout_s
         self.readiness_poll_s = config.readiness_poll_s
         self.connect_timeout_s = config.connect_timeout_s
         self.per_turn_retries = config.per_turn_retries
         self.retry_backoff_s = config.retry_backoff_s
-        self.default_max_tokens = config.default_max_tokens
+        self.default_max_tokens = config.max_tokens
         self.api_key_env = config.api_key_env
         self.auth_header_template = config.auth_header_template
         self.ssl_context = build_ssl_context(self.tls_verify, self.ca_bundle_path)
@@ -563,13 +563,13 @@ class OpenAICompatibleProvider:
         stream_chunks = cast(
             Iterable[dict[str, object]],
             self._stream_chat_completions(
-            endpoint=endpoint,
-            payload=payload,
-            timeout_s=self.request_timeout_s,
-            headers=self.headers(),
-            ssl_context=self.ssl_context,
-            stop_event=stop_event,
-            on_debug_event=lambda event: self.telemetry.emit("http_stream", pass_id=pass_id, **event),
+                endpoint=endpoint,
+                payload=payload,
+                timeout_s=self.request_timeout_s,
+                headers=self.headers(),
+                ssl_context=self.ssl_context,
+                stop_event=stop_event,
+                on_debug_event=lambda event: self.telemetry.emit("http_stream", pass_id=pass_id, **event),
             ),
         )
         for chunk in stream_chunks:
@@ -669,7 +669,11 @@ class OpenAICompatibleProvider:
             try:
                 status = self._status_allows_immediate_send()
                 if status.state == "offline":
-                    message = self._friendly_endpoint_error(status.last_error) if status.last_error else f"Model endpoint offline: {self.models_endpoint}"
+                    message = (
+                        self._friendly_endpoint_error(status.last_error)
+                        if status.last_error
+                        else f"Model endpoint offline: {self.models_endpoint}"
+                    )
                     raise RuntimeError(f"Model endpoint offline: {message}")
                 normalized_payload = self._normalize_payload_for_backend(payload, mode=mode, pass_id=pass_id)
                 if not str(normalized_payload.get("model", "")).strip():
@@ -777,7 +781,7 @@ class OpenAICompatibleProvider:
 class LLMClient(OpenAICompatibleProvider):
     """Configured provider used by classification and turn execution."""
 
-    def __init__(self, config: ConfigSchema | dict[str, Any], debug: bool = False, telemetry: TelemetryEmitter | None = None) -> None:
+    def __init__(self, config: ConfigSchema | Mapping[str, Any], debug: bool = False, telemetry: TelemetryEmitter | None = None) -> None:
         self.debug = debug
         self.telemetry = telemetry or TelemetryEmitter()
         self.api_key = ""
@@ -791,7 +795,7 @@ class LLMClient(OpenAICompatibleProvider):
         )
         self._load_classifier_config(config)
 
-    def _client_config(self, config: ConfigSchema | dict[str, Any]) -> AgentConfig:
+    def _client_config(self, config: ConfigSchema | Mapping[str, Any]) -> AgentConfig:
         self.config = config_schema(config)
         agent = self.config.agent
         api_key_ref = agent.api_key.strip()
@@ -816,14 +820,14 @@ class LLMClient(OpenAICompatibleProvider):
         self.auth_source = "env" if explicit_header else "none"
         return agent.model_copy(update={"auth_header": explicit_header or None})
 
-    def _load_classifier_config(self, config: ConfigSchema | dict[str, Any]) -> None:
+    def _load_classifier_config(self, config: ConfigSchema | Mapping[str, Any]) -> None:
         parsed = config_schema(config).agent
         self.classifier_model = parsed.classifier_model.strip()
         self.classifier_use_primary_model = parsed.classifier_use_primary_model
         self.enable_structured_classification = parsed.enable_structured_classification
         self.max_classifier_tokens = parsed.max_classifier_tokens
 
-    def reload_config(self, config: ConfigSchema | dict[str, Any]) -> None:
+    def reload_config(self, config: ConfigSchema | Mapping[str, Any]) -> None:
         provider_config = self._client_config(config)
         self._apply_provider_config(provider_config)
         self._load_classifier_config(config)

@@ -428,7 +428,7 @@ def test_project_action_outcome_skips_model_when_structured_classification_disab
         evidence={
             "has_successful_mutation": False,
             "policy_blocked_tools": ["shell_command"],
-            "recent_tools": [
+            "recent_tool_details": [
                 {
                     "name": "shell_command",
                     "ok": False,
@@ -460,7 +460,7 @@ def test_project_action_outcome_falls_back_to_blocked_when_classifier_call_fails
         evidence={
             "has_successful_mutation": False,
             "policy_blocked_tools": ["shell_command"],
-            "recent_tools": [
+            "recent_tool_details": [
                 {
                     "name": "shell_command",
                     "ok": False,
@@ -493,7 +493,7 @@ def test_project_action_outcome_accepts_shell_rejected_by_user(tmp_path: Path) -
             "has_successful_mutation": False,
             "successful_mutating_tools": [],
             "policy_blocked_tools": ["shell_command"],
-            "recent_tools": [
+            "recent_tool_details": [
                 {
                     "name": "shell_command",
                     "ok": False,
@@ -526,7 +526,7 @@ def test_project_action_outcome_accepts_shell_timeout_limitation(tmp_path: Path)
             "has_successful_mutation": False,
             "successful_mutating_tools": [],
             "policy_blocked_tools": [],
-            "recent_tools": [
+            "recent_tool_details": [
                 {
                     "name": "shell_command",
                     "ok": False,
@@ -556,7 +556,7 @@ def test_project_action_outcome_rules_rejects_user_delegation_even_with_blocked_
         evidence={
             "has_successful_mutation": False,
             "policy_blocked_tools": ["shell_command"],
-            "recent_tools": [
+            "recent_tool_details": [
                 {
                     "name": "shell_command",
                     "ok": False,
@@ -586,7 +586,7 @@ def test_project_action_outcome_rules_rejects_false_success_claim_even_with_bloc
         evidence={
             "has_successful_mutation": False,
             "policy_blocked_tools": ["shell_command"],
-            "recent_tools": [
+            "recent_tool_details": [
                 {
                     "name": "shell_command",
                     "ok": False,
@@ -819,7 +819,7 @@ def test_evidence_aggregates_the_whole_turn_but_bounds_recent_details(tmp_path: 
     evidence = orchestrator.evidence_guard.project_action_evidence(state)
 
     assert evidence["successful_mutating_tools"] == ["shell_command"]
-    assert len(evidence["recent_tools"]) == 12
+    assert len(evidence["recent_tool_details"]) == 12
 
 
 def _patch_project_tool_runtime(mocker, runtime: SkillRuntime, *, read_ok: bool = True) -> None:
@@ -1049,7 +1049,7 @@ def test_project_action_outcome_accepts_successful_non_mutating_open_action(tmp_
             "successful_mutating_tools": [],
             "successful_action_labels": ["open", "run"],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "shell_command", "actions": ["open", "run"], "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tool_details": [{"name": "shell_command", "actions": ["open", "run"], "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -1073,7 +1073,7 @@ def test_project_action_outcome_accepts_shell_version_query(tmp_path: Path) -> N
             "successful_mutating_tools": [],
             "successful_action_labels": ["run"],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "shell_command", "actions": ["run"], "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tool_details": [{"name": "shell_command", "actions": ["run"], "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -1097,7 +1097,7 @@ def test_project_action_outcome_accepts_read_file_version_query(tmp_path: Path) 
             "successful_mutating_tools": [],
             "successful_action_labels": ["read"],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "read_file", "actions": ["read"], "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tool_details": [{"name": "read_file", "actions": ["read"], "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -1121,7 +1121,7 @@ def test_project_action_outcome_accepts_open_followup_after_mutating_hint(tmp_pa
             "successful_mutating_tools": [],
             "successful_action_labels": ["open", "run"],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "shell_command", "actions": ["open", "run"], "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tool_details": [{"name": "shell_command", "actions": ["open", "run"], "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -1145,7 +1145,7 @@ def test_project_action_outcome_accepts_show_request_with_list_evidence(tmp_path
             "successful_mutating_tools": [],
             "successful_action_labels": ["list", "read"],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "list_files", "actions": ["list", "read"], "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tool_details": [{"name": "list_files", "actions": ["list", "read"], "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -1169,7 +1169,7 @@ def test_project_action_outcome_accepts_display_tree_with_project_tree_evidence(
             "successful_mutating_tools": [],
             "successful_action_labels": ["read"],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "project_tree", "actions": ["read"], "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tool_details": [{"name": "project_tree", "actions": ["read"], "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -1192,7 +1192,7 @@ def test_project_action_outcome_rejects_ack_followup_to_mutating_request_without
             "has_successful_mutation": False,
             "successful_mutating_tools": [],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tool_details": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -1216,7 +1216,7 @@ def test_project_action_outcome_overrides_structured_ack_followup_without_mutati
             "has_successful_mutation": False,
             "successful_mutating_tools": [],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tool_details": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -1239,7 +1239,7 @@ def test_project_action_outcome_rejects_open_claim_with_only_read_evidence(tmp_p
             "has_successful_mutation": False,
             "successful_mutating_tools": [],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tool_details": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -1263,7 +1263,7 @@ def test_project_action_outcome_overrides_structured_open_claim_with_only_read_e
             "has_successful_mutation": False,
             "successful_mutating_tools": [],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tool_details": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -1286,7 +1286,7 @@ def test_project_action_outcome_still_rejects_file_creation_claim_without_mutati
             "has_successful_mutation": False,
             "successful_mutating_tools": [],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tool_details": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -1309,7 +1309,7 @@ def test_project_action_outcome_rejects_non_mutating_completion_for_mutating_req
             "has_successful_mutation": False,
             "successful_mutating_tools": [],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tool_details": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )
@@ -1333,7 +1333,7 @@ def test_project_action_outcome_overrides_structured_completion_without_mutation
             "has_successful_mutation": False,
             "successful_mutating_tools": [],
             "policy_blocked_tools": [],
-            "recent_tools": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
+            "recent_tool_details": [{"name": "read_file", "ok": True, "mutating": False, "policy_blocked": False}],
         },
         pass_id="pass_1",
     )

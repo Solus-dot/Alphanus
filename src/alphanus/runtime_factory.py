@@ -2,9 +2,11 @@ import argparse
 import os
 import shutil
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from core.config_model import ConfigSchema, config_schema
 from core.configuration import load_global_config, normalize_config, validate_endpoint_policy
 
 
@@ -12,7 +14,7 @@ def _as_object(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _load_runtime_config(app_paths: Any, args: argparse.Namespace) -> tuple[dict[str, Any], list[str]]:
+def _load_runtime_config(app_paths: Any, args: argparse.Namespace) -> tuple[ConfigSchema, list[str]]:
     config_path = app_paths.config_path
     if not config_path.exists():
         raise FileNotFoundError(f"Global config not found at {config_path}. Run `alphanus init` first.")
@@ -36,7 +38,7 @@ def _load_runtime_config(app_paths: Any, args: argparse.Namespace) -> tuple[dict
         if not configured_log.is_absolute():
             configured_log = Path(app_paths.state_root).resolve() / configured_log
         logging_cfg["path"] = str(configured_log.resolve())
-    return config, config_warnings
+    return config_schema(config), config_warnings
 
 
 def _git_root_for_cwd(cwd: Path) -> Path | None:
@@ -58,38 +60,36 @@ def _git_root_for_cwd(cwd: Path) -> Path | None:
     return Path(root_text).expanduser().resolve() if root_text else None
 
 
-def resolve_project_root(config: dict[str, Any], *, override: str = "", cwd: Path | None = None) -> Path:
+def resolve_project_root(config: ConfigSchema | Mapping[str, Any], *, override: str = "", cwd: Path | None = None) -> Path:
+    config = config_schema(config)
     if override.strip():
         return Path(os.path.expanduser(override.strip())).resolve()
     start = (cwd or Path.cwd()).resolve()
-    strategy = str(_as_object(config.get("project")).get("root_strategy", "git-or-cwd")).strip().lower()
+    strategy = config.project.root_strategy.strip().lower()
     if strategy == "git-or-cwd":
         return _git_root_for_cwd(start) or start
     return start
 
 
-def _build_agent_runtime(app_paths: Any, config: dict[str, Any], *, debug: bool) -> tuple[Any, Any, Any, Any]:
+def _build_agent_runtime(app_paths: Any, config: ConfigSchema, *, debug: bool) -> tuple[Any, Any, Any, Any]:
     from agent.core import Agent
     from core.memory import LexicalMemory
     from core.project import ProjectRuntime
     from skills.runtime import SkillRuntime
 
-    project_root = resolve_project_root(config, override=str(config.get("_project_root_override", "")))
-    permissions_cfg = _as_object(config.get("permissions"))
-    sandbox_cfg = _as_object(config.get("sandbox"))
+    project_root = resolve_project_root(config, override=str(getattr(config, "_project_root_override", "")))
     project = ProjectRuntime(
         project_root=str(project_root),
-        permission_mode=str(permissions_cfg.get("mode", "project-write")),
-        network_access=bool(permissions_cfg.get("network", False)),
-        sandbox_backend=str(sandbox_cfg.get("backend", "auto")),
-        sandbox_fail_closed=bool(sandbox_cfg.get("fail_closed", True)),
+        permission_mode=config.permissions.mode,
+        network_access=config.permissions.network,
+        sandbox_backend=config.sandbox.backend,
+        sandbox_fail_closed=config.sandbox.fail_closed,
     )
     memory_path = str((Path(app_paths.state_root).resolve() / "memory" / "events.jsonl").resolve())
-    memory_cfg = config.get("memory", {})
     memory = LexicalMemory(
         storage_path=memory_path,
-        min_score=float(memory_cfg.get("min_score_default", 0.3)),
-        backup_revisions=int(memory_cfg.get("backup_revisions", 2)),
+        min_score=config.memory.min_score_default,
+        backup_revisions=config.memory.backup_revisions,
     )
     user_skills_dir = getattr(app_paths, "user_skills_dir", None)
     runtime_skills_dir = (

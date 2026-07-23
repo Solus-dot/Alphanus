@@ -5,11 +5,13 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, TextIO
 
+from core.errors import ProtocolError
+
 RUNTIME_PROTOCOL_VERSION = 1
 MAX_RUNTIME_FRAME_BYTES = 1024 * 1024
 
 
-class RuntimeProtocolError(ValueError):
+class RuntimeProtocolError(ProtocolError):
     pass
 
 

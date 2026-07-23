@@ -9,12 +9,14 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Generator
 
+from core.errors import ProviderError
+
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 RETRYABLE_URL_ERRORS = (TimeoutError, ConnectionResetError)
 STREAM_POLL_TIMEOUT_S = 0.25
 
 
-class StreamError(Exception):
+class StreamError(ProviderError):
     def __init__(self, message: str, status_code: int | None = None, retryable: bool = False):
         super().__init__(message)
         self.status_code = status_code
@@ -85,7 +87,7 @@ def stream_chat_completions(
                         "status": getattr(resp, "status", None),
                         "reason": getattr(resp, "reason", ""),
                     }
-            )
+                )
             readline = getattr(resp, "readline", None)
             stream_sock = None
             for candidate in (

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -25,8 +25,8 @@ from skills.runtime import SkillRuntime
 
 
 class Agent:
-    def __init__(self, config: dict[str, Any], skill_runtime: SkillRuntime, debug: bool = False) -> None:
-        config, _ = normalize_config(config)
+    def __init__(self, config: ConfigSchema | Mapping[str, Any], skill_runtime: SkillRuntime, debug: bool = False) -> None:
+        config = config if isinstance(config, ConfigSchema) else config_schema(normalize_config(dict(config))[0])
         self.skill_runtime = skill_runtime
         self.debug = debug
         self.telemetry = TelemetryEmitter()
@@ -50,11 +50,11 @@ class Agent:
         )
         self._apply_config(config)
 
-    def reload_config(self, config: dict[str, Any]) -> None:
-        config, _ = normalize_config(config)
-        self._apply_config(config)
+    def reload_config(self, config: ConfigSchema | Mapping[str, Any]) -> None:
+        model = config if isinstance(config, ConfigSchema) else config_schema(normalize_config(dict(config))[0])
+        self._apply_config(model)
 
-    def _apply_config(self, config: ConfigSchema | dict[str, Any]) -> None:
+    def _apply_config(self, config: ConfigSchema) -> None:
         self.config = config_schema(config)
         self.skill_runtime.reload_config(self.config)
         self.context_mgr.context_limit = self.config.context.context_limit

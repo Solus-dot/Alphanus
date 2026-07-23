@@ -2,14 +2,28 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
+from core.config_model import ConfigSchema, config_schema
+
 _SENSITIVE_KEYS = {
-    "arguments", "authorization", "content", "headers", "input", "payload",
-    "prompt", "reasoning", "request", "response", "secret", "text", "token",
+    "arguments",
+    "authorization",
+    "content",
+    "headers",
+    "input",
+    "payload",
+    "prompt",
+    "reasoning",
+    "request",
+    "response",
+    "secret",
+    "text",
+    "token",
     "tool_calls",
 }
 
@@ -58,9 +72,9 @@ class JsonLineFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 
-def configure_logging(config: dict[str, Any]) -> logging.Logger:
-    logging_cfg = config.get("logging", {}) if isinstance(config.get("logging"), dict) else {}
-    level_name = str(logging_cfg.get("level", "INFO")).strip().upper() or "INFO"
+def configure_logging(config: ConfigSchema | Mapping[str, Any]) -> logging.Logger:
+    logging_cfg = config_schema(config).logging
+    level_name = logging_cfg.level.strip().upper() or "INFO"
     level = getattr(logging, level_name, logging.INFO)
     root = logging.getLogger("alphanus")
     root.setLevel(level)
@@ -69,21 +83,21 @@ def configure_logging(config: dict[str, Any]) -> logging.Logger:
     stream_handler = logging.StreamHandler()
     stream_level = level if level >= logging.WARNING else logging.WARNING
     stream_handler.setLevel(stream_level)
-    if str(logging_cfg.get("format", "plain")).strip().lower() == "json":
+    if logging_cfg.format.strip().lower() == "json":
         formatter: logging.Formatter = JsonLineFormatter()
     else:
         formatter = logging.Formatter("[%(levelname)s] %(message)s")
     stream_handler.setFormatter(formatter)
     root.addHandler(stream_handler)
 
-    path_text = str(logging_cfg.get("path", "")).strip()
+    path_text = logging_cfg.path.strip()
     if path_text:
         path = Path(path_text)
         path.parent.mkdir(parents=True, exist_ok=True)
         file_handler = RotatingFileHandler(
             path,
-            maxBytes=max(1024 * 1024, int(logging_cfg.get("max_bytes", 10 * 1024 * 1024))),
-            backupCount=max(1, int(logging_cfg.get("backup_count", 5))),
+            maxBytes=max(1024 * 1024, int(getattr(logging_cfg, "max_bytes", 10 * 1024 * 1024))),
+            backupCount=max(1, int(getattr(logging_cfg, "backup_count", 5))),
             encoding="utf-8",
         )
         file_handler.setLevel(level)

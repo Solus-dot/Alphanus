@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 from pathlib import Path
@@ -18,21 +17,13 @@ _EXPLICIT_PATH_PATTERN = re.compile(
     r"|(?P<plain>(?<![:/\w])(?P<plain_path>(?:~/|/)[^\s\"'`]+))"
 )
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
-_DRAFT_CLARIFICATION_RE = re.compile(
-    r"\b(?:which|what|where|when|who|clarify|confirm|should i|do you want|would you like|can you tell me)\b"
+_CLARIFICATION_WORDS = frozenset("which what where when who clarify confirm".split())
+_CLARIFICATION_PHRASES = ("should i", "do you want", "would you like", "can you tell me")
+_COMPLETION_WORDS = frozenset("deleted removed created updated edited modified renamed moved wrote saved".split())
+_NON_MUTATING_DONE_WORDS = frozenset(
+    "opened ran running executed launched read listed shown showed displayed inspected checked verified".split()
 )
-_DRAFT_DEFER_RE = re.compile(
-    r"\b(?:you can|please|you should)\b[^.\n]{0,100}\b(?:create|delete|remove|rename|move|edit|update|write|save|copy|paste|type|run|execute|use)\b"
-)
-_DRAFT_COMPLETION_RE = re.compile(
-    r"\b(?:i|we)\s+(?:have\s+)?(?:already\s+)?(?:successfully\s+)?(?:deleted|removed|created|updated|edited|modified|renamed|moved|wrote|saved)\b"
-)
-_DRAFT_NON_MUTATING_ACTION_DONE_RE = re.compile(
-    r"\b(?:opened|ran|running|executed|launched|read|listed|shown|showed|displayed|inspected|checked|verified)\b"
-)
-_MUTATING_REQUEST_RE = re.compile(
-    r"\b(?:create|make(?!\s+sure)|write|save|edit|update|modify|delete|remove|rename|move|copy|scaffold|generate)\b"
-)
+_MUTATING_WORDS = frozenset("create make write save edit update modify delete remove rename move copy scaffold generate".split())
 _NON_MUTATING_ACTION_PATTERNS = {
     "open": re.compile(r"\b(?:open|opened|launch|launched)\b"),
     "run": re.compile(r"\b(?:run|ran|running|execute|executed)\b"),
@@ -40,9 +31,23 @@ _NON_MUTATING_ACTION_PATTERNS = {
     "list": re.compile(r"\b(?:list|listed)\b"),
     "check": re.compile(r"\b(?:inspect|inspected|check|checked|verify|verified)\b"),
 }
-_DRAFT_PROJECT_DONE_RE = re.compile(r"\b(?:project is now empty|done with project tools)\b")
-_DRAFT_LIMITATION_RE = re.compile(
-    r"\b(?:could not|couldn't|cannot|can't|unable|not allowed|blocked|rejected|declined|denied|timed out|timeout|permission|permissions|unsupported|unavailable|disabled)\b"
+_LIMITATION_PHRASES = (
+    "could not",
+    "couldn't",
+    "cannot",
+    "can't",
+    "unable",
+    "not allowed",
+    "blocked",
+    "rejected",
+    "declined",
+    "denied",
+    "timed out",
+    "timeout",
+    "permission",
+    "unsupported",
+    "unavailable",
+    "disabled",
 )
 _PROJECT_FILE_TOKEN_RE = re.compile(r"(?<![\w/.-])(?:[\w.-]+/)*[\w.-]+\.[a-z0-9]{1,16}\b", re.IGNORECASE)
 _PROJECT_ABS_PATH_RE = re.compile(r"(?<![:/\w])(?:~/|/)[^\s\"'`]+")
@@ -59,7 +64,7 @@ _FILESYSTEM_DIRECTORY_CONTEXT_RE = re.compile(
 class TurnClassifier:
     def __init__(
         self,
-        _config: dict[str, Any],
+        _config: object,
         skill_runtime: SkillRuntime,
         llm_client: LLMClient,
         telemetry: TelemetryEmitter | None = None,
@@ -73,78 +78,55 @@ class TurnClassifier:
         if isinstance(value, str):
             return value.strip()
         if isinstance(value, list):
-            parts: list[str] = []
-            for item in value:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    parts.append(str(item.get("text", "")).strip())
+            parts = [str(item.get("text", "")).strip() for item in value if isinstance(item, dict) and item.get("type") == "text"]
             return "\n".join(part for part in parts if part).strip()
         return str(value or "").strip()
 
     def recent_routing_context(self, history_messages: list[ChatMessage]) -> tuple[str, list[str]]:
-        if not history_messages:
+        last_user = next(
+            (index for index in range(len(history_messages) - 1, -1, -1) if history_messages[index].get("role") == "user"),
+            -1,
+        )
+        if last_user < 0:
             return "", []
-        last_user_index = -1
-        for idx in range(len(history_messages) - 1, -1, -1):
-            if str(history_messages[idx].get("role", "")).lower() == "user":
-                last_user_index = idx
-                break
-        if last_user_index < 0:
-            return "", []
-        recent = history_messages[last_user_index:]
-        recent_user = self.message_text(recent[0].get("content", ""))
+        recent = history_messages[last_user:]
         tool_names: list[str] = []
+        skill_ids: list[str] = []
         assistant_text = ""
-        seen_tools = set()
-        sticky_skill_ids: list[str] = []
-        seen_skills = set()
         registry = getattr(self.skill_runtime, "_tool_registry", {})
+
+        def remember_tool(name: str) -> None:
+            if not name or name in tool_names:
+                return
+            tool_names.append(name)
+            registration = registry.get(name)
+            if registration and registration.skill_id not in skill_ids:
+                skill_ids.append(registration.skill_id)
+
         for msg in recent[1:]:
             role = str(msg.get("role", "")).lower()
             if role == "assistant":
-                text = self.message_text(msg.get("content", ""))
-                if text:
-                    assistant_text = text
+                assistant_text = self.message_text(msg.get("content", "")) or assistant_text
                 for call in msg.get("tool_calls", []) or []:
-                    name = str(((call or {}).get("function") or {}).get("name", "")).strip()
-                    if not name or name in seen_tools:
-                        continue
-                    tool_names.append(name)
-                    seen_tools.add(name)
-                    reg = registry.get(name)
-                    if reg and reg.skill_id not in seen_skills:
-                        sticky_skill_ids.append(reg.skill_id)
-                        seen_skills.add(reg.skill_id)
+                    remember_tool(str(((call or {}).get("function") or {}).get("name", "")).strip())
             elif role == "tool":
-                name = str(msg.get("name", "")).strip()
-                if not name or name in seen_tools:
-                    continue
-                tool_names.append(name)
-                seen_tools.add(name)
-                reg = registry.get(name)
-                if reg and reg.skill_id not in seen_skills:
-                    sticky_skill_ids.append(reg.skill_id)
-                    seen_skills.add(reg.skill_id)
+                remember_tool(str(msg.get("name", "")).strip())
                 try:
                     payload = json.loads(self.message_text(msg.get("content", "")) or "{}")
-                except json.JSONDecodeError as exc:
-                    logging.debug("Failed to parse tool result content as JSON: %s", exc)
+                except json.JSONDecodeError:
                     payload = {}
                 data = payload.get("data") if isinstance(payload, dict) else {}
                 loaded_skill_id = str(data.get("skill_id", "")).strip() if isinstance(data, dict) else ""
-                if loaded_skill_id and loaded_skill_id not in seen_skills:
-                    sticky_skill_ids.append(loaded_skill_id)
-                    seen_skills.add(loaded_skill_id)
-        parts: list[str] = []
-        if recent_user:
-            parts.append(f"previous user request: {recent_user}")
+                if loaded_skill_id and loaded_skill_id not in skill_ids:
+                    skill_ids.append(loaded_skill_id)
+        parts = [f"previous user request: {self.message_text(recent[0].get('content', ''))}"]
         if assistant_text:
             compact_assistant = " ".join(assistant_text.split())
-            if len(compact_assistant) > 240:
-                compact_assistant = compact_assistant[:237].rstrip() + "..."
+            compact_assistant = compact_assistant if len(compact_assistant) <= 240 else compact_assistant[:237].rstrip() + "..."
             parts.append(f"assistant just said: {compact_assistant}")
         if tool_names:
             parts.append(f"tools just used: {', '.join(tool_names[:4])}")
-        return "\n".join(parts), sticky_skill_ids[:3]
+        return "\n".join(parts), skill_ids[:3]
 
     def build_skill_context(
         self,
@@ -169,7 +151,6 @@ class TurnClassifier:
 
     def _explicit_path_outside_project(self, text: str) -> str:
         project_root = Path(self.skill_runtime.project.project_root)
-        seen: set[str] = set()
         for match in _EXPLICIT_PATH_PATTERN.finditer(text or ""):
             raw = match.group("quoted_path") or match.group("plain_path") or ""
             cleaned = raw if match.group("quoted_path") else raw.rstrip(".,:;!?)]}")
@@ -177,14 +158,10 @@ class TurnClassifier:
             if not expanded.is_absolute():
                 continue
             resolved = expanded.resolve(strict=False)
-            resolved_str = str(resolved)
-            if resolved_str in seen:
-                continue
-            seen.add(resolved_str)
             try:
                 resolved.relative_to(project_root)
             except ValueError:
-                return resolved_str
+                return str(resolved)
         known_directory = _WELL_KNOWN_DIRECTORY_RE.search(text or "")
         has_filesystem_context = bool(_FILESYSTEM_DIRECTORY_CONTEXT_RE.search(text or "") or _PROJECT_FILE_TOKEN_RE.search(text or ""))
         if known_directory and has_filesystem_context:
@@ -197,12 +174,7 @@ class TurnClassifier:
         return ""
 
     def _should_model_classify(self) -> bool:
-        """Model classification is the default path.
-
-        Only skipped when structured classification is explicitly disabled
-        in the LLM client configuration.
-        """
-        return bool(self.llm_client.enable_structured_classification)
+        return self.llm_client.enable_structured_classification
 
     @staticmethod
     def _parse_json_object(content: str) -> dict[str, JSONValue]:
@@ -211,7 +183,6 @@ class TurnClassifier:
             return {}
         try:
             payload = json.loads(stripped)
-            return payload if isinstance(payload, dict) else {}
         except json.JSONDecodeError:
             match = _JSON_OBJECT_RE.search(stripped)
             if not match:
@@ -220,35 +191,48 @@ class TurnClassifier:
                 payload = json.loads(match.group(0))
             except json.JSONDecodeError:
                 return {}
-            return payload if isinstance(payload, dict) else {}
+        return payload if isinstance(payload, dict) else {}
 
     @staticmethod
     def _normalized_text(text: str) -> str:
         return " ".join(str(text or "").strip().lower().split())
 
+    @staticmethod
+    def _words(text: str) -> set[str]:
+        return set(re.findall(r"[a-z]+", text))
+
     @classmethod
     def _draft_requests_clarification(cls, assistant_reply: str) -> bool:
         lowered = cls._normalized_text(assistant_reply)
-        return bool(lowered and ("?" in assistant_reply or _DRAFT_CLARIFICATION_RE.search(lowered)))
+        return bool(
+            lowered
+            and (
+                "?" in assistant_reply
+                or cls._words(lowered) & _CLARIFICATION_WORDS
+                or any(phrase in lowered for phrase in _CLARIFICATION_PHRASES)
+            )
+        )
 
     @classmethod
     def _draft_defers_project_action_to_user(cls, assistant_reply: str) -> bool:
         lowered = cls._normalized_text(assistant_reply)
-        return bool(lowered and ("yourself" in lowered or "manually" in lowered or _DRAFT_DEFER_RE.search(lowered)))
+        asks_user = any(phrase in lowered for phrase in ("you can", "please", "you should"))
+        return bool(lowered and ("yourself" in lowered or "manually" in lowered or asks_user and cls._words(lowered) & _MUTATING_WORDS))
 
     @classmethod
     def _draft_claims_project_completion_without_evidence(cls, assistant_reply: str) -> bool:
         lowered = cls._normalized_text(assistant_reply)
-        return bool(lowered and (_DRAFT_COMPLETION_RE.search(lowered) or _DRAFT_PROJECT_DONE_RE.search(lowered)))
+        actor_claim = lowered.startswith(("i ", "we ")) or " i " in lowered or " we " in lowered
+        return bool(lowered and (actor_claim and cls._words(lowered) & _COMPLETION_WORDS or "project is now empty" in lowered))
 
     @classmethod
     def _draft_reports_supported_limitation(cls, assistant_reply: str) -> bool:
         lowered = cls._normalized_text(assistant_reply)
-        return bool(lowered and ("no project tool actually ran" in lowered or _DRAFT_LIMITATION_RE.search(lowered)))
+        return bool(lowered and ("no project tool actually ran" in lowered or any(phrase in lowered for phrase in _LIMITATION_PHRASES)))
 
     @staticmethod
     def _recent_tool_rows(evidence: dict[str, JSONValue]) -> list[dict[str, JSONValue]]:
-        rows = evidence.get("recent_tools")
+        rows = evidence.get("recent_tool_details")
         return [item for item in rows if isinstance(item, dict)] if isinstance(rows, list) else []
 
     @staticmethod
@@ -269,20 +253,15 @@ class TurnClassifier:
                 return True
         return False
 
-    @staticmethod
-    def _evidence_shows_successful_action_tool(evidence: dict[str, JSONValue]) -> bool:
-        tools = evidence.get("successful_tools")
-        return isinstance(tools, list) and bool(tools)
-
     @classmethod
     def _request_requires_project_mutation(cls, current_user_input: str, recent_routing_hint: str = "") -> bool:
         text = cls._normalized_text(current_user_input)
-        if text and _MUTATING_REQUEST_RE.search(text):
+        if text and cls._words(text) & _MUTATING_WORDS and "make sure" not in text:
             return True
         if cls._non_mutating_actions_in_text(text):
             return False
         hint = cls._normalized_text(recent_routing_hint)
-        return bool(hint and _MUTATING_REQUEST_RE.search(hint))
+        return bool(hint and cls._words(hint) & _MUTATING_WORDS and "make sure" not in hint)
 
     @classmethod
     def _non_mutating_actions_in_text(cls, text: str) -> set[str]:
@@ -290,28 +269,6 @@ class TurnClassifier:
         if not lowered:
             return set()
         return {action for action, pattern in _NON_MUTATING_ACTION_PATTERNS.items() if pattern.search(lowered)}
-
-    @staticmethod
-    def _canonical_evidence_tool_name(name: object) -> str:
-        return str(name or "").strip().lower().split(":")[-1].split(".")[-1]
-
-    @classmethod
-    def _successful_tool_names(cls, evidence: dict[str, JSONValue]) -> set[str]:
-        names: set[str] = set()
-        successful_tools = evidence.get("successful_tools")
-        if isinstance(successful_tools, list):
-            for item in successful_tools:
-                name = cls._canonical_evidence_tool_name(item)
-                if name:
-                    names.add(name)
-        for item in cls._recent_tool_rows(evidence):
-            if not bool(item.get("ok")) or bool(item.get("policy_blocked")):
-                continue
-            name = cls._canonical_evidence_tool_name(item.get("name"))
-            if name:
-                names.add(name)
-        names.discard("skill_view")
-        return names
 
     @staticmethod
     def _evidence_has_successful_non_mutating_tool(evidence: dict[str, JSONValue]) -> bool:
@@ -347,8 +304,7 @@ class TurnClassifier:
         requested_actions = cls._non_mutating_actions_in_text(current_user_input)
         claimed_actions = cls._non_mutating_actions_in_text(assistant_reply)
         required_actions = requested_actions | claimed_actions
-        tool_names = cls._successful_tool_names(evidence)
-        if not tool_names:
+        if not cls._evidence_has_successful_non_mutating_tool(evidence):
             return False
         if not required_actions:
             return cls._evidence_has_successful_non_mutating_tool(evidence)
@@ -508,8 +464,8 @@ class TurnClassifier:
             return "not_completed"
         if (
             not TurnClassifier._request_requires_project_mutation(current_user_input, recent_routing_hint)
-            and TurnClassifier._evidence_shows_successful_action_tool(evidence)
-            and _DRAFT_NON_MUTATING_ACTION_DONE_RE.search(lowered)
+            and bool(evidence.get("successful_tools"))
+            and TurnClassifier._words(lowered) & _NON_MUTATING_DONE_WORDS
             and TurnClassifier._evidence_supports_non_mutating_completion(
                 current_user_input=current_user_input,
                 assistant_reply=assistant_reply,

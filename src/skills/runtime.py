@@ -7,11 +7,13 @@ import os
 import re
 import shutil
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
 from core.config_model import ConfigSchema, config_schema
+from core.errors import ToolRuntimeError
 from core.memory import LexicalMemory
 from core.message_types import ApprovalRequestFn, JSONValue, UserInputRequestFn
 from core.project import ProjectRuntime
@@ -48,7 +50,7 @@ _SKILL_VIEW_TOOL_NAME = "skill_view"
 _ALWAYS_AVAILABLE_TOOL_NAMES = frozenset({_SKILLS_LIST_TOOL_NAME, _SKILL_VIEW_TOOL_NAME, _REQUEST_USER_INPUT_TOOL_NAME})
 
 
-class ToolProtocolError(RuntimeError):
+class ToolProtocolError(ToolRuntimeError):
     pass
 
 
@@ -91,7 +93,7 @@ class SkillRuntime:
         skills_dir: str,
         project: ProjectRuntime,
         memory: LexicalMemory,
-        config: ConfigSchema | dict[str, Any] | None = None,
+        config: ConfigSchema | Mapping[str, Any] | None = None,
         bundled_skills_dir: str | None = None,
         extra_skill_dirs: list[str] | None = None,
         debug: bool = False,
@@ -142,7 +144,7 @@ class SkillRuntime:
         self.selector = SkillSelector(self)
         self.load_skills()
 
-    def reload_config(self, config: ConfigSchema | dict[str, Any] | None) -> None:
+    def reload_config(self, config: ConfigSchema | Mapping[str, Any] | None) -> None:
         self.config_model = config_schema(config)
         self.config = self.config_model.model_dump()
         config_paths = self.config_model.skills.paths
@@ -386,6 +388,7 @@ class SkillRuntime:
             },
             required=["question"],
         )
+
     def load_skills(self) -> None:
         self._inventory_loader.load_skills()
 
@@ -511,9 +514,7 @@ class SkillRuntime:
 
     def enabled_skills(self) -> list[SkillManifest]:
         if self._enabled_skills_cache is None:
-            self._enabled_skills_cache = tuple(
-                skill for skill in self.skills.values() if skill.enabled and skill.available
-            )
+            self._enabled_skills_cache = tuple(skill for skill in self.skills.values() if skill.enabled and skill.available)
         return list(self._enabled_skills_cache)
 
     def skills_by_ids(self, skill_ids: list[str]) -> list[SkillManifest]:
@@ -589,9 +590,7 @@ class SkillRuntime:
             tier = self.skill_provenance_label(skill)
             location = self.skill_source_label(skill)
             location_text = f" location: {location}." if location else ""
-            lines.append(
-                f"- {skill.id}: {skill.description}. source: {tier}.{tag_text}{produce_text}{tool_text}{location_text}"
-            )
+            lines.append(f"- {skill.id}: {skill.description}. source: {tier}.{tag_text}{produce_text}{tool_text}{location_text}")
         return "\n".join(lines)
 
     def skill_health_report(self) -> list[dict[str, Any]]:
