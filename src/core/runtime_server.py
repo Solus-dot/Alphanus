@@ -12,6 +12,7 @@ from core.attachments import build_content, classify_attachment
 from core.configuration import config_for_editor_view, config_to_toml, load_global_config, save_global_config
 from core.conv_tree import Turn
 from core.message_types import JSONValue, MessageContentPart
+from core.retrieval import SQLiteRetrievalStore, configured_store_path
 from core.runtime_protocol import MAX_RUNTIME_FRAME_BYTES, RuntimeEmitter, RuntimeProtocolError, decode_runtime_frame
 from core.sessions import ChatSession, SessionStore
 from core.themes import available_theme_ids, reload_themes, theme_payload
@@ -334,8 +335,6 @@ def _previous_transcript_offset(path: list[Turn], current_offset: int) -> int | 
 
 
 class RuntimeServer:
-    """Private, presentation-neutral owner of interactive application state."""
-
     def __init__(
         self,
         *,
@@ -605,7 +604,7 @@ class RuntimeServer:
             self.turn_thread.start()
 
     def _finish_turn_request(self, request_id: str) -> None:
-        """Release protocol-visible turn state without clobbering a newer turn."""
+        # Release protocol-visible state without clobbering a newer turn.
         with self._state_lock:
             if self.turn_request_id == request_id:
                 self.turn_request_id = ""
@@ -619,7 +618,7 @@ class RuntimeServer:
         *,
         status: str,
     ) -> None:
-        """Publish terminal events before allowing the next turn to start."""
+        # Publish terminal events before allowing the next turn to start.
         with self._state_lock:
             self.emitter.emit("turn.completed", request_id=request_id, turn_id=turn_id, data=data)
             self._emit_completed(request_id, {"status": status})
@@ -752,6 +751,7 @@ class RuntimeServer:
                 loaded_skill_ids=list(self.session.loaded_skill_ids),
                 context_summary=self.session.tree.context_summary(),
                 collaboration_mode=self.session.collaboration_mode,
+                session_id=self.session.id,
                 stop_event=self.stop_event,
                 on_event=on_event,
                 request_approval=request_approval,
@@ -883,6 +883,7 @@ class RuntimeServer:
         self._require_idle()
         session_id = str(data.get("session_id") or "")
         self.store.delete_session(session_id)
+        SQLiteRetrievalStore(configured_store_path(self.agent.config)).delete_session_tool_outcomes(session_id)
         if session_id == self.session.id:
             remaining = self.store.list_sessions(limit=1)
             self.session = self._activate(self.store.load_session(remaining[0].id) if remaining else self.store.create_session())

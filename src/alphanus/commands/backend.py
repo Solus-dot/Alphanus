@@ -8,7 +8,7 @@ from core.headless_protocol import EXIT_INTERNAL
 
 
 def _run_runtime(args: Any) -> int:
-    """Run the private bidirectional backend used by the bundled Ratatui UI."""
+    # Private bidirectional backend for the bundled frontend.
     app_paths = get_app_paths()
     memory: Any = None
     try:

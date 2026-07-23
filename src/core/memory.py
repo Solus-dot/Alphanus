@@ -1,13 +1,21 @@
 import json
 import math
 import os
-import re
 import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+_MEMORY_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS memories(id INTEGER PRIMARY KEY AUTOINCREMENT,text TEXT NOT NULL,normalized_text TEXT NOT NULL,metadata_json TEXT NOT NULL,type TEXT NOT NULL,timestamp REAL NOT NULL,access_count INTEGER NOT NULL DEFAULT 0,last_accessed REAL NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS idx_memories_type_time ON memories(type,timestamp DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_memories_time ON memories(timestamp DESC)",
+    "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(text,content='memories',content_rowid='id')",
+    "CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN INSERT INTO memories_fts(rowid,text) VALUES(new.id,new.text); END",
+    "CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN INSERT INTO memories_fts(memories_fts,rowid,text) VALUES('delete',old.id,old.text); END",
+)
 
 @dataclass(slots=True)
 class MemoryItem:
@@ -30,20 +38,6 @@ def _normalize_threshold(value: Any, *, default: float) -> float:
     return max(0.0, min(1.0, parsed))
 
 
-def _tokenize(text: str) -> list[str]:
-    return re.findall(r"[a-z0-9]+", str(text).lower())
-
-
-def _score_tokens(query_tokens: list[str], text_tokens: list[str]) -> float:
-    if not query_tokens or not text_tokens:
-        return 0.0
-    query_set = set(query_tokens)
-    overlap = len(query_set & set(text_tokens)) / len(query_set)
-    width = len(query_tokens)
-    phrase = any(text_tokens[index : index + width] == query_tokens for index in range(len(text_tokens) - width + 1))
-    return min(1.0, (0.75 * overlap) + (0.3 if phrase else 0.0))
-
-
 def _to_public(item: MemoryItem) -> dict[str, Any]:
     return {
         "id": item.id,
@@ -55,7 +49,7 @@ def _to_public(item: MemoryItem) -> dict[str, Any]:
         "last_accessed": item.last_accessed,
     }
 class LexicalMemory:
-    """SQLite-backed lexical memory with bounded candidate retrieval."""
+    # SQLite-backed lexical memory with bounded candidates.
 
     def __init__(self, storage_path: str, min_score: float = 0.3, persist_access_updates: bool = False,
                  backup_revisions: int = 0, **_ignored: Any) -> None:
@@ -75,24 +69,11 @@ class LexicalMemory:
         self._connection.execute("PRAGMA foreign_keys=ON")
         self._connection.execute("PRAGMA busy_timeout=5000")
         with self._connection:
-            self._connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at REAL NOT NULL);
-                CREATE TABLE IF NOT EXISTS memories(
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    text TEXT NOT NULL,
-                    normalized_text TEXT NOT NULL,
-                    metadata_json TEXT NOT NULL,
-                    type TEXT NOT NULL,
-                    timestamp REAL NOT NULL,
-                    access_count INTEGER NOT NULL DEFAULT 0,
-                    last_accessed REAL NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_memories_type_time ON memories(type, timestamp DESC);
-                CREATE INDEX IF NOT EXISTS idx_memories_time ON memories(timestamp DESC);
-                """
-            )
+            self._connection.executescript(";\n".join(_MEMORY_SCHEMA))
             self._connection.execute("INSERT OR IGNORE INTO schema_migrations VALUES (1, ?)", (time.time(),))
+            migration = self._connection.execute("INSERT OR IGNORE INTO schema_migrations VALUES (2, ?)", (time.time(),))
+            if migration.rowcount:
+                self._connection.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
 
     @property
     def memories(self) -> list[MemoryItem]:
@@ -121,27 +102,23 @@ class LexicalMemory:
 
     def search(self, query: str, top_k: int = 5, memory_type: str | None = None,
                min_score: float | None = None) -> list[dict[str, Any]]:
-        query_tokens = _tokenize(query)
-        if not query_tokens:
+        tokens = [token.replace('"', '""') for token in str(query).casefold().split()[:12] if token]
+        if not tokens:
             return []
         threshold = self.min_score if min_score is None else _normalize_threshold(min_score, default=self.min_score)
-        clauses = ["normalized_text LIKE ?" for _ in query_tokens[:8]]
-        params: list[Any] = [f"%{token}%" for token in query_tokens[:8]]
-        where = "(" + " OR ".join(clauses) + ")"
+        where = "memories_fts MATCH ?"
+        params: list[Any] = [" OR ".join(f'"{token}"' for token in tokens)]
         if memory_type:
-            where += " AND type=?"
+            where += " AND m.type=?"
             params.append(memory_type)
-        params.append(max(100, min(2000, max(1, int(top_k)) * 40)))
+        params.append(max(1, min(2000, max(1, int(top_k)) * 8)))
         rows = self._connection.execute(
-            f"SELECT * FROM memories WHERE {where} ORDER BY timestamp DESC LIMIT ?", params  # noqa: S608
+            f"SELECT m.*,bm25(memories_fts) rank FROM memories_fts JOIN memories m ON m.id=memories_fts.rowid "
+            f"WHERE {where} ORDER BY rank,m.timestamp DESC LIMIT ?",  # noqa: S608
+            params,
         ).fetchall()
-        scored: list[tuple[float, MemoryItem]] = []
-        for row in rows:
-            item = self._row_to_item(row)
-            score = _score_tokens(query_tokens, _tokenize(item.text))
-            if score >= threshold:
-                scored.append((score, item))
-        selected = sorted(scored, key=lambda pair: (pair[0], pair[1].timestamp), reverse=True)[:max(1, int(top_k))]
+        selected = [(1 / (1 + abs(float(row["rank"]))), self._row_to_item(row)) for row in rows]
+        selected = [pair for pair in selected if pair[0] >= threshold][:max(1, int(top_k))]
         now = time.time()
         if selected and self.persist_access_updates:
             with self._connection:

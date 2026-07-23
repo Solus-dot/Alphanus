@@ -770,7 +770,7 @@ def _toml_ready(value: Any) -> Any:
 
 
 def config_to_toml(config: dict[str, Any]) -> str:
-    """Serialize the normalized, JSON-shaped configuration used by Alphanus."""
+    # Serialize normalized JSON-shaped configuration.
     return tomli_w.dumps(_toml_ready(config))
 
 

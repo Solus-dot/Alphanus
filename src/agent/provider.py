@@ -779,7 +779,7 @@ class OpenAICompatibleProvider:
 
 
 class LLMClient(OpenAICompatibleProvider):
-    """Configured provider used by classification and turn execution."""
+    # Configured provider used by classification and turn execution.
 
     def __init__(self, config: ConfigSchema | Mapping[str, Any], debug: bool = False, telemetry: TelemetryEmitter | None = None) -> None:
         self.debug = debug

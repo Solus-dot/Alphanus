@@ -151,12 +151,23 @@ class TurnOrchestrator:
         if _AUTO_MEMORY_SECRET_RE.search(text):
             return
         try:
-            record = SQLiteRetrievalStore(configured_store_path(self.config)).upsert_record(
+            store = SQLiteRetrievalStore(configured_store_path(self.config), candidate_limit=self.config.retrieval.candidate_limit)
+            record = store.upsert_record(
                 record_type="tool_outcome",
                 source=f"tool:{state.telemetry.turn_id}:{len(state.evidence)}:{call.name}",
                 title=f"{call.name} outcome",
                 text=text,
-                metadata={"tool": call.name, "turn_id": state.telemetry.turn_id},
+                metadata={
+                    "tool": call.name,
+                    "turn_id": state.telemetry.turn_id,
+                    "workspace": state.workspace_id,
+                    "session_id": state.session_id,
+                },
+            )
+            store.compact_tool_outcomes(
+                state.workspace_id,
+                retention_days=self.config.retrieval.tool_outcome_retention_days,
+                max_records=self.config.retrieval.tool_outcome_max_per_workspace,
             )
         except Exception as exc:
             self._trace_add(state, "retrieval", {"status": "tool_outcome_error", "tool": call.name, "error": str(exc)})
@@ -417,6 +428,7 @@ class TurnOrchestrator:
         loaded_skill_ids: list[str] | None = None,
         context_summary: str = "",
         collaboration_mode: str = "execute",
+        session_id: str = "",
         stop_event=None,
     ) -> TurnState:
         branch_labels = branch_labels or []
@@ -433,7 +445,7 @@ class TurnOrchestrator:
         ):
             relevant_skill_ids.append("project-ops")
         ctx.relevant_skill_ids = relevant_skill_ids
-        return self.policy_engine.build_turn_state(
+        state = self.policy_engine.build_turn_state(
             ctx,
             selected,
             history_messages,
@@ -441,6 +453,9 @@ class TurnOrchestrator:
             collaboration_mode=self._normalize_collaboration_mode(collaboration_mode),
             context_summary=ctx.context_summary,
         )
+        state.workspace_id = str(self.skill_runtime.project.project_root)
+        state.session_id = session_id
+        return state
 
     def _context_budget_report(
         self,
@@ -684,6 +699,7 @@ class TurnOrchestrator:
         loaded_skill_ids: list[str] | None = None,
         context_summary: str = "",
         collaboration_mode: str = "execute",
+        session_id: str = "",
         stop_event=None,
         on_event: Callable[[JsonObject], None] | None = None,
         request_approval: ApprovalRequestFn | None = None,
@@ -697,6 +713,7 @@ class TurnOrchestrator:
             loaded_skill_ids=loaded_skill_ids,
             context_summary=context_summary,
             collaboration_mode=collaboration_mode,
+            session_id=session_id,
             stop_event=stop_event,
         )
         self.inject_policy_retrieval_context(state, on_event=on_event)

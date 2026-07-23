@@ -12,6 +12,24 @@ from typing import Any
 
 from core.config_model import ConfigSchema
 
+_SCHEMA_STATEMENTS = (
+    "PRAGMA journal_mode=WAL",
+    "CREATE TABLE IF NOT EXISTS records (id INTEGER PRIMARY KEY, record_type TEXT NOT NULL, source TEXT NOT NULL, canonical_source TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', metadata_json TEXT NOT NULL DEFAULT '{}', content_hash TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, fetched_at INTEGER NOT NULL DEFAULT 0, stale_after INTEGER NOT NULL DEFAULT 0, UNIQUE(record_type, canonical_source))",
+    "CREATE TABLE IF NOT EXISTS chunks (id INTEGER PRIMARY KEY, record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE CASCADE, chunk_index INTEGER NOT NULL, text TEXT NOT NULL, UNIQUE(record_id, chunk_index))",
+    "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text, title, source, record_type)",
+    "CREATE TABLE IF NOT EXISTS embeddings (chunk_id INTEGER PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE, model TEXT NOT NULL, dimensions INTEGER NOT NULL, vector_json TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS embedding_cache (content_hash TEXT NOT NULL, model TEXT NOT NULL, dimensions INTEGER NOT NULL, vector_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(content_hash, model, dimensions))",
+    "CREATE INDEX IF NOT EXISTS idx_records_type_updated ON records(record_type, updated_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_embeddings_model_dimensions ON embeddings(model, dimensions)",
+)
+_UPDATE_RECORD_SQL = (
+    "UPDATE records SET source=?, title=?, metadata_json=?, content_hash=?, updated_at=?, fetched_at=?, stale_after=? WHERE id=?"
+)
+_INSERT_RECORD_SQL = "INSERT INTO records(record_type,source,canonical_source,title,metadata_json,content_hash,created_at,updated_at,fetched_at,stale_after) VALUES(?,?,?,?,?,?,?,?,?,?)"
+_LEXICAL_SEARCH_SQL = "SELECT c.id AS chunk_id,c.chunk_index,c.text,r.* FROM chunks_fts f JOIN chunks c ON c.id=f.rowid JOIN records r ON r.id=c.record_id WHERE chunks_fts MATCH ? {source_clause} ORDER BY bm25(chunks_fts) LIMIT ?"
+_UPSERT_EMBEDDING_SQL = "INSERT INTO embeddings(chunk_id,model,dimensions,vector_json) VALUES(?,?,?,?) ON CONFLICT(chunk_id) DO UPDATE SET model=excluded.model, dimensions=excluded.dimensions, vector_json=excluded.vector_json"
+_DENSE_SEARCH_SQL = "SELECT c.id AS chunk_id,c.chunk_index,c.text,e.vector_json,r.* FROM embeddings e JOIN chunks c ON c.id=e.chunk_id JOIN records r ON r.id=c.record_id WHERE {filters} ORDER BY r.updated_at DESC,c.id DESC LIMIT ?"
+
 
 def default_retrieval_store_path() -> Path:
     root = os.environ.get("ALPHANUS_APP_ROOT", "").strip()
@@ -34,58 +52,25 @@ class RetrievalRecord:
 
 
 class SQLiteRetrievalStore:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, candidate_limit: int = 2000) -> None:
         self.path = Path(path).expanduser().resolve()
+        self.candidate_limit = max(10, min(candidate_limit, 10000))
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.path))
+        conn = sqlite3.connect(str(self.path), timeout=5)
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 5000")
         conn.row_factory = sqlite3.Row
         return conn
 
     def _ensure_schema(self) -> None:
         with self._connect() as conn:
-            existing_fts = conn.execute(
-                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chunks_fts'"
-            ).fetchone()
+            existing_fts = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chunks_fts'").fetchone()
             if existing_fts and "content=''" in str(existing_fts["sql"] or ""):
                 conn.execute("DROP TABLE chunks_fts")
-            conn.executescript(
-                """
-                PRAGMA journal_mode=WAL;
-                CREATE TABLE IF NOT EXISTS records (
-                    id INTEGER PRIMARY KEY,
-                    record_type TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    canonical_source TEXT NOT NULL,
-                    title TEXT NOT NULL DEFAULT '',
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    content_hash TEXT NOT NULL,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL,
-                    fetched_at INTEGER NOT NULL DEFAULT 0,
-                    stale_after INTEGER NOT NULL DEFAULT 0,
-                    UNIQUE(record_type, canonical_source)
-                );
-                CREATE TABLE IF NOT EXISTS chunks (
-                    id INTEGER PRIMARY KEY,
-                    record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE CASCADE,
-                    chunk_index INTEGER NOT NULL,
-                    text TEXT NOT NULL,
-                    UNIQUE(record_id, chunk_index)
-                );
-                CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
-                USING fts5(text, title, source, record_type);
-                CREATE TABLE IF NOT EXISTS embeddings (
-                    chunk_id INTEGER PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,
-                    model TEXT NOT NULL,
-                    dimensions INTEGER NOT NULL,
-                    vector_json TEXT NOT NULL
-                );
-                """
-            )
+            conn.executescript(";\n".join(_SCHEMA_STATEMENTS))
             self._cleanup_orphans(conn)
 
     @staticmethod
@@ -103,8 +88,6 @@ class SQLiteRetrievalStore:
 
     @staticmethod
     def _cleanup_orphans(conn: sqlite3.Connection) -> None:
-        conn.execute("DELETE FROM embeddings WHERE chunk_id NOT IN (SELECT id FROM chunks)")
-        conn.execute("DELETE FROM chunks_fts WHERE rowid NOT IN (SELECT id FROM chunks)")
         conn.execute("DELETE FROM chunks WHERE record_id NOT IN (SELECT id FROM records)")
         conn.execute("DELETE FROM embeddings WHERE chunk_id NOT IN (SELECT id FROM chunks)")
         conn.execute("DELETE FROM chunks_fts WHERE rowid NOT IN (SELECT id FROM chunks)")
@@ -123,6 +106,28 @@ class SQLiteRetrievalStore:
                 break
             start = max(0, end - overlap)
         return [chunk for chunk in chunks if chunk]
+
+    @staticmethod
+    def _result(row: sqlite3.Row, *, score: float | None = None, mode: str = "") -> dict[str, Any]:
+        try:
+            metadata = json.loads(str(row["metadata_json"] or "{}"))
+        except json.JSONDecodeError:
+            metadata = {}
+        result = {
+            "record_id": int(row["id"]),
+            "chunk_id": int(row["chunk_id"]),
+            "record_type": str(row["record_type"]),
+            "source": str(row["source"]),
+            "title": str(row["title"]),
+            "text": str(row["text"]),
+            "chunk_index": int(row["chunk_index"]),
+            "metadata": metadata,
+            "fetched_at": int(row["fetched_at"] or 0),
+            "stale": bool(row["stale_after"] and int(row["stale_after"]) < int(time.time())),
+        }
+        if score is not None:
+            result.update(score=round(score, 4), retrieval_mode=mode)
+        return result
 
     def upsert_record(
         self,
@@ -151,23 +156,11 @@ class SQLiteRetrievalStore:
             ).fetchone()
             if row:
                 record_id = int(row["id"])
-                conn.execute(
-                    """
-                    UPDATE records
-                    SET source = ?, title = ?, metadata_json = ?, content_hash = ?,
-                        updated_at = ?, fetched_at = ?, stale_after = ?
-                    WHERE id = ?
-                    """,
-                    (source, title, metadata_json, content_hash, now, fetched_at, stale_after, record_id),
-                )
+                conn.execute(_UPDATE_RECORD_SQL, (source, title, metadata_json, content_hash, now, fetched_at, stale_after, record_id))
                 self._delete_record_chunks(conn, record_id)
             else:
                 cur = conn.execute(
-                    """
-                    INSERT INTO records
-                    (record_type, source, canonical_source, title, metadata_json, content_hash, created_at, updated_at, fetched_at, stale_after)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                    _INSERT_RECORD_SQL,
                     (record_type, source, canonical, title, metadata_json, content_hash, now, now, fetched_at, stale_after),
                 )
                 if cur.lastrowid is None:
@@ -190,51 +183,15 @@ class SQLiteRetrievalStore:
         clean = " ".join(str(query or "").split())
         if not clean:
             return []
-        quoted_tokens = []
-        for token in clean.split()[:12]:
-            quoted_tokens.append('"' + token.replace('"', '""') + '"')
-        fts_query = " OR ".join(quoted_tokens)
-        source_filter = {item.strip() for item in sources or [] if item.strip()}
+        fts_query = " OR ".join(f'"{token.replace(chr(34), chr(34) * 2)}"' for token in clean.split()[:12])
+        source_filter = sorted({item.strip() for item in sources or [] if item.strip()})
+        source_clause = f" AND r.record_type IN ({','.join('?' for _ in source_filter)})" if source_filter else ""
         with self._connect() as conn:
             rows = conn.execute(
-                """
-                SELECT c.id AS chunk_id, c.chunk_index, c.text, r.*
-                FROM chunks_fts f
-                JOIN chunks c ON c.id = f.rowid
-                JOIN records r ON r.id = c.record_id
-                WHERE chunks_fts MATCH ?
-                ORDER BY bm25(chunks_fts)
-                LIMIT ?
-                """,
-                (fts_query, max(1, top_k * 3)),
+                _LEXICAL_SEARCH_SQL.format(source_clause=source_clause),
+                (fts_query, *source_filter, min(self.candidate_limit, max(1, top_k * 3))),
             ).fetchall()
-        out: list[dict[str, Any]] = []
-        now = int(time.time())
-        for row in rows:
-            record_type = str(row["record_type"])
-            if source_filter and record_type not in source_filter:
-                continue
-            try:
-                metadata = json.loads(str(row["metadata_json"] or "{}"))
-            except json.JSONDecodeError:
-                metadata = {}
-            out.append(
-                {
-                    "record_id": int(row["id"]),
-                    "chunk_id": int(row["chunk_id"]),
-                    "record_type": record_type,
-                    "source": str(row["source"]),
-                    "title": str(row["title"]),
-                    "text": str(row["text"]),
-                    "chunk_index": int(row["chunk_index"]),
-                    "metadata": metadata,
-                    "fetched_at": int(row["fetched_at"] or 0),
-                    "stale": bool(row["stale_after"] and int(row["stale_after"]) < now),
-                }
-            )
-            if len(out) >= top_k:
-                break
-        return out
+        return [self._result(row) for row in rows[:top_k]]
 
     @staticmethod
     def _cosine(a: list[float], b: list[float]) -> float:
@@ -251,41 +208,64 @@ class SQLiteRetrievalStore:
                 "SELECT id, chunk_index, text FROM chunks WHERE record_id = ? ORDER BY chunk_index",
                 (record_id,),
             ).fetchall()
-        return [{"chunk_id": int(row["id"]), "chunk_index": int(row["chunk_index"]), "text": str(row["text"])} for row in rows]
+        return [
+            {
+                "chunk_id": int(row["id"]),
+                "chunk_index": int(row["chunk_index"]),
+                "text": str(row["text"]),
+                "content_hash": self._hash(str(row["text"])),
+            }
+            for row in rows
+        ]
+
+    def cached_embedding(self, text: str, *, model: str, dimensions: int = 0) -> list[float] | None:
+        where = "content_hash=? AND model=?" + (" AND dimensions=?" if dimensions else "")
+        params: tuple[object, ...] = (self._hash(text), model, dimensions) if dimensions else (self._hash(text), model)
+        with self._connect() as conn:
+            row = conn.execute(f"SELECT vector_json FROM embedding_cache WHERE {where} LIMIT 1", params).fetchone()
+        try:
+            return [float(item) for item in json.loads(str(row["vector_json"]))] if row else None
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
 
     def set_chunk_embedding(self, *, chunk_id: int, model: str, vector: list[float]) -> None:
+        if not model or not vector:
+            raise ValueError("embedding model and vector must not be empty")
         payload = json.dumps([float(item) for item in vector])
         with self._connect() as conn:
+            row = conn.execute("SELECT text FROM chunks WHERE id=?", (chunk_id,)).fetchone()
+            if row is None:
+                raise ValueError(f"unknown retrieval chunk {chunk_id}")
+            conn.execute(_UPSERT_EMBEDDING_SQL, (chunk_id, model, len(vector), payload))
             conn.execute(
-                """
-                INSERT INTO embeddings(chunk_id, model, dimensions, vector_json)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(chunk_id) DO UPDATE SET
-                    model = excluded.model,
-                    dimensions = excluded.dimensions,
-                    vector_json = excluded.vector_json
-                """,
-                (chunk_id, model, len(vector), payload),
+                "INSERT OR IGNORE INTO embedding_cache(content_hash,model,dimensions,vector_json,created_at) VALUES(?,?,?,?,?)",
+                (self._hash(str(row["text"])), model, len(vector), payload, int(time.time())),
             )
 
-    def dense_search(self, query_vector: list[float], *, top_k: int = 5, sources: list[str] | None = None) -> list[dict[str, Any]]:
+    def dense_search(
+        self,
+        query_vector: list[float],
+        *,
+        top_k: int = 5,
+        sources: list[str] | None = None,
+        model: str = "",
+    ) -> list[dict[str, Any]]:
         if not query_vector:
             return []
-        source_filter = {item.strip() for item in sources or [] if item.strip()}
+        source_filter = sorted({item.strip() for item in sources or [] if item.strip()})
+        filters = ["e.dimensions = ?"]
+        params: list[object] = [len(query_vector)]
+        if model:
+            filters.append("e.model = ?")
+            params.append(model)
+        if source_filter:
+            filters.append(f"r.record_type IN ({','.join('?' for _ in source_filter)})")
+            params.extend(source_filter)
+        params.append(self.candidate_limit)
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT c.id AS chunk_id, c.chunk_index, c.text, e.vector_json, r.*
-                FROM embeddings e
-                JOIN chunks c ON c.id = e.chunk_id
-                JOIN records r ON r.id = c.record_id
-                """
-            ).fetchall()
+            rows = conn.execute(_DENSE_SEARCH_SQL.format(filters=" AND ".join(filters)), params).fetchall()
         ranked: list[tuple[float, sqlite3.Row]] = []
         for row in rows:
-            record_type = str(row["record_type"])
-            if source_filter and record_type not in source_filter:
-                continue
             try:
                 vector = [float(item) for item in json.loads(str(row["vector_json"]))]
             except (TypeError, ValueError, json.JSONDecodeError):
@@ -295,29 +275,56 @@ class SQLiteRetrievalStore:
                 ranked.append((score, row))
         ranked.sort(key=lambda item: item[0], reverse=True)
         out: list[dict[str, Any]] = []
-        now = int(time.time())
         for score, row in ranked[: max(1, top_k)]:
-            try:
-                metadata = json.loads(str(row["metadata_json"] or "{}"))
-            except json.JSONDecodeError:
-                metadata = {}
-            out.append(
-                {
-                    "record_id": int(row["id"]),
-                    "chunk_id": int(row["chunk_id"]),
-                    "record_type": str(row["record_type"]),
-                    "source": str(row["source"]),
-                    "title": str(row["title"]),
-                    "text": str(row["text"]),
-                    "chunk_index": int(row["chunk_index"]),
-                    "metadata": metadata,
-                    "score": round(score, 4),
-                    "retrieval_mode": "dense",
-                    "fetched_at": int(row["fetched_at"] or 0),
-                    "stale": bool(row["stale_after"] and int(row["stale_after"]) < now),
-                }
-            )
+            out.append(self._result(row, score=score, mode="dense"))
         return out
+
+    def hybrid_search(
+        self,
+        query: str,
+        query_vector: list[float],
+        *,
+        model: str,
+        top_k: int = 5,
+        sources: list[str] | None = None,
+        dense_weight: float = 0.7,
+        lexical_weight: float = 0.3,
+    ) -> list[dict[str, Any]]:
+        lexical = self.search(query, top_k=min(self.candidate_limit, top_k * 4), sources=sources)
+        dense = self.dense_search(query_vector, model=model, top_k=min(self.candidate_limit, top_k * 4), sources=sources)
+        if not dense:
+            return lexical[:top_k]
+        ranked: dict[int, tuple[float, dict[str, Any]]] = {}
+        for weight, rows in ((lexical_weight, lexical), (dense_weight, dense)):
+            for rank, row in enumerate(rows, start=1):
+                chunk_id = int(row["chunk_id"])
+                score, _old = ranked.get(chunk_id, (0.0, row))
+                ranked[chunk_id] = (score + max(0.0, weight) / (60 + rank), row)
+        output = [
+            dict(row, score=round(score, 6), retrieval_mode="hybrid_rrf")
+            for score, row in sorted(ranked.values(), key=lambda item: item[0], reverse=True)
+        ]
+        return output[:top_k]
+
+    def compact_tool_outcomes(self, workspace: str, *, retention_days: int = 30, max_records: int = 2000) -> int:
+        cutoff = int(time.time()) - max(1, retention_days) * 86400
+        selector = "record_type='tool_outcome' AND json_extract(metadata_json, '$.workspace')=?"
+        with self._connect() as conn:
+            expired = conn.execute(f"DELETE FROM records WHERE {selector} AND updated_at < ?", (workspace, cutoff)).rowcount
+            excess = conn.execute(
+                f"DELETE FROM records WHERE {selector} AND id NOT IN "
+                f"(SELECT id FROM records WHERE {selector} ORDER BY updated_at DESC, id DESC LIMIT ?)",
+                (workspace, workspace, max(1, max_records)),
+            ).rowcount
+        return max(0, expired) + max(0, excess)
+
+    def delete_session_tool_outcomes(self, session_id: str) -> int:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM records WHERE record_type='tool_outcome' AND json_extract(metadata_json, '$.session_id')=?",
+                (session_id,),
+            )
+        return max(0, cursor.rowcount)
 
     def forget(self, record_id: int) -> bool:
         with self._connect() as conn:
@@ -338,9 +345,18 @@ class SQLiteRetrievalStore:
             records = int(conn.execute("SELECT COUNT(*) FROM records").fetchone()[0])
             chunks = int(conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
             embeddings = int(conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0])
-            stale = int(conn.execute("SELECT COUNT(*) FROM records WHERE stale_after > 0 AND stale_after < ?", (int(time.time()),)).fetchone()[0])
+            stale = int(
+                conn.execute("SELECT COUNT(*) FROM records WHERE stale_after > 0 AND stale_after < ?", (int(time.time()),)).fetchone()[0]
+            )
             by_type = {
                 str(row["record_type"]): int(row["count"])
                 for row in conn.execute("SELECT record_type, COUNT(*) AS count FROM records GROUP BY record_type")
             }
-        return {"path": str(self.path), "records": records, "chunks": chunks, "embeddings": embeddings, "stale_records": stale, "by_type": by_type}
+        return {
+            "path": str(self.path),
+            "records": records,
+            "chunks": chunks,
+            "embeddings": embeddings,
+            "stale_records": stale,
+            "by_type": by_type,
+        }

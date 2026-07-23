@@ -19,19 +19,16 @@ from core.search_providers import DEFAULT_TAVILY_API_KEY_ENV, SEARCH_PROVIDER_SE
 from core.streaming import should_retry
 from skills.runtime import ToolExecutionEnv
 
-TOOL_SPEC_ROWS = {  # fmt: skip
+# fmt: off
+TOOL_SPEC_ROWS = {
     "web_search": ("web_search", False, ("read", "check"), "Search the public web and return structured results with titles, URLs, snippets, and source metadata.", {"query": {"type": "string"}, "limit": {"type": "integer"}}, ("query",), False),
     "fetch_url": ("web_fetch", False, ("read",), "Fetch a URL and extract readable text content plus source metadata.", {"url": {"type": "string"}, "max_chars": {"type": "integer"}}, ("url",), False),
-    "retrieve_knowledge": (
-        "knowledge_retrieve", False, ("read", "check"),
-        "Search the local SQLite retrieval index for web, memory, project, and tool outcome records.",
-        {"query": {"type": "string"}, "top_k": {"type": "integer"}, "sources": {"type": "array", "items": {"type": "string"}}},
-        ("query",), False,
-    ),
+    "retrieve_knowledge": ("knowledge_retrieve", False, ("read", "check"), "Search the local SQLite retrieval index for web, memory, project, and tool outcome records.", {"query": {"type": "string"}, "top_k": {"type": "integer"}, "sources": {"type": "array", "items": {"type": "string"}}}, ("query",), False),
     "index_project": ("project_index", True, ("update",), "Index explicitly selected project files into the local retrieval store.", {"paths": {"type": "array", "items": {"type": "string"}}, "max_chars_per_file": {"type": "integer"}}, ("paths",), False),
     "retrieval_stats": ("retrieval_stats", False, ("check", "read"), "Return local retrieval database statistics and embedding availability.", {}, (), False),
     "forget_retrieval_record": ("retrieval_forget", True, ("delete", "remove"), "Delete a retrieval record by id.", {"record_id": {"type": "integer"}}, ("record_id",), False),
 }
+# fmt: on
 _USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 _BLOCK_TAG_RE = re.compile(r"</?(?:p|div|section|article|li|ul|ol|h[1-6]|br|tr|td|th|blockquote)[^>]*>", re.IGNORECASE)
 _SCRIPT_STYLE_RE = re.compile(r"<(script|style|noscript|svg)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
@@ -48,25 +45,11 @@ _ALLOWED_FETCH_CONTENT_TYPES = ("text/html", "text/plain", "application/json", "
 _REDIRECT_HTTP_STATUS = {301, 302, 303, 307, 308}
 _PRIVATE_HOST_SUFFIXES = (".local", ".internal", ".lan", ".home.arpa")
 _PRIVATE_HOST_LITERALS = {"localhost", "localhost.localdomain", "0.0.0.0", "::", "::1"}
-_TRUSTED_SOURCE_HINTS = (
-    ".gov",
-    ".mil",
-    ".edu",
-    ".org",
-    "wikipedia.org",
-    "github.com",
-    "official",
-    "docs.",
-)
+_TRUSTED_SOURCE_HINTS = (".gov", ".mil", ".edu", ".org", "wikipedia.org", "github.com", "official", "docs.")
 _TRACKING_QUERY_KEYS = {"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "gclid", "fbclid"}
 _MAX_JSON_RESPONSE_BYTES = 4 * 1024 * 1024
 _MAX_FETCH_RESPONSE_BYTES = 2 * 1024 * 1024
-_DATE_FORMATS = (
-    "%Y-%m-%dT%H:%M:%S%z",
-    "%Y-%m-%dT%H:%M:%SZ",
-    "%Y-%m-%dT%H:%M:%S",
-    "%Y-%m-%d",
-)
+_DATE_FORMATS = ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d")
 _FAILURE_CONFIG = "config"
 _FAILURE_NETWORK = "network"
 _FAILURE_RATE_LIMIT = "rate_limit"
@@ -303,11 +286,8 @@ def _raw_published_at(item: dict) -> str:
 
 
 def _selection_reason(source_type: str, query_match_score: float, freshness_score: float) -> str:
-    reasons: list[str] = []
-    if source_type in {"official", "documentation"}:
-        reasons.append("primary or official source")
-    elif source_type == "news":
-        reasons.append("news reporting")
+    source_reason = {"official": "primary or official source", "documentation": "primary or official source", "news": "news reporting"}
+    reasons = [source_reason[source_type]] if source_type in source_reason else []
     if query_match_score >= 0.7:
         reasons.append("strong query match")
     elif query_match_score >= 0.4:
@@ -318,13 +298,7 @@ def _selection_reason(source_type: str, query_match_score: float, freshness_scor
 
 
 def _ranking_bonus(source_type: str) -> float:
-    if source_type in {"official", "documentation"}:
-        return 0.18
-    if source_type == "reference":
-        return 0.08
-    if source_type == "news":
-        return 0.04
-    return 0.0
+    return {"official": 0.18, "documentation": 0.18, "reference": 0.08, "news": 0.04}.get(source_type, 0.0)
 
 
 def _provider_name(env: ToolExecutionEnv) -> str:
@@ -424,7 +398,9 @@ def _retrieval_enabled(env: ToolExecutionEnv) -> bool:
 
 
 def _retrieval_store(env: ToolExecutionEnv) -> SQLiteRetrievalStore:
-    return SQLiteRetrievalStore(configured_store_path(env.config if isinstance(env.config, dict) else {}))
+    cfg = env.config.get("retrieval", {}) if isinstance(env.config, dict) else {}
+    limit = int(cfg.get("candidate_limit", 2000)) if isinstance(cfg, dict) else 2000
+    return SQLiteRetrievalStore(configured_store_path(env.config if isinstance(env.config, dict) else {}), candidate_limit=limit)
 
 
 def _embedding_cfg(env: ToolExecutionEnv) -> dict[str, Any]:
@@ -451,18 +427,28 @@ def _embedding_vectors(texts: list[str], env: ToolExecutionEnv) -> tuple[str, li
     api_key = os.environ.get(api_key_env, "").strip() if api_key_env else ""
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    payload = json.dumps({"model": model, "input": texts}).encode("utf-8")
-    req = _request(_embedding_endpoint(base_url), data=payload, headers=headers)
-    response = _request_json(req, provider_name="Embeddings", timeout_s=_request_timeout_s(env), retries=0, retry_backoff_s=0.0)
-    rows = response.get("data")
-    if not isinstance(rows, list):
-        raise RuntimeError("Embeddings response missing data list")
     vectors: list[list[float]] = []
-    for row in rows:
-        embedding = row.get("embedding") if isinstance(row, dict) else None
-        if not isinstance(embedding, list):
-            continue
-        vectors.append([float(item) for item in embedding])
+    expected_dimensions = max(0, int(cfg.get("dimensions", 0) or 0))
+    batch_size = max(1, min(int(cfg.get("batch_size", 32) or 32), 256))
+    for offset in range(0, len(texts), batch_size):
+        batch = texts[offset : offset + batch_size]
+        req = _request(
+            _embedding_endpoint(base_url),
+            data=json.dumps({"model": model, "input": batch}).encode("utf-8"),
+            headers=headers,
+        )
+        response = _request_json(req, provider_name="Embeddings", timeout_s=_request_timeout_s(env), retries=0, retry_backoff_s=0.0)
+        rows = response.get("data")
+        if not isinstance(rows, list) or len(rows) != len(batch):
+            raise RuntimeError("Embeddings response count does not match the input batch")
+        for row in rows:
+            embedding = row.get("embedding") if isinstance(row, dict) else None
+            if not isinstance(embedding, list) or not embedding:
+                raise RuntimeError("Embeddings response contains an invalid vector")
+            vector = [float(item) for item in embedding]
+            if expected_dimensions and len(vector) != expected_dimensions:
+                raise RuntimeError(f"Embedding dimension mismatch: expected {expected_dimensions}, got {len(vector)}")
+            vectors.append(vector)
     return model, vectors
 
 
@@ -470,12 +456,21 @@ def _embed_record_chunks(store: SQLiteRetrievalStore, record_id: int, env: ToolE
     chunks = store.chunk_texts_for_record(record_id)
     if not chunks:
         return {"enabled": False, "stored": 0}
+    cfg = _embedding_cfg(env)
+    model = str(cfg.get("model") or "").strip()
+    dimensions = max(0, int(cfg.get("dimensions", 0) or 0))
+    cached = [store.cached_embedding(str(chunk["text"]), model=model, dimensions=dimensions) for chunk in chunks] if model else []
+    missing = [str(chunk["text"]) for chunk, vector in zip(chunks, cached, strict=False) if vector is None]
     try:
-        model, vectors = _embedding_vectors([str(chunk["text"]) for chunk in chunks], env)
+        embedded_model, generated = _embedding_vectors(missing, env)
     except RuntimeError as exc:
         return {"enabled": True, "stored": 0, "error": str(exc)}
-    if not model or not vectors:
+    if not model:
+        model = embedded_model
+    if not model or (not generated and not any(cached)):
         return {"enabled": False, "stored": 0}
+    generated_iter = iter(generated)
+    vectors = [vector if vector is not None else next(generated_iter) for vector in cached]
     stored = 0
     for chunk, vector in zip(chunks, vectors, strict=False):
         store.set_chunk_embedding(chunk_id=int(chunk["chunk_id"]), model=model, vector=vector)
@@ -1186,17 +1181,22 @@ def _retrieve_knowledge(args: dict[str, Any], env: ToolExecutionEnv) -> dict[str
     top_k = int(args.get("top_k", 5) or 5)
     hits = store.search(query, top_k=top_k, sources=sources)
     try:
-        _model, vectors = _embedding_vectors([query], env)
+        model, vectors = _embedding_vectors([query], env)
     except RuntimeError:
         vectors = []
     if vectors:
-        seen = {int(hit.get("chunk_id", 0) or 0) for hit in hits}
-        for hit in store.dense_search(vectors[0], top_k=top_k, sources=sources):
-            if int(hit.get("chunk_id", 0) or 0) not in seen:
-                hits.append(hit)
-                seen.add(int(hit.get("chunk_id", 0) or 0))
-            if len(hits) >= top_k:
-                break
+        cfg = env.config.get("retrieval", {}) if isinstance(env.config, dict) else {}
+        dense_weight = float(cfg.get("dense_weight", 0.7)) if isinstance(cfg, dict) else 0.7
+        lexical_weight = float(cfg.get("lexical_weight", 0.3)) if isinstance(cfg, dict) else 0.3
+        hits = store.hybrid_search(
+            query,
+            vectors[0],
+            model=model,
+            top_k=top_k,
+            sources=sources,
+            dense_weight=dense_weight,
+            lexical_weight=lexical_weight,
+        )
     return {"query": query, "hits": hits[:top_k], "backend": "sqlite_hybrid" if vectors else "sqlite_fts"}
 
 

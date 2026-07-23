@@ -259,12 +259,7 @@ class ProjectRuntime:
         return self._is_outside_project(target)
 
     def shell_command_external_paths(self, command: str) -> tuple[Path, ...]:
-        """Find external paths explicitly present in a shell command.
-
-        These paths are approval boundaries and, after approval, narrow sandbox
-        grants. Non-existent targets are retained so approved redirections and
-        creation commands can receive a grant for their nearest existing parent.
-        """
+        # Find approval-boundary paths, retaining non-existent creation targets.
         external_paths: list[Path] = []
         seen: set[str] = set()
         try:
@@ -305,12 +300,7 @@ class ProjectRuntime:
 
     @staticmethod
     def shell_command_external_grant_roots(paths: Iterable[Path]) -> tuple[Path, ...]:
-        """Return bindable roots for approved external command paths.
-
-        Existing files can be granted directly. A target that does not exist yet
-        must use its nearest existing parent because both Seatbelt and bubblewrap
-        require a real path before the command starts.
-        """
+        # Missing targets bind through their nearest existing parent.
         roots: list[Path] = []
         seen: set[str] = set()
         for path in paths:

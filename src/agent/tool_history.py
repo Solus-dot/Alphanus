@@ -15,7 +15,7 @@ _WRITE_FIELDS = frozenset(
 
 
 class ToolHistoryCompactor:
-    """Bounds tool payloads retained in model history without changing live results."""
+    # Bounds model-history payloads without changing live results.
 
     def __init__(self, config: AgentConfig) -> None:
         self.max_chars = config.max_tool_result_chars

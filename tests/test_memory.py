@@ -40,7 +40,7 @@ def test_store_uses_schema_wal_and_bounded_candidates(tmp_path: Path) -> None:
     assert len(memory.search("alpha", top_k=3, min_score=0)) == 3
     connection = sqlite3.connect(memory.storage_path)
     assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-    assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 1
+    assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 2
 
 
 def test_legacy_unversioned_memory_is_rejected(tmp_path: Path) -> None:

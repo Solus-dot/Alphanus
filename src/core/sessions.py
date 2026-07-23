@@ -56,7 +56,7 @@ class SessionSearchResult:
 
 
 class SessionStore:
-    """Transactional v1 session store with indexed, bounded search."""
+    # Transactional v1 session store with indexed, bounded search.
 
     SCHEMA_VERSION = 2
 

@@ -9,6 +9,13 @@ from core.memory import LexicalMemory
 from core.project import ProjectRuntime
 
 
+@pytest.fixture(autouse=True)
+def isolated_alphanus_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    root = tmp_path / "alphanus-home"
+    monkeypatch.setenv("ALPHANUS_APP_ROOT", str(root))
+    yield root
+
+
 @pytest.fixture
 def disable_model_classification():
     """Explicit deterministic provider-boundary substitute for focused tests."""

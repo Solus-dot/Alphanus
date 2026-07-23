@@ -25,17 +25,7 @@ class Turn:
 
     @staticmethod
     def _strip_attachment_blocks(text: str) -> str:
-        """Strip inline attachment payload blocks from display text.
-
-        Attachment text is injected as:
-        [File: name]
-        ```ext
-        ...
-        ```
-
-        We remove those blocks for UI preview/readability while preserving
-        the original `user_content` used for model context.
-        """
+        # Hide attachment payload blocks while retaining model context.
         lines = text.splitlines()
         kept: list[str] = []
         i = 0

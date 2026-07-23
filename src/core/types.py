@@ -167,6 +167,9 @@ class TurnState:
     post_target_inspection_calls: int = 0
     project_action_stall_blocks: int = 0
     trace_data: dict[str, JSONValue] = field(default_factory=dict)
+    workspace_id: str = ""
+    session_id: str = ""
+
 
 def cancelled_turn_result(state: TurnState) -> AgentTurnResult:
     return AgentTurnResult(

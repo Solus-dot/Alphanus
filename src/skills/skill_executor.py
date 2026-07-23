@@ -100,7 +100,7 @@ class SkillExecutor:
         return reg, owner
 
     def _require_bundled_executable_skill(self, skill) -> None:
-        """Reject executable code whose target is outside the reviewed bundle."""
+        # Executable code is restricted to reviewed bundled skills.
         if skill is None or not skill.path:
             raise FileNotFoundError("Selected skill root is unavailable")
         if not skill.execution_allowed:

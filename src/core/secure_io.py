@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def atomic_write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
-    """Durably replace a small state file without exposing partial contents."""
+    # Durably replace state without exposing partial contents.
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
         path.parent.chmod(0o700)
@@ -32,4 +32,3 @@ def atomic_write_text(path: Path, text: str, *, mode: int = 0o600) -> None:
                 os.close(directory_fd)
     finally:
         temporary_path.unlink(missing_ok=True)
-
