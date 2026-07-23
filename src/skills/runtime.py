@@ -23,6 +23,7 @@ from skills.skill_inventory import SkillInventoryLoader
 from skills.skill_parser import SKILL_DOC, extract_skill_doc, parse_agentskill_manifest
 from skills.skill_registry import SkillRegistry
 from skills.skill_selector import SkillSelector
+from skills.skill_tool_policy import SkillToolPolicy
 from skills.skill_tool_schema import SkillToolSchemaBuilder
 
 _CORE_TOOL_NAMES = frozenset(
@@ -102,6 +103,7 @@ class SkillRuntime:
         self.memory = memory
         self.debug = debug
         self.ToolExecutionEnv = ToolExecutionEnv
+        self.always_available_tool_names = _ALWAYS_AVAILABLE_TOOL_NAMES
         self.reload_config(config or {})
         self.generation = 0
 
@@ -128,6 +130,14 @@ class SkillRuntime:
             ok_fn=_ok,
             err_fn=_err,
             protocol_error_cls=ToolProtocolError,
+        )
+        self._tool_policy = SkillToolPolicy(
+            self,
+            core_tool_names=_CORE_TOOL_NAMES,
+            always_available_tool_names=_ALWAYS_AVAILABLE_TOOL_NAMES,
+            skills_list_tool_name=_SKILLS_LIST_TOOL_NAME,
+            skill_view_tool_name=_SKILL_VIEW_TOOL_NAME,
+            request_user_input_tool_name=_REQUEST_USER_INPUT_TOOL_NAME,
         )
         self.selector = SkillSelector(self)
         self.load_skills()
@@ -669,66 +679,11 @@ class SkillRuntime:
     def tool_registration(self, tool_name: str) -> RegisteredTool | None:
         return self._tool_registry.get(str(tool_name).strip())
 
-    def _tool_allowed_for_permission_mode(self, reg: RegisteredTool) -> bool:
-        mode = str(getattr(self, "permission_mode", "project-write") or "project-write").strip().lower()
-        if mode == "danger-full-access":
-            return True
-
-        capability = str(reg.capability or "").strip().lower()
-        if reg.name in {_SKILLS_LIST_TOOL_NAME, _SKILL_VIEW_TOOL_NAME, _REQUEST_USER_INPUT_TOOL_NAME}:
-            return True
-        if capability == "run_shell_command":
-            return mode == "project-write"
-        if capability.startswith(("web_", "utility_")):
-            return mode == "project-write"
-        if capability.startswith("memory_"):
-            return True
-        if mode == "project-write":
-            return True
-        # read-only: read-only project, memory helpers, and skill catalog/load utilities.
-        if capability in {"project_read", "project_tree"} or capability.startswith("skill_"):
-            return True
-        if capability.startswith(("web_", "utility_")):
-            return True
-        return False
-
     def tool_is_mutating(self, tool_name: str) -> bool:
-        reg = self.tool_registration(tool_name)
-        if reg is None:
-            return False
-        if reg.mutates is not None:
-            return bool(reg.mutates)
-        capability = str(reg.capability or "").strip().lower()
-        if capability.startswith("project_") and capability != "project_read":
-            return True
-        if reg.tool_scope == "skill" and (capability.endswith("_runner") or capability == "skill_executor"):
-            return True
-        return False
+        return self._tool_policy.is_mutating(tool_name)
 
     def tool_is_blocked_for_local_project(self, tool_name: str) -> bool:
-        reg = self.tool_registration(tool_name)
-        if reg is None:
-            normalized_name = str(tool_name).strip()
-            return normalized_name not in (_CORE_TOOL_NAMES | _ALWAYS_AVAILABLE_TOOL_NAMES | {"shell_command"})
-        capability = str(reg.capability or "").strip().lower()
-        # local_search is a read-only, project-root-scoped capability. Blocking
-        # it here makes the bundled local-search skill unusable precisely when a
-        # turn asks to search local project files.
-        if capability.startswith(
-            (
-                "project_",
-                "memory_",
-                "skill_",
-                "local_search",
-                "knowledge_",
-                "retrieval_",
-                "utility_file_search",
-            )
-        ):
-            return False
-        if capability in {"run_shell_command", "user_input_requester"}:
-            return False
-        return True
+        return self._tool_policy.is_blocked_for_local_project(tool_name)
 
     def compose_skill_block(
         self,
@@ -872,57 +827,17 @@ class SkillRuntime:
         selected: list[SkillManifest],
         ctx: SkillContext | None = None,
     ) -> list[str]:
-        return sorted(name for name in self.allowed_tool_names(selected, ctx=ctx) if name in _CORE_TOOL_NAMES)
-
-    def _optional_tool_names_for_turn(
-        self,
-        selected: list[SkillManifest],
-    ) -> list[str]:
-        selected_map = {skill.id: skill for skill in selected}
-        allowed: list[str] = []
-        for tool_name, reg in self._tool_registry.items():
-            if reg.skill_id == "__runtime__":
-                continue
-            if not self._tool_allowed_for_permission_mode(reg):
-                continue
-            skill = selected_map.get(reg.skill_id)
-            if not skill:
-                continue
-            if skill.disable_model_invocation:
-                continue
-            if skill.allowed_tools and reg.name not in skill.allowed_tools:
-                continue
-            allowed.append(tool_name)
-        return sorted(allowed)
+        return self._tool_policy.core_names(selected, ctx=ctx)
 
     def optional_tool_names(self, selected: list[SkillManifest], ctx: SkillContext | None = None) -> list[str]:
-        _ = ctx
-        if self.is_read_only_mode():
-            return []
-        return self._optional_tool_names_for_turn(selected)
+        return self._tool_policy.optional_names(selected, ctx=ctx)
 
     def allowed_tool_names(
         self,
         selected: list[SkillManifest],
         ctx: SkillContext | None = None,
     ) -> list[str]:
-        if self.is_read_only_mode():
-            turn_core_names = {
-                name
-                for name in (set(self.model_exposed_tool_names()) | set(self._optional_tool_names_for_turn(selected)))
-                if name in _CORE_TOOL_NAMES
-            }
-            safe_names = set(turn_core_names)
-            safe_names.update({_SKILLS_LIST_TOOL_NAME, _SKILL_VIEW_TOOL_NAME})
-            if self.config_model.runtime.ask_user_tool:
-                safe_names.add(_REQUEST_USER_INPUT_TOOL_NAME)
-            return sorted(name for name in safe_names if name in self._tool_registry)
-
-        names = set(self.model_exposed_tool_names())
-        names.update(self.optional_tool_names(selected, ctx=ctx))
-        if not self.config_model.runtime.ask_user_tool:
-            names.discard(_REQUEST_USER_INPUT_TOOL_NAME)
-        return sorted(name for name in names if name in self._tool_registry)
+        return self._tool_policy.allowed_names(selected, ctx=ctx)
 
     def tools_for_turn(
         self,
@@ -937,113 +852,6 @@ class SkillRuntime:
         tools = self._tool_schema_builder.build(names, selected=selected, ctx=ctx)
         self._tools_schema_cache[cache_key] = tools
         return tools
-
-    @staticmethod
-    def _schema_type_matches(value: Any, expected: str) -> bool:
-        if expected == "string":
-            return isinstance(value, str)
-        if expected == "integer":
-            return isinstance(value, int) and not isinstance(value, bool)
-        if expected == "number":
-            return (isinstance(value, int) and not isinstance(value, bool)) or isinstance(value, float)
-        if expected == "boolean":
-            return isinstance(value, bool)
-        if expected == "object":
-            return isinstance(value, dict)
-        if expected == "array":
-            return isinstance(value, list)
-        if expected == "null":
-            return value is None
-        return True
-
-    def _validate_schema_value(self, field_name: str, value: Any, schema: dict[str, Any]) -> None:
-        enum = schema.get("enum")
-        if isinstance(enum, list) and enum and value not in enum:
-            raise ValueError(f"Invalid '{field_name}': expected one of {', '.join(map(str, enum[:10]))}")
-
-        raw_type = schema.get("type")
-        expected_types: list[str] = []
-        if isinstance(raw_type, str):
-            expected_types = [raw_type]
-        elif isinstance(raw_type, list):
-            expected_types = [str(item) for item in raw_type if isinstance(item, str)]
-
-        if expected_types and not any(self._schema_type_matches(value, item) for item in expected_types):
-            raise ValueError(f"Invalid '{field_name}': expected {' or '.join(expected_types)}")
-
-        if isinstance(value, dict):
-            props = schema.get("properties")
-            if isinstance(props, dict):
-                required = schema.get("required") or []
-                if isinstance(required, list):
-                    for item in required:
-                        key = str(item).strip()
-                        if key and key not in value:
-                            raise ValueError(f"Missing required argument: {field_name}.{key}")
-                for key, child in props.items():
-                    if key in value and isinstance(child, dict):
-                        self._validate_schema_value(f"{field_name}.{key}", value[key], child)
-            if schema.get("additionalProperties") is False and isinstance(props, dict):
-                unknown = [key for key in value if key not in props]
-                if unknown:
-                    raise ValueError(f"Unexpected arguments for '{field_name}': {', '.join(sorted(unknown)[:5])}")
-
-        if isinstance(value, list):
-            items = schema.get("items")
-            if isinstance(items, dict):
-                for idx, item in enumerate(value):
-                    self._validate_schema_value(f"{field_name}[{idx}]", item, items)
-
-    def _validate_tool_args(self, reg: RegisteredTool, args: dict[str, Any]) -> dict[str, Any]:
-        cleaned = {key: value for key, value in args.items() if not str(key).startswith("_")}
-        schema = reg.parameters if isinstance(reg.parameters, dict) else {}
-        schema_type = schema.get("type")
-        if schema_type and schema_type != "object":
-            raise ValueError(f"Tool '{reg.name}' must declare an object parameters schema")
-
-        required = schema.get("required") or []
-        if isinstance(required, list):
-            for item in required:
-                key = str(item).strip()
-                if key and key not in cleaned:
-                    raise ValueError(f"Missing required argument: {key}")
-
-        props = schema.get("properties")
-        if isinstance(props, dict):
-            for key, child_schema in props.items():
-                if key in cleaned and isinstance(child_schema, dict):
-                    self._validate_schema_value(key, cleaned[key], child_schema)
-            if schema.get("additionalProperties") is False:
-                unknown = [key for key in cleaned if key not in props]
-                if unknown:
-                    raise ValueError(f"Unexpected arguments: {', '.join(sorted(unknown)[:5])}")
-
-        return cleaned
-
-    def _resolve_tool_call(
-        self,
-        tool_name: str,
-        selected: list[SkillManifest],
-        ctx: SkillContext | None = None,
-    ) -> tuple[RegisteredTool, SkillManifest | None]:
-        reg = self._tool_registry.get(tool_name)
-        if not reg:
-            raise LookupError(f"No adapter for tool '{tool_name}'")
-
-        if reg.name in self.allowed_tool_names(selected, ctx=ctx):
-            if reg.name in _ALWAYS_AVAILABLE_TOOL_NAMES:
-                return reg, None
-            return reg, self.skills.get(reg.skill_id)
-        raise PermissionError(f"Tool '{tool_name}' is not enabled by the current skill configuration")
-
-    def _prepare_tool_args(
-        self,
-        reg: RegisteredTool,
-        args: dict[str, Any],
-        selected: list[SkillManifest],
-    ) -> dict[str, Any]:
-        validated = self._validate_tool_args(reg, args)
-        return validated
 
     def execute_tool_call(
         self,

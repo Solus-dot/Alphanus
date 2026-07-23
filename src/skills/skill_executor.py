@@ -25,6 +25,80 @@ class SkillExecutor:
         self._err = err_fn
         self._protocol_error_cls = protocol_error_cls
 
+    @staticmethod
+    def _schema_type_matches(value: Any, expected: str) -> bool:
+        if expected == "string":
+            return isinstance(value, str)
+        if expected == "integer":
+            return isinstance(value, int) and not isinstance(value, bool)
+        if expected == "number":
+            return (isinstance(value, int) and not isinstance(value, bool)) or isinstance(value, float)
+        if expected == "boolean":
+            return isinstance(value, bool)
+        if expected == "object":
+            return isinstance(value, dict)
+        if expected == "array":
+            return isinstance(value, list)
+        if expected == "null":
+            return value is None
+        return True
+
+    def _validate_schema_value(self, field_name: str, value: Any, schema: dict[str, Any]) -> None:
+        enum = schema.get("enum")
+        if isinstance(enum, list) and enum and value not in enum:
+            raise ValueError(f"Invalid '{field_name}': expected one of {', '.join(map(str, enum[:10]))}")
+        raw_type = schema.get("type")
+        expected = [raw_type] if isinstance(raw_type, str) else [str(item) for item in raw_type if isinstance(item, str)] if isinstance(raw_type, list) else []
+        if expected and not any(self._schema_type_matches(value, item) for item in expected):
+            raise ValueError(f"Invalid '{field_name}': expected {' or '.join(expected)}")
+        if isinstance(value, dict):
+            props = schema.get("properties")
+            if isinstance(props, dict):
+                for item in schema.get("required") or []:
+                    key = str(item).strip()
+                    if key and key not in value:
+                        raise ValueError(f"Missing required argument: {field_name}.{key}")
+                for key, child in props.items():
+                    if key in value and isinstance(child, dict):
+                        self._validate_schema_value(f"{field_name}.{key}", value[key], child)
+                if schema.get("additionalProperties") is False:
+                    unknown = [key for key in value if key not in props]
+                    if unknown:
+                        raise ValueError(f"Unexpected arguments for '{field_name}': {', '.join(sorted(unknown)[:5])}")
+        if isinstance(value, list) and isinstance(items := schema.get("items"), dict):
+            for index, item in enumerate(value):
+                self._validate_schema_value(f"{field_name}[{index}]", item, items)
+
+    def _validate_tool_args(self, reg, args: dict[str, Any]) -> dict[str, Any]:
+        cleaned = {key: value for key, value in args.items() if not str(key).startswith("_")}
+        schema = reg.parameters if isinstance(reg.parameters, dict) else {}
+        if schema.get("type") not in {None, "object"}:
+            raise ValueError(f"Tool '{reg.name}' must declare an object parameters schema")
+        for item in schema.get("required") or []:
+            key = str(item).strip()
+            if key and key not in cleaned:
+                raise ValueError(f"Missing required argument: {key}")
+        props = schema.get("properties")
+        if isinstance(props, dict):
+            for key, child in props.items():
+                if key in cleaned and isinstance(child, dict):
+                    self._validate_schema_value(key, cleaned[key], child)
+            if schema.get("additionalProperties") is False:
+                unknown = [key for key in cleaned if key not in props]
+                if unknown:
+                    raise ValueError(f"Unexpected arguments: {', '.join(sorted(unknown)[:5])}")
+        return cleaned
+
+    def _resolve_tool_call(self, tool_name: str, selected, ctx):
+        runtime = self.runtime
+        reg = runtime.tool_registration(tool_name)
+        if not reg:
+            raise LookupError(f"No adapter for tool '{tool_name}'")
+        if reg.name not in runtime.allowed_tool_names(selected, ctx=ctx):
+            raise PermissionError(f"Tool '{tool_name}' is not enabled by the current skill configuration")
+        owner = None if reg.name in runtime.always_available_tool_names else runtime.get_skill(reg.skill_id)
+        return reg, owner
+
     def _require_bundled_executable_skill(self, skill) -> None:
         """Reject executable code whose target is outside the reviewed bundle."""
         if skill is None or not skill.path:
@@ -63,8 +137,8 @@ class SkillExecutor:
         runtime = self.runtime
         start = time.perf_counter()
         try:
-            reg, _owner = runtime._resolve_tool_call(tool_name, selected, ctx=ctx)
-            normalized_args = runtime._prepare_tool_args(reg, args, selected)
+            reg, _owner = self._resolve_tool_call(tool_name, selected, ctx)
+            normalized_args = self._validate_tool_args(reg, args)
             env = runtime.ToolExecutionEnv(
                 project=runtime.project,
                 memory=runtime.memory,

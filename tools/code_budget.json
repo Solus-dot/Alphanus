@@ -10,12 +10,10 @@
     "src-rust/app/render.rs": 1205,
     "src/alphanus/cli.py": 989,
     "src/core/project.py": 1159,
-    "src/core/runtime_server.py": 991,
-    "src/skills/runtime.py": 951
+    "src/core/runtime_server.py": 991
   },
   "test_module_exceptions": {
     "tests/test_agent_loop.py": 3484,
-    "tests/test_runtime_modules.py": 1761,
-    "tests/test_skills.py": 1794
+    "tests/test_runtime_modules.py": 1761
   }
 }
