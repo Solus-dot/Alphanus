@@ -21,6 +21,7 @@ class AppPaths:
     def config_path(self) -> Path:
         return self.state_root / "config" / "config.toml"
 
+
 def default_state_root(base_dir: Path | None = None) -> Path:
     return ((base_dir or Path.home()).resolve() / DEFAULT_APP_DIRNAME).resolve()
 

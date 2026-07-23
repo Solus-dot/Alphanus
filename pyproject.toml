@@ -66,7 +66,7 @@ ignore = ["E501"]
 
 [tool.setuptools]
 package-dir = {"" = "src", "alphanus_bundled" = "bundled-skills"}
-packages = ["alphanus", "agent", "core", "skills", "alphanus_bundled"]
+packages = ["alphanus", "alphanus.commands", "agent", "core", "skills", "alphanus_bundled"]
 include-package-data = false
 
 [tool.setuptools.package-data]

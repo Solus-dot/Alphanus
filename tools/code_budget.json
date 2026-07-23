@@ -8,7 +8,6 @@
   "production_module_exceptions": {
     "bundled-skills/search-ops/tools.py": 1121,
     "src-rust/app/render.rs": 1205,
-    "src/alphanus/cli.py": 989,
     "src/core/project.py": 1159,
     "src/core/runtime_server.py": 991
   },

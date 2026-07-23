@@ -8,6 +8,10 @@ from types import SimpleNamespace
 import pytest
 
 from alphanus import cli as alphanus_cli
+from alphanus.commands import doctor as doctor_command
+from alphanus.commands import exec as exec_command
+from alphanus.commands import init as init_command
+from alphanus.runtime_factory import resolve_project_root
 from core.configuration import load_global_config
 from core.headless_protocol import EXIT_INVALID_INPUT, EXIT_POLICY_DENIED, EXIT_SUCCESS
 from core.types import AgentTurnResult
@@ -54,7 +58,7 @@ def _init_args(**updates: object) -> SimpleNamespace:
 
 def test_init_writes_owner_only_versioned_toml_and_no_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     paths = _paths(tmp_path)
-    monkeypatch.setattr(alphanus_cli, "get_app_paths", lambda: paths)
+    monkeypatch.setattr(init_command, "get_app_paths", lambda: paths)
     assert alphanus_cli._run_init(_init_args()) == 0
     assert paths.config_path.stat().st_mode & 0o777 == 0o600
     assert not (paths.state_root / ".env").exists()
@@ -62,14 +66,14 @@ def test_init_writes_owner_only_versioned_toml_and_no_dotenv(tmp_path: Path, mon
 
 
 def test_init_rejects_secret_command_line_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(alphanus_cli, "get_app_paths", lambda: _paths(tmp_path))
+    monkeypatch.setattr(init_command, "get_app_paths", lambda: _paths(tmp_path))
     assert alphanus_cli._run_init(_init_args(api_key="sk-secret")) == 2
 
 
 def test_resolve_project_root_uses_override(tmp_path: Path) -> None:
     target = tmp_path / "workspace"
     target.mkdir()
-    assert alphanus_cli.resolve_project_root({}, override=str(target)) == target.resolve()
+    assert resolve_project_root({}, override=str(target)) == target.resolve()
 
 
 @pytest.mark.parametrize(
@@ -94,9 +98,9 @@ def test_doctor_json_ok_matches_nonzero_exit_status(tmp_path: Path, monkeypatch:
     }
     agent = SimpleNamespace(doctor_report=lambda: report)
     args = SimpleNamespace(json=True, debug=False, project_root="")
-    monkeypatch.setattr(alphanus_cli, "get_app_paths", lambda: _paths(tmp_path))
-    monkeypatch.setattr(alphanus_cli, "_load_runtime_config", lambda _paths, _args: ({"logging": {}}, []))
-    monkeypatch.setattr(alphanus_cli, "_build_agent_runtime", lambda *_args, **_kwargs: (None, None, None, agent))
+    monkeypatch.setattr(doctor_command, "get_app_paths", lambda: _paths(tmp_path))
+    monkeypatch.setattr(doctor_command, "_load_runtime_config", lambda _paths, _args: ({"logging": {}}, []))
+    monkeypatch.setattr(doctor_command, "_build_agent_runtime", lambda *_args, **_kwargs: (None, None, None, agent))
     monkeypatch.setattr(alphanus_cli.sys, "stdout", output)
 
     assert alphanus_cli._run_doctor(args) == 1
@@ -131,10 +135,10 @@ def test_exec_emits_versioned_jsonl_and_success_exit(tmp_path: Path, monkeypatch
     output = io.StringIO()
     paths = _paths(tmp_path)
     result = AgentTurnResult(status="done", content="final", reasoning="", skill_exchanges=[])
-    monkeypatch.setattr(alphanus_cli, "get_app_paths", lambda: paths)
-    monkeypatch.setattr(alphanus_cli, "_load_runtime_config", lambda _paths, _args: ({"logging": {}}, []))
+    monkeypatch.setattr(exec_command, "get_app_paths", lambda: paths)
+    monkeypatch.setattr(exec_command, "_load_runtime_config", lambda _paths, _args: ({"logging": {}}, []))
     monkeypatch.setattr(
-        alphanus_cli, "_build_agent_runtime", lambda *_args, **_kwargs: (None, _FakeMemory(), None, _FakeAgent(result, tmp_path))
+        exec_command, "_build_agent_runtime", lambda *_args, **_kwargs: (None, _FakeMemory(), None, _FakeAgent(result, tmp_path))
     )
     monkeypatch.setattr(alphanus_cli.sys, "stdout", output)
     assert alphanus_cli._run_exec(_exec_args()) == EXIT_SUCCESS
@@ -147,10 +151,10 @@ def test_exec_emits_versioned_jsonl_and_success_exit(tmp_path: Path, monkeypatch
 def test_exec_policy_denial_has_stable_exit_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     output = io.StringIO()
     result = AgentTurnResult(status="error", content="", reasoning="", skill_exchanges=[], error="approval denied")
-    monkeypatch.setattr(alphanus_cli, "get_app_paths", lambda: _paths(tmp_path))
-    monkeypatch.setattr(alphanus_cli, "_load_runtime_config", lambda _paths, _args: ({"logging": {}}, []))
+    monkeypatch.setattr(exec_command, "get_app_paths", lambda: _paths(tmp_path))
+    monkeypatch.setattr(exec_command, "_load_runtime_config", lambda _paths, _args: ({"logging": {}}, []))
     monkeypatch.setattr(
-        alphanus_cli, "_build_agent_runtime", lambda *_args, **_kwargs: (None, _FakeMemory(), None, _FakeAgent(result, tmp_path))
+        exec_command, "_build_agent_runtime", lambda *_args, **_kwargs: (None, _FakeMemory(), None, _FakeAgent(result, tmp_path))
     )
     monkeypatch.setattr(alphanus_cli.sys, "stdout", output)
     assert alphanus_cli._run_exec(_exec_args()) == EXIT_POLICY_DENIED
