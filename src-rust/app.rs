@@ -711,42 +711,74 @@ fn session_load_data(value: &Value) -> Value {
     data
 }
 
+fn file_score(name: &str, query: &str) -> Option<usize> {
+    let mut position = 0;
+    let name = name.to_lowercase();
+    for character in query.to_lowercase().chars() {
+        position += name[position..].find(character)? + character.len_utf8();
+    }
+    Some(position.saturating_sub(query.chars().count()))
+}
+
+fn palette_catalog<'a>(app: &'a App, query: &str, mode: PaletteMode) -> &'a [Value] {
+    if mode == PaletteMode::Files && query.trim().starts_with(['/', '~']) {
+        &app.external_files
+    } else {
+        &app.command_catalog
+    }
+}
+
 fn filtered_palette(catalog: &[Value], query: &str, mode: PaletteMode) -> Vec<Value> {
     let needle = query.trim().to_lowercase();
-    catalog
+    let mut matches = catalog
         .iter()
         .filter(|value| {
             let kind = field(value, "kind");
             let included = match mode {
                 PaletteMode::Commands => kind == "command",
-                PaletteMode::Files => kind == "file",
+                PaletteMode::Files => kind == "file" || kind == "directory",
                 PaletteMode::Global => true,
             };
             included
-                && (needle.is_empty()
-                    || palette_prompt(value).to_lowercase().contains(&needle)
-                    || field(value, "description").to_lowercase().contains(&needle)
-                    || kind.to_lowercase().contains(&needle))
+                && if mode == PaletteMode::Files {
+                    needle.starts_with(['/', '~'])
+                        || needle.is_empty()
+                        || file_score(&palette_prompt(value), &needle).is_some()
+                } else {
+                    needle.is_empty()
+                        || palette_prompt(value).to_lowercase().contains(&needle)
+                        || field(value, "description").to_lowercase().contains(&needle)
+                        || kind.to_lowercase().contains(&needle)
+                }
         })
         .cloned()
-        .collect()
+        .collect::<Vec<_>>();
+    if mode == PaletteMode::Files && !needle.is_empty() && !needle.starts_with(['/', '~']) {
+        matches
+            .sort_by_key(|value| file_score(&palette_prompt(value), &needle).unwrap_or(usize::MAX));
+    }
+    matches
 }
 
 fn catalog_text(rows: &[Value], label_field: &str) -> String {
+    let width = rows
+        .iter()
+        .map(|row| field(row, label_field).len())
+        .max()
+        .unwrap_or_default();
     let mut output = String::new();
     let mut section = "";
     for row in rows {
         let next_section = row.get("section").and_then(Value::as_str).unwrap_or("");
         if next_section != section {
             if !output.is_empty() {
-                output.push('\n');
+                output.push_str("\n\n");
             }
             section = next_section;
-            output.push_str(section);
-            output.push('\n');
+            output.push_str(&format!("**{section}**\n\n"));
         }
         output.push_str(&format!(
-            "  {:<28} {}\n",
+            "`{:<width$}`  {}\n",
             field(row, label_field),
             field(row, "description")
         ));
@@ -797,6 +829,17 @@ mod tests {
             palette_value(&filtered_palette(&catalog, "memory", PaletteMode::Commands)[0]),
             "/memory-stats"
         );
+    }
+
+    #[test]
+    fn file_picker_fuzzy_matches_names_without_matching_parent_paths() {
+        let catalog = vec![
+            json!({"kind":"file","value":"/project/src/runtime_server.py","prompt":"runtime_server.py","description":"src/core"}),
+            json!({"kind":"file","value":"/project/docs/guide.md","prompt":"guide.md","description":"docs"}),
+        ];
+        let matches = filtered_palette(&catalog, "rtserver", PaletteMode::Files);
+        assert_eq!(palette_prompt(&matches[0]), "runtime_server.py");
+        assert!(filtered_palette(&catalog, "docs", PaletteMode::Files).is_empty());
     }
 
     #[test]

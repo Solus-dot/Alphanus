@@ -694,7 +694,8 @@ def test_shortcuts_are_distinct_from_full_command_help(tmp_path: Path) -> None:
         help_text = "\n".join(execute_ui_command(server, "/help")["lines"])
         shortcuts_text = "\n".join(execute_ui_command(server, "/shortcuts")["lines"])
 
-        assert "/sessions" in help_text
+        assert "**CONVERSATION**\n\n" in help_text
+        assert "`/sessions" in help_text
         assert "Ctrl+Shift+K" in shortcuts_text
         assert "/sessions" not in shortcuts_text
     finally:

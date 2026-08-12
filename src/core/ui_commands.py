@@ -130,6 +130,17 @@ def _result(*lines: str, ok: bool = True, action: str = "", state_changed: bool 
     return {"ok": ok, "lines": list(lines), "action": action, "state_changed": state_changed, **extra}
 
 
+def _catalog_lines(sections: tuple[tuple[str, tuple[tuple[str, str], ...]], ...]) -> list[str]:
+    lines: list[str] = []
+    width = max(len(label) for _section, rows in sections for label, _description in rows)
+    for section, rows in sections:
+        if lines:
+            lines.append("")
+        lines.extend((f"**{section}**", ""))
+        lines.extend(f"`{label:<{width}}`  {description}" for label, description in rows)
+    return lines
+
+
 def execute_ui_command(server: Any, raw: str) -> dict[str, Any]:
     text = raw.strip()
     parts = text.split(None, 1)
@@ -138,19 +149,9 @@ def execute_ui_command(server: Any, raw: str) -> dict[str, Any]:
     tree = server.session.tree
 
     if cmd == "/help":
-        lines: list[str] = []
-        for section, rows in COMMAND_SECTIONS:
-            lines.append(section)
-            lines.extend(f"  {command:<26} {description}" for command, description in rows)
-            lines.append("")
-        return _result(*lines, action="help")
+        return _result(*_catalog_lines(COMMAND_SECTIONS), action="help")
     if cmd in {"/shortcuts", "/keymap", "/keys"}:
-        lines = []
-        for section, rows in SHORTCUT_SECTIONS:
-            lines.append(section)
-            lines.extend(f"  {key:<28} {description}" for key, description in rows)
-            lines.append("")
-        return _result(*lines, action="shortcuts")
+        return _result(*_catalog_lines(SHORTCUT_SECTIONS), action="shortcuts")
     if cmd in {"/quit", "/exit", "/q"}:
         return _result(action="quit")
     if cmd == "/sessions":

@@ -712,7 +712,7 @@ pub(super) fn markdown_lines(
                 if let Some(line) = lines.last_mut() {
                     line.spans.push(Span::styled(
                         value.into_string(),
-                        Style::default().fg(accent).bg(ratatui::style::Color::Black),
+                        Style::default().fg(accent).add_modifier(Modifier::BOLD),
                     ));
                 }
             }
