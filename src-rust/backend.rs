@@ -1,10 +1,11 @@
+use std::mem;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{bounded, Receiver};
+use crossbeam_channel::{bounded, Receiver, Sender};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -13,12 +14,31 @@ use crate::protocol::{BackendEvent, EventFrame, Request, MAX_FRAME_BYTES};
 
 const EVENT_CAPACITY: usize = 2048;
 const COMMAND_CAPACITY: usize = 256;
+const EVENT_SEND_TIMEOUT: Duration = Duration::from_millis(250);
+const DIAGNOSTIC_MAX_BYTES: usize = 4096;
 
 pub struct Backend {
     commands: mpsc::Sender<Request>,
     pub events: Receiver<BackendEvent>,
     join: Option<thread::JoinHandle<()>>,
     child_pid: Arc<AtomicI32>,
+}
+
+fn send_event(sender: &Sender<BackendEvent>, event: BackendEvent) -> bool {
+    sender.send_timeout(event, EVENT_SEND_TIMEOUT).is_ok()
+}
+
+fn clip_diagnostic(mut line: String) -> String {
+    if line.len() <= DIAGNOSTIC_MAX_BYTES {
+        return line;
+    }
+    let mut end = DIAGNOSTIC_MAX_BYTES;
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    line.truncate(end);
+    line.push('…');
+    line
 }
 
 async fn read_bounded_line<R: AsyncBufRead + Unpin>(
@@ -114,7 +134,7 @@ impl Backend {
                     .enable_all()
                     .build();
                 let Ok(runtime) = runtime else {
-                    let _ = event_tx.send(BackendEvent::ProtocolError("failed to create Tokio runtime".into()));
+                    let _ = send_event(&event_tx, BackendEvent::ProtocolError("failed to create Tokio runtime".into()));
                     return;
                 };
                 runtime.block_on(async move {
@@ -132,21 +152,21 @@ impl Backend {
                     let mut child = match command.spawn() {
                         Ok(child) => child,
                         Err(error) => {
-                            let _ = event_tx.send(BackendEvent::ProtocolError(format!("failed to start runtime: {error}")));
+                            let _ = send_event(&event_tx, BackendEvent::ProtocolError(format!("failed to start runtime: {error}")));
                             return;
                         }
                     };
                     runtime_child_pid.store(child.id().unwrap_or(0) as i32, Ordering::Release);
                     let Some(mut stdin) = child.stdin.take() else {
-                        let _ = event_tx.send(BackendEvent::ProtocolError("runtime stdin unavailable".into()));
+                        let _ = send_event(&event_tx, BackendEvent::ProtocolError("runtime stdin unavailable".into()));
                         return;
                     };
                     let Some(stdout) = child.stdout.take() else {
-                        let _ = event_tx.send(BackendEvent::ProtocolError("runtime stdout unavailable".into()));
+                        let _ = send_event(&event_tx, BackendEvent::ProtocolError("runtime stdout unavailable".into()));
                         return;
                     };
                     let Some(stderr) = child.stderr.take() else {
-                        let _ = event_tx.send(BackendEvent::ProtocolError("runtime stderr unavailable".into()));
+                        let _ = send_event(&event_tx, BackendEvent::ProtocolError("runtime stderr unavailable".into()));
                         return;
                     };
 
@@ -154,8 +174,7 @@ impl Backend {
                     tokio::spawn(async move {
                         let mut lines = BufReader::new(stderr).lines();
                         while let Ok(Some(line)) = lines.next_line().await {
-                            let clipped = if line.len() > 4096 { format!("{}…", &line[..4096]) } else { line };
-                            let _ = stderr_tx.send(BackendEvent::Diagnostic(clipped));
+                            let _ = stderr_tx.try_send(BackendEvent::Diagnostic(clip_diagnostic(line)));
                         }
                     });
 
@@ -167,7 +186,7 @@ impl Backend {
                             command = command_rx.recv() => {
                                 let Some(command) = command else { break; };
                                 if let Err(error) = write_request(&mut stdin, &command).await {
-                                    let _ = event_tx.send(BackendEvent::ProtocolError(error));
+                                    let _ = send_event(&event_tx, BackendEvent::ProtocolError(error));
                                     break;
                                 }
                             }
@@ -176,21 +195,21 @@ impl Backend {
                                     Ok(Some(line)) => match EventFrame::decode(&line) {
                                         Ok(frame) => {
                                             last_frame = Instant::now();
-                                            if event_tx.send(BackendEvent::Frame(frame)).is_err() { break; }
+                                            if !send_event(&event_tx, BackendEvent::Frame(frame)) { break; }
                                         }
                                         Err(error) => {
-                                            let _ = event_tx.send(BackendEvent::ProtocolError(error));
+                                            if !send_event(&event_tx, BackendEvent::ProtocolError(error)) { break; }
                                         }
                                     },
                                     Ok(None) => break,
                                     Err(error) => {
-                                        let _ = event_tx.send(BackendEvent::ProtocolError(error));
+                                        if !send_event(&event_tx, BackendEvent::ProtocolError(error)) { break; }
                                     }
                                 }
                             }
                             _ = heartbeat.tick() => {
                                 if last_frame.elapsed() >= Duration::from_secs(15) {
-                                    let _ = event_tx.send(BackendEvent::ProtocolError("runtime heartbeat timed out".into()));
+                                    let _ = send_event(&event_tx, BackendEvent::ProtocolError("runtime heartbeat timed out".into()));
                                     break;
                                 }
                                 let request = Request::new("heartbeat", serde_json::json!({}));
@@ -216,7 +235,7 @@ impl Backend {
                         }
                     };
                     runtime_child_pid.store(0, Ordering::Release);
-                    let _ = event_tx.send(BackendEvent::Exited(status.and_then(|value| value.code())));
+                    let _ = send_event(&event_tx, BackendEvent::Exited(status.and_then(|value| value.code())));
                 });
             })
             .map_err(|error| format!("failed to create runtime thread: {error}"))?;
@@ -240,6 +259,10 @@ impl Backend {
         let _ = self.send(Request::new("shutdown", serde_json::json!({})));
         let (replacement, _receiver) = mpsc::channel(1);
         self.commands = replacement;
+        let (replacement_sender, replacement_events) = bounded(1);
+        let previous_events = mem::replace(&mut self.events, replacement_events);
+        drop(previous_events);
+        drop(replacement_sender);
         if let Some(join) = self.join.take() {
             let deadline = Instant::now() + Duration::from_secs(7);
             while !join.is_finished() && Instant::now() < deadline {
@@ -250,7 +273,13 @@ impl Backend {
                 #[cfg(unix)]
                 signal_process_group(pid, libc::SIGKILL);
             }
-            let _ = join.join();
+            let final_deadline = Instant::now() + Duration::from_secs(3);
+            while !join.is_finished() && Instant::now() < final_deadline {
+                thread::sleep(Duration::from_millis(25));
+            }
+            if join.is_finished() {
+                let _ = join.join();
+            }
         }
     }
 }
@@ -258,5 +287,17 @@ impl Backend {
 impl Drop for Backend {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clip_diagnostic;
+
+    #[test]
+    fn diagnostic_clipping_preserves_utf8_boundaries() {
+        let clipped = clip_diagnostic(format!("{}x", "界".repeat(1400)));
+        assert!(clipped.ends_with('…'));
+        assert!(clipped.len() <= 4099);
     }
 }

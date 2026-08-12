@@ -246,6 +246,7 @@ struct App {
     last_sequence: u64,
     last_escape: Option<Instant>,
     last_frame: Instant,
+    animation_frame: u16,
     active_turn_id: String,
     clipboard_notice: Option<(String, Instant)>,
     session_delete_armed: Option<String>,
@@ -997,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn status_shortens_model_endpoint_to_its_host() {
+    fn status_helpers_are_compact_and_terminal_safe() {
         assert_eq!(
             short_endpoint("http://127.0.0.1:8080/v1/chat/completions"),
             "127.0.0.1:8080"
@@ -1006,6 +1007,9 @@ mod tests {
             short_endpoint("https://api.example.com/v1"),
             "api.example.com"
         );
+        assert!(["⣀", "⣤", "⣶", "⣾", "⣿", "⣾", "⣶", "⣤"]
+            .iter()
+            .all(|frame| UnicodeWidthStr::width(*frame) == 1));
     }
 
     #[test]

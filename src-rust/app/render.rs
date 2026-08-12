@@ -8,6 +8,7 @@ pub(super) use transcript::*;
 pub(super) use utils::*;
 
 pub(super) fn draw(frame: &mut Frame, app: &mut App) {
+    app.animation_frame = app.animation_frame.wrapping_add(u16::from(app.streaming));
     let area = frame.area();
     frame.render_widget(
         Block::default().style(Style::default().bg(app.theme.background)),
@@ -378,8 +379,13 @@ pub(super) fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(" deny", Style::default().fg(app.theme.muted)),
         ]
     } else if app.streaming {
+        let spinner =
+            ["⣀", "⣤", "⣶", "⣾", "⣿", "⣾", "⣶", "⣤"][(app.animation_frame / 9 % 8) as usize];
         vec![
-            Span::styled("Esc", Style::default().fg(app.theme.warning)),
+            Span::styled(
+                format!("{spinner}  Esc"),
+                Style::default().fg(app.theme.warning),
+            ),
             Span::styled(" twice to stop", Style::default().fg(app.theme.muted)),
         ]
     } else {

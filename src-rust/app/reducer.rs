@@ -50,6 +50,7 @@ impl App {
             last_sequence: 0,
             last_escape: None,
             last_frame: Instant::now(),
+            animation_frame: 0,
             active_turn_id: String::new(),
             clipboard_notice: None,
             session_delete_armed: None,
@@ -89,8 +90,18 @@ impl App {
 
     pub(super) fn drain_backend(&mut self) {
         for _ in 0..MAX_EVENTS_PER_FRAME {
-            let Ok(event) = self.backend.events.try_recv() else {
-                break;
+            let event = match self.backend.events.try_recv() {
+                Ok(event) => event,
+                Err(crossbeam_channel::TryRecvError::Empty) => break,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    if !self.should_quit && self.connected {
+                        self.connected = false;
+                        self.streaming = false;
+                        self.status = "Python runtime event channel disconnected".into();
+                        self.popup = Some(Popup::Fatal);
+                    }
+                    break;
+                }
             };
             match event {
                 BackendEvent::Frame(frame) => self.apply_frame(frame),
@@ -141,6 +152,7 @@ impl App {
             "state.snapshot" => self.apply_snapshot(&frame.data),
             "turn.started" => {
                 self.streaming = true;
+                self.animation_frame = 0;
                 self.transcript_auto_follow = true;
                 self.active_turn_id = frame.turn_id.unwrap_or_default();
                 if let Some(turn) = frame.data.get("turn") {
