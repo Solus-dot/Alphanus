@@ -139,7 +139,9 @@ def test_runtime_server_handshake_and_shutdown(tmp_path: Path) -> None:
     )
     assert server.serve() == 0
     frames = [json.loads(line) for line in output.getvalue().splitlines()]
-    assert any(frame["type"] == "runtime.ready" for frame in frames)
+    ready = next(frame for frame in frames if frame["type"] == "runtime.ready")
+    assert ready["data"]["sessions"]
+    assert ready["data"]["theme"]["id"] == "classic"
     assert any(frame["type"] == "runtime.heartbeat" for frame in frames)
     themes = next(frame for frame in frames if frame["type"] == "theme.list")
     assert themes["data"]["active"]["id"] == "classic"

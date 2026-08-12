@@ -58,7 +58,9 @@ class RuntimeServer:
         self.emitter = RuntimeEmitter(output_stream)
         self.input_stream = input_stream
         self.store = SessionStore(state_root, storage_dir=state_root / "sessions")
-        self.session = self._activate(self.store.bootstrap())
+        had_sessions = bool(self.store.list_sessions(limit=1))
+        self.session = self._activate(self.store.bootstrap(load_tree=False))
+        self._session_loaded = not had_sessions
         self.pending_attachments: list[tuple[str, str]] = []
         self.stop_event = threading.Event()
         self.turn_thread: threading.Thread | None = None
@@ -81,7 +83,13 @@ class RuntimeServer:
                 session.tree.current_id = leaf
         return session
 
+    def _ensure_session_loaded(self) -> None:
+        if not self._session_loaded:
+            self.session = self._activate(self.store.load_session(self.session.id))
+            self._session_loaded = True
+
     def _save(self, *, title: str | None = None) -> None:
+        self._ensure_session_loaded()
         self.session = self.store.save_tree(
             self.session.id,
             (title or self.session.title).strip() or "Untitled Session",
@@ -122,6 +130,7 @@ class RuntimeServer:
         tree_offset: int | None = None,
         streaming: bool | None = None,
     ) -> dict[str, Any]:
+        self._ensure_session_loaded()
         path = [turn for turn in self.session.tree.active_path if turn.id != "root"]
         transcript_offset, transcript = _transcript_page(path, transcript_offset)
         nodes = [turn for turn in self.session.tree.nodes.values() if turn.id != "root"]
@@ -270,7 +279,8 @@ class RuntimeServer:
                         "streaming",
                     ]
                 ),
-                "snapshot": self._snapshot(),
+                "sessions": [asdict(item) for item in self.store.list_sessions(limit=SESSION_PAGE_SIZE)],
+                "theme": theme_payload(self.agent.config.tui.theme),
             },
         )
 
@@ -278,6 +288,7 @@ class RuntimeServer:
         self._respond("runtime.heartbeat", request_id, {})
 
     def _state_get(self, request_id: str, data: dict[str, Any]) -> None:
+        self._ensure_session_loaded()
         transcript_offset = data.get("transcript_offset")
         tree_offset = data.get("tree_offset")
         self._respond(
@@ -291,6 +302,7 @@ class RuntimeServer:
 
     def _turn_start(self, request_id: str, data: dict[str, Any]) -> None:
         with self._state_lock:
+            self._ensure_session_loaded()
             if self.turn_request_id:
                 raise ValueError("a turn is already active")
             prompt = str(data.get("prompt") or "").strip()
@@ -562,18 +574,22 @@ class RuntimeServer:
 
     def _session_create(self, request_id: str, data: dict[str, Any]) -> None:
         self._require_idle()
-        self._save()
+        if self._session_loaded:
+            self._save()
         title = str(data.get("title") or "").strip()
         if len(title) > 200:
             raise ValueError("session title must be at most 200 characters")
         self.session = self._activate(self.store.create_session(title))
+        self._session_loaded = True
         self.pending_attachments.clear()
         self._respond_snapshot(request_id)
 
     def _session_load(self, request_id: str, data: dict[str, Any]) -> None:
         self._require_idle()
-        self._save()
+        if self._session_loaded:
+            self._save()
         self.session = self._activate(self.store.load_session(str(data.get("session_id") or "")))
+        self._session_loaded = True
         turn_id = str(data.get("turn_id") or "")
         if turn_id and turn_id in self.session.tree.nodes:
             self.session.tree.current_id = turn_id
@@ -596,6 +612,7 @@ class RuntimeServer:
         if session_id == self.session.id:
             remaining = self.store.list_sessions(limit=1)
             self.session = self._activate(self.store.load_session(remaining[0].id) if remaining else self.store.create_session())
+            self._session_loaded = True
         self._respond_snapshot(request_id)
 
     def _branch_arm(self, request_id: str, data: dict[str, Any]) -> None:

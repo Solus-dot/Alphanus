@@ -23,6 +23,20 @@ def test_bootstrap_and_roundtrip_branching_state(tmp_path: Path) -> None:
     assert store.list_sessions()[0].is_active
 
 
+def test_bootstrap_can_defer_loading_the_active_tree(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path, tmp_path / "sessions")
+    session = store.bootstrap()
+    turn = session.tree.add_turn("existing")
+    session.tree.complete_turn(turn.id, "reply")
+    store.save_tree(session.id, session.title, session.tree)
+
+    shell = store.bootstrap(load_tree=False)
+
+    assert shell.id == session.id
+    assert list(shell.tree.nodes) == ["root"]
+    assert turn.id in store.load_session(shell.id).tree.nodes
+
+
 def test_search_is_indexed_and_bounded(tmp_path: Path) -> None:
     store = SessionStore(tmp_path, tmp_path / "sessions")
     tree = ConvTree()

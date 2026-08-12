@@ -153,15 +153,32 @@ class SessionStore:
     def _counts(tree: ConvTree) -> tuple[int, int]:
         return max(0, len(tree.nodes) - 1), sum(1 for node in tree.nodes.values() if node.branch_root)
 
-    def bootstrap(self) -> ChatSession:
+    def bootstrap(self, *, load_tree: bool = True) -> ChatSession:
         active_id = self._active_id()
         if active_id:
             try:
-                return self.load_session(active_id)
+                return self.load_session(active_id) if load_tree else self.session_shell(active_id)
             except (FileNotFoundError, ValueError):
                 pass
         sessions = self.list_sessions()
-        return self.load_session(sessions[0].id) if sessions else self.create_session()
+        if sessions:
+            return self.load_session(sessions[0].id) if load_tree else self.session_shell(sessions[0].id)
+        return self.create_session()
+
+    def session_shell(self, session_id: str) -> ChatSession:
+        row = self._connection.execute("SELECT * FROM sessions WHERE id=? AND deleted_at IS NULL", (session_id,)).fetchone()
+        if row is None:
+            raise FileNotFoundError(session_id)
+        return ChatSession(
+            row["id"],
+            row["title"],
+            row["created_at"],
+            row["updated_at"],
+            ConvTree(),
+            json.loads(row["loaded_skill_ids_json"]),
+            row["collaboration_mode"],
+            row["context_summary"],
+        )
 
     def list_sessions(self, *, limit: int = 1000, offset: int = 0) -> list[SessionSummary]:
         active_id = self._active_id()
