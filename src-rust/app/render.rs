@@ -199,6 +199,14 @@ pub(super) fn take_startup_session_manager(show_on_ready: &mut bool) -> bool {
     std::mem::take(show_on_ready)
 }
 
+pub(super) fn startup_session_request(query: &str) -> (&'static str, Value) {
+    if query.is_empty() {
+        ("session.list", json!({"offset":0,"limit":100}))
+    } else {
+        ("session.search", json!({"query":query,"limit":80}))
+    }
+}
+
 pub(super) fn transcript_scrollbar_state(
     current: u16,
     max_scroll: u16,

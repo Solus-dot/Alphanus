@@ -880,6 +880,8 @@ mod tests {
         assert!(take_startup_session_manager(&mut initial_startup));
         assert!(!initial_startup);
         assert!(!take_startup_session_manager(&mut backend_restart));
+        assert_eq!(startup_session_request("").0, "session.list");
+        assert_eq!(startup_session_request("typed early").0, "session.search");
     }
 
     #[test]

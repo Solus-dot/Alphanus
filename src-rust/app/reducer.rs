@@ -42,7 +42,11 @@ impl App {
             diagnostics: VecDeque::new(),
             pending_attachments: Vec::new(),
             approval: None,
-            popup: None,
+            popup: Some(Popup::Sessions {
+                query: String::new(),
+                selected: 0,
+                items: Vec::new(),
+            }),
             theme: Theme::default(),
             themes: Vec::new(),
             command_catalog: Vec::new(),
@@ -142,12 +146,17 @@ impl App {
                 if let Some(snapshot) = frame.data.get("snapshot") {
                     self.apply_snapshot(snapshot);
                 }
+                if take_startup_session_manager(&mut self.show_session_manager_on_ready) {
+                    let query = match &self.popup {
+                        Some(Popup::Sessions { query, .. }) => query.as_str(),
+                        _ => "",
+                    };
+                    let (kind, data) = startup_session_request(query);
+                    self.send(kind, data);
+                }
                 self.send("theme.list", json!({}));
                 self.send("palette.get", json!({}));
                 self.send("status.refresh", json!({}));
-                if take_startup_session_manager(&mut self.show_session_manager_on_ready) {
-                    self.send("session.list", json!({"offset":0,"limit":100}));
-                }
             }
             "state.snapshot" => self.apply_snapshot(&frame.data),
             "turn.started" => {
