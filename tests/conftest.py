@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,9 +11,11 @@ from core.project import ProjectRuntime
 
 
 @pytest.fixture(autouse=True)
-def isolated_alphanus_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def isolated_alphanus_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest):
     root = tmp_path / "alphanus-home"
     monkeypatch.setenv("ALPHANUS_APP_ROOT", str(root))
+    if os.environ.get("ALPHANUS_TEST_UNSANDBOXED") and "test_sandbox.py" not in str(request.node.fspath):
+        monkeypatch.setattr("core.sandbox.SandboxRunner.run", lambda self, spec: self._run_unsandboxed(spec))
     yield root
 
 
