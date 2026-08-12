@@ -34,7 +34,6 @@ def get_app_paths() -> AppPaths:
             if (candidate / "pyproject.toml").exists()
             and (candidate / "src").is_dir()
             and (candidate / "bundled-skills").is_dir()
-            and (candidate / "config").is_dir()
         ),
         None,
     )

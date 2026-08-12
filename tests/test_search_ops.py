@@ -52,7 +52,7 @@ def _env(provider: str = "searxng"):
                 "searxng_base_url": "http://127.0.0.1:8888",
                 "tavily_api_key_env": "TAVILY_API_KEY",
             },
-            "retrieval": {"store_path": "/private/tmp/alphanus-test-retrieval.sqlite", "web_ttl_hours": 24},
+            "retrieval": {"store_path": "", "web_ttl_hours": 24},
         }
     )
 
