@@ -677,19 +677,22 @@ class RuntimeServer:
         self._respond("attachments.changed", request_id, {"items": self._snapshot()["pending_attachments"]})
 
     def _status_refresh(self, request_id: str, _data: dict[str, Any]) -> None:
-        timeout = min(float(getattr(self.agent, "connect_timeout_s", 2.0)), 2.0)
-        status = self.agent.refresh_model_status(timeout_s=timeout, force=True)
-        self._respond(
-            "status.changed",
-            request_id,
-            {
-                "state": str(status.state),
-                "detail": str(status.last_error or ""),
-                "model_name": str(status.model_name or ""),
-                "context_window": status.context_window,
-                "endpoint": str(status.endpoint or getattr(self.agent, "model_endpoint", "")),
-            },
-        )
+        def refresh() -> None:
+            timeout = min(float(getattr(self.agent, "connect_timeout_s", 2.0)), 2.0)
+            status = self.agent.refresh_model_status(timeout_s=timeout, force=True)
+            self._respond(
+                "status.changed",
+                request_id,
+                {
+                    "state": str(status.state),
+                    "detail": str(status.last_error or ""),
+                    "model_name": str(status.model_name or ""),
+                    "context_window": status.context_window,
+                    "endpoint": str(status.endpoint or getattr(self.agent, "model_endpoint", "")),
+                },
+            )
+
+        threading.Thread(target=refresh, daemon=True, name="alphanus-status").start()
 
     def _config_get(self, request_id: str, _data: dict[str, Any]) -> None:
         config = load_global_config(self.config_path)
