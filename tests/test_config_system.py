@@ -166,6 +166,18 @@ def test_load_global_config_reports_bad_toml(tmp_path: Path) -> None:
         load_global_config(cfg)
 
 
+def test_load_global_config_ignores_obsolete_top_level_sections(tmp_path: Path) -> None:
+    cfg = tmp_path / "config" / "config.toml"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text("config_version = 1\n[agents]\nenable_skill_agents = true\n", encoding="utf-8")
+    warnings: list[str] = []
+
+    loaded = load_global_config(cfg, warnings=warnings)
+
+    assert "agents" not in loaded
+    assert warnings == ["agents: obsolete top-level section ignored"]
+
+
 def test_load_global_config_rejects_secret_fields(tmp_path: Path) -> None:
     cfg = tmp_path / "config" / "config.toml"
     cfg.parent.mkdir(parents=True, exist_ok=True)

@@ -744,8 +744,10 @@ def load_global_config(path: Path, *, warnings: list[str] | None = None) -> dict
     if version != CONFIG_VERSION:
         raise ValueError(f"Unsupported config_version {version!r}; expected {CONFIG_VERSION}")
     unknown = sorted(set(raw) - set(DEFAULT_CONFIG))
-    if unknown:
-        raise ValueError(f"Unknown top-level configuration keys: {', '.join(unknown)}")
+    for key in unknown:
+        raw.pop(key)
+        if warnings is not None:
+            warnings.append(f"{key}: obsolete top-level section ignored")
 
     sanitized_raw, stripped = strip_secret_fields(raw)
     if stripped:
