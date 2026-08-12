@@ -29,7 +29,7 @@ benchmark-fixtures/
 build/
 *.egg-info/
 target/
-src/_alphanus_tui*.so
+src/alphanus/_alphanus_tui*.so
 
 # Optional local memory/workspace data
 memories/*.pkl

@@ -74,7 +74,7 @@ alphanus_bundled = ["**/*"]
 core = ["theme_specs/*.json"]
 
 [[tool.setuptools-rust.ext-modules]]
-target = "_alphanus_tui"
+target = "alphanus._alphanus_tui"
 path = "Cargo.toml"
 binding = "PyO3"
 py-limited-api = "cp311"

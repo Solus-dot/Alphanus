@@ -1,10 +1,7 @@
 import argparse
 import importlib
-import importlib.machinery
-import importlib.util
 import platform
 import sys
-from pathlib import Path
 from typing import Any
 
 from alphanus.commands.backend import _run_runtime
@@ -109,21 +106,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _run_tui(args: Any) -> int:
     try:
-        _alphanus_tui = importlib.import_module("_alphanus_tui")
+        _alphanus_tui = importlib.import_module("alphanus._alphanus_tui")
     except ImportError as exc:
-        spec = importlib.machinery.PathFinder.find_spec("_alphanus_tui", [str(Path(__file__).resolve().parents[1])])
-        if spec is not None and spec.loader is not None:
-            _alphanus_tui = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(_alphanus_tui)
-        else:
-            print(
-                "Ratatui frontend is unavailable for this installation. "
-                "Install a supported Alphanus wheel or rebuild from source with Rust/Cargo.",
-                file=sys.stderr,
-            )
-            if bool(getattr(args, "debug", False)):
-                print(f"frontend import failed: {exc}", file=sys.stderr)
-            return 2
+        print(
+            "Ratatui frontend is unavailable for this installation. "
+            "Install a supported Alphanus wheel or rebuild from source with Rust/Cargo.",
+            file=sys.stderr,
+        )
+        if bool(getattr(args, "debug", False)):
+            print(f"frontend import failed: {exc}", file=sys.stderr)
+        return 2
     project_root = str(getattr(args, "project_root", "") or "").strip() or None
     try:
         return int(_alphanus_tui.run(sys.executable, project_root, bool(getattr(args, "debug", False))))
