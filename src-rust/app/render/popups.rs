@@ -281,6 +281,187 @@ fn draw_session_name_popup(frame: &mut Frame, app: &mut App, value: &str) {
     ));
 }
 
+fn draw_palette_popup(
+    frame: &mut Frame,
+    app: &mut App,
+    query: &str,
+    selected: usize,
+    mode: PaletteMode,
+) {
+    const MAX_VISIBLE_ITEMS: usize = 10;
+    let items = filtered_palette(palette_catalog(app, query, mode), query, mode);
+    let loading = mode != PaletteMode::Commands && !app.palette_loaded;
+    let area = centered(frame.area(), 76, MAX_VISIBLE_ITEMS as u16 + 10);
+    app.areas.popup = area;
+    let inner = area.inner(ratatui::layout::Margin {
+        vertical: 1,
+        horizontal: 2,
+    });
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Min(3),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+    let (title, heading, placeholder) = match mode {
+        PaletteMode::Commands => (
+            " Command Palette ",
+            "Available commands",
+            "Search commands…",
+        ),
+        PaletteMode::Global => (
+            " Global Palette ",
+            "Sessions, files, skills, and commands",
+            "Search everything…",
+        ),
+        PaletteMode::Files => (
+            " File Picker ",
+            "Project files · paste any absolute path to attach",
+            "Fuzzy-search file names or enter a path…",
+        ),
+    };
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(app.theme.border_type())
+            .border_style(Style::default().fg(app.theme.accent))
+            .title(Span::styled(
+                title,
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .style(app.theme.base()),
+        area,
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            heading,
+            Style::default()
+                .fg(app.theme.text)
+                .add_modifier(Modifier::BOLD),
+        )),
+        rows[0],
+    );
+    let search = if query.is_empty() {
+        Span::styled(placeholder, Style::default().fg(app.theme.subtle))
+    } else {
+        Span::styled(query.to_owned(), Style::default().fg(app.theme.text))
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("⌕ ", Style::default().fg(app.theme.secondary)),
+            search,
+        ]))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(app.theme.border_type())
+                .border_style(Style::default().fg(app.theme.secondary))
+                .style(Style::default().bg(app.theme.panel)),
+        ),
+        rows[2],
+    );
+
+    let start = selected.saturating_sub(MAX_VISIBLE_ITEMS - 1);
+    app.areas.popup_list_offset = start;
+    app.areas.popup_list = rows[4];
+    if loading {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "Loading…",
+                Style::default()
+                    .fg(app.theme.muted)
+                    .add_modifier(Modifier::ITALIC),
+            )),
+            rows[4],
+        );
+    } else if items.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No matching items",
+                Style::default()
+                    .fg(app.theme.muted)
+                    .add_modifier(Modifier::ITALIC),
+            )),
+            rows[4],
+        );
+    } else {
+        let item_rows = items
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(MAX_VISIBLE_ITEMS)
+            .map(|(index, value)| {
+                let is_selected = index == selected;
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        if is_selected { "● " } else { "  " },
+                        Style::default().fg(app.theme.accent),
+                    ),
+                    Span::styled(
+                        format!("{:<30}", ellipsis(&palette_prompt(value), 28)),
+                        Style::default()
+                            .fg(if is_selected {
+                                app.theme.text
+                            } else {
+                                app.theme.muted
+                            })
+                            .add_modifier(if is_selected {
+                                Modifier::BOLD
+                            } else {
+                                Modifier::empty()
+                            }),
+                    ),
+                    Span::styled(
+                        ellipsis(&field(value, "description"), 36),
+                        Style::default().fg(app.theme.subtle),
+                    ),
+                ]))
+                .style(if is_selected {
+                    app.theme.selected()
+                } else {
+                    app.theme.base()
+                })
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(List::new(item_rows), rows[4]);
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("↑↓", Style::default().fg(app.theme.accent)),
+            Span::styled(" Navigate    ", Style::default().fg(app.theme.muted)),
+            Span::styled("Enter", Style::default().fg(app.theme.success)),
+            Span::styled(
+                if mode == PaletteMode::Files {
+                    " Attach    "
+                } else {
+                    " Select    "
+                },
+                Style::default().fg(app.theme.muted),
+            ),
+            Span::styled("Esc", Style::default().fg(app.theme.secondary)),
+            Span::styled(" Close", Style::default().fg(app.theme.muted)),
+        ])),
+        rows[5],
+    );
+    frame.set_cursor_position(Position::new(
+        rows[2]
+            .x
+            .saturating_add(3)
+            .saturating_add(UnicodeWidthStr::width(query) as u16)
+            .min(rows[2].right().saturating_sub(2)),
+        rows[2].y + 1,
+    ));
+}
+
 pub(super) fn draw_popup(frame: &mut Frame, app: &mut App) {
     let Some(popup) = app.popup.clone() else {
         return;
@@ -298,41 +479,19 @@ pub(super) fn draw_popup(frame: &mut Frame, app: &mut App) {
         draw_session_name_popup(frame, app, value);
         return;
     }
+    if let Popup::Palette {
+        query,
+        selected,
+        mode,
+    } = &popup
+    {
+        draw_palette_popup(frame, app, query, *selected, *mode);
+        return;
+    }
     app.areas.popup_list = Rect::default();
     app.areas.popup_new = Rect::default();
     app.areas.popup_list_offset = 0;
     let (title, content, width, height) = match &popup {
-        Popup::Palette {
-            query,
-            selected,
-            mode,
-        } => {
-            let commands = filtered_palette(&app.command_catalog, query, *mode);
-            let text = commands
-                .iter()
-                .enumerate()
-                .take(12)
-                .map(|(index, value)| {
-                    format!(
-                        "{} {:<28} {}",
-                        if index == *selected { "›" } else { " " },
-                        palette_prompt(value),
-                        field(value, "description")
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            (
-                match mode {
-                    PaletteMode::Commands => " Command Palette ",
-                    PaletteMode::Global => " Global Palette ",
-                    PaletteMode::Files => " File Picker ",
-                },
-                format!("Search: {query}\n\n{text}"),
-                76,
-                16,
-            )
-        }
         Popup::Theme { selected, items } => {
             let text = items
                 .iter()
@@ -378,8 +537,8 @@ pub(super) fn draw_popup(frame: &mut Frame, app: &mut App) {
                 18,
             )
         }
-        Popup::Sessions { .. } | Popup::SessionName { .. } => {
-            unreachable!("session popups are rendered separately")
+        Popup::Sessions { .. } | Popup::SessionName { .. } | Popup::Palette { .. } => {
+            unreachable!("custom popups are rendered separately")
         }
     };
     let area = centered(frame.area(), width, height);
