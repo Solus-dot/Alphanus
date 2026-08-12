@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
+from core.errors import OperationCancelled
 from core.sandbox import (
     MAX_SANDBOX_OUTPUT_BYTES,
     MAX_SUBPROCESS_STDIN_BYTES,
@@ -32,6 +35,24 @@ def test_bounded_process_caps_output_and_accepts_stdin(tmp_path: Path) -> None:
 def test_bounded_process_times_out_process_group(tmp_path: Path) -> None:
     with pytest.raises(subprocess.TimeoutExpired):
         run_bounded_process([sys.executable, "-c", "import time; time.sleep(60)"], cwd=tmp_path, timeout_s=1)
+
+
+def test_bounded_process_cancellation_terminates_promptly(tmp_path: Path) -> None:
+    stop_event = threading.Event()
+    timer = threading.Timer(0.1, stop_event.set)
+    started = time.monotonic()
+    timer.start()
+    try:
+        with pytest.raises(OperationCancelled):
+            run_bounded_process(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                cwd=tmp_path,
+                timeout_s=60,
+                stop_event=stop_event,
+            )
+    finally:
+        timer.cancel()
+    assert time.monotonic() - started < 2
 
 
 def test_bounded_process_timeout_covers_blocked_stdin_and_caps_input(tmp_path: Path) -> None:
@@ -65,7 +86,8 @@ def test_linux_backend_unshares_network_only_when_disabled(tmp_path: Path, monke
 
     monkeypatch.setattr("core.sandbox.shutil.which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else None)
 
-    def fake_run_subprocess(argv: list[str], *, cwd: Path, timeout_s: int):
+    def fake_run_subprocess(argv: list[str], *, cwd: Path, timeout_s: int, stop_event=None):
+        assert stop_event is None
         commands.append(argv)
         return {
             "argv": argv,

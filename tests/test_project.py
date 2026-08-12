@@ -75,6 +75,21 @@ def test_absolute_write_outside_project_requires_approval(tmp_path: Path):
     assert mgr.edit_file(str(target), "changed", approved=True) == str(target.resolve())
 
 
+def test_edit_file_failure_preserves_original_content(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = tmp_path / "important.py"
+    target.write_text("original", encoding="utf-8")
+    mgr = ProjectRuntime(str(tmp_path))
+
+    def fail_replace(_source, _target) -> None:
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr("core.project.os.replace", fail_replace)
+    with pytest.raises(OSError, match="simulated"):
+        mgr.edit_file(str(target), "replacement")
+
+    assert target.read_text(encoding="utf-8") == "original"
+
+
 def test_absolute_read_outside_project_allowed(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"

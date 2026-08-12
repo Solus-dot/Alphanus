@@ -4,6 +4,8 @@ import subprocess
 import time
 from typing import Any, cast
 
+from core.errors import OperationCancelled
+
 
 class SkillExecutor:
     def __init__(
@@ -133,6 +135,7 @@ class SkillExecutor:
         ctx,
         request_approval=None,
         request_user_input=None,
+        stop_event=None,
     ) -> dict[str, Any]:
         runtime = self.runtime
         start = time.perf_counter()
@@ -146,6 +149,7 @@ class SkillExecutor:
                 debug=runtime.debug,
                 request_approval=request_approval,
                 request_user_input=request_user_input,
+                stop_event=stop_event,
             )
             result = self.execute_registered_tool(reg, normalized_args, env, ctx)
             duration = int((time.perf_counter() - start) * 1000)
@@ -160,6 +164,8 @@ class SkillExecutor:
             return self._err("E_POLICY", str(exc), int((time.perf_counter() - start) * 1000))
         except (TimeoutError, subprocess.TimeoutExpired) as exc:
             return self._err("E_TIMEOUT", str(exc), int((time.perf_counter() - start) * 1000))
+        except OperationCancelled as exc:
+            return self._err("E_CANCELLED", str(exc), int((time.perf_counter() - start) * 1000))
         except self._protocol_error_cls as exc:
             return self._err("E_PROTOCOL", str(exc), int((time.perf_counter() - start) * 1000))
         except RuntimeError as exc:

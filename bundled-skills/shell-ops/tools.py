@@ -66,4 +66,5 @@ def execute(tool_name: str, args: dict[str, object], env: ToolExecutionEnv):
         cwd=cwd,
         allowed_cwd_roots=[cwd] if cwd else None,
         approved=approved,
+        stop_event=env.stop_event,
     )

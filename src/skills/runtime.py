@@ -70,6 +70,7 @@ class ToolExecutionEnv:
     debug: bool
     request_approval: ApprovalRequestFn | None = None
     request_user_input: UserInputRequestFn | None = None
+    stop_event: Any = None
 
 
 @dataclass(slots=True)
@@ -862,6 +863,7 @@ class SkillRuntime:
         ctx: SkillContext,
         request_approval: ApprovalRequestFn | None = None,
         request_user_input: UserInputRequestFn | None = None,
+        stop_event: Any = None,
     ) -> dict[str, Any]:
         return self._skill_executor.execute_tool_call(
             tool_name,
@@ -870,4 +872,5 @@ class SkillRuntime:
             ctx,
             request_approval=request_approval,
             request_user_input=request_user_input,
+            stop_event=stop_event,
         )

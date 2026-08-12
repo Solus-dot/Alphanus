@@ -23,6 +23,30 @@ RESTRICTED_SYSTEM_ROOTS = tuple(map(Path, ("/etc", "/var", "/System", "/bin", "/
 TRUSTED_RUNTIME_ROOTS = tuple(map(Path, ("/bin", "/sbin", "/usr", "/System", "/Library", "/opt", "/lib")))
 
 
+def _atomic_replace_project_text(path: Path, content: str) -> None:
+    mode = (path.stat().st_mode & 0o7777) if path.exists() else 0o644
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary_path = Path(temporary)
+    try:
+        os.fchmod(fd, mode)
+        handle = os.fdopen(fd, "w", encoding="utf-8", newline="\n")
+        fd = -1
+        with handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        temporary_path.unlink(missing_ok=True)
+
+
 class ProjectRuntime(ProjectSearchShellMixin):
     def __init__(
         self,
@@ -458,7 +482,7 @@ class ProjectRuntime(ProjectSearchShellMixin):
         if self.write_path_requires_approval(filepath, overwrite=True) and self.permission_mode != "danger-full-access" and not approved:
             raise PermissionError("External file overwrite requires approval before execution")
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        _atomic_replace_project_text(target, content)
         return str(target)
 
     def create_directory(self, path: str, *, approved: bool = False) -> str:
@@ -474,7 +498,7 @@ class ProjectRuntime(ProjectSearchShellMixin):
             raise PermissionError("External file edit requires approval before execution")
         if not target.exists():
             raise FileNotFoundError(str(target))
-        target.write_text(content, encoding="utf-8")
+        _atomic_replace_project_text(target, content)
         return str(target)
 
     def move_path(self, source_path: str, destination_path: str, overwrite: bool = False, *, approved: bool = False) -> str:

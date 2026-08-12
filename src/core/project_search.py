@@ -11,6 +11,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from core.errors import OperationCancelled
 from core.project_command_policy import ProjectCommandPolicy, unwrap_shell_command
 from core.project_command_policy import shell_has_boundary as shell_has_approval_boundary
 from core.sandbox import SandboxCommand, shell_tokens
@@ -51,6 +52,7 @@ class ProjectSearchShellMixin:
         timeout_s: int = 30,
         cwd: Path | None = None,
         extra_roots: Iterable[Path] | None = None,
+        stop_event: Any = None,
     ) -> dict[str, Any]:
         return self.sandbox_runner.run(
             SandboxCommand(
@@ -60,6 +62,7 @@ class ProjectSearchShellMixin:
                 timeout_s=timeout_s,
                 config=self.sandbox_config,
                 extra_roots=tuple(extra_roots or ()),
+                stop_event=stop_event,
             )
         )
 
@@ -416,6 +419,7 @@ class ProjectSearchShellMixin:
         cwd: str | None = None,
         allowed_cwd_roots: Iterable[str] | None = None,
         approved: bool = False,
+        stop_event: Any = None,
     ) -> dict:
         start = time.perf_counter()
         try:
@@ -446,7 +450,13 @@ class ProjectSearchShellMixin:
                 raise PermissionError("Shell command requires approval before execution")
             extra_roots = [target_cwd] if external_cwd else []
             extra_roots.extend(self.shell_command_external_grant_roots(external_paths))
-            run = self._run_shell_string(command_text, timeout_s=timeout_s, cwd=target_cwd, extra_roots=extra_roots)
+            run = self._run_shell_string(
+                command_text,
+                timeout_s=timeout_s,
+                cwd=target_cwd,
+                extra_roots=extra_roots,
+                stop_event=stop_event,
+            )
             sandbox_error = run.get("sandbox_error")
             if isinstance(sandbox_error, dict):
                 return {
@@ -506,6 +516,8 @@ class ProjectSearchShellMixin:
                 "error": {"code": "E_TIMEOUT", "message": f"Command did not finish within {timeout_s}s"},
                 "meta": {"duration_ms": int((time.perf_counter() - start) * 1000)},
             }
+        except OperationCancelled:
+            raise
         except PermissionError as exc:
             return {
                 "ok": False,

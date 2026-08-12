@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.errors import OperationCancelled
 from core.project_command_policy import shell_has_boundary, unwrap_shell_command
 
 MAX_SANDBOX_OUTPUT_BYTES = 20000
@@ -37,6 +38,7 @@ class SandboxCommand:
     timeout_s: int
     config: SandboxConfig
     extra_roots: tuple[Path, ...] = ()
+    stop_event: threading.Event | None = None
 
 
 def _shell() -> str:
@@ -89,11 +91,14 @@ def run_bounded_process(
     timeout_s: int,
     env: dict[str, str] | None = None,
     stdin: str = "",
+    stop_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     start = time.perf_counter()
     stdin_bytes = stdin.encode("utf-8")
     if len(stdin_bytes) > MAX_SUBPROCESS_STDIN_BYTES:
         raise ValueError(f"subprocess stdin exceeds {MAX_SUBPROCESS_STDIN_BYTES} byte limit")
+    if stop_event is not None and stop_event.is_set():
+        raise OperationCancelled("Subprocess cancelled before launch")
     safe_env = {
         key: value for key, value in os.environ.items() if key in {"HOME", "LANG", "LC_ALL", "PATH", "SHELL", "TERM", "TMPDIR", "TZ"}
     }
@@ -140,9 +145,7 @@ def run_bounded_process(
     writer = threading.Thread(target=write_stdin, daemon=True) if stdin_bytes else None
     if writer:
         writer.start()
-    try:
-        proc.wait(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
+    def terminate_process_group() -> None:
         try:
             os.killpg(proc.pid, signal.SIGTERM)
             proc.wait(timeout=1)
@@ -152,7 +155,21 @@ def run_bounded_process(
             except OSError:
                 pass
             proc.wait()
-        raise
+
+    try:
+        deadline = time.monotonic() + timeout_s
+        while proc.poll() is None:
+            if stop_event is not None and stop_event.is_set():
+                terminate_process_group()
+                raise OperationCancelled("Subprocess cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                terminate_process_group()
+                raise subprocess.TimeoutExpired(argv, timeout_s)
+            try:
+                proc.wait(timeout=min(0.1, remaining))
+            except subprocess.TimeoutExpired:
+                continue
     finally:
         if writer:
             writer.join(timeout=2)
@@ -220,7 +237,12 @@ class SandboxRunner:
         return "unsupported"
 
     def _run_unsandboxed(self, spec: SandboxCommand) -> dict[str, Any]:
-        return run_bounded_process([_shell(), "-c", spec.command], cwd=spec.cwd, timeout_s=spec.timeout_s)
+        return run_bounded_process(
+            [_shell(), "-c", spec.command],
+            cwd=spec.cwd,
+            timeout_s=spec.timeout_s,
+            stop_event=spec.stop_event,
+        )
 
     def _run_macos(self, spec: SandboxCommand) -> dict[str, Any]:
         sandbox_exec = shutil.which("sandbox-exec")
@@ -241,7 +263,7 @@ class SandboxRunner:
                     "-c",
                     spec.command,
                 ]
-                return run_bounded_process(argv, cwd=spec.cwd, timeout_s=spec.timeout_s)
+                return run_bounded_process(argv, cwd=spec.cwd, timeout_s=spec.timeout_s, stop_event=spec.stop_event)
         finally:
             try:
                 profile_path.unlink()
@@ -351,7 +373,7 @@ class SandboxRunner:
                 root_text = str(root)
                 argv.extend(["--ro-bind", root_text, root_text])
         argv.extend(["--chdir", cwd, _shell(), "-c", spec.command])
-        return run_bounded_process(argv, cwd=spec.project_root, timeout_s=spec.timeout_s)
+        return run_bounded_process(argv, cwd=spec.project_root, timeout_s=spec.timeout_s, stop_event=spec.stop_event)
 
     @staticmethod
     def _setup_error(message: str) -> dict[str, Any]:

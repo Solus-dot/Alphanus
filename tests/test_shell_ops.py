@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import cast
 
@@ -127,15 +128,17 @@ def test_shell_command_uses_longer_default_timeout(mocker, tmp_path: Path):
         return_value={"ok": True, "data": {"returncode": 0}, "error": None, "meta": {}},
     )
 
+    stop_event = threading.Event()
     out = runtime.execute_tool_call(
         "shell_command",
         {"command": "llama-update"},
         selected=[shell_skill],
         ctx=_ctx(str(runtime.project.project_root)),
+        stop_event=stop_event,
     )
 
     assert out["ok"] is True
-    run.assert_called_once_with("llama-update", timeout_s=600, cwd=None, allowed_cwd_roots=None, approved=False)
+    run.assert_called_once_with("llama-update", timeout_s=600, cwd=None, allowed_cwd_roots=None, approved=False, stop_event=stop_event)
 
 
 def test_shell_command_allows_explicit_timeout_and_caps_it(mocker, tmp_path: Path):
@@ -165,9 +168,21 @@ def test_shell_command_allows_explicit_timeout_and_caps_it(mocker, tmp_path: Pat
     )
 
     assert run.call_args_list[0].args == ("make",)
-    assert run.call_args_list[0].kwargs == {"timeout_s": 1200, "cwd": None, "allowed_cwd_roots": None, "approved": False}
+    assert run.call_args_list[0].kwargs == {
+        "timeout_s": 1200,
+        "cwd": None,
+        "allowed_cwd_roots": None,
+        "approved": False,
+        "stop_event": None,
+    }
     assert run.call_args_list[1].args == ("make world",)
-    assert run.call_args_list[1].kwargs == {"timeout_s": 7200, "cwd": None, "allowed_cwd_roots": None, "approved": False}
+    assert run.call_args_list[1].kwargs == {
+        "timeout_s": 7200,
+        "cwd": None,
+        "allowed_cwd_roots": None,
+        "approved": False,
+        "stop_event": None,
+    }
 
 
 def test_shell_command_external_cwd_requests_approval_and_forwards_cwd(mocker, tmp_path: Path):
@@ -202,6 +217,7 @@ def test_shell_command_external_cwd_requests_approval_and_forwards_cwd(mocker, t
         cwd=str(outside),
         allowed_cwd_roots=[str(outside)],
         approved=True,
+        stop_event=None,
     )
 
 
@@ -232,7 +248,7 @@ def test_shell_command_external_argument_requests_path_approval(mocker, tmp_path
 
     assert out["ok"] is True
     assert approvals[0]["paths"] == [str(outside_file.resolve())]
-    run.assert_called_once_with(command, timeout_s=600, cwd=None, allowed_cwd_roots=None, approved=True)
+    run.assert_called_once_with(command, timeout_s=600, cwd=None, allowed_cwd_roots=None, approved=True, stop_event=None)
 
 
 def test_shell_command_nonzero_exit_bubbles_up_as_tool_failure(tmp_path: Path):
