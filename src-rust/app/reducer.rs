@@ -147,19 +147,26 @@ impl App {
                 self.status = "Ready".into();
                 self.command_catalog = values(&frame.data, "commands");
                 self.shortcut_catalog = values(&frame.data, "shortcuts");
-                if let Some(snapshot) = frame.data.get("snapshot") {
-                    self.apply_snapshot(snapshot);
+                if let Some(theme) = frame.data.get("theme") {
+                    self.theme = Theme::from_value(theme);
                 }
                 if take_startup_session_manager(&mut self.show_session_manager_on_ready) {
+                    let items = values(&frame.data, "sessions");
                     let query = match &self.popup {
-                        Some(Popup::Sessions { query, .. }) => query.as_str(),
-                        _ => "",
+                        Some(Popup::Sessions { query, .. }) => query.clone(),
+                        _ => String::new(),
                     };
-                    let (kind, data) = startup_session_request(query);
-                    self.send(kind, data);
+                    if query.is_empty() {
+                        self.popup = Some(Popup::Sessions {
+                            query,
+                            selected: 0,
+                            items,
+                        });
+                    } else {
+                        let (kind, data) = startup_session_request(&query);
+                        self.send(kind, data);
+                    }
                 }
-                self.send("theme.list", json!({}));
-                self.send("palette.get", json!({}));
                 self.send("status.refresh", json!({}));
             }
             "state.snapshot" => self.apply_snapshot(&frame.data),
@@ -339,6 +346,10 @@ impl App {
                 if let Some(active) = frame.data.get("active") {
                     self.theme = Theme::from_value(active);
                 }
+                self.popup = Some(Popup::Theme {
+                    selected: 0,
+                    items: self.themes.clone(),
+                });
             }
             "theme.changed" => {
                 if let Some(theme) = frame.data.get("theme") {
@@ -347,9 +358,14 @@ impl App {
                 self.popup = None;
             }
             "palette.items" => {
-                self.command_catalog = values(&frame.data, "items");
+                if frame.data.get("external").and_then(Value::as_bool) == Some(true) {
+                    self.external_files = values(&frame.data, "items");
+                } else {
+                    self.command_catalog = values(&frame.data, "items");
+                    self.palette_loaded = true;
+                }
             }
-            "skill.changed" => self.send("palette.get", json!({})),
+            "skill.changed" => self.palette_loaded = false,
             "command.result" => self.apply_command_result(&frame.data),
             "request.error" | "protocol.error" => {
                 self.status = field(&frame.data, "message");
@@ -502,12 +518,7 @@ impl App {
                 self.tree_selected = 0;
             }
             "sessions" => self.send("session.list", json!({"offset":0,"limit":100})),
-            "theme" => {
-                self.popup = Some(Popup::Theme {
-                    selected: 0,
-                    items: self.themes.clone(),
-                })
-            }
+            "theme" => self.send("theme.list", json!({})),
             "config" => self.send("config.get", json!({})),
             "health" => {
                 self.popup = Some(Popup::Health {
@@ -519,7 +530,10 @@ impl App {
                     query: String::new(),
                     selected: 0,
                     mode: PaletteMode::Files,
-                })
+                });
+                if !self.palette_loaded {
+                    self.send("palette.get", json!({}));
+                }
             }
             "attach" => self.send("attachment.add", json!({"path": field(value, "path")})),
             "detach" => self.send(

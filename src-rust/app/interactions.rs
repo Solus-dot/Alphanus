@@ -113,11 +113,7 @@ impl App {
                     });
                 }
                 KeyCode::Char('k') if !key.modifiers.contains(KeyModifiers::SHIFT) => {
-                    self.popup = Some(Popup::Palette {
-                        query: String::new(),
-                        selected: 0,
-                        mode: PaletteMode::Global,
-                    });
+                    self.open_global_palette(PaletteMode::Global);
                 }
                 KeyCode::Char('u') if self.focus == Focus::Input => {
                     self.input.clear();
@@ -252,15 +248,22 @@ impl App {
         self.transcript_auto_follow = true;
     }
 
-    fn open_file_picker(&mut self) {
+    fn open_global_palette(&mut self, mode: PaletteMode) {
         if self.streaming {
             return;
         }
         self.popup = Some(Popup::Palette {
             query: String::new(),
             selected: 0,
-            mode: PaletteMode::Files,
+            mode,
         });
+        if !self.palette_loaded {
+            self.send("palette.get", json!({}));
+        }
+    }
+
+    fn open_file_picker(&mut self) {
+        self.open_global_palette(PaletteMode::Files);
     }
 
     pub(super) fn command_matches(&self) -> Vec<Value> {
@@ -338,6 +341,19 @@ impl App {
                     items: Vec::new(),
                 });
                 self.send("session.list", json!({"offset":0,"limit":100}));
+            } else if self.session_id.is_empty() {
+                let data = match &self.popup {
+                    Some(Popup::Sessions { items, .. }) => items
+                        .iter()
+                        .find(|item| item.get("is_active").and_then(Value::as_bool) == Some(true))
+                        .or_else(|| items.first())
+                        .map(session_load_data),
+                    _ => None,
+                };
+                self.popup = None;
+                if let Some(data) = data {
+                    self.send("session.load", data);
+                }
             } else {
                 self.popup = None;
             }
@@ -351,22 +367,49 @@ impl App {
                 selected,
                 mode,
             }) => match key.code {
-                KeyCode::Char(character) => query.push(character),
+                KeyCode::Char(character) => {
+                    query.push(character);
+                    *selected = 0;
+                    if *mode == PaletteMode::Files && query.starts_with(['/', '~']) {
+                        deferred = Some(("palette.get", json!({"path":query.clone()})));
+                    }
+                }
                 KeyCode::Backspace => {
                     query.pop();
+                    *selected = 0;
+                    if *mode == PaletteMode::Files && query.starts_with(['/', '~']) {
+                        deferred = Some(("palette.get", json!({"path":query.clone()})));
+                    }
                 }
                 KeyCode::Down => *selected = selected.saturating_add(1),
                 KeyCode::Up => *selected = selected.saturating_sub(1),
                 KeyCode::Enter => {
-                    let items = filtered_palette(&self.command_catalog, query, *mode);
+                    let items = filtered_palette(
+                        if *mode == PaletteMode::Files && query.starts_with(['/', '~']) {
+                            &self.external_files
+                        } else {
+                            &self.command_catalog
+                        },
+                        query,
+                        *mode,
+                    );
                     if let Some(item) = items.get(*selected) {
-                        deferred = palette_request(item);
-                        if field(item, "kind") == "command" {
-                            self.input = palette_value(item);
-                            self.cursor = self.input.len();
+                        if field(item, "kind") == "directory" {
+                            *query = format!("{}/", palette_value(item).trim_end_matches('/'));
+                            *selected = 0;
+                            deferred = Some(("palette.get", json!({"path":query.clone()})));
+                        } else {
+                            deferred = palette_request(item);
+                            if field(item, "kind") == "command" {
+                                self.input = palette_value(item);
+                                self.cursor = self.input.len();
+                            }
+                            self.popup = None;
                         }
+                    } else if *mode == PaletteMode::Files && !query.trim().is_empty() {
+                        deferred = Some(("attachment.add", json!({"path":query.trim()})));
+                        self.popup = None;
                     }
-                    self.popup = None;
                 }
                 _ => {}
             },
@@ -610,7 +653,8 @@ impl App {
                     }
                     Some(Popup::Palette { query, mode, .. }) if relative_row >= 3 => {
                         let selected = relative_row - 3;
-                        let items = filtered_palette(&self.command_catalog, &query, mode);
+                        let items =
+                            filtered_palette(palette_catalog(self, &query, mode), &query, mode);
                         if let Some(item) = items.get(selected) {
                             let request = palette_request(item);
                             if field(item, "kind") == "command" {
