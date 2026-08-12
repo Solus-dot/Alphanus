@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
-
 from core.retrieval import SQLiteRetrievalStore, default_retrieval_store_path
 
 
@@ -71,23 +69,6 @@ def test_embedding_cache_is_keyed_by_content_model_and_dimensions(tmp_path) -> N
     assert store.cached_embedding("same content", model="embed-a", dimensions=2) == [0.2, 0.8]
     assert store.cached_embedding("same content", model="embed-b", dimensions=2) is None
     assert store.cached_embedding("same content", model="embed-a", dimensions=3) is None
-
-
-def test_tool_outcome_compaction_and_session_deletion_are_scoped(tmp_path) -> None:
-    path = tmp_path / "retrieval.sqlite"
-    store = SQLiteRetrievalStore(path)
-    for index in range(4):
-        _record(store, f"a-{index}", f"outcome {index}", session_id="session-a")
-    _record(store, "b", "other workspace", workspace="/other", session_id="session-b")
-    with sqlite3.connect(path) as conn:
-        conn.execute("UPDATE records SET updated_at=0 WHERE canonical_source='a-0'")
-
-    removed = store.compact_tool_outcomes("/workspace", retention_days=30, max_records=2)
-
-    assert removed == 2
-    assert store.stats()["records"] == 3
-    assert store.delete_session_tool_outcomes("session-a") == 2
-    assert store.search("other workspace", top_k=5)[0]["source"] == "b"
 
 
 def test_default_store_is_always_inside_isolated_test_home(isolated_alphanus_home) -> None:

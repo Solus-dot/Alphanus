@@ -17,7 +17,6 @@ from core.attachments import (
 from core.configuration import config_for_editor_view, config_to_toml, load_global_config, save_global_config
 from core.conv_tree import Turn
 from core.message_types import JSONValue, MessageContentPart
-from core.retrieval import SQLiteRetrievalStore, configured_store_path
 from core.runtime_protocol import MAX_RUNTIME_FRAME_BYTES, RuntimeEmitter, RuntimeProtocolError, decode_runtime_frame
 from core.runtime_views import (
     COMPLETION_CONTENT_CHARS,
@@ -594,7 +593,6 @@ class RuntimeServer:
         self._require_idle()
         session_id = str(data.get("session_id") or "")
         self.store.delete_session(session_id)
-        SQLiteRetrievalStore(configured_store_path(self.agent.config)).delete_session_tool_outcomes(session_id)
         if session_id == self.session.id:
             remaining = self.store.list_sessions(limit=1)
             self.session = self._activate(self.store.load_session(remaining[0].id) if remaining else self.store.create_session())

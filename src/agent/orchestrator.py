@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import time
 from collections.abc import Callable, Mapping
 from typing import Any, cast
@@ -30,16 +29,6 @@ from core.types import (
     cancelled_turn_result,
 )
 from skills.runtime import SkillRuntime
-
-_AUTO_MEMORY_PATTERNS = (
-    re.compile(r"\b(?:i|we)\s+(?:prefer|like|use|work with)\s+([^.\n]{3,160})", re.IGNORECASE),
-    re.compile(r"\bmy\s+(?:preferred|favorite|go-to)\s+([^.\n]{3,160})", re.IGNORECASE),
-    re.compile(r"\b(?:this|the)\s+project\s+(?:uses|is|runs on|depends on)\s+([^.\n]{3,180})", re.IGNORECASE),
-)
-_AUTO_MEMORY_SECRET_RE = re.compile(r"\b(?:password|secret|token|api[_ -]?key|credential|private key)\b", re.IGNORECASE)
-_TOOL_OUTCOME_SKIP = frozenset(
-    "web_search fetch_url retrieve_knowledge retrieval_stats forget_retrieval_record recall_memory list_memories".split()
-)
 
 
 class TurnOrchestrator:
@@ -100,80 +89,6 @@ class TurnOrchestrator:
         )
         if hits:
             self.emit(on_event, {"type": "info", "text": f"Retrieved {len(hits)} local context record(s)."})
-
-    @staticmethod
-    def _auto_memory_text(user_input: str) -> str:
-        text = " ".join(str(user_input or "").split())
-        if len(text) < 8 or len(text) > 600 or _AUTO_MEMORY_SECRET_RE.search(text):
-            return ""
-        for pattern in _AUTO_MEMORY_PATTERNS:
-            match = pattern.search(text)
-            if not match:
-                continue
-            fact = match.group(0).strip(" .")
-            if 8 <= len(fact) <= 220:
-                return fact
-        return ""
-
-    def maybe_auto_capture_memory(self, state: TurnState, result: AgentTurnResult) -> None:
-        if result.status != "done":
-            return
-        if not self.config.memory.auto_capture:
-            return
-        text = self._auto_memory_text(state.ctx.user_input)
-        if not text:
-            return
-        if any(str(item.text).strip().lower() == text.lower() for item in self.skill_runtime.memory.memories):
-            return
-        item = self.skill_runtime.memory.add_memory(
-            text,
-            memory_type="preference" if re.search(r"\b(?:prefer|preferred|favorite|go-to|like)\b", text, re.IGNORECASE) else "project",
-            metadata={"source": "auto_capture", "turn_id": state.telemetry.turn_id},
-            importance=self.config.memory.auto_capture_importance,
-        )
-        self.skill_runtime.memory.flush()
-        if self.config.retrieval.enabled:
-            SQLiteRetrievalStore(configured_store_path(self.config)).upsert_record(
-                record_type="memory_fact",
-                source=f"memory:{item['id']}",
-                canonical_source=f"memory:{item['id']}",
-                title=str(item.get("type", "memory")),
-                text=text,
-                metadata={"memory_id": item["id"], "source": "auto_capture", "turn_id": state.telemetry.turn_id},
-            )
-        self._trace_add(state, "memory", {"status": "auto_captured", "memory_id": item["id"], "text": text})
-
-    def maybe_index_tool_outcome(self, state: TurnState, call: ToolCall, result: dict[str, object]) -> None:
-        if not self.config.retrieval.enabled or call.name in _TOOL_OUTCOME_SKIP or not result.get("ok"):
-            return
-        text = f"Tool {call.name} succeeded.\nArguments: {self.history.dumps(call.arguments)}\nResult: {self.history.dumps(result)}"
-        text = self.history.truncate(text, 2400)
-        if _AUTO_MEMORY_SECRET_RE.search(text):
-            return
-        try:
-            store = SQLiteRetrievalStore(configured_store_path(self.config), candidate_limit=self.config.retrieval.candidate_limit)
-            record = store.upsert_record(
-                record_type="tool_outcome",
-                source=f"tool:{state.telemetry.turn_id}:{len(state.evidence)}:{call.name}",
-                title=f"{call.name} outcome",
-                text=text,
-                metadata={
-                    "tool": call.name,
-                    "turn_id": state.telemetry.turn_id,
-                    "workspace": state.workspace_id,
-                    "session_id": state.session_id,
-                },
-            )
-            store.compact_tool_outcomes(
-                state.workspace_id,
-                retention_days=self.config.retrieval.tool_outcome_retention_days,
-                max_records=self.config.retrieval.tool_outcome_max_per_workspace,
-            )
-        except Exception as exc:
-            self._trace_add(state, "retrieval", {"status": "tool_outcome_error", "tool": call.name, "error": str(exc)})
-            return
-        if record:
-            self._trace_add(state, "retrieval", {"status": "tool_outcome_indexed", "tool": call.name, "record_id": record.id})
 
     @staticmethod
     def emit(on_event: Callable[[JsonObject], None] | None, event: JsonObject) -> None:
@@ -352,8 +267,6 @@ class TurnOrchestrator:
 
     def record_tool_effects(self, state: TurnState, call: ToolCall, result: dict[str, object], *, policy_blocked: bool = False) -> None:
         self.tool_execution_engine.record_tool_effects(state, call, result, policy_blocked=policy_blocked)
-        if not policy_blocked:
-            self.maybe_index_tool_outcome(state, call, result)
 
     def project_action_outcome(self, state: TurnState, text: str, *, stop_event, pass_id: str) -> str:
         if self.evidence_guard.project_mutation_count(state) > 0:
@@ -721,7 +634,6 @@ class TurnOrchestrator:
         self.inject_policy_retrieval_context(state, on_event=on_event)
 
         def finish(result: AgentTurnResult) -> AgentTurnResult:
-            self.maybe_auto_capture_memory(state, result)
             result.journal = self.build_turn_journal(state, result)
             self.log_turn_summary(state, result)
             return result

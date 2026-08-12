@@ -302,26 +302,6 @@ class SQLiteRetrievalStore:
         ]
         return output[:top_k]
 
-    def compact_tool_outcomes(self, workspace: str, *, retention_days: int = 30, max_records: int = 2000) -> int:
-        cutoff = int(time.time()) - max(1, retention_days) * 86400
-        selector = "record_type='tool_outcome' AND json_extract(metadata_json, '$.workspace')=?"
-        with self._connect() as conn:
-            expired = conn.execute(f"DELETE FROM records WHERE {selector} AND updated_at < ?", (workspace, cutoff)).rowcount
-            excess = conn.execute(
-                f"DELETE FROM records WHERE {selector} AND id NOT IN "
-                f"(SELECT id FROM records WHERE {selector} ORDER BY updated_at DESC, id DESC LIMIT ?)",
-                (workspace, workspace, max(1, max_records)),
-            ).rowcount
-        return max(0, expired) + max(0, excess)
-
-    def delete_session_tool_outcomes(self, session_id: str) -> int:
-        with self._connect() as conn:
-            cursor = conn.execute(
-                "DELETE FROM records WHERE record_type='tool_outcome' AND json_extract(metadata_json, '$.session_id')=?",
-                (session_id,),
-            )
-        return max(0, cursor.rowcount)
-
     def forget(self, record_id: int) -> bool:
         with self._connect() as conn:
             self._delete_record_chunks(conn, record_id)

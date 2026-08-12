@@ -68,8 +68,6 @@ class MemoryConfig(ClosedConfigSection):
     recall_min_score_default: float = Field(default=0.18, ge=0, le=1)
     replace_min_score_default: float = Field(default=0.72, ge=0, le=1)
     backup_revisions: int = Field(default=2, ge=0, le=20)
-    auto_capture: bool = True
-    auto_capture_importance: float = Field(default=0.55, ge=0, le=1)
 
 
 class ContextConfig(ConfigSection):
@@ -129,8 +127,6 @@ class RetrievalConfig(ConfigSection):
     lexical_weight: float = Field(default=0.3, ge=0, le=1)
     dense_weight: float = Field(default=0.7, ge=0, le=1)
     candidate_limit: int = Field(default=2000, ge=10, le=10000)
-    tool_outcome_retention_days: int = Field(default=30, ge=1, le=365)
-    tool_outcome_max_per_workspace: int = Field(default=2000, ge=10, le=10000)
     embeddings: EmbeddingsConfig = Field(default_factory=lambda: EmbeddingsConfig())
 
 

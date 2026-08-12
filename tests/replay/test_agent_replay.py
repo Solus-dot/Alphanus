@@ -130,7 +130,6 @@ def _build_agent(tmp_path: Path, fixture: dict[str, Any]) -> Agent:
             },
             "permissions": {"mode": "project-write", "approvals": "on-boundary", "network": False},
             "retrieval": {"enabled": False},
-            "memory": {"auto_capture": False},
         },
         dict(fixture.get("config", {})),
     )
