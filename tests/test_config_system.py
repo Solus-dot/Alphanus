@@ -54,7 +54,6 @@ def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
             "backend_profile": "unsupported-backend",
         },
         "context": {"context_limit": 200, "safety_margin": 5000},
-        "skills": {"strict_capability_policy": "bad"},
         "search": {"provider": "bing"},
         "tui": {"chat_log_max_lines": -1},
     }
@@ -69,7 +68,6 @@ def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
     assert normalized["agent"]["backend_profile"] == "auto"
     assert normalized["context"]["context_limit"] == 512
     assert normalized["context"]["safety_margin"] < normalized["context"]["context_limit"]
-    assert normalized["skills"]["strict_capability_policy"] == DEFAULT_CONFIG["skills"]["strict_capability_policy"]
     assert normalized["search"]["provider"] == DEFAULT_CONFIG["search"]["provider"]
     assert normalized["tui"]["chat_log_max_lines"] == 1000
 
@@ -236,7 +234,7 @@ def test_normalize_config_preserves_new_runtime_boundary_fields() -> None:
             "per_turn_retries": "2",
             "retry_backoff_s": "0.75",
         },
-        "skills": {"python_executable": "/usr/bin/python3", "paths": ["~/agent-skills"]},
+        "skills": {"paths": ["~/agent-skills"]},
         "tui": {"timing": {"stream_drain_interval_s": "0.02", "action_approval_timeout_s": "90"}},
     }
 
@@ -246,7 +244,6 @@ def test_normalize_config_preserves_new_runtime_boundary_fields() -> None:
     assert normalized["agent"]["connect_timeout_s"] == 2.5
     assert normalized["agent"]["per_turn_retries"] == 2
     assert normalized["agent"]["retry_backoff_s"] == 0.75
-    assert normalized["skills"]["python_executable"] == "/usr/bin/python3"
     assert normalized["skills"]["paths"] == ["~/agent-skills"]
     assert normalized["tui"]["timing"]["stream_drain_interval_s"] == 0.02
     assert normalized["tui"]["timing"]["action_approval_timeout_s"] == 90.0
@@ -291,7 +288,7 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
     normalized, _warnings = normalize_config(
         {
             "agent": {"connect_timeout_s": 3, "per_turn_retries": 2},
-            "skills": {"python_executable": "/usr/bin/python3", "paths": ["~/agent-skills"]},
+            "skills": {"paths": ["~/agent-skills"]},
             "tui": {"theme": "gruvbox-dark-soft", "chat_log_max_lines": 1234, "timing": {"action_approval_timeout_s": 90}},
         }
     )
@@ -306,7 +303,6 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
     assert provider.backend_profile == "auto"
     assert provider.auth_header == "Authorization: Bearer demo"
     assert "auth_header" not in provider.model_dump()
-    assert skills.python_executable == "/usr/bin/python3"
     assert skills.paths == ["~/agent-skills"]
     assert ui.theme == "gruvbox-dark-soft"
     assert ui.chat_log_max_lines == 1234

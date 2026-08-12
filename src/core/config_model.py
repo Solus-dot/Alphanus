@@ -90,13 +90,7 @@ class SandboxConfig(ClosedConfigSection):
 
 
 class SkillsConfig(ClosedConfigSection):
-    strict_capability_policy: bool = False
-    python_executable: str = ""
     paths: list[str] = Field(default_factory=list)
-
-
-class AgentsConfig(ConfigSection):
-    enable_skill_agents: bool = True
 
 
 class RuntimeConfig(ConfigSection):
@@ -131,7 +125,6 @@ class RetrievalConfig(ConfigSection):
     enabled: bool = True
     store_path: str = ""
     web_ttl_hours: float = Field(default=72, ge=0)
-    max_chunks_per_record: int = Field(default=64, ge=1)
     pre_context_top_k: int = Field(default=3, ge=0, le=10)
     lexical_weight: float = Field(default=0.3, ge=0, le=1)
     dense_weight: float = Field(default=0.7, ge=0, le=1)
@@ -149,7 +142,6 @@ class LoggingConfig(ConfigSection):
 
 class UiTimingConfig(ConfigSection):
     stream_drain_interval_s: float = Field(default=0.033, ge=0.001, le=1)
-    scroll_interval_s: float = Field(default=0.05, ge=0.001, le=1)
     action_approval_timeout_s: float = Field(default=60, ge=1, le=600)
 
 
@@ -176,7 +168,6 @@ class ConfigSchema(ConfigSection):
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
-    agents: AgentsConfig = Field(default_factory=AgentsConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     tools: dict[str, Any] = Field(default_factory=dict)
     search: SearchConfig = Field(default_factory=lambda: SearchConfig())

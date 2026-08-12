@@ -19,10 +19,6 @@ class ConfigurationError(AlphanusError, ValueError):
     code = "E_CONFIG"
 
 
-class PolicyError(AlphanusError):
-    code = "E_POLICY"
-
-
 class ProviderError(AlphanusError):
     code = "E_PROVIDER"
 
@@ -33,15 +29,6 @@ class ToolRuntimeError(AlphanusError, RuntimeError):
 
 class ProtocolError(AlphanusError, ValueError):
     code = "E_PROTOCOL"
-
-
-class PersistenceError(AlphanusError):
-    code = "E_PERSISTENCE"
-
-
-class OperationTimeout(AlphanusError, TimeoutError):
-    code = "E_TIMEOUT"
-    retryable = True
 
 
 class OperationCancelled(AlphanusError):

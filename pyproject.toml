@@ -27,15 +27,12 @@ desktop = [
 dev = [
   "pytest>=9.0.2",
   "pytest-mock>=3.15.1",
-  "pytest-benchmark>=5.1.0",
-  "anyio>=4.9.0",
   "ruff>=0.12.9",
   "pyright>=1.1.402",
   "vulture>=2.11",
   "pytest-cov>=6.2",
   "pip-audit>=2.9",
   "setuptools-rust>=1.11",
-  "idna>=3.15",
 ]
 
 [tool.pytest.ini_options]
@@ -43,7 +40,6 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "--strict-markers"
 markers = [
-  "benchmark: performance benchmarks excluded from the default CI test job",
   "integration: tests that exercise multiple runtime subsystems",
   "security: policy, sandbox, and hostile-input tests",
 ]

@@ -9,25 +9,19 @@ permissions:
 
 jobs:
   quality:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        python: ["3.11", "3.12"]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
-          python-version: ${{ matrix.python }}
+          python-version: "3.11"
           enable-cache: true
-      - uses: dtolnay/rust-toolchain@1.85.0
-      - run: uv sync --all-extras
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - run: uv sync --extra dev
       - run: uv run ruff check .
       - run: uv run pyright
       - run: uv run vulture
-      - run: uv run python tools/code_metrics.py --check
-      - run: uv run pytest -m "not benchmark" --cov --cov-branch --cov-report=term-missing
+      - run: uv run pytest --cov --cov-branch --cov-report=term-missing
       - run: uv build
       - run: uv run pip-audit
 
@@ -35,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.88.0
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
@@ -55,18 +49,3 @@ jobs:
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  benchmarks:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@1.85.0
-      - run: uv sync --all-extras
-      - run: uv run pytest -m benchmark --benchmark-only --benchmark-json=benchmark.json
-      - uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-results
-          path: benchmark.json

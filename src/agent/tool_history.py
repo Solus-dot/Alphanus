@@ -240,7 +240,7 @@ class ToolHistoryCompactor:
             return output
         if tool_name == "shell_command":
             return self._data_result(result, {key: 12000 for key in ("stdout", "stderr", "aggregated_output", "output")})
-        if tool_name in {"find_files", "search_code", "web_search", "fetch_url", "search_local_files", "retrieve_knowledge"}:
+        if tool_name in {"find_files", "search_code", "web_search", "fetch_url", "retrieve_knowledge"}:
             fields = ("content", "text", "snippet", "summary", "line")
             return self._data_result(result, {key: 4000 for key in fields}, {"results": (40, fields)})
         return self.compact_result(result)

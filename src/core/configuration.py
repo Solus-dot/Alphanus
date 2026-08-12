@@ -330,7 +330,6 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
 
     from core.config_model import (
         AgentConfig,
-        AgentsConfig,
         ContextConfig,
         EmbeddingsConfig,
         LoggingConfig,
@@ -518,7 +517,6 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         "memory": (MemoryConfig, ()),
         "context": (ContextConfig, ()),
         "skills": (SkillsConfig, ()),
-        "agents": (AgentsConfig, ()),
         "runtime": (RuntimeConfig, ()),
         "permissions": (PermissionsConfig, (("mode", PERMISSION_MODES, False), ("approvals", APPROVAL_MODES, False))),
         "sandbox": (SandboxConfig, (("backend", SANDBOX_BACKENDS, False),)),

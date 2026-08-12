@@ -242,11 +242,10 @@ Core project/runtime skills:
 - `utilities`: weather, URL/Youtube helpers, and simple local utility lookups
 - `git`: inspect and operate on Git repositories with path policy checks
 
-Desktop and local-inspection skills:
+Desktop skills:
 
 - `app-control`: list, open, focus, and quit desktop applications; open/focus/quit require explicit confirmation
 - `browser-control`: open URLs/searches with confirmation and inspect the current browser page where supported
-- `local-search`: search filenames and text under the project root, skipping sensitive/protected paths
 - `document-tools`: extract text/tables from TXT, CSV, PDF, and DOCX; PDF/DOCX require optional dependencies
 - `screenshot-ocr`: capture screenshots with confirmation and OCR explicit image paths when OCR tooling is installed
 
@@ -527,12 +526,6 @@ uv run pyright
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --no-default-features
-```
-
-Performance benchmarks are part of the test suite and can be run directly:
-
-```bash
-uv run pytest tests/test_performance_benchmarks.py
 ```
 
 ---

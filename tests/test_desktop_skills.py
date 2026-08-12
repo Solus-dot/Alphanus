@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from core.memory import LexicalMemory
@@ -54,7 +53,7 @@ def _load_tool_module(runtime: SkillRuntime, tool_name: str):
 def test_new_desktop_skills_expose_expected_tools(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path)
 
-    selected = runtime.skills_by_ids(["app-control", "browser-control", "local-search", "document-tools", "screenshot-ocr"])
+    selected = runtime.skills_by_ids(["app-control", "browser-control", "document-tools", "screenshot-ocr"])
     names = set(runtime.allowed_tool_names(selected, ctx=_ctx(runtime)))
 
     assert {
@@ -65,7 +64,6 @@ def test_new_desktop_skills_expose_expected_tools(tmp_path: Path) -> None:
         "open_browser_url",
         "browser_search",
         "get_current_browser_page",
-        "search_local_files",
         "extract_document_text",
         "extract_document_tables",
         "capture_screenshot",
@@ -87,7 +85,6 @@ def test_side_effecting_desktop_tools_count_as_mutating_for_plan_mode(tmp_path: 
 
     assert runtime.tool_is_mutating("list_apps") is False
     assert runtime.tool_is_mutating("get_current_browser_page") is False
-    assert runtime.tool_is_mutating("search_local_files") is False
     assert runtime.tool_is_mutating("extract_document_text") is False
     assert runtime.tool_is_mutating("ocr_image") is False
 
@@ -260,98 +257,6 @@ def test_browser_current_page_skips_timed_out_macos_candidate(mocker, tmp_path: 
     assert out["ok"] is True
     assert out["data"]["browser"] == "Google Chrome"  # type: ignore[index]
     assert run.call_count == 2
-
-
-def test_local_search_finds_filename_and_content_matches(tmp_path: Path) -> None:
-    runtime = _runtime(tmp_path)
-    project = Path(runtime.project.project_root)
-    (project / "notes").mkdir()
-    (project / "notes" / "release-notes.txt").write_text("alpha beta gamma\nsecond line\n", encoding="utf-8")
-    (project / "todo.txt").write_text("remember alpha release\n", encoding="utf-8")
-
-    out = _execute(
-        runtime,
-        "local-search",
-        "search_local_files",
-        {"query": "alpha", "root": str(project), "mode": "both", "max_results": 10},
-    )
-
-    assert out["ok"] is True
-    matches = out["data"]["matches"]  # type: ignore[index]
-    paths = {Path(str(item["path"])).name for item in matches}  # type: ignore[index]
-    assert {"release-notes.txt", "todo.txt"}.issubset(paths)
-    assert len(matches) >= 2
-
-
-def test_local_search_skips_symlinked_files_outside_allowed_roots(tmp_path: Path) -> None:
-    runtime = _runtime(tmp_path)
-    project = Path(runtime.project.project_root)
-    outside = tmp_path / "outside-secret.txt"
-    outside.write_text("needle outside policy\n", encoding="utf-8")
-    link = project / "linked-secret.txt"
-
-    try:
-        os.symlink(outside, link)
-    except (OSError, NotImplementedError):
-        return
-
-    out = _execute(
-        runtime,
-        "local-search",
-        "search_local_files",
-        {"query": "needle", "root": str(project), "mode": "content", "max_results": 10},
-    )
-
-    assert out["ok"] is True
-    assert out["data"]["matches"] == []  # type: ignore[index]
-
-
-def test_local_search_skips_sensitive_project_paths_and_ignores_home(tmp_path: Path) -> None:
-    runtime = _runtime(tmp_path)
-    project = Path(runtime.project.project_root)
-    home = project.parent
-    ssh_dir = home / ".ssh"
-    ssh_dir.mkdir()
-    (ssh_dir / "notes.txt").write_text("needle from ssh\n", encoding="utf-8")
-    (project / ".env.json").write_text('{"token": "needle"}\n', encoding="utf-8")
-    (project / "safe.txt").write_text("needle from safe file\n", encoding="utf-8")
-
-    content_out = _execute(runtime, "local-search", "search_local_files", {"query": "needle", "mode": "both", "max_results": 10})
-    filename_out = _execute(runtime, "local-search", "search_local_files", {"query": "env", "mode": "filename", "max_results": 10})
-
-    assert content_out["ok"] is True
-    content_matches = content_out["data"]["matches"]  # type: ignore[index]
-    assert [Path(str(item["path"])).name for item in content_matches] == ["safe.txt"]
-    assert filename_out["ok"] is True
-    assert filename_out["data"]["matches"] == []  # type: ignore[index]
-
-
-def test_local_search_uses_configured_max_text_bytes(tmp_path: Path) -> None:
-    runtime = _runtime_with_config(tmp_path, {"tools": {"local_search": {"max_text_bytes": 5}}})
-    project = Path(runtime.project.project_root)
-    (project / "small.txt").write_text("needle\n", encoding="utf-8")
-
-    out = _execute(
-        runtime,
-        "local-search",
-        "search_local_files",
-        {"query": "needle", "root": str(project), "mode": "content", "max_results": 10},
-    )
-
-    assert out["ok"] is True
-    assert out["data"]["matches"] == []  # type: ignore[index]
-    assert out["data"]["skipped_large"] == 1  # type: ignore[index]
-
-
-def test_local_search_rejects_roots_outside_project(tmp_path: Path) -> None:
-    runtime = _runtime(tmp_path)
-    outside = tmp_path / "outside"
-    outside.mkdir()
-
-    out = _execute(runtime, "local-search", "search_local_files", {"query": "alpha", "root": str(outside)})
-
-    assert out["ok"] is False
-    assert out["error"]["code"] == "E_POLICY"  # type: ignore[index]
 
 
 def test_document_tools_extract_text_and_csv_tables(tmp_path: Path) -> None:
