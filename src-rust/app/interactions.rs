@@ -331,7 +331,16 @@ impl App {
 
     fn handle_popup_key(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Esc {
-            self.popup = None;
+            if matches!(self.popup, Some(Popup::SessionName { .. })) {
+                self.popup = Some(Popup::Sessions {
+                    query: String::new(),
+                    selected: 0,
+                    items: Vec::new(),
+                });
+                self.send("session.list", json!({"offset":0,"limit":100}));
+            } else {
+                self.popup = None;
+            }
             return;
         }
         let mut deferred: Option<(&'static str, Value)> = None;
@@ -631,7 +640,12 @@ impl App {
                             self.popup = None;
                             self.send("session.create", json!({"title":value}));
                         } else {
-                            self.popup = None;
+                            self.popup = Some(Popup::Sessions {
+                                query: String::new(),
+                                selected: 0,
+                                items: Vec::new(),
+                            });
+                            self.send("session.list", json!({"offset":0,"limit":100}));
                         }
                     }
                     Some(Popup::Config { value, .. })
