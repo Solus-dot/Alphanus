@@ -385,11 +385,13 @@ pub fn run(python: &str, project_root: Option<&str>, debug: bool) -> Result<i32,
             draw_result.map_err(|error| error.to_string())?;
             sync_result.map_err(|error| error.to_string())?;
             app.last_frame = Instant::now();
+            app.dirty = false;
         }
         if event::poll(Duration::from_millis(8)).map_err(|error| error.to_string())? {
             let next = event::read().map_err(|error| error.to_string())?;
             let terminal_needs_repaint = terminal_repaint_shortcut(&next);
             app.handle_event(next);
+            app.dirty = true;
             if terminal_needs_repaint {
                 // Integrated terminals such as VSCodium may clear their visible
                 // buffer for Ctrl+K/Ctrl+L even while forwarding the key to the
@@ -813,7 +815,7 @@ mod tests {
             ],
             "key",
         );
-        assert!(text.contains("Ctrl+Shift+K"));
+        assert!(text.starts_with("**INPUT**\n\n`Ctrl+Shift+K`"));
         assert!(!text.contains("/sessions"));
     }
 
