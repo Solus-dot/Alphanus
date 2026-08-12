@@ -6,7 +6,6 @@ from typing import Any
 
 from core.conv_tree import ConvTree
 from core.file_audit import build_file_audit_from_skill_exchanges
-from core.secure_io import atomic_write_text
 
 COMMAND_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     (
@@ -60,7 +59,6 @@ COMMAND_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("/project-tree", "Show the project tree"),
             ("/theme", "Open the theme picker"),
             ("/config", "Edit configuration"),
-            ("/report [file]", "Save a support report"),
             ("/code [n|last]", "Open a code block"),
         ),
     ),
@@ -312,17 +310,6 @@ def execute_ui_command(server: Any, raw: str) -> dict[str, Any]:
             project_root=server.agent.skill_runtime.project.project_root,
         )
         return _result(json.dumps(rows, indent=2, ensure_ascii=False) if rows else "No file changes recorded for the current turn")
-    if cmd == "/report":
-        root = Path(server.agent.skill_runtime.project.project_root)
-        target = Path(arg).expanduser() if arg else root / "alphanus-support.json"
-        if not target.is_absolute():
-            target = root / target
-        target = target.resolve()
-        if not target.is_relative_to(root.resolve()):
-            return _result("Support reports must be written inside the workspace", ok=False)
-        bundle = server.agent.build_support_bundle(tree.to_dict())
-        atomic_write_text(target, json.dumps(bundle, indent=2, ensure_ascii=False) + "\n")
-        return _result(f"Saved support report to {target}")
     if cmd == "/code":
         return _result(action="code", target=arg or "last")
     if cmd.startswith("/"):

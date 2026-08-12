@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import logging
 import os
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from agent.classifier import TurnClassifier
 from agent.context import ContextWindowManager
-from agent.harness_metrics import HarnessMetrics
 from agent.orchestrator import TurnOrchestrator, request_user_input_passthrough
 from agent.policies import PromptPolicyRenderer
 from agent.prompts import build_system_prompt
@@ -30,7 +27,6 @@ class Agent:
         self.skill_runtime = skill_runtime
         self.debug = debug
         self.telemetry = TelemetryEmitter()
-        self.harness_metrics = HarnessMetrics()
         self.system_prompt = build_system_prompt(str(self.skill_runtime.project.project_root))
         self.context_mgr = ContextWindowManager()
         self.llm_client = LLMClient(config, debug=debug, telemetry=self.telemetry)
@@ -209,26 +205,11 @@ class Agent:
                 "reason": retrieval_reason,
                 **retrieval_stats,
             },
-            "harness_metrics": self.harness_metrics.snapshot(),
             "skills": self.skill_runtime.skill_health_report(),
-        }
-
-    def build_support_bundle(self, tree_payload: dict[str, object]) -> dict[str, object]:
-        return {
-            "created_at": datetime.now(UTC).isoformat(),
-            "doctor": self.doctor_report(),
-            "tree": tree_payload,
         }
 
     def reload_skills(self) -> int:
         return self.classifier.reload_skills()
-
-    def _record_and_return(self, result: AgentTurnResult) -> AgentTurnResult:
-        try:
-            self.harness_metrics.record(result)
-        except Exception as exc:
-            logging.debug("Harness metric recording failed: %s", exc)
-        return result
 
     def run_turn(
         self,
@@ -247,29 +228,28 @@ class Agent:
     ) -> AgentTurnResult:
         endpoint_err = self._validate_endpoints()
         if endpoint_err:
-            return self._record_and_return(self._empty_result("error", endpoint_err))
+            return self._empty_result("error", endpoint_err)
         if self.llm_client.stop_requested(stop_event):
-            return self._record_and_return(self._empty_result("cancelled"))
+            return self._empty_result("cancelled")
         status = self.get_model_status()
         if status.state == "offline" and self.llm_client.is_model_status_fresh(status):
             if self.llm_client.should_fail_fast_on_offline_status(status):
-                return self._record_and_return(self._not_ready_result(status))
+                return self._not_ready_result(status)
             ready = self.ensure_ready(stop_event=stop_event, on_event=on_event)
             if ready is None:
-                return self._record_and_return(self._empty_result("cancelled"))
+                return self._empty_result("cancelled")
             if not ready:
-                return self._record_and_return(self._not_ready_result(self.get_model_status()))
+                return self._not_ready_result(self.get_model_status())
         if not self.llm_client.is_model_status_fresh(status):
             if status.state != "unknown":
                 status = self.refresh_model_status(timeout_s=min(self.llm_client.connect_timeout_s, 1.0), force=True)
             if status.state != "online":
                 ready = self.ensure_ready(stop_event=stop_event, on_event=on_event)
                 if ready is None:
-                    return self._record_and_return(self._empty_result("cancelled"))
+                    return self._empty_result("cancelled")
                 if not ready:
-                    return self._record_and_return(self._not_ready_result(self.get_model_status()))
-        return self._record_and_return(
-            self.orchestrator.run_turn(
+                    return self._not_ready_result(self.get_model_status())
+        return self.orchestrator.run_turn(
                 history_messages=history_messages,
                 user_input=user_input,
                 thinking=thinking,
@@ -284,4 +264,3 @@ class Agent:
                 request_approval=request_approval,
                 request_user_input=request_user_input_passthrough,
             )
-        )

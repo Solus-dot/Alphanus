@@ -770,7 +770,6 @@ def test_command_catalog_preserves_every_public_tui_command() -> None:
         "/project-tree",
         "/theme",
         "/config",
-        "/report",
         "/code",
     } <= commands
 

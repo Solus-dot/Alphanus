@@ -136,7 +136,6 @@ def test_doctor_report_uses_env_auth_header(mocker, runtime: SkillRuntime, monke
     report = cast(Any, agent.doctor_report())
     assert report["agent"]["auth_header_source"] == "env"
     assert report["agent"]["permission_mode"] == "project-write"
-    assert report["harness_metrics"]["turns_total"] == 0
 
 
 def test_typed_config_provider_uses_resolved_auth_header(runtime: SkillRuntime, monkeypatch):

@@ -413,7 +413,6 @@ Per-turn journal includes:
 - `/project-tree`
 - `/theme`
 - `/config`
-- `/report [file]`
 
 ### Keyboard Shortcuts
 
