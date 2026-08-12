@@ -205,6 +205,82 @@ fn draw_sessions_popup(
     ));
 }
 
+fn draw_session_name_popup(frame: &mut Frame, app: &mut App, value: &str) {
+    let area = centered(frame.area(), 72, 11);
+    app.areas.popup = area;
+    let inner = area.inner(ratatui::layout::Margin {
+        vertical: 1,
+        horizontal: 2,
+    });
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(app.theme.border_type())
+            .border_style(Style::default().fg(app.theme.accent))
+            .title(Span::styled(
+                " New Session ",
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .style(app.theme.base()),
+        area,
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "Name your conversation",
+            Style::default()
+                .fg(app.theme.text)
+                .add_modifier(Modifier::BOLD),
+        )),
+        rows[0],
+    );
+    let input = if value.is_empty() {
+        Span::styled("Session name…", Style::default().fg(app.theme.subtle))
+    } else {
+        Span::styled(value.to_owned(), Style::default().fg(app.theme.text))
+    };
+    frame.render_widget(
+        Paragraph::new(input).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(app.theme.border_type())
+                .border_style(Style::default().fg(app.theme.secondary))
+                .style(Style::default().bg(app.theme.panel)),
+        ),
+        rows[2],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Enter", Style::default().fg(app.theme.success)),
+            Span::styled(" Create    ", Style::default().fg(app.theme.muted)),
+            Span::styled("Esc", Style::default().fg(app.theme.secondary)),
+            Span::styled(" Back", Style::default().fg(app.theme.muted)),
+        ])),
+        rows[4],
+    );
+    frame.set_cursor_position(Position::new(
+        rows[2]
+            .x
+            .saturating_add(1)
+            .saturating_add(UnicodeWidthStr::width(value) as u16)
+            .min(rows[2].right().saturating_sub(2)),
+        rows[2].y + 1,
+    ));
+}
+
 pub(super) fn draw_popup(frame: &mut Frame, app: &mut App) {
     let Some(popup) = app.popup.clone() else {
         return;
@@ -216,6 +292,10 @@ pub(super) fn draw_popup(frame: &mut Frame, app: &mut App) {
     } = &popup
     {
         draw_sessions_popup(frame, app, query, *selected, items);
+        return;
+    }
+    if let Popup::SessionName { value } = &popup {
+        draw_session_name_popup(frame, app, value);
         return;
     }
     app.areas.popup_list = Rect::default();
@@ -253,12 +333,6 @@ pub(super) fn draw_popup(frame: &mut Frame, app: &mut App) {
                 16,
             )
         }
-        Popup::SessionName { value } => (
-            " New Session ",
-            format!("Name:\n\n{value}\n\n[Create]                         [Cancel]"),
-            58,
-            9,
-        ),
         Popup::Theme { selected, items } => {
             let text = items
                 .iter()
@@ -304,7 +378,9 @@ pub(super) fn draw_popup(frame: &mut Frame, app: &mut App) {
                 18,
             )
         }
-        Popup::Sessions { .. } => unreachable!("sessions are rendered separately"),
+        Popup::Sessions { .. } | Popup::SessionName { .. } => {
+            unreachable!("session popups are rendered separately")
+        }
     };
     let area = centered(frame.area(), width, height);
     app.areas.popup = area;
