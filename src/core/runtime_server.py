@@ -17,6 +17,7 @@ from core.attachments import (
 from core.configuration import config_for_editor_view, config_to_toml, load_global_config, save_global_config
 from core.conv_tree import Turn
 from core.message_types import JSONValue, MessageContentPart
+from core.project_search import HEAVY_WALK_DIRS
 from core.runtime_protocol import MAX_RUNTIME_FRAME_BYTES, RuntimeEmitter, RuntimeProtocolError, decode_runtime_frame
 from core.runtime_views import (
     COMPLETION_CONTENT_CHARS,
@@ -744,10 +745,37 @@ class RuntimeServer:
         self.agent.reload_config(load_global_config(self.config_path))
         self._respond("theme.changed", request_id, {"theme": theme_payload(theme_id)})
 
-    def _palette_get(self, request_id: str, _data: dict[str, Any]) -> None:
+    def _palette_get(self, request_id: str, data: dict[str, Any]) -> None:
         from core.ui_commands import palette_command_catalog
 
-        items: list[dict[str, Any]] = list(palette_command_catalog())
+        query = str(data.get("path") or "").strip()
+        if query.startswith(("/", "~")):
+            expanded = Path(query).expanduser()
+            directory, prefix = (expanded, "") if expanded.is_dir() else (expanded.parent, expanded.name.lower())
+            items: list[dict[str, Any]] = []
+            try:
+                for entry in sorted(directory.iterdir(), key=lambda path: (not path.is_dir(), path.name.lower())):
+                    if entry.name.startswith(".") and not prefix.startswith("."):
+                        continue
+                    if prefix and prefix not in entry.name.lower():
+                        continue
+                    items.append(
+                        {
+                            "kind": "directory" if entry.is_dir() else "file",
+                            "value": str(entry),
+                            "prompt": entry.name,
+                            "description": "directory" if entry.is_dir() else str(directory),
+                            "scope": "external",
+                        }
+                    )
+                    if len(items) >= 1000:
+                        break
+            except OSError:
+                pass
+            self._respond("palette.items", request_id, {"items": items, "external": True})
+            return
+
+        items = list(palette_command_catalog())
         for summary in self.store.list_sessions(limit=20):
             items.append(
                 {
@@ -758,21 +786,27 @@ class RuntimeServer:
                 }
             )
         root = Path(self.agent.skill_runtime.project.project_root).resolve()
-        skip = {".git", ".hg", ".svn", ".alphanus", ".venv", "venv", "__pycache__", "node_modules", ".pytest_cache"}
+        skip = {*HEAVY_WALK_DIRS, ".hg", ".svn"}
         file_count = 0
         for current, directories, names in os.walk(root):
             directories[:] = sorted(name for name in directories if name not in skip and not name.startswith("."))
             for name in sorted(names):
                 if name.startswith("."):
                     continue
-                path = (Path(current) / name).resolve()
-                if classify_attachment(str(path)) not in {"image", "text"}:
-                    continue
-                items.append({"kind": "file", "value": str(path), "prompt": str(path.relative_to(root)), "description": "attach file"})
+                path = Path(current) / name
+                relative = path.relative_to(root)
+                items.append(
+                    {
+                        "kind": "file",
+                        "value": str(path),
+                        "prompt": path.name,
+                        "description": str(relative.parent) if relative.parent != Path(".") else "project root",
+                    }
+                )
                 file_count += 1
-                if file_count >= 60:
+                if file_count >= 1000:
                     break
-            if file_count >= 60:
+            if file_count >= 1000:
                 break
         loaded = set(self.session.loaded_skill_ids)
         for skill in self.agent.skill_runtime.list_skills():

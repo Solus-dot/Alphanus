@@ -178,6 +178,28 @@ def test_runtime_theme_apply_reloads_typed_agent_config(tmp_path: Path) -> None:
         server.close()
 
 
+def test_runtime_attachment_add_accepts_files_outside_project(tmp_path: Path) -> None:
+    from core.runtime_server import RuntimeServer
+
+    project = tmp_path / "project"
+    project.mkdir()
+    external = tmp_path / "external.txt"
+    external.write_text("outside\n", encoding="utf-8")
+    server = RuntimeServer(
+        agent=_RuntimeAgent(project),
+        memory=_RuntimeMemory(),
+        state_root=tmp_path / "state",
+        config_path=tmp_path / "config.toml",
+        input_stream=io.StringIO(),
+        output_stream=io.StringIO(),
+    )
+    try:
+        server._attachment_add("external", {"path": str(external)})
+        assert server.pending_attachments == [(str(external.resolve()), "text")]
+    finally:
+        server.close()
+
+
 def test_runtime_attachment_add_enforces_pending_limits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from core.attachments import MAX_ATTACHMENTS
     from core.runtime_server import RuntimeServer
@@ -705,6 +727,65 @@ def test_branch_command_snapshot_immediately_exposes_the_pending_branch_name(tmp
         snapshots = [frame["data"] for frame in frames if frame["type"] == "state.snapshot"]
         assert snapshots[-1]["session"]["branch_name"] == "root"
         assert snapshots[-1]["session"]["pending_branch"] is False
+    finally:
+        server.close()
+
+
+def test_palette_files_skip_build_artifacts_without_truncating_source_tree(tmp_path: Path) -> None:
+    from core.runtime_server import RuntimeServer
+
+    for index in range(70):
+        path = tmp_path / "src" / f"module_{index:02}.py"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(f"value = {index}\n", encoding="utf-8")
+    artifact = tmp_path / "build" / "lib.macosx" / "copied.py"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("copied = True\n", encoding="utf-8")
+    output = io.StringIO()
+    server = RuntimeServer(
+        agent=_RuntimeAgent(tmp_path),
+        memory=_RuntimeMemory(),
+        state_root=tmp_path / "state",
+        config_path=tmp_path / "config.toml",
+        input_stream=io.StringIO(),
+        output_stream=output,
+    )
+    try:
+        server.agent.skill_runtime.list_skills = lambda: []
+        server._palette_get("palette", {})
+        frame = next(frame for frame in map(json.loads, output.getvalue().splitlines()) if frame["type"] == "palette.items")
+        files = [item["prompt"] for item in frame["data"]["items"] if item["kind"] == "file"]
+        assert len([name for name in files if name.startswith("module_")]) == 70
+        assert "module_69.py" in files
+        assert "src" in [item["description"] for item in frame["data"]["items"] if item["kind"] == "file"]
+        assert "copied.py" not in files
+    finally:
+        server.close()
+
+
+def test_palette_external_path_lists_one_directory_level(tmp_path: Path) -> None:
+    from core.runtime_server import RuntimeServer
+
+    (tmp_path / "Desktop" / "nested").mkdir(parents=True)
+    (tmp_path / "Desktop" / "note.txt").write_text("note\n", encoding="utf-8")
+    (tmp_path / "Desktop" / "nested" / "deep.txt").write_text("deep\n", encoding="utf-8")
+    output = io.StringIO()
+    server = RuntimeServer(
+        agent=_RuntimeAgent(tmp_path),
+        memory=_RuntimeMemory(),
+        state_root=tmp_path / "state",
+        config_path=tmp_path / "config.toml",
+        input_stream=io.StringIO(),
+        output_stream=output,
+    )
+    try:
+        server._palette_get("external", {"path": str(tmp_path / "Desktop") + "/"})
+        frame = next(frame for frame in map(json.loads, output.getvalue().splitlines()) if frame["type"] == "palette.items")
+        assert frame["data"]["external"] is True
+        assert [(item["prompt"], item["kind"]) for item in frame["data"]["items"]] == [
+            ("nested", "directory"),
+            ("note.txt", "file"),
+        ]
     finally:
         server.close()
 
