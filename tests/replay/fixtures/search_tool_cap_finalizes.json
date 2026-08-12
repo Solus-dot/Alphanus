@@ -5,6 +5,7 @@
   "classification": {
     "time_sensitive": true
   },
+  "config": {"permissions": {"network": true}},
   "fixture_skills": {
     "search-ops": {
       "SKILL.md": "---\nname: search-ops\ndescription: web research\nversion: 1.2.0\nallowed-tools: web_search\nmetadata:\n  tags: [web, latest]\n  triggers:\n    keywords: [latest, web]\n---\nsearch\n",

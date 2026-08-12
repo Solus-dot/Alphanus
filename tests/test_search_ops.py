@@ -961,6 +961,7 @@ def test_search_ops_skill_loads_and_executes_from_repo(tmp_path: Path, mocker):
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(mem)),
         config={
+            "permissions": {"network": True},
             "search": {"provider": "searxng", "searxng_base_url": "http://127.0.0.1:8888"},
             "retrieval": {"store_path": str(tmp_path / "retrieval.sqlite")},
         },

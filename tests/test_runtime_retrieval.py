@@ -140,7 +140,7 @@ def test_policy_retrieval_injects_time_sensitive_context(tmp_path: Path) -> None
     system_content = orchestrator.prompt_renderer.compose_system_content(state.selected, state.ctx)
 
     assert state.ctx.retrieval_hits
-    assert "Retrieved context:" in system_content
+    assert "Potentially relevant local context" in system_content
     assert "Status update" in system_content
     assert any("Retrieved 1 local context" in str(event.get("text", "")) for event in events)
 

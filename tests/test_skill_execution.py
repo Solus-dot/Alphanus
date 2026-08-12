@@ -71,7 +71,7 @@ def test_project_write_mode_exposes_selected_tools(tmp_path: Path):
         skills_dir="bundled-skills",
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": False}},
+        config={"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": True}},
         debug=True,
     )
     ctx = SkillContext(
@@ -120,7 +120,7 @@ def test_read_only_mode_allows_read_only_project_tools(tmp_path: Path):
     assert "shell_command" not in names
 
 
-def test_project_write_mode_allows_project_mutation_web_and_shell(tmp_path: Path):
+def test_project_write_mode_enforces_network_independently(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     home.mkdir()
@@ -140,9 +140,18 @@ def test_project_write_mode_allows_project_mutation_web_and_shell(tmp_path: Path
     assert "edit_file" in names
     assert "delete_path" in names
     assert "run_checks" not in names
+    assert "web_search" not in names
+    assert "fetch_url" not in names
+    assert "shell_command" in names
+
+    runtime.reload_config({"permissions": {"mode": "danger-full-access", "network": False}})
+    names = set(runtime.allowed_tool_names(selected))
+    assert "web_search" not in names
+
+    runtime.reload_config({"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": True}})
+    names = set(runtime.allowed_tool_names(selected))
     assert "web_search" in names
     assert "fetch_url" in names
-    assert "shell_command" in names
 
 
 def test_skill_load_select_and_execute(tmp_path: Path):
@@ -415,6 +424,7 @@ def execute(tool_name, args, env):
         bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"permissions": {"network": True}},
     )
 
     runtime_only_tool_names = set(_tool_names(runtime, []))
@@ -688,6 +698,7 @@ def execute(tool_name, args, env):
         bundled_skills_dir=str(skills),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
+        config={"permissions": {"network": True}},
         debug=False,
     )
     skill = runtime.get_skill("faulty-skill")

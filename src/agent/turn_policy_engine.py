@@ -58,22 +58,16 @@ class TurnPolicyEngine:
             return None
         if state.completion.tool_counts.get(call.name, 0) < limit:
             return None
-        if call.name == "web_search" and state.classification.time_sensitive:
+        if call.name in {"web_search", "fetch_url"}:
+            operation, directive = (
+                ("search-attempt", "issue more search calls") if call.name == "web_search" else ("fetch", "fetch more pages")
+            )
             return "\n".join(
                 [
                     "Search completion rule:",
-                    "- The search-attempt budget is exhausted.",
+                    f"- The {operation} budget is exhausted.",
                     "- Answer only from the evidence already gathered.",
-                    "- Do not issue more search calls.",
-                ]
-            )
-        if call.name == "fetch_url" and state.classification.time_sensitive:
-            return "\n".join(
-                [
-                    "Fetch completion rule:",
-                    "- The fetch budget is exhausted.",
-                    "- Answer only from the evidence already gathered.",
-                    "- Do not fetch more pages.",
+                    f"- Do not {directive}.",
                 ]
             )
         return f"Tool budget exceeded for {call.name} ({limit})"

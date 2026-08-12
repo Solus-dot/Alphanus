@@ -50,7 +50,7 @@ def test_play_youtube_falls_back_to_search_url_on_fetch_failure(mocker):
     assert url == search_url
 
 
-def _runtime(tmp_path: Path) -> SkillRuntime:
+def _runtime(tmp_path: Path, *, network: bool = True) -> SkillRuntime:
     repo_root = Path(__file__).resolve().parents[1]
     home = tmp_path / "home"
     ws = home / "ws"
@@ -60,7 +60,7 @@ def _runtime(tmp_path: Path) -> SkillRuntime:
         skills_dir=str(repo_root / "bundled-skills"),
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={},
+        config={"permissions": {"network": network}},
     )
 
 
@@ -171,7 +171,7 @@ def test_classify_attachment_rejects_late_invalid_utf8(tmp_path: Path) -> None:
 
 
 def test_open_url_accepts_file_urls_in_runtime(mocker, tmp_path: Path):
-    runtime = _runtime(tmp_path)
+    runtime = _runtime(tmp_path, network=False)
     skill = runtime.get_skill("utilities")
     assert skill is not None
 
@@ -188,6 +188,13 @@ def test_open_url_accepts_file_urls_in_runtime(mocker, tmp_path: Path):
         return True
 
     mocker.patch.object(module.webbrowser, "open", side_effect=_capture_open)
+    blocked = runtime.execute_tool_call(
+        "open_url",
+        {"url": "https://example.com"},
+        selected=[skill],
+        ctx=_ctx(str(runtime.project.project_root)),
+    )
+    assert blocked["error"]["code"] == "E_POLICY"
     target = tmp_path / "pomodoro-app" / "index.html"
     target.parent.mkdir()
     target.write_text("<!doctype html>\n", encoding="utf-8")

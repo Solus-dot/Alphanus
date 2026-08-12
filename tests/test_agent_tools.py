@@ -36,7 +36,7 @@ def agent_config(*, sections=None, **overrides):
         "max_tokens": 256,
     }
     agent.update(overrides)
-    config = {"agent": agent}
+    config = {"agent": agent, "permissions": {"network": True}}
     config.update(sections or {})
     return config
 

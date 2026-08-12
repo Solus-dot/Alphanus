@@ -4,6 +4,13 @@ from core.skill_types import SkillContext, SkillManifest
 
 
 class SkillToolPolicy:
+    _NETWORK_CAPABILITIES = frozenset(
+        {
+            "utility_play_youtube",
+            "utility_weather",
+        }
+    )
+
     def __init__(
         self,
         runtime,
@@ -23,9 +30,12 @@ class SkillToolPolicy:
 
     def _allowed_for_permission_mode(self, reg) -> bool:
         mode = self.runtime.permission_mode
+        capability = str(reg.capability or "").strip().lower()
+        requires_network = capability.startswith("web_") or capability in self._NETWORK_CAPABILITIES
+        if requires_network and not self.runtime.config_model.permissions.network:
+            return False
         if mode == "danger-full-access":
             return True
-        capability = str(reg.capability or "").strip().lower()
         if reg.name in self.always_available_tool_names:
             return True
         if capability == "run_shell_command":

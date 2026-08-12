@@ -85,11 +85,15 @@ def _search_project_files(args: dict[str, object], env: ToolExecutionEnv) -> dic
     return _ok({"matches": matches})
 
 
-def _open_url(args: dict[str, object]) -> dict[str, object]:
+def _open_url(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object]:
     url = str(args["url"]).strip()
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in {"http", "https", "file"}:
         raise ValueError("URL must start with http://, https://, or file://")
+    permissions = env.config.get("permissions")
+    network_enabled = bool(permissions.get("network")) if isinstance(permissions, dict) else False
+    if parsed.scheme in {"http", "https"} and not network_enabled:
+        raise PermissionError("Network access is disabled by configuration")
     if parsed.scheme == "file" and not parsed.path:
         raise ValueError("file:// URL must include a path")
     try:
@@ -152,7 +156,7 @@ def execute(tool_name: str, args: dict[str, object], env: ToolExecutionEnv):
     if tool_name == "search_project_files":
         return _search_project_files(args, env)
     if tool_name == "open_url":
-        return _open_url(args)
+        return _open_url(args, env)
     if tool_name == "play_youtube":
         return _play_youtube(args)
     raise ValueError(f"Unsupported tool: {tool_name}")
