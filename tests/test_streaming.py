@@ -3,7 +3,9 @@ from __future__ import annotations
 import threading
 import urllib.request
 
-from core.streaming import stream_chat_completions
+import pytest
+
+from core.streaming import MAX_SSE_LINE_BYTES, StreamError, stream_chat_completions
 
 
 class _StallingResponse:
@@ -26,7 +28,7 @@ class _StallingResponse:
     def fileno(self):
         return 0
 
-    def readline(self):
+    def readline(self, _size: int = -1):
         self.readline_calls += 1
         if self._stop_event.is_set():
             return b""
@@ -63,3 +65,22 @@ def test_stream_chat_completions_cancels_during_stalled_read(mocker):
     assert chunks == []
     assert select_calls["count"] >= 1
     assert response.readline_calls == 0
+
+
+def test_stream_chat_completions_rejects_oversized_lines(mocker) -> None:
+    class Response:
+        status = 200
+        reason = "OK"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def readline(self, size: int = -1):
+            return b"x" * max(size, MAX_SSE_LINE_BYTES + 1)
+
+    mocker.patch.object(urllib.request, "urlopen", return_value=Response())
+    with pytest.raises(StreamError, match="stream line exceeds"):
+        list(stream_chat_completions("http://localhost/v1/chat/completions", {"stream": True}, timeout_s=1))

@@ -67,6 +67,7 @@ class ToolLoopEngine:
             reasoning=state.full_reasoning,
             skill_exchanges=state.skill_exchanges,
             error=error,
+            error_code="E_TOOL",
         )
 
     def _cancelled_after_tool(self, state: TurnState, call, stop_event, on_event) -> tuple[str, AgentTurnResult] | None:
@@ -105,6 +106,7 @@ class ToolLoopEngine:
                     reasoning=state.full_reasoning,
                     skill_exchanges=state.skill_exchanges,
                     error="tool_loop_stuck",
+                    error_code="E_TOOL",
                 ),
             )
         message = (
@@ -144,6 +146,7 @@ class ToolLoopEngine:
                     reasoning=state.full_reasoning,
                     skill_exchanges=state.skill_exchanges,
                     error="project_action_stuck",
+                    error_code="E_TOOL",
                 ),
             )
         message = (
@@ -298,8 +301,16 @@ class ToolLoopEngine:
 
             force_finalize_reason = self.orchestrator.policy_engine.tool_budget_reason(state, call) or ""
             if force_finalize_reason:
-                if not (state.classification.time_sensitive and state.search_tools_enabled):
+                if call.name not in {"web_search", "fetch_url"} or not state.search_tools_enabled:
                     return self._error_result(state, force_finalize_reason)
+                self._loop_block_tool(
+                    state=state,
+                    call=call,
+                    pass_id=pass_id,
+                    code="E_TOOL_LOOP_BUDGET",
+                    message=force_finalize_reason,
+                    on_event=on_event,
+                )
                 break
 
             if self.orchestrator._normalize_collaboration_mode(
@@ -363,6 +374,7 @@ class ToolLoopEngine:
                 ctx=state.ctx,
                 request_approval=request_approval,
                 request_user_input=request_user_input,
+                stop_event=stop_event,
             )
             self.orchestrator.emit(on_event, {"type": "tool_result", "name": call.name, "id": call.id, "result": result})
             tool_message = {

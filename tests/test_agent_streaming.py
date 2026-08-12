@@ -11,8 +11,11 @@ from typing import Any, cast
 import pytest
 
 from agent.core import Agent
+from agent.provider import OpenAICompatibleProvider
+from core.config_model import config_schema
 from core.memory import LexicalMemory
 from core.project import ProjectRuntime
+from core.streaming import StreamError
 from core.types import TurnClassification
 from skills.runtime import SkillRuntime
 from tests.support import build_skill_runtime
@@ -24,6 +27,22 @@ TEST_MODEL_ENDPOINT = f"{TEST_BASE_URL}/v1/chat/completions"
 TEST_MODELS_ENDPOINT = f"{TEST_BASE_URL}/v1/models"
 TEST_SLOTS_ENDPOINT = f"{TEST_BASE_URL}/slots"
 TEST_PROPS_ENDPOINT = f"{TEST_BASE_URL}/props"
+
+
+def test_provider_rejects_unbounded_aggregate_content() -> None:
+    config = config_schema({"agent": {"stream_content_char_limit": 1024}}).agent
+
+    def chunks(**_kwargs):
+        return iter(
+            [
+                {"choices": [{"delta": {"content": "x" * 600}}]},
+                {"choices": [{"delta": {"content": "y" * 600}}]},
+            ]
+        )
+
+    provider = OpenAICompatibleProvider(config, stream_chat_completions_fn=chunks)
+    with pytest.raises(StreamError, match="Provider content exceeds"):
+        provider.stream_completion({}, None, None, pass_id="bounded")
 
 
 def agent_config(*, sections=None, **overrides):

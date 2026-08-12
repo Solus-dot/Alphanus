@@ -52,7 +52,12 @@ class FinalizationEngine:
                 message = str(exc)
                 self.orchestrator.emit(on_event, {"type": "error", "text": message})
                 return AgentTurnResult(
-                    status="error", content="", reasoning=state.full_reasoning, skill_exchanges=state.skill_exchanges, error=message
+                    status="error",
+                    content="",
+                    reasoning=state.full_reasoning,
+                    skill_exchanges=state.skill_exchanges,
+                    error=message,
+                    error_code="E_PROVIDER",
                 )
 
         def coerce_result(stream_result, current_reasoning: str) -> AgentTurnResult:
@@ -65,6 +70,7 @@ class FinalizationEngine:
                     reasoning=self.orchestrator.sanitizer.append_reasoning(current_reasoning, stream_result.reasoning),
                     skill_exchanges=state.skill_exchanges,
                     error="Finalization pass unexpectedly returned tool calls",
+                    error_code="E_PROVIDER",
                 )
             cleaned = self.orchestrator.sanitizer.sanitize_final_content(stream_result.content)
             return AgentTurnResult(
@@ -188,6 +194,7 @@ class FinalizationEngine:
                 reasoning=current_reasoning,
                 skill_exchanges=state.skill_exchanges,
                 error=error_code,
+                error_code="E_PROVIDER",
                 journal=journal,
             )
 

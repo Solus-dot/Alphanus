@@ -81,8 +81,15 @@ class Agent:
         return f": {self.llm_client.friendly_endpoint_error(status.last_error)}" if status.last_error else ""
 
     @staticmethod
-    def _empty_result(status: str, error: str = "") -> AgentTurnResult:
-        return AgentTurnResult(status=status, content="", reasoning="", skill_exchanges=[], error=error)
+    def _empty_result(status: str, error: str = "", error_code: str | None = None) -> AgentTurnResult:
+        return AgentTurnResult(
+            status=status,
+            content="",
+            reasoning="",
+            skill_exchanges=[],
+            error=error,
+            error_code=error_code,
+        )
 
     def _not_ready_result(self, status: ModelStatus) -> AgentTurnResult:
         error = (
@@ -90,7 +97,7 @@ class Agent:
             if status.state == "offline"
             else f"Model endpoint not ready: {self.llm_client.models_endpoint}"
         )
-        return self._empty_result("error", error)
+        return self._empty_result("error", error, "E_PROVIDER")
 
     def _validate_endpoints(self) -> str | None:
         try:

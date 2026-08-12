@@ -347,6 +347,7 @@ class TurnOrchestrator:
             reasoning=state.full_reasoning,
             skill_exchanges=state.skill_exchanges,
             error=message,
+            error_code="E_PROVIDER",
         )
 
     def record_tool_effects(self, state: TurnState, call: ToolCall, result: dict[str, object], *, policy_blocked: bool = False) -> None:
@@ -387,6 +388,7 @@ class TurnOrchestrator:
             reasoning=result.reasoning,
             skill_exchanges=result.skill_exchanges,
             error="project_action_not_completed",
+            error_code="E_TOOL",
             journal=result.journal,
         )
 

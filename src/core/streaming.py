@@ -14,6 +14,7 @@ from core.errors import ProviderError
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 RETRYABLE_URL_ERRORS = (TimeoutError, ConnectionResetError)
 STREAM_POLL_TIMEOUT_S = 0.25
+MAX_SSE_LINE_BYTES = 1024 * 1024
 
 
 class StreamError(ProviderError):
@@ -119,13 +120,20 @@ def stream_chat_completions(
                         if not ready:
                             continue
                     try:
-                        raw = readline()
+                        try:
+                            raw = readline(MAX_SSE_LINE_BYTES + 1)
+                        except TypeError:
+                            # File-like test doubles and some third-party response
+                            # wrappers do not accept the standard size argument.
+                            raw = readline()
                     except TimeoutError:
                         continue
                     if not raw:
                         return
                     idle_deadline = time.monotonic() + idle_timeout_s
                     raw_bytes = raw if isinstance(raw, (bytes, bytearray)) else str(raw).encode("utf-8", errors="replace")
+                    if len(raw_bytes) > MAX_SSE_LINE_BYTES:
+                        raise StreamError(f"Provider stream line exceeds {MAX_SSE_LINE_BYTES} bytes")
                     line = raw_bytes.decode(errors="replace").strip()
                     if not line.startswith("data:"):
                         continue
@@ -150,6 +158,8 @@ def stream_chat_completions(
             for raw in resp:
                 if stop_event is not None and stop_event.is_set():
                     return
+                if len(raw) > MAX_SSE_LINE_BYTES:
+                    raise StreamError(f"Provider stream line exceeds {MAX_SSE_LINE_BYTES} bytes")
                 line = raw.decode(errors="replace").strip()
                 if not line.startswith("data:"):
                     continue

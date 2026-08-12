@@ -41,6 +41,10 @@ class AgentConfig(ConfigSection):
     allow_cross_host_endpoints: bool = False
     max_tokens: int | None = None
     context_budget_max_tokens: int = Field(default=2048, ge=256, le=262144)
+    stream_content_char_limit: int = Field(default=4_000_000, ge=1024, le=16_000_000)
+    stream_reasoning_char_limit: int = Field(default=4_000_000, ge=1024, le=16_000_000)
+    stream_tool_argument_char_limit: int = Field(default=2_000_000, ge=1024, le=16_000_000)
+    stream_tool_call_limit: int = Field(default=128, ge=1, le=1024)
     max_action_depth: int = Field(default=10, ge=1, le=100)
     max_tool_result_chars: int = Field(default=12000, ge=500, le=200000)
     max_reasoning_chars: int = Field(default=20000, ge=0, le=200000)

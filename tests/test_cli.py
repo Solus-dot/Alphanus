@@ -13,7 +13,7 @@ from alphanus.commands import exec as exec_command
 from alphanus.commands import init as init_command
 from alphanus.runtime_factory import resolve_project_root
 from core.configuration import load_global_config
-from core.headless_protocol import EXIT_INVALID_INPUT, EXIT_POLICY_DENIED, EXIT_SUCCESS
+from core.headless_protocol import EXIT_INVALID_INPUT, EXIT_MODEL_FAILURE, EXIT_POLICY_DENIED, EXIT_SUCCESS
 from core.types import AgentTurnResult
 
 
@@ -150,7 +150,14 @@ def test_exec_emits_versioned_jsonl_and_success_exit(tmp_path: Path, monkeypatch
 
 def test_exec_policy_denial_has_stable_exit_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     output = io.StringIO()
-    result = AgentTurnResult(status="error", content="", reasoning="", skill_exchanges=[], error="approval denied")
+    result = AgentTurnResult(
+        status="error",
+        content="",
+        reasoning="",
+        skill_exchanges=[],
+        error="approval denied",
+        error_code="E_POLICY",
+    )
     monkeypatch.setattr(exec_command, "get_app_paths", lambda: _paths(tmp_path))
     monkeypatch.setattr(exec_command, "_load_runtime_config", lambda _paths, _args: ({"logging": {}}, []))
     monkeypatch.setattr(
@@ -158,6 +165,28 @@ def test_exec_policy_denial_has_stable_exit_code(tmp_path: Path, monkeypatch: py
     )
     monkeypatch.setattr(alphanus_cli.sys, "stdout", output)
     assert alphanus_cli._run_exec(_exec_args()) == EXIT_POLICY_DENIED
+
+
+def test_exec_provider_permission_error_is_not_a_policy_denial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    output = io.StringIO()
+    result = AgentTurnResult(
+        status="error",
+        content="",
+        reasoning="",
+        skill_exchanges=[],
+        error="Provider permission denied",
+        error_code="E_PROVIDER",
+    )
+    monkeypatch.setattr(exec_command, "get_app_paths", lambda: _paths(tmp_path))
+    monkeypatch.setattr(exec_command, "_load_runtime_config", lambda _paths, _args: ({"logging": {}}, []))
+    monkeypatch.setattr(
+        exec_command, "_build_agent_runtime", lambda *_args, **_kwargs: (None, _FakeMemory(), None, _FakeAgent(result, tmp_path))
+    )
+    monkeypatch.setattr(alphanus_cli.sys, "stdout", output)
+
+    assert alphanus_cli._run_exec(_exec_args()) == EXIT_MODEL_FAILURE
+    error = next(record for record in map(json.loads, output.getvalue().splitlines()) if record["type"] == "run.error")
+    assert error["data"]["category"] == "model"
 
 
 def test_exec_rejects_empty_input_with_final_event(monkeypatch: pytest.MonkeyPatch) -> None:

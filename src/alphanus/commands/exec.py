@@ -73,10 +73,19 @@ def _run_exec(args: Any) -> int:
             return EXIT_CANCELLED
         if result.status not in {"ok", "done"}:
             error = str(result.error or "model execution failed")
-            denied = "approval" in error.casefold() or "policy" in error.casefold() or "permission" in error.casefold()
-            emitter.emit("run.error", category="policy" if denied else "model", message=error)
+            error_code = str(result.error_code or "E_PROVIDER")
+            if error_code == "E_POLICY":
+                category = "policy"
+                exit_code = EXIT_POLICY_DENIED
+            elif error_code in {"E_CANCELLED", "E_TIMEOUT"}:
+                category = "timeout" if error_code == "E_TIMEOUT" else "cancelled"
+                exit_code = EXIT_CANCELLED
+            else:
+                category = "model"
+                exit_code = EXIT_MODEL_FAILURE
+            emitter.emit("run.error", category=category, code=error_code, message=error)
             emitter.emit("run.completed", status="error")
-            return EXIT_POLICY_DENIED if denied else EXIT_MODEL_FAILURE
+            return exit_code
         emitter.emit("assistant.final", content=result.content)
         emitter.emit("run.completed", status="success")
         return EXIT_SUCCESS

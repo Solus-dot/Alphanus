@@ -81,6 +81,7 @@ class AgentTurnResult:
     reasoning: str
     skill_exchanges: list[ChatMessage]
     error: str | None = None
+    error_code: str | None = None
     journal: dict[str, JSONValue] = field(default_factory=dict)
 
 
@@ -177,6 +178,7 @@ def cancelled_turn_result(state: TurnState) -> AgentTurnResult:
         content="",
         reasoning=state.full_reasoning,
         skill_exchanges=state.skill_exchanges,
+        error_code="E_CANCELLED",
     )
 
 

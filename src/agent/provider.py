@@ -34,7 +34,7 @@ from agent.telemetry import TelemetryEmitter
 from core.config_model import AgentConfig, ConfigSchema, config_schema
 from core.endpoint_modes import CONCRETE_ENDPOINT_MODES, ENDPOINT_MODE_AUTO, ENDPOINT_MODE_CHAT, ENDPOINT_MODE_RESPONSES, ENDPOINT_MODES
 from core.message_types import ChatMessage, ToolCallDelta
-from core.streaming import build_ssl_context
+from core.streaming import StreamError, build_ssl_context
 from core.streaming import stream_chat_completions as core_stream_chat_completions
 from core.types import JsonObject, ModelStatus, StreamPassResult, ToolCallAccumulator
 
@@ -111,6 +111,10 @@ class OpenAICompatibleProvider:
         self.per_turn_retries = config.per_turn_retries
         self.retry_backoff_s = config.retry_backoff_s
         self.default_max_tokens = config.max_tokens
+        self.stream_content_char_limit = config.stream_content_char_limit
+        self.stream_reasoning_char_limit = config.stream_reasoning_char_limit
+        self.stream_tool_argument_char_limit = config.stream_tool_argument_char_limit
+        self.stream_tool_call_limit = config.stream_tool_call_limit
         self.api_key_env = config.api_key_env
         self.auth_header_template = config.auth_header_template
         self.ssl_context = build_ssl_context(self.tls_verify, self.ca_bundle_path)
@@ -543,6 +547,10 @@ class OpenAICompatibleProvider:
 
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
+        content_chars = 0
+        reasoning_chars = 0
+        tool_argument_chars = 0
+        tool_argument_lengths: dict[int, int] = {}
         finish_reason = "stop"
         tool_acc = ToolCallAccumulator(pass_id=pass_id)
         tool_phase_started = False
@@ -588,12 +596,18 @@ class OpenAICompatibleProvider:
                 self._emit(on_event, {"type": "usage", "usage": dict(usage)})
             reasoning = str(parsed.get("reasoning") or "")
             if reasoning:
+                reasoning_chars += len(reasoning)
+                if reasoning_chars > self.stream_reasoning_char_limit:
+                    raise StreamError(f"Provider reasoning exceeds {self.stream_reasoning_char_limit} characters")
                 if first_output_at is None:
                     first_output_at = time.time()
                 reasoning_parts.append(reasoning)
                 self._emit(on_event, {"type": "reasoning_token", "text": reasoning})
             content = str(parsed.get("content") or "")
             if content:
+                content_chars += len(content)
+                if content_chars > self.stream_content_char_limit:
+                    raise StreamError(f"Provider content exceeds {self.stream_content_char_limit} characters")
                 if first_output_at is None:
                     first_output_at = time.time()
                 content_parts.append(content)
@@ -619,6 +633,14 @@ class OpenAICompatibleProvider:
                     tool_phase_started = True
                     self._emit(on_event, {"type": "tool_phase_started"})
                 for update in tool_acc.ingest(tool_deltas):
+                    index = int(update.get("index", 0))
+                    current_length = len(str(update.get("name") or "")) + len(str(update.get("raw_arguments") or ""))
+                    tool_argument_chars += current_length - tool_argument_lengths.get(index, 0)
+                    tool_argument_lengths[index] = current_length
+                    if len(tool_argument_lengths) > self.stream_tool_call_limit:
+                        raise StreamError(f"Provider emitted more than {self.stream_tool_call_limit} tool calls")
+                    if tool_argument_chars > self.stream_tool_argument_char_limit:
+                        raise StreamError(f"Provider tool arguments exceed {self.stream_tool_argument_char_limit} characters")
                     self._emit(
                         on_event,
                         {
@@ -642,8 +664,8 @@ class OpenAICompatibleProvider:
             pass_id=pass_id,
             mode=mode,
             finish_reason=finish_reason,
-            content_chars=len("".join(content_parts)),
-            reasoning_chars=len("".join(reasoning_parts)),
+            content_chars=content_chars,
+            reasoning_chars=reasoning_chars,
             tool_call_count=len(tool_calls),
             tool_names=[call.name for call in tool_calls],
         )
