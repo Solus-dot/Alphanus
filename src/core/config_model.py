@@ -110,24 +110,12 @@ class SearchConfig(ClosedConfigSection):
     fetch_min_chars: int = Field(default=20, ge=1)
 
 
-class EmbeddingsConfig(ConfigSection):
-    enabled: bool = False
-    base_url: str = ""
-    model: str = ""
-    api_key_env: str = "ALPHANUS_EMBEDDINGS_API_KEY"
-    dimensions: int = Field(default=0, ge=0)
-    batch_size: int = Field(default=32, ge=1)
-
-
 class RetrievalConfig(ConfigSection):
     enabled: bool = True
     store_path: str = ""
     web_ttl_hours: float = Field(default=72, ge=0)
     pre_context_top_k: int = Field(default=3, ge=0, le=10)
-    lexical_weight: float = Field(default=0.3, ge=0, le=1)
-    dense_weight: float = Field(default=0.7, ge=0, le=1)
     candidate_limit: int = Field(default=2000, ge=10, le=10000)
-    embeddings: EmbeddingsConfig = Field(default_factory=lambda: EmbeddingsConfig())
 
 
 class LoggingConfig(ConfigSection):

@@ -57,19 +57,13 @@ def _env(provider: str = "searxng"):
     )
 
 
-def _env_with_store(path: Path, *, embeddings: bool = False):
-    cfg = {
-        "search": {"provider": "searxng", "fallback_provider": "", "searxng_base_url": "http://127.0.0.1:8888"},
-        "retrieval": {"store_path": str(path), "web_ttl_hours": 24},
-    }
-    if embeddings:
-        cfg["retrieval"]["embeddings"] = {
-            "enabled": True,
-            "base_url": "http://127.0.0.1:8080",
-            "model": "local-embed",
-            "api_key_env": "ALPHANUS_EMBEDDINGS_API_KEY",
+def _env_with_store(path: Path):
+    return SimpleNamespace(
+        config={
+            "search": {"provider": "searxng", "fallback_provider": "", "searxng_base_url": "http://127.0.0.1:8888"},
+            "retrieval": {"store_path": str(path), "web_ttl_hours": 24},
         }
-    return SimpleNamespace(config=cfg)
+    )
 
 
 def _env_with_search_store(path: Path):
@@ -286,64 +280,6 @@ def test_fetch_url_respects_disabled_retrieval(mocker, tmp_path: Path):
     assert stats["backend"] == "disabled"
     assert stats["enabled"] is False
     assert not db_path.exists()
-
-
-def test_fetch_url_indexes_embeddings_and_retrieve_uses_dense_query(mocker, tmp_path: Path):
-    module = _load_search_module()
-    env = _env_with_store(tmp_path / "retrieval.sqlite", embeddings=True)
-    html = """
-    <html>
-      <head><title>Vector Page</title></head>
-      <body><article><p>Semantic alpha release notes are available.</p></article></body>
-    </html>
-    """
-
-    class _FetchResp:
-        headers = _Headers("text/html; charset=utf-8")
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self, _size=-1):
-            return html.encode("utf-8")
-
-        def geturl(self):
-            return "https://example.com/vector"
-
-    class _EmbeddingResp:
-        headers = _Headers()
-
-        def __init__(self, vector: list[float]):
-            self._payload = json.dumps({"data": [{"embedding": vector}]}).encode("utf-8")
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self, _size=-1):
-            return self._payload
-
-    embedding_calls: list[dict[str, object]] = []
-
-    def fake_urlopen(req, timeout=None):
-        embedding_calls.append(json.loads(req.data.decode("utf-8")))
-        return _EmbeddingResp([1.0, 0.0])
-
-    mocker.patch.object(module._search_engine, "_open_no_redirect", return_value=_FetchResp())
-    mocker.patch.object(module.urllib.request, "urlopen", side_effect=fake_urlopen)
-
-    fetched = module.execute("fetch_url", {"url": "https://example.com/vector"}, env=env)
-    retrieved = module.execute("retrieve_knowledge", {"query": "meaning not lexically overlapping", "top_k": 1}, env=env)
-
-    assert fetched["retrieval"]["embedding"]["stored"] == 1
-    assert retrieved["backend"] == "sqlite_hybrid"
-    assert retrieved["hits"][0]["title"] == "Vector Page"
-    assert embedding_calls[0]["model"] == "local-embed"
 
 
 def test_web_search_does_not_fall_back_without_fallback_provider(mocker):

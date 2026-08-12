@@ -97,7 +97,6 @@ uv run alphanus init permissions
 - `ALPHANUS_API_KEY` for authenticated model endpoints
 - `ALPHANUS_AUTH_HEADER` for advanced custom auth header override
 - `TAVILY_API_KEY` when `search.provider = "tavily"` or `search.fallback_provider = "tavily"`
-- `ALPHANUS_EMBEDDINGS_API_KEY` when optional OpenAI-compatible retrieval embeddings use an authenticated endpoint
 
 ---
 
@@ -300,7 +299,6 @@ Search is intended for time-sensitive queries and feeds the local retrieval inde
 - export the configured Tavily environment variable before launching Alphanus; secrets are never persisted by `init`
 - retrieval store: SQLite FTS under the Alphanus state root, usually `~/.alphanus/retrieval/index.sqlite` unless `ALPHANUS_APP_ROOT` is set
 - fetched pages are indexed; search result snippets alone are not persisted
-- optional dense retrieval uses an OpenAI-compatible embeddings endpoint when `retrieval.embeddings.enabled` is true
 - safe automatic memory capture stores only obvious stable preference/project facts and skips secret-like text
 - policy: if evidence is insufficient, Alphanus declines to speculate
 - default per-turn budgets:

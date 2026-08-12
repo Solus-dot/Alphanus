@@ -11,7 +11,6 @@ from html import unescape
 from typing import Any
 
 from core.coercion import coerce_bool
-from core.endpoint_modes import OPENAI_EMBEDDINGS_PATH
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
 from core.search_providers import DEFAULT_TAVILY_API_KEY_ENV, SEARCH_PROVIDER_SEARXNG, SEARCH_PROVIDER_TAVILY
 from core.streaming import should_retry
@@ -324,77 +323,6 @@ def _retrieval_store(env: ToolExecutionEnv) -> SQLiteRetrievalStore:
     cfg = env.config.get("retrieval", {}) if isinstance(env.config, dict) else {}
     limit = int(cfg.get("candidate_limit", 2000)) if isinstance(cfg, dict) else 2000
     return SQLiteRetrievalStore(configured_store_path(env.config if isinstance(env.config, dict) else {}), candidate_limit=limit)
-
-
-def _embedding_cfg(env: ToolExecutionEnv) -> dict[str, Any]:
-    retrieval_cfg = env.config.get("retrieval", {}) if isinstance(env.config, dict) else {}
-    embeddings_cfg = retrieval_cfg.get("embeddings", {}) if isinstance(retrieval_cfg, dict) else {}
-    return embeddings_cfg if isinstance(embeddings_cfg, dict) else {}
-
-
-def _embedding_vectors(texts: list[str], env: ToolExecutionEnv) -> tuple[str, list[list[float]]]:
-    cfg = _embedding_cfg(env)
-    if not bool(cfg.get("enabled", False)):
-        return "", []
-    base_url = str(cfg.get("base_url") or "").strip()
-    model = str(cfg.get("model") or "").strip()
-    if not base_url or not model or not texts:
-        return "", []
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
-    api_key_env = str(cfg.get("api_key_env") or "").strip()
-    api_key = os.environ.get(api_key_env, "").strip() if api_key_env else ""
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    vectors: list[list[float]] = []
-    expected_dimensions = max(0, int(cfg.get("dimensions", 0) or 0))
-    batch_size = max(1, min(int(cfg.get("batch_size", 32) or 32), 256))
-    for offset in range(0, len(texts), batch_size):
-        batch = texts[offset : offset + batch_size]
-        trimmed_url = base_url.rstrip("/")
-        req = _request(
-            trimmed_url if trimmed_url.endswith("/embeddings") else f"{trimmed_url}{OPENAI_EMBEDDINGS_PATH}",
-            data=json.dumps({"model": model, "input": batch}).encode("utf-8"),
-            headers=headers,
-        )
-        response = _request_json(req, provider_name="Embeddings", timeout_s=_request_timeout_s(env), retries=0, retry_backoff_s=0.0)
-        rows = response.get("data")
-        if not isinstance(rows, list) or len(rows) != len(batch):
-            raise RuntimeError("Embeddings response count does not match the input batch")
-        for row in rows:
-            embedding = row.get("embedding") if isinstance(row, dict) else None
-            if not isinstance(embedding, list) or not embedding:
-                raise RuntimeError("Embeddings response contains an invalid vector")
-            vector = [float(item) for item in embedding]
-            if expected_dimensions and len(vector) != expected_dimensions:
-                raise RuntimeError(f"Embedding dimension mismatch: expected {expected_dimensions}, got {len(vector)}")
-            vectors.append(vector)
-    return model, vectors
-
-
-def _embed_record_chunks(store: SQLiteRetrievalStore, record_id: int, env: ToolExecutionEnv) -> dict[str, Any]:
-    chunks = store.chunk_texts_for_record(record_id)
-    if not chunks:
-        return {"enabled": False, "stored": 0}
-    cfg = _embedding_cfg(env)
-    model = str(cfg.get("model") or "").strip()
-    dimensions = max(0, int(cfg.get("dimensions", 0) or 0))
-    cached = [store.cached_embedding(str(chunk["text"]), model=model, dimensions=dimensions) for chunk in chunks] if model else []
-    missing = [str(chunk["text"]) for chunk, vector in zip(chunks, cached, strict=False) if vector is None]
-    try:
-        embedded_model, generated = _embedding_vectors(missing, env)
-    except RuntimeError as exc:
-        return {"enabled": True, "stored": 0, "error": str(exc)}
-    if not model:
-        model = embedded_model
-    if not model or (not generated and not any(cached)):
-        return {"enabled": False, "stored": 0}
-    generated_iter = iter(generated)
-    vectors = [vector if vector is not None else next(generated_iter) for vector in cached]
-    stored = 0
-    for chunk, vector in zip(chunks, vectors, strict=False):
-        store.set_chunk_embedding(chunk_id=int(chunk["chunk_id"]), model=model, vector=vector)
-        stored += 1
-    return {"enabled": True, "stored": stored, "model": model}
 
 
 def _searxng_base_url(env: ToolExecutionEnv) -> str:

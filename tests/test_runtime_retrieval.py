@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -205,64 +204,6 @@ def test_project_action_coercion_preserves_declined_or_blocked_reply(mocker, tmp
     coerced = orchestrator.coerce_project_action_failure(state, result, stop_event=None, pass_id="pass_1")
 
     assert coerced is result
-
-
-def test_retrieval_replacement_and_forget_cleanup_embeddings(tmp_path: Path) -> None:
-    db_path = tmp_path / "retrieval.sqlite"
-    store = SQLiteRetrievalStore(db_path)
-    first = store.upsert_record(
-        record_type="web_page",
-        source="https://example.com/first",
-        canonical_source="https://example.com/doc",
-        title="First",
-        text="alpha release notes " * 100,
-    )
-    assert first is not None
-    for chunk in store.chunk_texts_for_record(first.id):
-        store.set_chunk_embedding(chunk_id=int(chunk["chunk_id"]), model="test", vector=[1.0, 0.0])
-    assert store.stats()["embeddings"] > 0
-
-    second = store.upsert_record(
-        record_type="web_page",
-        source="https://example.com/second",
-        canonical_source="https://example.com/doc",
-        title="Second",
-        text="beta release notes " * 20,
-    )
-
-    assert second is not None
-    assert second.id == first.id
-    assert store.stats()["embeddings"] == 0
-    for chunk in store.chunk_texts_for_record(second.id):
-        store.set_chunk_embedding(chunk_id=int(chunk["chunk_id"]), model="test", vector=[0.0, 1.0])
-    assert store.forget(second.id) is True
-    assert store.stats()["records"] == 0
-    assert store.stats()["chunks"] == 0
-    assert store.stats()["embeddings"] == 0
-
-
-def test_retrieval_open_cleans_existing_orphans(tmp_path: Path) -> None:
-    db_path = tmp_path / "retrieval.sqlite"
-    store = SQLiteRetrievalStore(db_path)
-    record = store.upsert_record(
-        record_type="web_page",
-        source="https://example.com/orphan",
-        canonical_source="https://example.com/orphan",
-        title="Orphan",
-        text="orphan cleanup release notes " * 80,
-    )
-    assert record is not None
-    for chunk in store.chunk_texts_for_record(record.id):
-        store.set_chunk_embedding(chunk_id=int(chunk["chunk_id"]), model="test", vector=[1.0])
-
-    with sqlite3.connect(db_path) as conn:
-        conn.execute("DELETE FROM records WHERE id = ?", (record.id,))
-    raw_store = SQLiteRetrievalStore(db_path)
-
-    assert raw_store.stats()["records"] == 0
-    assert raw_store.stats()["chunks"] == 0
-    assert raw_store.stats()["embeddings"] == 0
-    assert raw_store.search("orphan cleanup", top_k=1) == []
 
 
 def test_plan_mode_blocks_mutating_tool_calls(mocker, tmp_path: Path) -> None:

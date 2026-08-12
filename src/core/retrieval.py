@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import sqlite3
 import time
@@ -17,18 +16,13 @@ _SCHEMA_STATEMENTS = (
     "CREATE TABLE IF NOT EXISTS records (id INTEGER PRIMARY KEY, record_type TEXT NOT NULL, source TEXT NOT NULL, canonical_source TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', metadata_json TEXT NOT NULL DEFAULT '{}', content_hash TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, fetched_at INTEGER NOT NULL DEFAULT 0, stale_after INTEGER NOT NULL DEFAULT 0, UNIQUE(record_type, canonical_source))",
     "CREATE TABLE IF NOT EXISTS chunks (id INTEGER PRIMARY KEY, record_id INTEGER NOT NULL REFERENCES records(id) ON DELETE CASCADE, chunk_index INTEGER NOT NULL, text TEXT NOT NULL, UNIQUE(record_id, chunk_index))",
     "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text, title, source, record_type)",
-    "CREATE TABLE IF NOT EXISTS embeddings (chunk_id INTEGER PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE, model TEXT NOT NULL, dimensions INTEGER NOT NULL, vector_json TEXT NOT NULL)",
-    "CREATE TABLE IF NOT EXISTS embedding_cache (content_hash TEXT NOT NULL, model TEXT NOT NULL, dimensions INTEGER NOT NULL, vector_json TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(content_hash, model, dimensions))",
     "CREATE INDEX IF NOT EXISTS idx_records_type_updated ON records(record_type, updated_at DESC)",
-    "CREATE INDEX IF NOT EXISTS idx_embeddings_model_dimensions ON embeddings(model, dimensions)",
 )
 _UPDATE_RECORD_SQL = (
     "UPDATE records SET source=?, title=?, metadata_json=?, content_hash=?, updated_at=?, fetched_at=?, stale_after=? WHERE id=?"
 )
 _INSERT_RECORD_SQL = "INSERT INTO records(record_type,source,canonical_source,title,metadata_json,content_hash,created_at,updated_at,fetched_at,stale_after) VALUES(?,?,?,?,?,?,?,?,?,?)"
 _LEXICAL_SEARCH_SQL = "SELECT c.id AS chunk_id,c.chunk_index,c.text,r.* FROM chunks_fts f JOIN chunks c ON c.id=f.rowid JOIN records r ON r.id=c.record_id WHERE chunks_fts MATCH ? {source_clause} ORDER BY bm25(chunks_fts) LIMIT ?"
-_UPSERT_EMBEDDING_SQL = "INSERT INTO embeddings(chunk_id,model,dimensions,vector_json) VALUES(?,?,?,?) ON CONFLICT(chunk_id) DO UPDATE SET model=excluded.model, dimensions=excluded.dimensions, vector_json=excluded.vector_json"
-_DENSE_SEARCH_SQL = "SELECT c.id AS chunk_id,c.chunk_index,c.text,e.vector_json,r.* FROM embeddings e JOIN chunks c ON c.id=e.chunk_id JOIN records r ON r.id=c.record_id WHERE {filters} ORDER BY r.updated_at DESC,c.id DESC LIMIT ?"
 
 
 def default_retrieval_store_path() -> Path:
@@ -79,13 +73,11 @@ class SQLiteRetrievalStore:
         if chunk_ids:
             params = [(chunk_id,) for chunk_id in chunk_ids]
             conn.executemany("DELETE FROM chunks_fts WHERE rowid = ?", params)
-            conn.executemany("DELETE FROM embeddings WHERE chunk_id = ?", params)
         conn.execute("DELETE FROM chunks WHERE record_id = ?", (record_id,))
 
     @staticmethod
     def _cleanup_orphans(conn: sqlite3.Connection) -> None:
         conn.execute("DELETE FROM chunks WHERE record_id NOT IN (SELECT id FROM records)")
-        conn.execute("DELETE FROM embeddings WHERE chunk_id NOT IN (SELECT id FROM chunks)")
         conn.execute("DELETE FROM chunks_fts WHERE rowid NOT IN (SELECT id FROM chunks)")
 
     @staticmethod
@@ -189,119 +181,6 @@ class SQLiteRetrievalStore:
             ).fetchall()
         return [self._result(row) for row in rows[:top_k]]
 
-    @staticmethod
-    def _cosine(a: list[float], b: list[float]) -> float:
-        if not a or len(a) != len(b):
-            return 0.0
-        dot = sum(x * y for x, y in zip(a, b, strict=True))
-        norm_a = math.sqrt(sum(x * x for x in a))
-        norm_b = math.sqrt(sum(y * y for y in b))
-        return dot / (norm_a * norm_b) if norm_a and norm_b else 0.0
-
-    def chunk_texts_for_record(self, record_id: int) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT id, chunk_index, text FROM chunks WHERE record_id = ? ORDER BY chunk_index",
-                (record_id,),
-            ).fetchall()
-        return [
-            {
-                "chunk_id": int(row["id"]),
-                "chunk_index": int(row["chunk_index"]),
-                "text": str(row["text"]),
-                "content_hash": self._hash(str(row["text"])),
-            }
-            for row in rows
-        ]
-
-    def cached_embedding(self, text: str, *, model: str, dimensions: int = 0) -> list[float] | None:
-        where = "content_hash=? AND model=?" + (" AND dimensions=?" if dimensions else "")
-        params: tuple[object, ...] = (self._hash(text), model, dimensions) if dimensions else (self._hash(text), model)
-        with self._connect() as conn:
-            row = conn.execute(f"SELECT vector_json FROM embedding_cache WHERE {where} LIMIT 1", params).fetchone()
-        try:
-            return [float(item) for item in json.loads(str(row["vector_json"]))] if row else None
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return None
-
-    def set_chunk_embedding(self, *, chunk_id: int, model: str, vector: list[float]) -> None:
-        if not model or not vector:
-            raise ValueError("embedding model and vector must not be empty")
-        payload = json.dumps([float(item) for item in vector])
-        with self._connect() as conn:
-            row = conn.execute("SELECT text FROM chunks WHERE id=?", (chunk_id,)).fetchone()
-            if row is None:
-                raise ValueError(f"unknown retrieval chunk {chunk_id}")
-            conn.execute(_UPSERT_EMBEDDING_SQL, (chunk_id, model, len(vector), payload))
-            conn.execute(
-                "INSERT OR IGNORE INTO embedding_cache(content_hash,model,dimensions,vector_json,created_at) VALUES(?,?,?,?,?)",
-                (self._hash(str(row["text"])), model, len(vector), payload, int(time.time())),
-            )
-
-    def dense_search(
-        self,
-        query_vector: list[float],
-        *,
-        top_k: int = 5,
-        sources: list[str] | None = None,
-        model: str = "",
-    ) -> list[dict[str, Any]]:
-        if not query_vector:
-            return []
-        source_filter = sorted({item.strip() for item in sources or [] if item.strip()})
-        filters = ["e.dimensions = ?"]
-        params: list[object] = [len(query_vector)]
-        if model:
-            filters.append("e.model = ?")
-            params.append(model)
-        if source_filter:
-            filters.append(f"r.record_type IN ({','.join('?' for _ in source_filter)})")
-            params.extend(source_filter)
-        params.append(self.candidate_limit)
-        with self._connect() as conn:
-            rows = conn.execute(_DENSE_SEARCH_SQL.format(filters=" AND ".join(filters)), params).fetchall()
-        ranked: list[tuple[float, sqlite3.Row]] = []
-        for row in rows:
-            try:
-                vector = [float(item) for item in json.loads(str(row["vector_json"]))]
-            except (TypeError, ValueError, json.JSONDecodeError):
-                continue
-            score = self._cosine(query_vector, vector)
-            if score > 0:
-                ranked.append((score, row))
-        ranked.sort(key=lambda item: item[0], reverse=True)
-        out: list[dict[str, Any]] = []
-        for score, row in ranked[: max(1, top_k)]:
-            out.append(self._result(row, score=score, mode="dense"))
-        return out
-
-    def hybrid_search(
-        self,
-        query: str,
-        query_vector: list[float],
-        *,
-        model: str,
-        top_k: int = 5,
-        sources: list[str] | None = None,
-        dense_weight: float = 0.7,
-        lexical_weight: float = 0.3,
-    ) -> list[dict[str, Any]]:
-        lexical = self.search(query, top_k=min(self.candidate_limit, top_k * 4), sources=sources)
-        dense = self.dense_search(query_vector, model=model, top_k=min(self.candidate_limit, top_k * 4), sources=sources)
-        if not dense:
-            return lexical[:top_k]
-        ranked: dict[int, tuple[float, dict[str, Any]]] = {}
-        for weight, rows in ((lexical_weight, lexical), (dense_weight, dense)):
-            for rank, row in enumerate(rows, start=1):
-                chunk_id = int(row["chunk_id"])
-                score, _old = ranked.get(chunk_id, (0.0, row))
-                ranked[chunk_id] = (score + max(0.0, weight) / (60 + rank), row)
-        output = [
-            dict(row, score=round(score, 6), retrieval_mode="hybrid_rrf")
-            for score, row in sorted(ranked.values(), key=lambda item: item[0], reverse=True)
-        ]
-        return output[:top_k]
-
     def forget(self, record_id: int) -> bool:
         with self._connect() as conn:
             self._delete_record_chunks(conn, record_id)
@@ -320,7 +199,6 @@ class SQLiteRetrievalStore:
         with self._connect() as conn:
             records = int(conn.execute("SELECT COUNT(*) FROM records").fetchone()[0])
             chunks = int(conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
-            embeddings = int(conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0])
             stale = int(
                 conn.execute("SELECT COUNT(*) FROM records WHERE stale_after > 0 AND stale_after < ?", (int(time.time()),)).fetchone()[0]
             )
@@ -332,7 +210,6 @@ class SQLiteRetrievalStore:
             "path": str(self.path),
             "records": records,
             "chunks": chunks,
-            "embeddings": embeddings,
             "stale_records": stale,
             "by_type": by_type,
         }

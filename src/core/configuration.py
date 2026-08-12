@@ -331,7 +331,6 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
     from core.config_model import (
         AgentConfig,
         ContextConfig,
-        EmbeddingsConfig,
         LoggingConfig,
         MemoryConfig,
         PermissionsConfig,
@@ -612,7 +611,7 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
 
     retrieval_cfg = merged.get("retrieval", {}) if isinstance(merged.get("retrieval"), dict) else {}
     retrieval_default = DEFAULT_CONFIG["retrieval"]
-    retrieval_cfg = _normalize_model(retrieval_cfg, RetrievalConfig, "retrieval", warnings, exclude=("store_path", "embeddings"))
+    retrieval_cfg = _normalize_model(retrieval_cfg, RetrievalConfig, "retrieval", warnings, exclude=("store_path",))
     raw_store_path = retrieval_cfg.get("store_path")
     retrieval_cfg["store_path"] = (
         ""
@@ -624,23 +623,6 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
             warnings=warnings,
         )
     )
-    embeddings_cfg = retrieval_cfg.get("embeddings", {}) if isinstance(retrieval_cfg.get("embeddings"), dict) else {}
-    embeddings_default = retrieval_default["embeddings"]
-    embeddings_cfg = _normalize_model(embeddings_cfg, EmbeddingsConfig, "retrieval.embeddings", warnings)
-    if embeddings_cfg["base_url"]:
-        embeddings_cfg["base_url"] = _normalize_base_url(
-            embeddings_cfg["base_url"],
-            default="",
-            path="retrieval.embeddings.base_url",
-            warnings=warnings,
-        )
-    embeddings_cfg["api_key_env"] = _normalize_env_name(
-        embeddings_cfg.get("api_key_env"),
-        default=str(embeddings_default["api_key_env"]),
-        path="retrieval.embeddings.api_key_env",
-        warnings=warnings,
-    )
-    retrieval_cfg["embeddings"] = embeddings_cfg
     merged["retrieval"] = retrieval_cfg
 
     tui_cfg = merged.get("tui", {}) if isinstance(merged.get("tui"), dict) else {}

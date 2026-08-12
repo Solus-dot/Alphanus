@@ -20,7 +20,7 @@ TOOL_SPEC_ROWS = {
     "fetch_url": ("web_fetch", False, ("read",), "Fetch a URL and extract readable text content plus source metadata.", {"url": {"type": "string"}, "max_chars": {"type": "integer"}}, ("url",), False),
     "retrieve_knowledge": ("knowledge_retrieve", False, ("read", "check"), "Search the local SQLite retrieval index for web, memory, project, and tool outcome records.", {"query": {"type": "string"}, "top_k": {"type": "integer"}, "sources": {"type": "array", "items": {"type": "string"}}}, ("query",), False),
     "index_project": ("project_index", True, ("update",), "Index explicitly selected project files into the local retrieval store.", {"paths": {"type": "array", "items": {"type": "string"}}, "max_chars_per_file": {"type": "integer"}}, ("paths",), False),
-    "retrieval_stats": ("retrieval_stats", False, ("check", "read"), "Return local retrieval database statistics and embedding availability.", {}, (), False),
+    "retrieval_stats": ("retrieval_stats", False, ("check", "read"), "Return local retrieval database statistics.", {}, (), False),
     "forget_retrieval_record": ("retrieval_forget", True, ("delete", "remove"), "Delete a retrieval record by id.", {"record_id": {"type": "integer"}}, ("record_id",), False),
 }
 # fmt: on
@@ -309,8 +309,7 @@ def _index_fetched_page(page: dict[str, Any], env: ToolExecutionEnv) -> dict[str
             "description": page.get("description", ""),
         },
     )
-    embedding = _search_engine._embed_record_chunks(store, record.id, env) if record else {"enabled": False, "stored": 0}
-    return {"indexed": bool(record), "record_id": record.id if record else 0, "embedding": embedding}
+    return {"indexed": bool(record), "record_id": record.id if record else 0}
 
 
 def _retrieve_knowledge(args: dict[str, Any], env: ToolExecutionEnv) -> dict[str, Any]:
@@ -324,24 +323,7 @@ def _retrieve_knowledge(args: dict[str, Any], env: ToolExecutionEnv) -> dict[str
     store = _search_engine._retrieval_store(env)
     top_k = int(args.get("top_k", 5) or 5)
     hits = store.search(query, top_k=top_k, sources=sources)
-    try:
-        model, vectors = _search_engine._embedding_vectors([query], env)
-    except RuntimeError:
-        vectors = []
-    if vectors:
-        cfg = env.config.get("retrieval", {}) if isinstance(env.config, dict) else {}
-        dense_weight = float(cfg.get("dense_weight", 0.7)) if isinstance(cfg, dict) else 0.7
-        lexical_weight = float(cfg.get("lexical_weight", 0.3)) if isinstance(cfg, dict) else 0.3
-        hits = store.hybrid_search(
-            query,
-            vectors[0],
-            model=model,
-            top_k=top_k,
-            sources=sources,
-            dense_weight=dense_weight,
-            lexical_weight=lexical_weight,
-        )
-    return {"query": query, "hits": hits[:top_k], "backend": "sqlite_hybrid" if vectors else "sqlite_fts"}
+    return {"query": query, "hits": hits[:top_k], "backend": "sqlite_fts"}
 
 
 def _index_project(args: dict[str, Any], env: ToolExecutionEnv) -> dict[str, Any]:
@@ -366,9 +348,7 @@ def _index_project(args: dict[str, Any], env: ToolExecutionEnv) -> dict[str, Any
             text=content[:limit],
             metadata={"path": path, "truncated": len(content) > limit},
         )
-        embedding = _search_engine._embed_record_chunks(store, record.id, env) if record else {"enabled": False, "stored": 0}
         indexed.append({"path": path, "record_id": record.id if record else 0, "indexed": bool(record)})
-        indexed[-1]["embedding"] = embedding
     return {"indexed": indexed, "count": sum(1 for item in indexed if item["indexed"])}
 
 
@@ -382,17 +362,9 @@ def _retrieval_stats(env: ToolExecutionEnv) -> dict[str, Any]:
             "by_type": {},
             "backend": "disabled",
             "enabled": False,
-            "embeddings": {"enabled": False, "mode": "openai_compatible", "ready": False},
         }
     stats = _search_engine._retrieval_store(env).stats()
-    retrieval_cfg = env.config.get("retrieval", {}) if isinstance(env.config, dict) else {}
-    embeddings_cfg = retrieval_cfg.get("embeddings", {}) if isinstance(retrieval_cfg, dict) else {}
     stats["backend"] = "sqlite_fts"
-    stats["embeddings"] = {
-        "enabled": bool(embeddings_cfg.get("enabled", False)) if isinstance(embeddings_cfg, dict) else False,
-        "mode": "openai_compatible",
-        "ready": bool(embeddings_cfg.get("base_url") and embeddings_cfg.get("model")) if isinstance(embeddings_cfg, dict) else False,
-    }
     return stats
 
 
