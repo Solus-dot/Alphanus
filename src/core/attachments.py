@@ -26,6 +26,10 @@ def _validated_path(path: str, *, max_bytes: int = MAX_ATTACHMENT_BYTES) -> Path
     return resolved
 
 
+def validated_attachment_size(path: str) -> int:
+    return _validated_path(path).stat().st_size
+
+
 def image_mime_type(path: str) -> str | None:
     mime, _encoding = mimetypes.guess_type(path)
     return mime if mime and mime.startswith("image/") else None

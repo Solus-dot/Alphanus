@@ -144,7 +144,7 @@ class TurnClassifier:
             attachments=attachments,
             project_root=str(self.skill_runtime.project.project_root),
             memory_hits=hits,
-            loaded_skill_ids=[str(item).strip() for item in (loaded_skill_ids or []) if str(item).strip()],
+            loaded_skill_ids=loaded_skill_ids if loaded_skill_ids is not None else [],
             recent_routing_hint=recent_hint,
             sticky_skill_ids=sticky_skill_ids,
         )

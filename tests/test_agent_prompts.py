@@ -21,6 +21,8 @@ def test_system_prompt_requires_structured_tool_calls(tmp_path):
     assert "<|tool_call>" in prompt
     assert "call:name{...}" in prompt
     assert "current tool interface" in prompt
+    assert "does not prove a tool is exposed now" in prompt
+    assert "even when history says it was loaded" in prompt
 
 
 def test_system_prompt_guides_shell_safety_without_forbidding_shell_syntax(tmp_path):

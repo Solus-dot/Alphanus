@@ -55,6 +55,10 @@ class _RuntimeAgent:
             endpoint="http://127.0.0.1:8080/v1/models",
         )
 
+    def reload_config(self, config: object) -> None:
+        assert isinstance(config, dict)
+        self.config = config_schema(config)
+
 
 class _RecordingRuntimeAgent(_RuntimeAgent):
     def __init__(self, root: Path) -> None:
@@ -146,6 +150,59 @@ def test_runtime_server_handshake_and_shutdown(tmp_path: Path) -> None:
         ("themes", "ok"),
         ("bye", "ok"),
     ]
+
+
+def test_runtime_theme_apply_reloads_typed_agent_config(tmp_path: Path) -> None:
+    from core.configuration import save_global_config
+    from core.runtime_server import RuntimeServer
+
+    output = io.StringIO()
+    agent = _RuntimeAgent(tmp_path)
+    config_path = tmp_path / "config.toml"
+    save_global_config(config_path, {"tui": {"theme": "classic"}})
+    server = RuntimeServer(
+        agent=agent,
+        memory=_RuntimeMemory(),
+        state_root=tmp_path / "state",
+        config_path=config_path,
+        input_stream=io.StringIO(),
+        output_stream=output,
+    )
+    try:
+        server._theme_apply("theme", {"theme_id": "nord"})
+        assert agent.config.tui.theme == "nord"
+        assert any(json.loads(line)["type"] == "theme.changed" for line in output.getvalue().splitlines())
+    finally:
+        server.close()
+
+
+def test_runtime_attachment_add_enforces_pending_limits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from core.attachments import MAX_ATTACHMENTS
+    from core.runtime_server import RuntimeServer
+
+    server = RuntimeServer(
+        agent=_RuntimeAgent(tmp_path),
+        memory=_RuntimeMemory(),
+        state_root=tmp_path / "state",
+        config_path=tmp_path / "config.toml",
+        input_stream=io.StringIO(),
+        output_stream=io.StringIO(),
+    )
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("ab", encoding="utf-8")
+    second.write_text("cd", encoding="utf-8")
+    try:
+        server.pending_attachments = [(str(first), "text")] * MAX_ATTACHMENTS
+        with pytest.raises(ValueError, match="At most"):
+            server._attachment_add("count", {"path": str(second)})
+
+        server.pending_attachments = [(str(first), "text")]
+        monkeypatch.setattr("core.runtime_server.MAX_TOTAL_ATTACHMENT_BYTES", 3)
+        with pytest.raises(ValueError, match="aggregate limit"):
+            server._attachment_add("bytes", {"path": str(second)})
+    finally:
+        server.close()
 
 
 def test_runtime_snapshot_uses_latest_bounded_page(tmp_path: Path) -> None:
@@ -510,6 +567,42 @@ def test_runtime_sends_each_current_user_turn_to_the_agent(tmp_path: Path) -> No
         ]
         completed = [frame for frame in map(json.loads, output.getvalue().splitlines()) if frame["type"] == "turn.completed"]
         assert [frame["data"]["content"] for frame in completed] == ["reply:first", "reply:second"]
+    finally:
+        server.close()
+
+
+def test_runtime_keeps_skills_loaded_by_the_model_for_followup_turns(tmp_path: Path) -> None:
+    from core.runtime_server import RuntimeServer
+
+    class SkillLoadingAgent(_RecordingRuntimeAgent):
+        def __init__(self, root: Path) -> None:
+            super().__init__(root)
+            self.loaded_snapshots: list[list[str]] = []
+
+        def run_turn(self, **kwargs: object) -> SimpleNamespace:
+            loaded = kwargs["loaded_skill_ids"]
+            assert isinstance(loaded, list)
+            self.loaded_snapshots.append(list(loaded))
+            if "utilities" not in loaded:
+                loaded.append("utilities")
+            return super().run_turn(**kwargs)
+
+    agent = SkillLoadingAgent(tmp_path)
+    server = RuntimeServer(
+        agent=agent,
+        memory=_RuntimeMemory(),
+        state_root=tmp_path / "state",
+        config_path=tmp_path / "config.toml",
+        input_stream=io.StringIO(),
+        output_stream=io.StringIO(),
+    )
+    try:
+        for request_id, prompt in (("one", "weather"), ("two", "try again")):
+            server._turn_start(request_id, {"prompt": prompt})
+            assert server.turn_thread is not None
+            server.turn_thread.join(timeout=2)
+        assert agent.loaded_snapshots == [[], ["utilities"]]
+        assert server.session.loaded_skill_ids == ["utilities"]
     finally:
         server.close()
 

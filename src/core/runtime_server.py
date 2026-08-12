@@ -7,7 +7,13 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, TextIO, cast
 
-from core.attachments import build_content, classify_attachment
+from core.attachments import (
+    MAX_ATTACHMENTS,
+    MAX_TOTAL_ATTACHMENT_BYTES,
+    build_content,
+    classify_attachment,
+    validated_attachment_size,
+)
 from core.configuration import config_for_editor_view, config_to_toml, load_global_config, save_global_config
 from core.conv_tree import Turn
 from core.message_types import JSONValue, MessageContentPart
@@ -453,7 +459,7 @@ class RuntimeServer:
                 thinking=thinking,
                 branch_labels=[item.label for item in self.session.tree.active_path if item.branch_root and item.label],
                 attachments=attachment_paths,
-                loaded_skill_ids=list(self.session.loaded_skill_ids),
+                loaded_skill_ids=self.session.loaded_skill_ids,
                 context_summary=self.session.tree.context_summary(),
                 collaboration_mode=self.session.collaboration_mode,
                 session_id=self.session.id,
@@ -631,6 +637,13 @@ class RuntimeServer:
             raise ValueError(f"unsupported attachment: {path.name}")
         item = (str(path), kind)
         if item not in self.pending_attachments:
+            if len(self.pending_attachments) >= MAX_ATTACHMENTS:
+                raise ValueError(f"At most {MAX_ATTACHMENTS} attachments are allowed")
+            total_bytes = validated_attachment_size(str(path)) + sum(
+                validated_attachment_size(existing_path) for existing_path, _kind in self.pending_attachments
+            )
+            if total_bytes > MAX_TOTAL_ATTACHMENT_BYTES:
+                raise ValueError(f"Attachments exceed the {MAX_TOTAL_ATTACHMENT_BYTES}-byte aggregate limit")
             self.pending_attachments.append(item)
         self._respond("attachments.changed", request_id, {"items": self._snapshot()["pending_attachments"]})
 
@@ -709,8 +722,8 @@ class RuntimeServer:
             raise ValueError("config tui section must be a table")
         tui["theme"] = theme_id
         save_global_config(self.config_path, config)
-        self.agent.config.setdefault("tui", {})["theme"] = theme_id
         reload_themes()
+        self.agent.reload_config(load_global_config(self.config_path))
         self._respond("theme.changed", request_id, {"theme": theme_payload(theme_id)})
 
     def _palette_get(self, request_id: str, _data: dict[str, Any]) -> None:
