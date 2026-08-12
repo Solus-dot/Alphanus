@@ -242,10 +242,13 @@ struct App {
     theme: Theme,
     themes: Vec<Value>,
     command_catalog: Vec<Value>,
+    external_files: Vec<Value>,
+    palette_loaded: bool,
     shortcut_catalog: Vec<Value>,
     last_sequence: u64,
     last_escape: Option<Instant>,
     last_frame: Instant,
+    dirty: bool,
     animation_frame: u16,
     active_turn_id: String,
     clipboard_notice: Option<(String, Instant)>,
@@ -361,7 +364,13 @@ pub fn run(python: &str, project_root: Option<&str>, debug: bool) -> Result<i32,
             forced_repaints = 4;
             app.last_frame = Instant::now() - Duration::from_millis(16);
         }
-        if app.last_frame.elapsed() >= Duration::from_millis(16) {
+        let notice_visible = app
+            .clipboard_notice
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() < Duration::from_secs(3));
+        if (app.dirty || app.streaming || notice_visible || forced_repaints > 0)
+            && app.last_frame.elapsed() >= Duration::from_millis(16)
+        {
             if forced_repaints > 0 {
                 terminal.clear().map_err(|error| error.to_string())?;
                 forced_repaints -= 1;

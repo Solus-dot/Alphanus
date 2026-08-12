@@ -50,10 +50,13 @@ impl App {
             theme: Theme::default(),
             themes: Vec::new(),
             command_catalog: Vec::new(),
+            external_files: Vec::new(),
+            palette_loaded: false,
             shortcut_catalog: Vec::new(),
             last_sequence: 0,
             last_escape: None,
             last_frame: Instant::now(),
+            dirty: true,
             animation_frame: 0,
             active_turn_id: String::new(),
             clipboard_notice: None,
@@ -107,6 +110,7 @@ impl App {
                     break;
                 }
             };
+            self.dirty = true;
             match event {
                 BackendEvent::Frame(frame) => self.apply_frame(frame),
                 BackendEvent::Diagnostic(line) => {
