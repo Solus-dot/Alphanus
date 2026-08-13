@@ -125,7 +125,6 @@ class LoggingConfig(ConfigSection):
 
 
 class UiTimingConfig(ConfigSection):
-    stream_drain_interval_s: float = Field(default=0.033, ge=0.001, le=1)
     action_approval_timeout_s: float = Field(default=60, ge=1, le=600)
 
 
@@ -138,7 +137,6 @@ class TreeCompactionConfig(ConfigSection):
 
 class UiConfig(ConfigSection):
     theme: str = DEFAULT_THEME_ID
-    chat_log_max_lines: int | None = Field(default=10000, ge=1000, le=200000)
     timing: UiTimingConfig = Field(default_factory=lambda: UiTimingConfig())
     tree_compaction: TreeCompactionConfig = Field(default_factory=lambda: TreeCompactionConfig())
 

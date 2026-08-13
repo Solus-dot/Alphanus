@@ -9,15 +9,13 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable, Generator
 
-from core.errors import ProviderError
-
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 RETRYABLE_URL_ERRORS = (TimeoutError, ConnectionResetError)
 STREAM_POLL_TIMEOUT_S = 0.25
 MAX_SSE_LINE_BYTES = 1024 * 1024
 
 
-class StreamError(ProviderError):
+class StreamError(RuntimeError):
     def __init__(self, message: str, status_code: int | None = None, retryable: bool = False):
         super().__init__(message)
         self.status_code = status_code

@@ -98,9 +98,8 @@ def test_prune_hard_fallback_enforces_budget():
     assert mgr.estimate_tokens(pruned) + 40 <= mgr.context_limit - mgr.safety_margin
 
 
-def test_default_config_keeps_transcript_unlimited_and_tree_compaction_enabled():
+def test_default_config_keeps_tree_compaction_enabled():
     tui = DEFAULT_CONFIG.get("tui", {})
-    assert int(tui.get("chat_log_max_lines", -1)) == 10000
     tree = tui.get("tree_compaction", {})
     assert bool(tree.get("enabled", False))
 

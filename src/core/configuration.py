@@ -19,7 +19,6 @@ from core.endpoint_modes import (
     OPENAI_MODELS_PATH,
     OPENAI_RESPONSES_PATH,
 )
-from core.errors import ConfigurationError
 from core.search_providers import SEARCH_FALLBACK_NONE, SEARCH_FALLBACK_PROVIDERS, SEARCH_PROVIDERS
 from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
 
@@ -218,34 +217,6 @@ def _normalize_choice(
     return choice
 
 
-class ConfigMigrationError(ConfigurationError):
-    pass
-
-
-def _legacy_config_errors(config: dict[str, Any]) -> list[str]:
-    errors: list[str] = []
-    if isinstance(config.get("workspace"), dict) or "workspace" in config:
-        errors.append(
-            "`workspace.path` was removed. Launch from the project directory or pass `--project-root`; configure `project.root_strategy` instead."
-        )
-    caps = config.get("capabilities")
-    if isinstance(caps, dict):
-        for key in ("permission_profile", "shell_require_confirmation", "dangerously_skip_permissions"):
-            if key in caps:
-                replacement = {
-                    "permission_profile": "`permissions.mode`",
-                    "shell_require_confirmation": "`permissions.approvals`",
-                    "dangerously_skip_permissions": '`permissions.mode = "danger-full-access"`',
-                }[key]
-                errors.append(f"`capabilities.{key}` was removed. Use {replacement}.")
-    elif "capabilities" in config:
-        errors.append("`capabilities` was removed. Use `permissions` and `sandbox`.")
-    runtime = config.get("runtime")
-    if isinstance(runtime, dict) and "profile" in runtime:
-        errors.append("`runtime.profile` was removed. Use `permissions.mode`.")
-    return errors
-
-
 def strip_secret_fields(config: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
     changed = False
 
@@ -348,14 +319,6 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
 
     warnings: list[str] = []
     sanitized_input, stripped = strip_secret_fields(raw_config)
-    legacy_errors = _legacy_config_errors(sanitized_input)
-    if legacy_errors:
-        detail = "\n".join(f"- {item}" for item in legacy_errors)
-        raise ConfigMigrationError(
-            "Config uses removed workspace-era keys.\n"
-            "Run `uv run alphanus init` again to write the new project/permissions config, then retry.\n"
-            "Removed keys:\n" + detail
-        )
     if stripped:
         _warn(warnings, "Removed secret-like fields from config; use environment variables for secrets.")
 

@@ -15,21 +15,5 @@ class AlphanusError(Exception):
         self.__cause__ = cause
 
 
-class ConfigurationError(AlphanusError, ValueError):
-    code = "E_CONFIG"
-
-
-class ProviderError(AlphanusError):
-    code = "E_PROVIDER"
-
-
-class ToolRuntimeError(AlphanusError, RuntimeError):
-    code = "E_TOOL"
-
-
-class ProtocolError(AlphanusError, ValueError):
-    code = "E_PROTOCOL"
-
-
 class OperationCancelled(AlphanusError):
     code = "E_CANCELLED"

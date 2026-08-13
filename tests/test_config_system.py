@@ -7,7 +7,6 @@ import pytest
 from core.config_model import config_schema
 from core.configuration import (
     DEFAULT_CONFIG,
-    ConfigMigrationError,
     load_global_config,
     normalize_config,
     save_global_config,
@@ -55,7 +54,6 @@ def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
         },
         "context": {"context_limit": 200, "safety_margin": 5000},
         "search": {"provider": "bing"},
-        "tui": {"chat_log_max_lines": -1},
     }
 
     normalized, _warnings = normalize_config(raw)
@@ -69,7 +67,6 @@ def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
     assert normalized["context"]["context_limit"] == 512
     assert normalized["context"]["safety_margin"] < normalized["context"]["context_limit"]
     assert normalized["search"]["provider"] == DEFAULT_CONFIG["search"]["provider"]
-    assert normalized["tui"]["chat_log_max_lines"] == 1000
 
 
 def test_normalize_config_accepts_search_architecture_knobs() -> None:
@@ -144,17 +141,6 @@ def test_normalize_config_theme_alias_and_invalid_values() -> None:
     assert invalid["tui"]["theme"] == DEFAULT_CONFIG["tui"]["theme"]
     assert any("tui.theme" in warning for warning in invalid_warnings)
     assert not any("unsupported 'catppuccin'" in warning for warning in alias_warnings)
-
-
-def test_normalize_config_rejects_removed_runtime_profile() -> None:
-    with pytest.raises(ConfigMigrationError, match="uv run alphanus init") as exc_info:
-        normalize_config({"runtime": {"profile": "safe"}})
-    assert "runtime.profile" in str(exc_info.value)
-
-
-def test_normalize_config_rejects_removed_capabilities() -> None:
-    with pytest.raises(ConfigMigrationError, match="capabilities.permission_profile"):
-        normalize_config({"capabilities": {"permission_profile": "minimal"}})
 
 
 def test_load_global_config_reports_bad_toml(tmp_path: Path) -> None:
@@ -247,7 +233,7 @@ def test_normalize_config_preserves_new_runtime_boundary_fields() -> None:
             "retry_backoff_s": "0.75",
         },
         "skills": {"paths": ["~/agent-skills"]},
-        "tui": {"timing": {"stream_drain_interval_s": "0.02", "action_approval_timeout_s": "90"}},
+        "tui": {"timing": {"action_approval_timeout_s": "90"}},
     }
 
     normalized, _warnings = normalize_config(raw)
@@ -257,7 +243,6 @@ def test_normalize_config_preserves_new_runtime_boundary_fields() -> None:
     assert normalized["agent"]["per_turn_retries"] == 2
     assert normalized["agent"]["retry_backoff_s"] == 0.75
     assert normalized["skills"]["paths"] == ["~/agent-skills"]
-    assert normalized["tui"]["timing"]["stream_drain_interval_s"] == 0.02
     assert normalized["tui"]["timing"]["action_approval_timeout_s"] == 90.0
 
 
@@ -301,7 +286,7 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
         {
             "agent": {"connect_timeout_s": 3, "per_turn_retries": 2},
             "skills": {"paths": ["~/agent-skills"]},
-            "tui": {"theme": "gruvbox-dark-soft", "chat_log_max_lines": 1234, "timing": {"action_approval_timeout_s": 90}},
+            "tui": {"theme": "gruvbox-dark-soft", "timing": {"action_approval_timeout_s": 90}},
         }
     )
 
@@ -317,26 +302,7 @@ def test_typed_runtime_configs_parse_normalized_config() -> None:
     assert "auth_header" not in provider.model_dump()
     assert skills.paths == ["~/agent-skills"]
     assert ui.theme == "gruvbox-dark-soft"
-    assert ui.chat_log_max_lines == 1234
     assert ui.timing.action_approval_timeout_s == 90.0
-
-
-def test_tui_chat_log_max_lines_zero_is_clamped_for_bounded_memory() -> None:
-    normalized, _warnings = normalize_config({"tui": {"chat_log_max_lines": 0}})
-
-    ui = config_schema(normalized).tui
-
-    assert normalized["tui"]["chat_log_max_lines"] == 1000
-    assert ui.chat_log_max_lines == 1000
-
-
-def test_tui_stream_drain_default_is_terminal_friendly() -> None:
-    normalized, _warnings = normalize_config({})
-
-    ui = config_schema(normalized).tui
-
-    assert normalized["tui"]["timing"]["stream_drain_interval_s"] == 0.033
-    assert ui.timing.stream_drain_interval_s == 0.033
 
 
 def test_normalize_config_accepts_loadable_custom_theme(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

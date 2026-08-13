@@ -58,18 +58,12 @@ class SessionSearchResult:
 class SessionStore:
     # Transactional v1 session store with indexed, bounded search.
 
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def __init__(self, project_root: str | Path, storage_dir: str | Path | None = None) -> None:
         self.project_root = Path(project_root)
         self.storage_dir = Path(storage_dir) if storage_dir is not None else self.project_root / DEFAULT_SESSIONS_DIRNAME
         self.storage_dir.mkdir(parents=True, exist_ok=True)
-        legacy = [self.storage_dir / "manifest.json", *self.storage_dir.glob("*.json")]
-        if any(path.exists() for path in legacy):
-            raise ValueError(
-                f"Legacy unversioned sessions were found in {self.storage_dir}. "
-                "Alphanus v1 does not migrate them; export or remove that directory before continuing."
-            )
         self.database_path = self.storage_dir / "sessions.db"
         self._lock = threading.RLock()
         self._connection = sqlite3.connect(self.database_path, timeout=5.0, check_same_thread=False)
@@ -92,7 +86,6 @@ class SessionStore:
                     title TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
-                    tree_json TEXT NOT NULL,
                     loaded_skill_ids_json TEXT NOT NULL DEFAULT '[]',
                     collaboration_mode TEXT NOT NULL DEFAULT 'execute',
                     context_summary TEXT NOT NULL DEFAULT '',
@@ -119,11 +112,14 @@ class SessionStore:
                 );
                 """
             )
-            legacy_rows = self._connection.execute(
-                "SELECT id,tree_json FROM sessions WHERE id NOT IN (SELECT session_id FROM session_turns)"
-            ).fetchall()
-            for row in legacy_rows:
-                self._sync_tree(str(row["id"]), ConvTree.from_dict(json.loads(row["tree_json"])))
+            columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(sessions)")}
+            if "tree_json" in columns:
+                legacy_rows = self._connection.execute(
+                    "SELECT id,tree_json FROM sessions WHERE id NOT IN (SELECT session_id FROM session_turns)"
+                ).fetchall()
+                for row in legacy_rows:
+                    self._sync_tree(str(row["id"]), ConvTree.from_dict(json.loads(row["tree_json"])))
+                self._connection.execute("ALTER TABLE sessions DROP COLUMN tree_json")
             self._connection.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (self.SCHEMA_VERSION, _utc_now_iso()),
@@ -304,8 +300,8 @@ class SessionStore:
         turn_count, branch_count = self._counts(session.tree)
         with self._lock, self._connection:
             self._connection.execute(
-                "INSERT INTO sessions(id,title,created_at,updated_at,tree_json,loaded_skill_ids_json,collaboration_mode,context_summary,turn_count,branch_count,deleted_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,NULL) ON CONFLICT(id) DO UPDATE SET title=excluded.title,updated_at=excluded.updated_at,"
+                "INSERT INTO sessions(id,title,created_at,updated_at,loaded_skill_ids_json,collaboration_mode,context_summary,turn_count,branch_count,deleted_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,NULL) ON CONFLICT(id) DO UPDATE SET title=excluded.title,updated_at=excluded.updated_at,"
                 "loaded_skill_ids_json=excluded.loaded_skill_ids_json,collaboration_mode=excluded.collaboration_mode,"
                 "context_summary=excluded.context_summary,turn_count=excluded.turn_count,branch_count=excluded.branch_count,deleted_at=NULL",
                 (
@@ -313,7 +309,6 @@ class SessionStore:
                     session.title,
                     session.created_at,
                     session.updated_at,
-                    "{}",
                     json.dumps(session.loaded_skill_ids),
                     session.collaboration_mode,
                     session.context_summary,
