@@ -447,8 +447,22 @@ fn draw_palette_popup(
                 },
                 Style::default().fg(app.theme.muted),
             ),
-            Span::styled("Esc", Style::default().fg(app.theme.secondary)),
-            Span::styled(" Close", Style::default().fg(app.theme.muted)),
+            Span::styled(
+                if mode == PaletteMode::Files {
+                    "Tab"
+                } else {
+                    "Esc"
+                },
+                Style::default().fg(app.theme.secondary),
+            ),
+            Span::styled(
+                if mode == PaletteMode::Files {
+                    " Complete    Esc Close"
+                } else {
+                    " Close"
+                },
+                Style::default().fg(app.theme.muted),
+            ),
         ])),
         rows[5],
     );

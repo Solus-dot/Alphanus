@@ -381,8 +381,39 @@ impl App {
                         deferred = Some(("palette.get", json!({"path":query.clone()})));
                     }
                 }
-                KeyCode::Down => *selected = selected.saturating_add(1),
+                KeyCode::Down => {
+                    let count = filtered_palette(
+                        if *mode == PaletteMode::Files && query.starts_with(['/', '~']) {
+                            &self.external_files
+                        } else {
+                            &self.command_catalog
+                        },
+                        query,
+                        *mode,
+                    )
+                    .len();
+                    *selected = (*selected + 1).min(count.saturating_sub(1));
+                }
                 KeyCode::Up => *selected = selected.saturating_sub(1),
+                KeyCode::Tab if *mode == PaletteMode::Files => {
+                    let external = query.starts_with(['/', '~']);
+                    let items = filtered_palette(
+                        if external {
+                            &self.external_files
+                        } else {
+                            &self.command_catalog
+                        },
+                        query,
+                        *mode,
+                    );
+                    if let Some(item) = items.get(*selected) {
+                        *query = palette_completion(item, external);
+                        *selected = 0;
+                        if external {
+                            deferred = Some(("palette.get", json!({"path":query.clone()})));
+                        }
+                    }
+                }
                 KeyCode::Enter => {
                     let items = filtered_palette(
                         if *mode == PaletteMode::Files && query.starts_with(['/', '~']) {

@@ -683,6 +683,19 @@ fn palette_value(value: &Value) -> String {
     }
 }
 
+fn palette_completion(item: &Value, external: bool) -> String {
+    let value = if external {
+        palette_value(item)
+    } else {
+        palette_prompt(item)
+    };
+    if field(item, "kind") == "directory" {
+        format!("{}/", value.trim_end_matches('/'))
+    } else {
+        value
+    }
+}
+
 fn palette_request(value: &Value) -> Option<(&'static str, Value)> {
     let selected = palette_value(value);
     match field(value, "kind").as_str() {
@@ -829,6 +842,14 @@ mod tests {
             palette_value(&filtered_palette(&catalog, "memory", PaletteMode::Commands)[0]),
             "/memory-stats"
         );
+    }
+
+    #[test]
+    fn file_picker_completion_uses_names_in_project_and_paths_outside_it() {
+        let file = json!({"kind":"file","value":"/project/src/app.rs","prompt":"app.rs"});
+        let directory = json!({"kind":"directory","value":"/Users/me/Desktop","prompt":"Desktop"});
+        assert_eq!(palette_completion(&file, false), "app.rs");
+        assert_eq!(palette_completion(&directory, true), "/Users/me/Desktop/");
     }
 
     #[test]
