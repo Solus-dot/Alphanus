@@ -20,6 +20,17 @@ def _load_runtime_config(app_paths: Any, args: argparse.Namespace) -> tuple[Conf
         raise FileNotFoundError(f"Global config not found at {config_path}. Run `alphanus init` first.")
     config_warnings: list[str] = []
     config = load_global_config(config_path, warnings=config_warnings)
+    endpoint = os.environ.get("ALPHANUS_RUN_ENDPOINT", "").rstrip("/")
+    if endpoint:
+        agent_cfg = config.setdefault("agent", {})
+        agent_cfg.update(
+            base_url=endpoint,
+            model_endpoint=f"{endpoint}/v1/chat/completions",
+            responses_endpoint=f"{endpoint}/v1/responses",
+            models_endpoint=f"{endpoint}/v1/models",
+            api_key="env:ALPHANUS_RUN_API_KEY",
+            api_key_env="ALPHANUS_RUN_API_KEY",
+        )
     if args.debug:
         debug_dir = app_paths.state_root / "logs"
         debug_dir.mkdir(parents=True, exist_ok=True)

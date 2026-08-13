@@ -1,7 +1,11 @@
 import argparse
 import importlib
+import os
 import platform
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from typing import Any
 
 from alphanus.commands.backend import _run_runtime
@@ -26,7 +30,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Alphanus", parents=[common])
     subparsers = parser.add_subparsers(dest="command", metavar="{run,exec,init,doctor,retrieval}")
 
-    subparsers.add_parser("run", help="Launch the TUI", parents=[command_common])
+    run_parser = subparsers.add_parser("run", help="Launch the TUI", parents=[command_common])
+    run_parser.add_argument("--endpoint", default="", help="OpenAI-compatible endpoint as HOST:PORT or URL")
+    run_parser.add_argument("--api-key", default="", help="API key for this run only")
 
     runtime_parser = subparsers.add_parser("_runtime", help=argparse.SUPPRESS, parents=[command_common])
     runtime_parser.add_argument("--stdio", action="store_true", default=True, help=argparse.SUPPRESS)
@@ -104,7 +110,45 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_endpoint(endpoint: str, api_key: str) -> str:
+    raw = endpoint.strip()
+    if not raw:
+        return ""
+    parsed = urllib.parse.urlsplit(raw if "://" in raw else f"http://{raw}")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"invalid endpoint port: {exc}") from exc
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or port is None:
+        raise ValueError("endpoint must be an HTTP(S) HOST:PORT or URL")
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
+
+
+def _probe_endpoint(base_url: str, api_key: str) -> None:
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    request = urllib.request.Request(f"{base_url}/v1/models", headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=2):
+            return
+    except urllib.error.HTTPError as exc:
+        if exc.code in {401, 403}:
+            detail = "no API key was provided" if not api_key else "the API key was rejected"
+            raise ValueError(f"endpoint access restricted: {detail}") from exc
+        return  # Any other HTTP response proves the endpoint is online.
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise ValueError(f"endpoint is offline: {base_url}") from exc
+
+
 def _run_tui(args: Any) -> int:
+    try:
+        endpoint = _run_endpoint(str(getattr(args, "endpoint", "") or ""), str(getattr(args, "api_key", "") or ""))
+        if endpoint:
+            _probe_endpoint(endpoint, str(getattr(args, "api_key", "") or ""))
+            os.environ["ALPHANUS_RUN_ENDPOINT"] = endpoint
+            os.environ["ALPHANUS_RUN_API_KEY"] = str(getattr(args, "api_key", "") or "")
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     try:
         _alphanus_tui = importlib.import_module("alphanus._alphanus_tui")
     except ImportError as exc:
