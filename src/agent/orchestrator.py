@@ -5,16 +5,15 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any, cast
 
+from agent import tool_execution_engine, turn_journal
 from agent.classifier import TurnClassifier
 from agent.evidence_guard import EvidenceGuard
 from agent.finalization_engine import FinalizationEngine
 from agent.policies import OutputSanitizer, PromptPolicyRenderer
 from agent.provider import LLMClient
 from agent.telemetry import TelemetryEmitter
-from agent.tool_execution_engine import ToolExecutionEngine
 from agent.tool_history import ToolHistoryCompactor
 from agent.tool_loop_engine import ToolLoopEngine
-from agent.turn_journal import TurnJournalBuilder
 from agent.turn_policy_engine import TurnPolicyEngine
 from core.config_model import ConfigSchema, config_schema
 from core.message_types import ChatMessage, JSONValue
@@ -62,9 +61,9 @@ class TurnOrchestrator:
         self.sanitizer = OutputSanitizer(self.max_reasoning_chars)
         self.policy_engine = TurnPolicyEngine(self.skill_runtime, self.default_tool_budgets)
         self.evidence_guard = EvidenceGuard(self.skill_runtime, agent_cfg.recent_tool_detail_limit)
-        self.tool_execution_engine = ToolExecutionEngine()
+        self.tool_execution_engine = tool_execution_engine
         self.tool_loop = ToolLoopEngine(self)
-        self.turn_journal = TurnJournalBuilder()
+        self.turn_journal = turn_journal
         self.finalization_engine = FinalizationEngine(self)
 
     def inject_policy_retrieval_context(self, state: TurnState, on_event: Callable[[JsonObject], None] | None = None) -> None:

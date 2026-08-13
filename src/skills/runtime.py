@@ -13,20 +13,16 @@ from pathlib import Path
 from typing import Any, cast
 
 from core.config_model import ConfigSchema, config_schema
-from core.errors import ToolRuntimeError
 from core.memory import LexicalMemory
 from core.message_types import ApprovalRequestFn, JSONValue, UserInputRequestFn
 from core.project import ProjectRuntime
 from core.skill_types import SkillContext, SkillManifest
 from core.tool_results import ToolResult, error_result, ok_result
-from skills.skill_discovery import SkillDiscovery
+from skills.skill_discovery import discover_skill_dirs, discover_skill_roots
 from skills.skill_executor import SkillExecutor
-from skills.skill_inventory import SkillInventoryLoader
 from skills.skill_parser import SKILL_DOC, extract_skill_doc, parse_agentskill_manifest
-from skills.skill_registry import SkillRegistry
 from skills.skill_selector import SkillSelector
 from skills.skill_tool_policy import SkillToolPolicy
-from skills.skill_tool_schema import SkillToolSchemaBuilder
 
 _CORE_TOOL_NAMES = frozenset(
     {
@@ -50,7 +46,7 @@ _SKILL_VIEW_TOOL_NAME = "skill_view"
 _ALWAYS_AVAILABLE_TOOL_NAMES = frozenset({_SKILLS_LIST_TOOL_NAME, _SKILL_VIEW_TOOL_NAME, _REQUEST_USER_INPUT_TOOL_NAME})
 
 
-class ToolProtocolError(ToolRuntimeError):
+class ToolProtocolError(RuntimeError):
     pass
 
 
@@ -123,8 +119,6 @@ class SkillRuntime:
         self._enabled_skills_cache: tuple[SkillManifest, ...] | None = None
         self._skill_catalog_cache: dict[int, str] = {}
         self._tools_schema_cache: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
-        self._tool_schema_builder = SkillToolSchemaBuilder(self)
-        self._inventory_loader = SkillInventoryLoader(self)
         self._skill_executor = SkillExecutor(
             self,
             skills_list_tool_name=_SKILLS_LIST_TOOL_NAME,
@@ -174,7 +168,7 @@ class SkillRuntime:
         roots = [self.skills_dir, *self.extra_skill_dirs]
         if self.bundled_skills_dir is not None:
             roots.append(self.bundled_skills_dir)
-        return SkillDiscovery.discover_skill_roots(roots)
+        return discover_skill_roots(roots)
 
     @staticmethod
     def _load_module(path: Path, module_name: str):
@@ -268,7 +262,7 @@ class SkillRuntime:
         return manifest.prompt or ""
 
     def _remove_skill_tools(self, skill_id: str) -> None:
-        SkillRegistry.remove_skill_tools(self._tool_registry, skill_id)
+        self._tool_registry = {name: reg for name, reg in self._tool_registry.items() if reg.skill_id != skill_id}
 
     def _invalidate_skill_caches(self) -> None:
         self._list_skills_cache = None
@@ -333,17 +327,32 @@ class SkillRuntime:
         soft: bool = False,
         **extra: Any,
     ) -> bool:
-        return SkillRegistry.register_tool(
-            tool_registry=self._tool_registry,
-            registered_tool_cls=RegisteredTool,
-            tool_name=tool_name,
-            manifest=manifest,
-            tool_scope_for_name=lambda name: "core" if name in _CORE_TOOL_NAMES else "skill",
-            append_unique=self._append_unique,
-            spec=spec,
-            extra=extra,
-            soft=soft,
+        warning_sink = manifest.validation_warnings if soft else manifest.validation_errors
+        if tool_name in self._tool_registry:
+            self._append_unique(warning_sink, f"duplicate tool '{tool_name}' already registered")
+            return False
+        capability = str(spec.get("capability", "")).strip()
+        description = str(spec.get("description", "")).strip()
+        parameters = spec.get("parameters")
+        if not capability or not description or not isinstance(parameters, dict):
+            self._append_unique(warning_sink, f"invalid tool spec '{tool_name}'")
+            return False
+        mutates_raw = spec.get("mutates")
+        actions_raw = spec.get("actions", [])
+        self._tool_registry[tool_name] = RegisteredTool(
+            name=tool_name,
+            skill_id=manifest.id,
+            tool_scope="core" if tool_name in _CORE_TOOL_NAMES else "skill",
+            capability=capability,
+            description=description,
+            parameters=parameters,
+            mutates=mutates_raw if isinstance(mutates_raw, bool) else None,
+            actions=tuple(dict.fromkeys(str(item).strip().lower() for item in actions_raw if str(item).strip()))
+            if isinstance(actions_raw, list)
+            else (),
+            **extra,
         )
+        return True
 
     def _register_runtime_tools(self) -> None:
         def register(name: str, scope: str, capability: str, description: str, mutates: bool, actions, properties, **schema) -> None:
@@ -393,7 +402,75 @@ class SkillRuntime:
         )
 
     def load_skills(self) -> None:
-        self._inventory_loader.load_skills()
+        runtime = self
+        previous_enabled = {skill_id: skill.enabled for skill_id, skill in runtime.skills.items()}
+        runtime.generation += 1
+        runtime.skill_roots = runtime._discover_skill_roots()
+        runtime.skills = {}
+        runtime._all_skills = []
+        runtime._tool_registry = {}
+        runtime._skill_alias_index = {}
+        runtime._skill_alias_collisions = {}
+        runtime._invalidate_skill_caches()
+        runtime._register_runtime_tools()
+        if not any(root.exists() for root in runtime.skill_roots):
+            runtime._refresh_skill_runtime_indexes()
+            return
+
+        for root in runtime.skill_roots:
+            if not root.exists():
+                continue
+            for child in discover_skill_dirs(root):
+                manifest: SkillManifest | None = None
+                try:
+                    manifest = runtime._load_manifest(child)
+                    if manifest is None:
+                        continue
+
+                    if manifest.id in previous_enabled:
+                        manifest.enabled = previous_enabled[manifest.id]
+
+                    (
+                        manifest.available,
+                        manifest.availability_code,
+                        manifest.availability_reason,
+                    ) = runtime._check_skill_availability(manifest)
+
+                    existing = runtime.skills.get(manifest.id)
+                    if existing is not None:
+                        source = runtime.skill_source_label(existing) or existing.id
+                        incoming = runtime.skill_source_label(manifest) or manifest.id
+                        runtime._append_unique(
+                            existing.validation_errors,
+                            f"duplicate skill id '{manifest.id}' ignored from {incoming}; using {source}",
+                        )
+                        continue
+
+                    if manifest.available and manifest.execution_allowed and not runtime._load_skill_tools(manifest):
+                        manifest.available = False
+                        manifest.execution_allowed = False
+                        if not manifest.availability_code or manifest.availability_code == "ready":
+                            manifest.availability_code = "invalid"
+                        if not manifest.availability_reason:
+                            manifest.availability_reason = (
+                                manifest.validation_errors[0] if manifest.validation_errors else "skill load failed"
+                            )
+
+                    runtime.skills[manifest.id] = manifest
+                    runtime._all_skills.append(manifest)
+                except Exception as exc:
+                    runtime._remove_skill_tools(manifest.id if manifest else child.name)
+                    if manifest is not None:
+                        runtime._append_unique(manifest.validation_errors, str(exc))
+                        manifest.available = False
+                        manifest.execution_allowed = False
+                        manifest.availability_code = "invalid"
+                        manifest.availability_reason = str(exc)
+                        runtime.skills[manifest.id] = manifest
+                        runtime._all_skills.append(manifest)
+                    elif runtime.debug:
+                        print(f"[skill] failed to load {child.name}: {exc}")
+        runtime._refresh_skill_runtime_indexes()
 
     @staticmethod
     def _current_os_aliases() -> set[str]:
@@ -847,13 +924,18 @@ class SkillRuntime:
         ctx: SkillContext | None = None,
     ) -> list[dict[str, Any]]:
         names = self.allowed_tool_names(selected, ctx=ctx)
-        cache_key = SkillToolSchemaBuilder.cache_key(names, selected, generation=self.generation)
-        cached = self._tools_schema_cache.get(cache_key)
-        if cached is not None:
-            return cached
-        tools = self._tool_schema_builder.build(names, selected=selected, ctx=ctx)
-        self._tools_schema_cache[cache_key] = tools
-        return tools
+        selected_ids = tuple(skill.id for skill in selected)
+        cache_key = (self.generation, selected_ids, tuple(names))
+        if cache_key not in self._tools_schema_cache:
+            self._tools_schema_cache[cache_key] = [
+                {
+                    "type": "function",
+                    "function": {"name": reg.name, "description": reg.description, "parameters": reg.parameters},
+                }
+                for name in names
+                for reg in [self._tool_registry[name]]
+            ]
+        return self._tools_schema_cache[cache_key]
 
     def execute_tool_call(
         self,
