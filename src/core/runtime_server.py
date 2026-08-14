@@ -349,6 +349,7 @@ class RuntimeServer:
             if self.turn_request_id == request_id:
                 self.turn_request_id = ""
                 self.turn_id = ""
+                self.steering_messages.clear()
 
     def _emit_turn_completion(
         self,
@@ -577,17 +578,21 @@ class RuntimeServer:
             )
         except Exception as exc:
             flush_reasoning_activity()
-            self.session.tree.fail_turn(
-                turn.id,
-                "".join(reply_parts),
-                reasoning_parts.value(),
-                activity_trace,
-            )
-            self._save()
+            error = f"{type(exc).__name__}: {exc}"
+            try:
+                self.session.tree.fail_turn(
+                    turn.id,
+                    "".join(reply_parts),
+                    reasoning_parts.value(),
+                    activity_trace,
+                )
+                self._save()
+            except Exception as save_exc:
+                error += f"; persistence failed: {type(save_exc).__name__}: {save_exc}"
             self._emit_turn_completion(
                 request_id,
                 turn.id,
-                {"status": "error", "content": "".join(reply_parts), "error": f"{type(exc).__name__}: {exc}"},
+                {"status": "error", "content": _clip("".join(reply_parts), COMPLETION_CONTENT_CHARS), "error": error},
                 status="error",
             )
         finally:

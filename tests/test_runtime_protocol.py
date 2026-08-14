@@ -104,6 +104,50 @@ def test_runtime_queues_and_drains_steering(tmp_path: Path) -> None:
         server.close()
 
 
+def test_finishing_turn_discards_late_steering(tmp_path: Path) -> None:
+    from core.runtime_server import RuntimeServer
+
+    server = RuntimeServer(
+        agent=_RuntimeAgent(tmp_path),
+        memory=_RuntimeMemory(),
+        state_root=tmp_path / "state",
+        config_path=tmp_path / "config.toml",
+        input_stream=io.StringIO(),
+        output_stream=io.StringIO(),
+    )
+    try:
+        server.turn_request_id = "active"
+        server.steering_messages.append("late message")
+        server._finish_turn_request("active")
+        assert server.steering_messages == []
+    finally:
+        server.close()
+
+
+def test_turn_emits_completion_when_session_save_fails(tmp_path: Path, mocker) -> None:
+    from core.runtime_server import RuntimeServer
+
+    output = io.StringIO()
+    server = RuntimeServer(
+        agent=_RecordingRuntimeAgent(tmp_path),
+        memory=_RuntimeMemory(),
+        state_root=tmp_path / "state",
+        config_path=tmp_path / "config.toml",
+        input_stream=io.StringIO(),
+        output_stream=output,
+    )
+    try:
+        turn = server.session.tree.add_turn("hello")
+        server.turn_request_id = "request"
+        mocker.patch.object(server, "_save", side_effect=OSError("disk full"))
+        server._run_turn("request", turn, "hello", [], True)
+        events = [json.loads(line) for line in output.getvalue().splitlines()]
+        completed = [event for event in events if event["type"] == "turn.completed"]
+        assert completed and "persistence failed" in completed[-1]["data"]["error"]
+    finally:
+        server.close()
+
+
 def test_golden_runtime_requests_are_valid() -> None:
     fixture = Path(__file__).parent / "fixtures" / "runtime_protocol_v1.jsonl"
     frames = [decode_runtime_frame(line) for line in fixture.read_text(encoding="utf-8").splitlines()]
