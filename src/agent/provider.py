@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
+from agent import provider_metadata, provider_payload
 from agent.backend_profiles import (
     AUTO_BACKEND_PROFILE,
     UNKNOWN_BACKEND_PROFILE,
@@ -27,8 +28,6 @@ from agent.provider_failure_policy import (
     is_transport_failure,
     should_retry_provider_exception,
 )
-from agent.provider_metadata import ProviderMetadataExtractor
-from agent.provider_payload import ProviderPayloadAdapter
 from agent.provider_stream_parser import ProviderStreamParser
 from agent.telemetry import TelemetryEmitter
 from core.config_model import AgentConfig, ConfigSchema, config_schema
@@ -84,8 +83,6 @@ class OpenAICompatibleProvider:
         self.debug = debug
         self.telemetry = telemetry or TelemetryEmitter()
         self._stream_chat_completions = stream_chat_completions_fn or core_stream_chat_completions
-        self._payload_adapter = ProviderPayloadAdapter()
-        self._metadata = ProviderMetadataExtractor()
         self._stream_parser = ProviderStreamParser()
         self._ready_checked = False
         self._model_status = ModelStatus(endpoint=config.models_endpoint)
@@ -289,7 +286,7 @@ class OpenAICompatibleProvider:
         mode: str | None = None,
     ) -> JsonObject:
         selected_mode = mode if mode in CONCRETE_ENDPOINT_MODES else self._select_endpoint_mode()
-        return self._payload_adapter.build_payload(
+        return provider_payload.build_payload(
             model_messages=cast(list[JsonObject], model_messages),
             thinking=thinking,
             tools=tools,
@@ -403,14 +400,14 @@ class OpenAICompatibleProvider:
 
         context_window = current.context_window
         loaded_model_name: str | None = None
-        slots_endpoint = self._metadata.slots_endpoint_from_models_endpoint(self.models_endpoint)
+        slots_endpoint = provider_metadata.slots_endpoint_from_models_endpoint(self.models_endpoint)
         try:
             slots_payload = self.fetch_json(slots_endpoint, timeout_s=remaining_timeout())
         except Exception as exc:
             self.telemetry.emit("model_slots_fetch_failed", endpoint=slots_endpoint, error=str(exc))
         else:
-            context_window = self._metadata.extract_model_context_window(slots_payload) or context_window
-            loaded_model_name = self._metadata.extract_model_name(slots_payload) or loaded_model_name
+            context_window = provider_metadata.extract_model_context_window(slots_payload) or context_window
+            loaded_model_name = provider_metadata.extract_model_name(slots_payload) or loaded_model_name
 
         try:
             payload = self.list_models(timeout_s=remaining_timeout())
@@ -430,18 +427,18 @@ class OpenAICompatibleProvider:
             )
         self._refresh_backend_profile(payload)
 
-        model_name = loaded_model_name or self._metadata.extract_model_name(payload) or current.model_name
+        model_name = loaded_model_name or provider_metadata.extract_model_name(payload) or current.model_name
         if context_window is None:
-            context_window = self._metadata.extract_model_context_window(payload)
+            context_window = provider_metadata.extract_model_context_window(payload)
         if context_window is None:
-            props_endpoint = self._metadata.props_endpoint_from_models_endpoint(self.models_endpoint)
+            props_endpoint = provider_metadata.props_endpoint_from_models_endpoint(self.models_endpoint)
             try:
                 props_payload = self.fetch_json(props_endpoint, timeout_s=remaining_timeout())
             except Exception as exc:
                 self.telemetry.emit("model_props_fetch_failed", endpoint=props_endpoint, error=str(exc))
             else:
-                context_window = self._metadata.extract_model_context_window(props_payload)
-                model_name = self._metadata.extract_model_name(props_payload) or model_name
+                context_window = provider_metadata.extract_model_context_window(props_payload)
+                model_name = provider_metadata.extract_model_name(props_payload) or model_name
         return self._store_model_status(
             ModelStatus(
                 state="online",
@@ -631,6 +628,8 @@ class OpenAICompatibleProvider:
                     first_output_at = time.time()
                 if not tool_phase_started:
                     tool_phase_started = True
+                    if content_parts:
+                        self._emit(on_event, {"type": "content_retract", "text": "".join(content_parts)})
                     self._emit(on_event, {"type": "tool_phase_started"})
                 for update in tool_acc.ingest(tool_deltas):
                     index = int(update.get("index", 0))
@@ -755,7 +754,7 @@ class OpenAICompatibleProvider:
                     )
                     payload = cast(
                         dict[str, object],
-                        self._payload_adapter.payload_to_mode(payload, ENDPOINT_MODE_CHAT, default_max_tokens=self.default_max_tokens),
+                        provider_payload.payload_to_mode(payload, ENDPOINT_MODE_CHAT, default_max_tokens=self.default_max_tokens),
                     )
                     continue
                 if is_transport_failure(exc):
