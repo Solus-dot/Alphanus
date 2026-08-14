@@ -22,7 +22,7 @@ _UPDATE_RECORD_SQL = (
     "UPDATE records SET source=?, title=?, metadata_json=?, content_hash=?, updated_at=?, fetched_at=?, stale_after=? WHERE id=?"
 )
 _INSERT_RECORD_SQL = "INSERT INTO records(record_type,source,canonical_source,title,metadata_json,content_hash,created_at,updated_at,fetched_at,stale_after) VALUES(?,?,?,?,?,?,?,?,?,?)"
-_LEXICAL_SEARCH_SQL = "SELECT c.id AS chunk_id,c.chunk_index,c.text,r.* FROM chunks_fts f JOIN chunks c ON c.id=f.rowid JOIN records r ON r.id=c.record_id WHERE chunks_fts MATCH ? {source_clause} ORDER BY bm25(chunks_fts) LIMIT ?"
+_LEXICAL_SEARCH_SQL = "SELECT c.id AS chunk_id,c.chunk_index,c.text,r.*,bm25(chunks_fts) AS rank FROM chunks_fts f JOIN chunks c ON c.id=f.rowid JOIN records r ON r.id=c.record_id WHERE chunks_fts MATCH ? {source_clause} ORDER BY rank LIMIT ?"
 
 
 def default_retrieval_store_path() -> Path:
@@ -179,7 +179,24 @@ class SQLiteRetrievalStore:
                 _LEXICAL_SEARCH_SQL.format(source_clause=source_clause),
                 (fts_query, *source_filter, min(self.candidate_limit, max(1, top_k * 3))),
             ).fetchall()
-        return [self._result(row) for row in rows[:top_k]]
+        return [self._result(row, score=1 / (1 + abs(float(row["rank"]))), mode="lexical") for row in rows[:top_k]]
+
+    def list_records(self, record_type: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT c.id AS chunk_id,c.chunk_index,c.text,r.* FROM records r "
+                "JOIN chunks c ON c.record_id=r.id AND c.chunk_index=0 "
+                "WHERE r.record_type=? ORDER BY r.updated_at DESC LIMIT ?",
+                (record_type, max(1, int(limit))),
+            ).fetchall()
+        return [self._result(row) for row in rows]
+
+    def update_metadata(self, record_id: int, metadata: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE records SET metadata_json=?,updated_at=? WHERE id=?",
+                (json.dumps(metadata, sort_keys=True), int(time.time()), record_id),
+            )
 
     def forget(self, record_id: int) -> bool:
         with self._connect() as conn:

@@ -1,21 +1,18 @@
+from __future__ import annotations
+
 import json
 import math
 import os
 import sqlite3
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-_MEMORY_SCHEMA = (
-    "CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at REAL NOT NULL)",
-    "CREATE TABLE IF NOT EXISTS memories(id INTEGER PRIMARY KEY AUTOINCREMENT,text TEXT NOT NULL,normalized_text TEXT NOT NULL,metadata_json TEXT NOT NULL,type TEXT NOT NULL,timestamp REAL NOT NULL,access_count INTEGER NOT NULL DEFAULT 0,last_accessed REAL NOT NULL)",
-    "CREATE INDEX IF NOT EXISTS idx_memories_type_time ON memories(type,timestamp DESC)",
-    "CREATE INDEX IF NOT EXISTS idx_memories_time ON memories(timestamp DESC)",
-    "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(text,content='memories',content_rowid='id')",
-    "CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN INSERT INTO memories_fts(rowid,text) VALUES(new.id,new.text); END",
-    "CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN INSERT INTO memories_fts(memories_fts,rowid,text) VALUES('delete',old.id,old.text); END",
-)
+from core.retrieval import SQLiteRetrievalStore
+from core.secure_io import atomic_write_text
+
 
 @dataclass(slots=True)
 class MemoryItem:
@@ -32,10 +29,8 @@ def _normalize_threshold(value: Any, *, default: float) -> float:
     try:
         parsed = float(value)
     except (TypeError, ValueError):
-        parsed = float(default)
-    if not math.isfinite(parsed):
-        parsed = float(default)
-    return max(0.0, min(1.0, parsed))
+        parsed = default
+    return max(0.0, min(1.0, parsed if math.isfinite(parsed) else default))
 
 
 def _to_public(item: MemoryItem) -> dict[str, Any]:
@@ -48,121 +43,163 @@ def _to_public(item: MemoryItem) -> dict[str, Any]:
         "access_count": item.access_count,
         "last_accessed": item.last_accessed,
     }
-class LexicalMemory:
-    # SQLite-backed lexical memory with bounded candidates.
 
-    def __init__(self, storage_path: str, min_score: float = 0.3, persist_access_updates: bool = False,
-                 backup_revisions: int = 0, **_ignored: Any) -> None:
-        legacy_path = Path(os.path.expanduser(storage_path)).resolve()
-        legacy_path.parent.mkdir(parents=True, exist_ok=True)
-        if legacy_path.exists() and legacy_path.suffix != ".db":
-            raise ValueError(
-                f"Legacy unversioned memory found at {legacy_path}. Alphanus v1 does not migrate it; export or remove it first."
-            )
-        self.storage_path = legacy_path if legacy_path.suffix == ".db" else legacy_path.parent / "memory.db"
+
+class LexicalMemory:
+    """Memory API backed by the shared SQLite retrieval store."""
+
+    def __init__(
+        self,
+        storage_path: str,
+        min_score: float = 0.3,
+        persist_access_updates: bool = False,
+        legacy_path: str | None = None,
+    ) -> None:
+        requested = Path(os.path.expanduser(storage_path)).resolve()
+        requested.parent.mkdir(parents=True, exist_ok=True)
+        if requested.exists() and requested.suffix not in {".db", ".sqlite"}:
+            raise ValueError(f"Legacy unversioned memory found at {requested}. Alphanus v1 does not migrate it; export or remove it first.")
+        self.storage_path = requested if requested.suffix in {".db", ".sqlite"} else requested.parent / "memory.db"
         self.min_score = _normalize_threshold(min_score, default=0.3)
         self.persist_access_updates = bool(persist_access_updates)
-        self.backup_revisions = int(backup_revisions)
-        self._connection = sqlite3.connect(self.storage_path, timeout=5.0, check_same_thread=False)
-        self._connection.row_factory = sqlite3.Row
-        self._connection.execute("PRAGMA journal_mode=WAL")
-        self._connection.execute("PRAGMA foreign_keys=ON")
-        self._connection.execute("PRAGMA busy_timeout=5000")
-        with self._connection:
-            self._connection.executescript(";\n".join(_MEMORY_SCHEMA))
-            self._connection.execute("INSERT OR IGNORE INTO schema_migrations VALUES (1, ?)", (time.time(),))
-            migration = self._connection.execute("INSERT OR IGNORE INTO schema_migrations VALUES (2, ?)", (time.time(),))
-            if migration.rowcount:
-                self._connection.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
+        self.store = SQLiteRetrievalStore(self.storage_path)
+        self._migrate_legacy_table(Path(legacy_path).resolve() if legacy_path else self.storage_path)
+
+    def _migrate_legacy_table(self, legacy_path: Path) -> None:
+        if not legacy_path.exists():
+            return
+        existing = {str(record.get("source") or "") for record in self.store.list_records("memory_fact", limit=10_000)}
+        with sqlite3.connect(legacy_path) as connection:
+            exists = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories'").fetchone()
+            rows = (
+                connection.execute("SELECT id,text,metadata_json,type,timestamp,access_count,last_accessed FROM memories").fetchall()
+                if exists
+                else []
+            )
+
+        for memory_id, text, metadata_json, memory_type, timestamp, access_count, last_accessed in rows:
+            source = f"memory:{memory_id}"
+            if source in existing:
+                continue
+            try:
+                user_metadata = json.loads(metadata_json)
+            except (TypeError, json.JSONDecodeError):
+                user_metadata = {}
+            self.store.upsert_record(
+                record_type="memory_fact",
+                source=source,
+                canonical_source=source,
+                title=memory_type,
+                text=text,
+                metadata={
+                    "memory_type": memory_type,
+                    "timestamp": timestamp,
+                    "access_count": access_count,
+                    "last_accessed": last_accessed,
+                    "metadata": user_metadata if isinstance(user_metadata, dict) else {},
+                },
+            )
+
+    @staticmethod
+    def _item(record: dict[str, Any]) -> MemoryItem:
+        raw_metadata = record.get("metadata")
+        metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
+        return MemoryItem(
+            id=int(record["record_id"]),
+            text=str(record["text"]),
+            metadata=dict(metadata.get("metadata") or {}),
+            type=str(metadata.get("memory_type") or record.get("title") or "conversation"),
+            timestamp=float(metadata.get("timestamp") or record.get("fetched_at") or 0),
+            access_count=int(metadata.get("access_count") or 0),
+            last_accessed=float(metadata.get("last_accessed") or 0),
+        )
 
     @property
     def memories(self) -> list[MemoryItem]:
-        rows = self._connection.execute(
-            "SELECT * FROM memories ORDER BY timestamp DESC LIMIT 10000"
-        ).fetchall()
-        return [self._row_to_item(row) for row in rows]
+        return [self._item(record) for record in self.store.list_records("memory_fact", limit=10_000)]
 
-    @staticmethod
-    def _row_to_item(row: sqlite3.Row) -> MemoryItem:
-        return MemoryItem(row["id"], row["text"], json.loads(row["metadata_json"]), row["type"],
-                          row["timestamp"], row["access_count"], row["last_accessed"])
-
-    def add_memory(self, text: str, memory_type: str = "conversation", metadata: dict[str, Any] | None = None,
-                   importance: float | None = None) -> dict[str, Any]:
+    def add_memory(
+        self,
+        text: str,
+        memory_type: str = "conversation",
+        metadata: dict[str, Any] | None = None,
+        importance: float | None = None,
+    ) -> dict[str, Any]:
         now = time.time()
-        md = dict(metadata or {})
+        public_metadata = dict(metadata or {})
         if importance is not None:
-            md["importance"] = float(importance)
-        with self._connection:
-            cursor = self._connection.execute(
-                "INSERT INTO memories(text,normalized_text,metadata_json,type,timestamp,last_accessed) VALUES (?,?,?,?,?,?)",
-                (str(text), " ".join(str(text).casefold().split()), json.dumps(md, ensure_ascii=False), str(memory_type), now, now),
-            )
-        return _to_public(MemoryItem(cursor.lastrowid or 0, str(text), md, str(memory_type), now, 0, now))
+            public_metadata["importance"] = float(importance)
+        record = self.store.upsert_record(
+            record_type="memory_fact",
+            source=f"memory:{uuid.uuid4().hex}",
+            title=memory_type,
+            text=str(text),
+            metadata={
+                "memory_type": memory_type,
+                "timestamp": now,
+                "access_count": 0,
+                "last_accessed": now,
+                "metadata": public_metadata,
+            },
+        )
+        if record is None:
+            raise ValueError("Memory text must not be empty")
+        return _to_public(MemoryItem(record.id, str(text), public_metadata, memory_type, now, 0, now))
 
-    def search(self, query: str, top_k: int = 5, memory_type: str | None = None,
-               min_score: float | None = None) -> list[dict[str, Any]]:
-        tokens = [token.replace('"', '""') for token in str(query).casefold().split()[:12] if token]
-        if not tokens:
-            return []
+    def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        memory_type: str | None = None,
+        min_score: float | None = None,
+    ) -> list[dict[str, Any]]:
         threshold = self.min_score if min_score is None else _normalize_threshold(min_score, default=self.min_score)
-        where = "memories_fts MATCH ?"
-        params: list[Any] = [" OR ".join(f'"{token}"' for token in tokens)]
-        if memory_type:
-            where += " AND m.type=?"
-            params.append(memory_type)
-        params.append(max(1, min(2000, max(1, int(top_k)) * 8)))
-        rows = self._connection.execute(
-            f"SELECT m.*,bm25(memories_fts) rank FROM memories_fts JOIN memories m ON m.id=memories_fts.rowid "
-            f"WHERE {where} ORDER BY rank,m.timestamp DESC LIMIT ?",  # noqa: S608
-            params,
-        ).fetchall()
-        selected = [(1 / (1 + abs(float(row["rank"]))), self._row_to_item(row)) for row in rows]
-        selected = [pair for pair in selected if pair[0] >= threshold][:max(1, int(top_k))]
+        records = self.store.search(query, top_k=max(1, int(top_k)) * 8, sources=["memory_fact"])
+        selected: list[dict[str, Any]] = []
         now = time.time()
-        if selected and self.persist_access_updates:
-            with self._connection:
-                self._connection.executemany(
-                    "UPDATE memories SET access_count=access_count+1,last_accessed=? WHERE id=?",
-                    [(now, item.id) for _score, item in selected],
-                )
-        output = []
-        for score, item in selected:
+        for record in records:
+            item = self._item(record)
+            score = float(record.get("score") or 0)
+            if score < threshold or memory_type and item.type != memory_type:
+                continue
             item.access_count += 1
             item.last_accessed = now
-            record = _to_public(item)
-            record["score"] = round(score, 4)
-            output.append(record)
-        return output
+            if self.persist_access_updates:
+                metadata = dict(record.get("metadata") or {})
+                metadata.update(access_count=item.access_count, last_accessed=now)
+                self.store.update_metadata(item.id, metadata)
+            result = _to_public(item)
+            result["score"] = round(score, 4)
+            selected.append(result)
+            if len(selected) >= max(1, int(top_k)):
+                break
+        return selected
 
     def forget(self, memory_id: int) -> bool:
-        with self._connection:
-            cursor = self._connection.execute("DELETE FROM memories WHERE id=?", (int(memory_id),))
-        return cursor.rowcount > 0
+        return self.store.forget(int(memory_id))
 
     def list_recent(self, count: int = 5) -> list[dict[str, Any]]:
-        rows = self._connection.execute("SELECT * FROM memories ORDER BY timestamp DESC LIMIT ?", (max(1, int(count)),)).fetchall()
-        return [_to_public(self._row_to_item(row)) for row in rows]
+        return [_to_public(item) for item in self.memories[: max(1, int(count))]]
 
     def stats(self) -> dict[str, Any]:
-        count, latest = self._connection.execute("SELECT COUNT(*), MAX(timestamp) FROM memories").fetchone()
-        by_type = dict(self._connection.execute("SELECT type, COUNT(*) FROM memories GROUP BY type").fetchall())
-        return {"count": count, "by_type": by_type, "latest_timestamp": latest, "min_score_default": self.min_score,
-                "backend": "sqlite-lexical", "mode_label": "sqlite lexical", "backup_revisions": 0,
-                "storage_format": "sqlite-v1", "storage_root": str(self.storage_path.parent), "load_recovery_count": 0}
+        stats = self.store.stats()
+        return {
+            "count": int(stats["by_type"].get("memory_fact", 0)),
+            "backend": "sqlite-lexical",
+            "mode_label": "sqlite lexical",
+            "min_score_default": self.min_score,
+        }
 
     def export_txt(self, path: str) -> str:
         target = Path(os.path.expanduser(path)).resolve()
         lines = ["# Alphanus Memory Export", ""]
         for item in reversed(self.memories):
             lines.extend([f"- id: {item.id}", f"  type: {item.type}", f"  timestamp: {item.timestamp}", f"  text: {item.text}", ""])
-        target.parent.mkdir(parents=True, exist_ok=True)
-        from core.secure_io import atomic_write_text
         atomic_write_text(target, "\n".join(lines), mode=0o600)
         return str(target)
 
     def flush(self) -> None:
-        self._connection.commit()
+        pass
 
     def close(self) -> None:
-        self._connection.close()
+        pass

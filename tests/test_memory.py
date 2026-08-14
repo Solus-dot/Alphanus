@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -40,7 +41,36 @@ def test_store_uses_schema_wal_and_bounded_candidates(tmp_path: Path) -> None:
     assert len(memory.search("alpha", top_k=3, min_score=0)) == 3
     connection = sqlite3.connect(memory.storage_path)
     assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-    assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 2
+    assert connection.execute("SELECT COUNT(*) FROM records WHERE record_type='memory_fact'").fetchone()[0] == 2500
+
+
+def test_legacy_sqlite_memory_migrates_missing_records_individually(tmp_path: Path) -> None:
+    legacy = tmp_path / "old-memory.db"
+    with sqlite3.connect(legacy) as connection:
+        connection.execute(
+            "CREATE TABLE memories(id INTEGER PRIMARY KEY,text TEXT,metadata_json TEXT,type TEXT,timestamp REAL,access_count INTEGER,last_accessed REAL)"
+        )
+        connection.executemany(
+            "INSERT INTO memories VALUES(?,?,?,?,?,?,?)",
+            [
+                (1, "Old existing value", json.dumps({"source": "legacy"}), "fact", 1.0, 2, 3.0),
+                (2, "Missing legacy value", "malformed", "fact", 1.0, 0, 0.0),
+            ],
+        )
+    destination = tmp_path / "retrieval.sqlite"
+    memory = LexicalMemory(str(destination))
+    memory.store.upsert_record(
+        record_type="memory_fact",
+        source="memory:1",
+        canonical_source="memory:1",
+        title="fact",
+        text="New existing value",
+    )
+
+    migrated = LexicalMemory(str(destination), legacy_path=str(legacy))
+
+    assert migrated.search("New existing", min_score=0)[0]["text"] == "New existing value"
+    assert migrated.search("Missing legacy", min_score=0)[0]["metadata"] == {}
 
 
 def test_legacy_unversioned_memory_is_rejected(tmp_path: Path) -> None:
@@ -54,7 +84,7 @@ def test_memory_skill_contract(tmp_path: Path) -> None:
     runtime, workspace = _memory_runtime(tmp_path)
     skill = runtime.get_skill("memory-rag")
     assert skill is not None
-    context = SkillContext(user_input="remember", branch_labels=[], attachments=[], project_root=workspace, memory_hits=[])
+    context = SkillContext(user_input="remember", branch_labels=[], attachments=[], project_root=workspace)
     stored = runtime.execute_tool_call("store_memory", {"text": "Favorite editor is Neovim"}, [skill], context)
     recalled = runtime.execute_tool_call("recall_memory", {"query": "favorite editor", "top_k": 3}, [skill], context)
     assert stored["ok"] is True
@@ -86,7 +116,7 @@ def test_user_skill_cannot_execute_python(tmp_path: Path) -> None:
     assert manifest.execution_allowed is False
     assert manifest in runtime.enabled_skills()
     assert runtime.tool_registration("unsafe_run") is None
-    context = SkillContext(user_input="run", branch_labels=[], attachments=[], project_root=str(workspace), memory_hits=[])
+    context = SkillContext(user_input="run", branch_labels=[], attachments=[], project_root=str(workspace))
     result = runtime.execute_tool_call("unsafe_run", {}, [manifest], context)
     assert result["ok"] is False
     assert result["error"]["code"] in {"E_POLICY", "E_UNSUPPORTED"}

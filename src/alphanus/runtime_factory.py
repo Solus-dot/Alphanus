@@ -8,6 +8,7 @@ from typing import Any
 
 from core.config_model import ConfigSchema, config_schema
 from core.configuration import load_global_config, normalize_config, validate_endpoint_policy
+from core.retrieval import configured_store_path
 
 
 def _as_object(value: Any) -> dict[str, Any]:
@@ -76,10 +77,7 @@ def resolve_project_root(config: ConfigSchema | Mapping[str, Any], *, override: 
     if override.strip():
         return Path(os.path.expanduser(override.strip())).resolve()
     start = (cwd or Path.cwd()).resolve()
-    strategy = config.project.root_strategy.strip().lower()
-    if strategy == "git-or-cwd":
-        return _git_root_for_cwd(start) or start
-    return start
+    return _git_root_for_cwd(start) or start
 
 
 def _build_agent_runtime(app_paths: Any, config: ConfigSchema, *, debug: bool) -> tuple[Any, Any, Any, Any]:
@@ -96,11 +94,10 @@ def _build_agent_runtime(app_paths: Any, config: ConfigSchema, *, debug: bool) -
         sandbox_backend=config.sandbox.backend,
         sandbox_fail_closed=config.sandbox.fail_closed,
     )
-    memory_path = str((Path(app_paths.state_root).resolve() / "memory" / "events.jsonl").resolve())
     memory = LexicalMemory(
-        storage_path=memory_path,
+        storage_path=str(configured_store_path(config)),
         min_score=config.memory.min_score_default,
-        backup_revisions=config.memory.backup_revisions,
+        legacy_path=str(Path(app_paths.state_root).resolve() / "memory" / "memory.db"),
     )
     user_skills_dir = getattr(app_paths, "user_skills_dir", None)
     runtime_skills_dir = (
