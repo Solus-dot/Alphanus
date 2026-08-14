@@ -56,6 +56,9 @@ class Agent:
         self.context_mgr.context_limit = self.config.context.context_limit
         self.context_mgr.keep_last_n = self.config.context.keep_last_n
         self.context_mgr.safety_margin = self.config.context.safety_margin
+        model_window = self.llm_client.get_model_status().context_window
+        if model_window:
+            self.context_mgr.context_limit = model_window
         self.system_prompt = build_system_prompt(str(self.skill_runtime.project.project_root))
         self.llm_client.reload_config(self.config)
         self.prompt_renderer.system_prompt = self.system_prompt
@@ -225,6 +228,7 @@ class Agent:
         stop_event=None,
         on_event: Callable[[JsonObject], None] | None = None,
         request_approval: ApprovalRequestFn | None = None,
+        get_steering_messages: Callable[[], list[str]] | None = None,
     ) -> AgentTurnResult:
         endpoint_err = self._validate_endpoints()
         if endpoint_err:
@@ -249,18 +253,23 @@ class Agent:
                     return self._empty_result("cancelled")
                 if not ready:
                     return self._not_ready_result(self.get_model_status())
+        model_window = self.get_model_status().context_window
+        if model_window:
+            self.context_mgr.context_limit = int(model_window)
+            self.prompt_renderer.context_limit = int(model_window)
         return self.orchestrator.run_turn(
-                history_messages=history_messages,
-                user_input=user_input,
-                thinking=thinking,
-                branch_labels=branch_labels,
-                attachments=attachments,
-                loaded_skill_ids=loaded_skill_ids,
-                context_summary=context_summary,
-                collaboration_mode=collaboration_mode,
-                session_id=session_id,
-                stop_event=stop_event,
-                on_event=on_event,
-                request_approval=request_approval,
-                request_user_input=request_user_input_passthrough,
-            )
+            history_messages=history_messages,
+            user_input=user_input,
+            thinking=thinking,
+            branch_labels=branch_labels,
+            attachments=attachments,
+            loaded_skill_ids=loaded_skill_ids,
+            context_summary=context_summary,
+            collaboration_mode=collaboration_mode,
+            session_id=session_id,
+            stop_event=stop_event,
+            on_event=on_event,
+            request_approval=request_approval,
+            request_user_input=request_user_input_passthrough,
+            get_steering_messages=get_steering_messages,
+        )

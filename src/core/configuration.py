@@ -311,7 +311,6 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         SandboxConfig,
         SearchConfig,
         SkillsConfig,
-        TreeCompactionConfig,
         UiConfig,
         UiTimingConfig,
         validated_config,
@@ -609,7 +608,7 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         else:
             _warn(warnings, f"tui.theme: empty value, using {resolved_theme!r}")
     tui_cfg["theme"] = resolved_theme
-    tui_cfg = _normalize_model(tui_cfg, UiConfig, "tui", warnings, exclude=("theme", "timing", "tree_compaction"))
+    tui_cfg = _normalize_model(tui_cfg, UiConfig, "tui", warnings, exclude=("theme", "timing"))
     tui_cfg["theme"] = resolved_theme
     timing_cfg = tui_cfg.get("timing", {})
     if not isinstance(timing_cfg, dict):
@@ -617,12 +616,6 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         timing_cfg = {}
     timing_cfg = _normalize_model(timing_cfg, UiTimingConfig, "tui.timing", warnings)
     tui_cfg["timing"] = timing_cfg
-    tree_cfg = tui_cfg.get("tree_compaction", {})
-    if not isinstance(tree_cfg, dict):
-        _warn(warnings, "tui.tree_compaction: expected object, using defaults")
-        tree_cfg = {}
-    tree_cfg = _normalize_model(tree_cfg, TreeCompactionConfig, "tui.tree_compaction", warnings)
-    tui_cfg["tree_compaction"] = tree_cfg
     merged["tui"] = tui_cfg
 
     return validated_config(merged), warnings

@@ -77,9 +77,7 @@ class TurnPolicyEngine:
         return TurnPolicySnapshot(
             search_mode=state.classification.time_sensitive and state.search_tools_enabled,
             time_sensitive_query=state.classification.time_sensitive,
-            forced_search_retry=state.forced_search_retry and state.completion.tool_counts.get("web_search", 0) == 0,
             requires_project_action=state.classification.requires_project_action,
-            forced_action_retry=state.forced_action_retry and not state.completion.tool_counts,
             explicit_external_path=state.classification.explicit_external_path,
             prefer_local_project_tools=state.classification.prefer_local_project_tools,
             shell_tool_exposed="shell_command" in turn_tool_names,

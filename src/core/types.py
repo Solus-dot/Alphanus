@@ -108,9 +108,7 @@ class TurnClassification:
 class TurnPolicySnapshot:
     search_mode: bool = False
     time_sensitive_query: bool = False
-    forced_search_retry: bool = False
     requires_project_action: bool = False
-    forced_action_retry: bool = False
     explicit_external_path: str = ""
     prefer_local_project_tools: bool = False
     shell_tool_exposed: bool = False
@@ -137,9 +135,6 @@ class TurnTelemetry:
     started_at: float = field(default_factory=time.time)
     pass_index: int = 0
     model_usage: dict[str, int] = field(default_factory=dict)
-    finalization_attempts: int = 0
-    finalization_repairs: int = 0
-    finalization_repair_failed: bool = False
 
 
 @dataclass(slots=True)
@@ -157,16 +152,14 @@ class TurnState:
     context_summary: str = ""
     context_report: dict[str, JSONValue] = field(default_factory=dict)
     pass_index: int = 0
-    action_depth: int = 0
     collaboration_mode: str = "execute"
-    forced_search_retry: bool = False
-    forced_action_retry: bool = False
     tool_budgets: dict[str, int] = field(default_factory=dict)
     successful_inspection_tool_signatures: set[str] = field(default_factory=set)
     blocked_inspection_tool_signatures: set[str] = field(default_factory=set)
-    project_target_inspected: bool = False
-    post_target_inspection_calls: int = 0
-    project_action_stall_blocks: int = 0
+    verified_write_paths: set[str] = field(default_factory=set)
+    verified_write_readbacks: set[str] = field(default_factory=set)
+    read_line_ranges: dict[str, list[tuple[int, int]]] = field(default_factory=dict)
+    read_total_lines: dict[str, int] = field(default_factory=dict)
     trace_data: dict[str, JSONValue] = field(default_factory=dict)
     workspace_id: str = ""
     session_id: str = ""

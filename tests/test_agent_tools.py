@@ -11,7 +11,6 @@ import pytest
 
 from agent.core import Agent
 from agent.policies import PromptPolicyRenderer
-from core.types import TurnClassification
 from skills.runtime import SkillContext, SkillRuntime
 from tests.support import build_skill_runtime
 
@@ -107,97 +106,6 @@ def execute(tool_name, args, env):
     return {"ok": False, "data": None, "error": {"code": "E_UNSUPPORTED", "message": "nope"}, "meta": {}}
 """,
     )
-
-
-def test_time_sensitive_query_forces_search_before_accepting_answer(mocker, runtime: SkillRuntime):
-    search_skill = runtime.skills_dir / "search-ops"
-    search_skill.mkdir(parents=True)
-    (search_skill / "SKILL.md").write_text(
-        """
----
-name: search-ops
-description: Search the web for recent information.
-allowed-tools: web_search
-metadata:
-  tags: [web, latest, recent, current, news]
----
-Search the internet.
-""".strip(),
-        encoding="utf-8",
-    )
-    (search_skill / "tools.py").write_text(
-        """
-TOOL_SPECS = {
-  "web_search": {
-    "capability": "web_search",
-    "description": "Search web",
-    "parameters": {
-      "type": "object",
-      "properties": {"query": {"type": "string"}},
-      "required": ["query"]
-    }
-  }
-}
-
-def execute(tool_name, args, env):
-    return {"ok": True, "data": {"results": [{"title": "Example", "url": "https://example.com", "domain": "example.com", "snippet": "Verified"}]}, "error": None, "meta": {}}
-""".strip(),
-        encoding="utf-8",
-    )
-    runtime.load_skills()
-
-    cfg = agent_config()
-    agent = Agent(cfg, runtime)
-    mocker.patch.object(
-        agent.classifier,
-        "classify",
-        return_value=TurnClassification(time_sensitive=True),
-    )
-
-    chat_reqs = []
-
-    def fake_urlopen(req, timeout=None, context=None):
-        if req.full_url.endswith("/v1/models"):
-            return FakeResponse([])
-        if req.full_url.endswith("/slots"):
-            return FakeResponse(['{"id":0,"n_ctx":40960}'])
-        chat_reqs.append(req)
-        if len(chat_reqs) == 1:
-            return FakeResponse(
-                [
-                    'data: {"choices":[{"delta":{"content":"As of my knowledge, Meta has not announced major new acquisitions."}}]}',
-                    'data: {"choices":[{"finish_reason":"stop"}]}',
-                    "data: [DONE]",
-                ]
-            )
-        if len(chat_reqs) == 2:
-            return FakeResponse(
-                [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\"meta latest acquisitions\\"}"}}]}}]}',
-                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
-                    "data: [DONE]",
-                ]
-            )
-        return FakeResponse(
-            [
-                'data: {"choices":[{"delta":{"content":"I could not verify the latest open source models from reliable current web results in this turn."}}]}',
-                'data: {"choices":[{"finish_reason":"stop"}]}',
-                "data: [DONE]",
-            ]
-        )
-
-    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
-
-    result = agent.run_turn(
-        history_messages=[{"role": "user", "content": "tell me about the latest open source models"}],
-        user_input="tell me about the latest open source models",
-        thinking=True,
-        loaded_skill_ids=["search-ops"],
-    )
-
-    assert result.status == "done"
-    assert "could not verify" in result.content.lower()
-    assert len(chat_reqs) == 4
 
 
 def test_time_sensitive_query_without_model_classification_does_not_force_search(mocker, runtime: SkillRuntime):
@@ -364,101 +272,6 @@ def execute(tool_name, args, env):
     assert result.status == "done"
 
 
-def test_time_sensitive_turn_recomputes_search_safeguards_after_skill_view(mocker, runtime: SkillRuntime):
-    search_skill = runtime.skills_dir / "search-ops"
-    search_skill.mkdir(parents=True)
-    (search_skill / "SKILL.md").write_text(
-        """
----
-name: search-ops
-description: Search the web for current information.
-allowed-tools: web_search
----
-Search the web.
-""".strip(),
-        encoding="utf-8",
-    )
-    (search_skill / "tools.py").write_text(
-        """
-TOOL_SPECS = {
-  "web_search": {
-    "capability": "web_search",
-    "description": "Search web",
-    "parameters": {
-      "type": "object",
-      "properties": {"query": {"type": "string"}},
-      "required": ["query"]
-    }
-  }
-}
-
-def execute(tool_name, args, env):
-    return {"ok": True, "data": {"results": [{"title": "Meta News", "url": "https://example.com", "domain": "example.com", "snippet": "Verified"}]}, "error": None, "meta": {}}
-""".strip(),
-        encoding="utf-8",
-    )
-    runtime.load_skills()
-
-    cfg = agent_config()
-    agent = Agent(cfg, runtime)
-    mocker.patch.object(agent.classifier, "classify", return_value=TurnClassification(time_sensitive=True))
-
-    chat_reqs: list[urllib.request.Request] = []
-
-    def fake_urlopen(req, timeout=None, context=None):
-        if req.full_url.endswith("/v1/models"):
-            return FakeResponse([])
-        if req.full_url.endswith("/slots"):
-            return FakeResponse(['{"id":0,"n_ctx":40960}'])
-        chat_reqs.append(req)
-        if len(chat_reqs) == 1:
-            return FakeResponse(
-                [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"skill_view","arguments":"{\\"name\\": \\"search-ops\\", \\"file_path\\": \\"\\"}"}}]}}]}',
-                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
-                    "data: [DONE]",
-                ]
-            )
-        if len(chat_reqs) == 2:
-            return FakeResponse(
-                [
-                    'data: {"choices":[{"delta":{"content":"As of my knowledge, no major updates."}}]}',
-                    'data: {"choices":[{"finish_reason":"stop"}]}',
-                    "data: [DONE]",
-                ]
-            )
-        if len(chat_reqs) == 3:
-            payload = json.loads(req.data.decode("utf-8"))
-            system_message = payload["messages"][0]["content"]
-            assert "You must call web_search before answering." in system_message
-            return FakeResponse(
-                [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"web_search","arguments":"{\\"query\\": \\"latest acquisitions\\"}"}}]}}]}',
-                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
-                    "data: [DONE]",
-                ]
-            )
-        return FakeResponse(
-            [
-                'data: {"choices":[{"delta":{"content":"I checked the web before answering."}}]}',
-                'data: {"choices":[{"finish_reason":"stop"}]}',
-                "data: [DONE]",
-            ]
-        )
-
-    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
-
-    result = agent.run_turn(
-        history_messages=[{"role": "user", "content": "latest acquisitions"}],
-        user_input="latest acquisitions",
-        thinking=True,
-    )
-
-    assert result.status == "done"
-    assert "checked the web" in result.content
-    assert len(chat_reqs) >= 4
-
-
 def test_skill_index_keeps_full_catalog_available_until_a_skill_is_loaded(runtime: SkillRuntime):
     hidden_skill = runtime.skills_dir / "hidden-tool"
     hidden_skill.mkdir(parents=True)
@@ -544,9 +357,10 @@ def test_large_tool_call_args_are_compacted_in_history(runtime: SkillRuntime):
     compacted = cast(Any, agent.orchestrator.history.arguments({"filepath": "a.txt", "content": large}))
 
     assert compacted["filepath"] == "a.txt"
-    assert compacted["content"].startswith("x" * 1200)
-    assert "[history excerpt; 3800 chars omitted]" in compacted["content"]
-    assert "truncated" not in compacted["content"]
+    assert compacted["content"] == (
+        "[AUTHORITATIVE HISTORY RECEIPT: complete content argument contained 5000 characters "
+        "when the tool ran; hidden here only to save context]"
+    )
 
 
 def test_large_non_content_tool_call_args_still_use_generic_truncation(runtime: SkillRuntime):
@@ -731,7 +545,8 @@ def test_write_tool_history_compaction_keeps_evidence_not_full_content(runtime: 
     assert compacted["data"]["sha256"] == "abc123"
     assert compacted["data"]["bytes_written"] == 50000
     assert "unexpected_full_content" not in compacted["data"]
-    assert len(compacted["data"]["content_preview"]) < 5000
+    assert "content_preview" not in compacted["data"]
+    assert compacted["data"]["write_receipt"].startswith("AUTHORITATIVE:")
 
 
 def test_agent_transport_error_marks_error(mocker, runtime: SkillRuntime):
@@ -1019,74 +834,6 @@ def test_tool_result_history_compaction_can_be_gated_by_tool_name(mocker, runtim
     tool_content = tool_msgs[-1]["content"]
     assert huge_text not in tool_content
     assert "blob" not in tool_content
-
-
-def test_agent_summarizes_history_when_prompt_exceeds_context_budget(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-            "context_budget_max_tokens": 128,
-        },
-        "context": {"context_limit": 260, "keep_last_n": 2, "safety_margin": 0},
-    }
-    agent = Agent(cfg, runtime)
-    chat_reqs = []
-
-    def fake_urlopen(req, timeout=None, context=None):
-        if req.full_url.endswith("/v1/models"):
-            return FakeResponse([])
-        if req.full_url.endswith("/slots"):
-            return FakeResponse(['{"id":0,"n_ctx":40960}'])
-        chat_reqs.append(req)
-        if len(chat_reqs) == 1:
-            return FakeResponse(
-                [
-                    'data: {"choices":[{"delta":{"content":"Summary: user wants the context system optimized."}}]}',
-                    'data: {"choices":[{"finish_reason":"stop"}]}',
-                    "data: [DONE]",
-                ]
-            )
-        if len(chat_reqs) == 2:
-            payload = json.loads(req.data.decode("utf-8"))
-            system_content = payload["messages"][0]["content"]
-            assert "Conversation summary" in system_content
-            assert "context system optimized" in system_content
-            return FakeResponse(
-                [
-                    'data: {"choices":[{"delta":{"content":"Done"}}]}',
-                    'data: {"choices":[{"finish_reason":"stop"}]}',
-                    "data: [DONE]",
-                ]
-            )
-        raise AssertionError("Unexpected extra completion call")
-
-    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
-    history = cast(
-        Any,
-        [
-            {"role": "user", "content": "old request " + ("x" * 800)},
-            {"role": "assistant", "content": "old answer " + ("y" * 800)},
-            {"role": "user", "content": "middle request " + ("z" * 800)},
-            {"role": "assistant", "content": "middle answer " + ("q" * 800)},
-            {"role": "user", "content": "what next?"},
-        ],
-    )
-
-    result = agent.run_turn(history_messages=history, user_input="what next?", thinking=True)
-
-    assert result.status == "done"
-    assert result.journal["context_summary"] == "Summary: user wants the context system optimized."
-    report = cast(Any, result.journal["context_report"])
-    assert isinstance(report, dict)
-    assert report["summary_status"] == "model"
-    assert int(report["final_prompt_tokens_estimate"]) > 0
 
 
 def test_agent_can_cancel_while_waiting_for_readiness(mocker, runtime: SkillRuntime):

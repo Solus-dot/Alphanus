@@ -9,8 +9,8 @@ from typing import Any, cast
 
 import pytest
 
+from agent import provider_metadata
 from agent.core import Agent
-from agent.provider_metadata import ProviderMetadataExtractor
 from core.memory import LexicalMemory
 from core.project import ProjectRuntime
 from core.types import ModelStatus
@@ -426,26 +426,26 @@ def test_reload_config_resets_model_status_cache(runtime: SkillRuntime):
 
 
 def test_fetch_model_name_accepts_top_level_model_field(runtime: SkillRuntime):
-    assert ProviderMetadataExtractor.extract_model_name({"model": "qwen2.5-coder-7b"}) == "qwen2.5-coder-7b"
+    assert provider_metadata.extract_model_name({"model": "qwen2.5-coder-7b"}) == "qwen2.5-coder-7b"
 
 
 def test_fetch_model_name_accepts_nested_model_id_field(runtime: SkillRuntime):
     assert (
-        ProviderMetadataExtractor.extract_model_name({"models": [{"model_id": "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"}]})
+        provider_metadata.extract_model_name({"models": [{"model_id": "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"}]})
         == "mlx-community/Qwen2.5-VL-7B-Instruct-4bit"
     )
 
 
 def test_fetch_model_name_returns_none_when_models_list_is_empty(runtime: SkillRuntime):
-    assert ProviderMetadataExtractor.extract_model_name({"object": "list", "data": []}) is None
+    assert provider_metadata.extract_model_name({"object": "list", "data": []}) is None
 
 
 def test_extract_model_context_window_accepts_nested_metadata(runtime: SkillRuntime):
-    assert ProviderMetadataExtractor.extract_model_context_window({"data": [{"metadata": {"n_ctx_slot": 40960}}]}) == 40960
+    assert provider_metadata.extract_model_context_window({"data": [{"metadata": {"n_ctx_slot": 40960}}]}) == 40960
 
 
 def test_extract_model_context_window_accepts_recursive_nested_fields(runtime: SkillRuntime):
-    assert ProviderMetadataExtractor.extract_model_context_window({"default_generation_settings": {"nested": {"n_ctx": 40960}}}) == 40960
+    assert provider_metadata.extract_model_context_window({"default_generation_settings": {"nested": {"n_ctx": 40960}}}) == 40960
 
 
 def test_reload_config_resets_readiness_state(runtime: SkillRuntime):
@@ -526,7 +526,7 @@ def test_reload_config_coerces_invalid_numeric_values(runtime: SkillRuntime):
         {
             "agent": {
                 **cfg["agent"],
-                "max_action_depth": "invalid",
+                "max_iterations": "invalid",
                 "max_tool_result_chars": None,
                 "max_reasoning_chars": "-20",
                 "context_budget_max_tokens": "not-an-int",
@@ -546,7 +546,7 @@ def test_reload_config_coerces_invalid_numeric_values(runtime: SkillRuntime):
     assert agent.context_mgr.keep_last_n == 1
     assert agent.context_mgr.safety_margin == 0
     assert agent.llm_client.max_classifier_tokens == 256
-    assert agent.orchestrator.max_action_depth == 10
+    assert agent.orchestrator.max_iterations == 50
     assert agent.orchestrator.history.max_chars == 12000
     assert agent.orchestrator.max_reasoning_chars == 0
     assert agent.orchestrator.context_budget_max_tokens == 2048

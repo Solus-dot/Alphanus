@@ -5,15 +5,11 @@
     {
       "finish_reason": "stop",
       "content": "I should check that.\n\n<tool_call>\n<function=shell>\n<parameter=command>git branch</parameter>\n</function>\n</tool_call>"
-    },
-    {
-      "finish_reason": "stop",
-      "content": "I misformatted the previous reply. Please tell me what you want to do with the branch."
     }
   ],
   "expect": {
     "status": "done",
-    "content_contains": "misformatted the previous reply",
+    "content_contains": "I should check that",
     "content_not_contains": ["<tool_call>", "<function=shell>"],
     "event_types": ["pass_end"]
   }

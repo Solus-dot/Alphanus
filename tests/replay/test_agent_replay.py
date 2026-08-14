@@ -174,7 +174,7 @@ def test_replay_core_coding_loop(fixture_path: Path, tmp_path: Path) -> None:
     hooks = ReplayHooks(agent, fixture)
     setattr(agent.llm_client, "call_with_retry", hooks.call_with_retry)
     setattr(agent.classifier, "classify", hooks.classify_context)
-    setattr(agent.skill_runtime.selector, "select_skills", hooks.selected_skills)
+    setattr(agent.skill_runtime, "select_skills", hooks.selected_skills)
 
     events: list[dict[str, Any]] = []
     stop_event = None

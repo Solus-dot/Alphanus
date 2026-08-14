@@ -162,22 +162,6 @@ class PromptPolicyRenderer:
                 "- If key intent or implementation details are missing, ask a concise follow-up question.\n"
                 "- Conclude with a concrete implementation plan that can be executed later."
             )
-        if snapshot.search_mode and snapshot.time_sensitive_query and snapshot.forced_search_retry:
-            blocks.append(
-                "Mandatory retrieval rule:\n"
-                "- This user request is time-sensitive.\n"
-                "- You must call web_search before answering.\n"
-                "- Do not answer from memory cutoff or prior knowledge alone.\n"
-                "- If web_search fails, say you could not verify the answer."
-            )
-        if snapshot.requires_project_action and snapshot.forced_action_retry:
-            blocks.append(
-                "Mandatory action rule:\n"
-                "- This is a confirmation of an immediate prior project action request.\n"
-                "- Use the available project tools to perform the requested action if policy allows.\n"
-                "- Do not replace an available project tool action with manual terminal instructions.\n"
-                "- Only decline if the required project tool is unavailable or policy blocks the action."
-            )
         if snapshot.explicit_external_path:
             block = (
                 "Explicit path rule:\n"

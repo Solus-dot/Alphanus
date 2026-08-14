@@ -98,12 +98,6 @@ def test_prune_hard_fallback_enforces_budget():
     assert mgr.estimate_tokens(pruned) + 40 <= mgr.context_limit - mgr.safety_margin
 
 
-def test_default_config_keeps_tree_compaction_enabled():
-    tui = DEFAULT_CONFIG.get("tui", {})
-    tree = tui.get("tree_compaction", {})
-    assert bool(tree.get("enabled", False))
-
-
 def test_prune_keeps_at_least_one_user_message_when_tool_bundle_is_large():
     mgr = ContextWindowManager(context_limit=900, keep_last_n=10, safety_margin=0)
     messages: Any = [{"role": "system", "content": "base prompt"}]

@@ -45,7 +45,8 @@ class AgentConfig(ConfigSection):
     stream_reasoning_char_limit: int = Field(default=4_000_000, ge=1024, le=16_000_000)
     stream_tool_argument_char_limit: int = Field(default=2_000_000, ge=1024, le=16_000_000)
     stream_tool_call_limit: int = Field(default=128, ge=1, le=1024)
-    max_action_depth: int = Field(default=10, ge=1, le=100)
+    max_iterations: int = Field(default=50, ge=1, le=500)
+    turn_timeout_s: float = Field(default=1800, ge=30, le=86400)
     max_tool_result_chars: int = Field(default=12000, ge=500, le=200000)
     max_reasoning_chars: int = Field(default=20000, ge=0, le=200000)
     recent_tool_detail_limit: int = Field(default=12, ge=1, le=100)
@@ -128,17 +129,9 @@ class UiTimingConfig(ConfigSection):
     action_approval_timeout_s: float = Field(default=60, ge=1, le=600)
 
 
-class TreeCompactionConfig(ConfigSection):
-    enabled: bool = True
-    inactive_assistant_char_limit: int = Field(default=12000, ge=1000, le=200000)
-    inactive_tool_argument_char_limit: int = Field(default=5000, ge=500, le=100000)
-    inactive_tool_content_char_limit: int = Field(default=8000, ge=1000, le=200000)
-
-
 class UiConfig(ConfigSection):
     theme: str = DEFAULT_THEME_ID
     timing: UiTimingConfig = Field(default_factory=lambda: UiTimingConfig())
-    tree_compaction: TreeCompactionConfig = Field(default_factory=lambda: TreeCompactionConfig())
 
 
 class ConfigSchema(ConfigSection):

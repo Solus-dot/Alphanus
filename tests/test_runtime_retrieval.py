@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 
 from agent.classifier import TurnClassifier
@@ -12,7 +11,7 @@ from agent.provider import LLMClient
 from core.config_model import default_config
 from core.retrieval import SQLiteRetrievalStore
 from core.streaming import StreamError
-from core.types import AgentTurnResult, ModelStatus, StreamPassResult, ToolCall, TurnClassification
+from core.types import ModelStatus, StreamPassResult, ToolCall, TurnClassification
 from skills.runtime import SkillContext, SkillRuntime
 from tests.support import build_skill_runtime
 
@@ -166,46 +165,6 @@ def test_policy_retrieval_skips_non_time_sensitive_turns(tmp_path: Path) -> None
     assert state.ctx.retrieval_hits == []
 
 
-def test_project_action_coercion_preserves_clarification_reply(mocker, tmp_path: Path) -> None:
-    _runtime, orchestrator, state = _turn_state(
-        tmp_path,
-        user_input="edit the config",
-        time_sensitive=False,
-        project_action=True,
-    )
-    mocker.patch.object(orchestrator, "project_action_outcome", return_value="needs_clarification")
-    result = AgentTurnResult(
-        status="done",
-        content="Which config file should I edit?",
-        reasoning="",
-        skill_exchanges=[],
-    )
-
-    coerced = orchestrator.coerce_project_action_failure(state, result, stop_event=None, pass_id="pass_1")
-
-    assert coerced is result
-
-
-def test_project_action_coercion_preserves_declined_or_blocked_reply(mocker, tmp_path: Path) -> None:
-    _runtime, orchestrator, state = _turn_state(
-        tmp_path,
-        user_input="delete all project files",
-        time_sensitive=False,
-        project_action=True,
-    )
-    mocker.patch.object(orchestrator, "project_action_outcome", return_value="declined_or_blocked")
-    result = AgentTurnResult(
-        status="done",
-        content="No project tool actually ran because the requested operation was blocked.",
-        reasoning="",
-        skill_exchanges=[],
-    )
-
-    coerced = orchestrator.coerce_project_action_failure(state, result, stop_event=None, pass_id="pass_1")
-
-    assert coerced is result
-
-
 def test_plan_mode_blocks_mutating_tool_calls(mocker, tmp_path: Path) -> None:
     runtime, orchestrator, state = _turn_state(
         tmp_path,
@@ -256,131 +215,6 @@ def test_plan_mode_allows_project_tree_read_only_tool(tmp_path: Path) -> None:
     cast(Any, runtime).tool_is_mutating = lambda _name: True
 
     assert orchestrator._tool_allowed_in_plan_mode("project_tree") is True
-
-
-def test_finalize_response_skips_project_action_enforcement_in_plan_mode(tmp_path: Path) -> None:
-    _runtime, orchestrator, state = _turn_state(
-        tmp_path,
-        user_input="delete temp files",
-        time_sensitive=False,
-        project_action=True,
-    )
-    state.collaboration_mode = "plan"
-    stream_result = type(
-        "R",
-        (),
-        {
-            "content": "Here is a step-by-step implementation plan.",
-            "finish_reason": "stop",
-        },
-    )()
-
-    action, result = orchestrator.finalization_engine.finalize_response(
-        system_content="system",
-        state=state,
-        pass_id="pass_1",
-        stream_result=stream_result,
-    )
-
-    assert action == "result"
-    assert result is not None
-    assert result.status == "done"
-    assert "implementation plan" in result.content.lower()
-    assert state.forced_action_retry is False
-
-
-def test_finalize_response_accepts_read_only_shell_version_evidence(tmp_path: Path) -> None:
-    runtime, orchestrator, state = _turn_state(
-        tmp_path,
-        user_input="what go version am i running?",
-        time_sensitive=False,
-        project_action=True,
-    )
-    original_tool_registration = runtime.tool_registration
-    shell_registration = SimpleNamespace(capability="run_shell_command", actions=("run",), mutates=True)
-    cast(Any, runtime).tool_registration = lambda name: shell_registration if name == "shell_command" else original_tool_registration(name)
-    orchestrator.classifier.llm_client.enable_structured_classification = False
-    call = ToolCall(stream_id="call_1", index=0, id="call_1", name="shell_command", arguments={"command": "go version"})
-    orchestrator.record_tool_effects(
-        state,
-        call,
-        {
-            "ok": True,
-            "data": {
-                "command": "go version",
-                "stdout": "go version go1.26.4 darwin/arm64\n",
-                "stderr": "",
-                "returncode": 0,
-            },
-            "error": None,
-            "meta": {"project_changed": False},
-        },
-    )
-    stream_result = type(
-        "R",
-        (),
-        {
-            "content": "You are running Go version `go1.26.4` on `darwin/arm64`.",
-            "finish_reason": "stop",
-        },
-    )()
-
-    action, result = orchestrator.finalization_engine.finalize_response(
-        system_content="system",
-        state=state,
-        pass_id="pass_1",
-        stream_result=stream_result,
-    )
-
-    assert action == "result"
-    assert result is not None
-    assert result.status == "done"
-    assert result.content == "You are running Go version `go1.26.4` on `darwin/arm64`."
-    assert state.forced_action_retry is False
-
-
-def test_finalize_response_preserves_shell_rejection_explanation(tmp_path: Path) -> None:
-    _runtime, orchestrator, state = _turn_state(
-        tmp_path,
-        user_input="what go version am i using?",
-        time_sensitive=False,
-        project_action=True,
-    )
-    orchestrator.classifier.llm_client.enable_structured_classification = False
-    call = ToolCall(stream_id="call_1", index=0, id="call_1", name="shell_command", arguments={"command": "go version"})
-    orchestrator.record_tool_effects(
-        state,
-        call,
-        {
-            "ok": False,
-            "data": None,
-            "error": {"code": "E_POLICY", "message": "Shell command rejected by user"},
-            "meta": {"duration_ms": 60008},
-        },
-        policy_blocked=True,
-    )
-    stream_result = type(
-        "R",
-        (),
-        {
-            "content": "I attempted to run `go version` to check your Go version, but the command was rejected.",
-            "finish_reason": "stop",
-        },
-    )()
-
-    action, result = orchestrator.finalization_engine.finalize_response(
-        system_content="system",
-        state=state,
-        pass_id="pass_1",
-        stream_result=stream_result,
-    )
-
-    assert action == "result"
-    assert result is not None
-    assert result.status == "done"
-    assert "command was rejected" in result.content
-    assert result.error is None
-    assert state.forced_action_retry is False
 
 
 def test_skill_runtime_only_exposes_custom_tools_after_skill_view_load(tmp_path: Path) -> None:

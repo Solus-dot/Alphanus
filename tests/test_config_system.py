@@ -48,7 +48,7 @@ def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
             "model_endpoint": "ftp://bad-endpoint",
             "request_timeout_s": "bad",
             "readiness_poll_s": 0,
-            "max_action_depth": -8,
+            "max_iterations": -8,
             "max_tokens": "0",
             "backend_profile": "unsupported-backend",
         },
@@ -61,7 +61,7 @@ def test_normalize_config_clamps_and_falls_back_invalid_values() -> None:
     assert normalized["agent"]["model_endpoint"] == DEFAULT_CONFIG["agent"]["model_endpoint"]
     assert normalized["agent"]["request_timeout_s"] == float(DEFAULT_CONFIG["agent"]["request_timeout_s"])
     assert normalized["agent"]["readiness_poll_s"] == 0.05
-    assert normalized["agent"]["max_action_depth"] == 1
+    assert normalized["agent"]["max_iterations"] == 1
     assert normalized["agent"]["max_tokens"] is None
     assert normalized["agent"]["backend_profile"] == "auto"
     assert normalized["context"]["context_limit"] == 512

@@ -8,7 +8,7 @@ from typing import Any
 
 from agent.provider import LLMClient
 from agent.telemetry import TelemetryEmitter
-from core.message_types import ChatMessage, JsonObject, JSONValue, MessageContentPart
+from core.message_types import ChatMessage, JSONValue, MessageContentPart
 from core.types import TurnClassification
 from skills.runtime import SkillContext, SkillRuntime
 
@@ -376,110 +376,6 @@ class TurnClassifier:
             self.telemetry.emit(failure_event, error=str(exc))
             return {}
         return self._parse_json_object(result.content) if result is not None else {}
-
-    def classify_project_action_outcome(
-        self,
-        *,
-        current_user_input: str,
-        recent_routing_hint: str,
-        assistant_reply: str,
-        evidence: JsonObject,
-        pass_id: str,
-        stop_event=None,
-    ) -> str:
-        rules_outcome = self._rule_based_project_action_outcome(
-            assistant_reply,
-            evidence,
-            current_user_input=current_user_input,
-            recent_routing_hint=recent_routing_hint,
-        )
-        if not bool(self.llm_client.enable_structured_classification):
-            return rules_outcome
-        prompt = (
-            "Classify an assistant draft for a local project action request.\n"
-            "Return strict JSON only with this field:\n"
-            '{"outcome":"not_completed"}\n'
-            "Allowed outcome values: completed_with_evidence, declined_or_blocked, needs_clarification, not_completed.\n"
-            "Use the provided tool evidence as the source of truth.\n"
-            "- Choose completed_with_evidence when the evidence shows a successful tool that satisfies the requested action.\n"
-            "- For create, edit, delete, move, save, or write requests, require successful mutating project-tool evidence.\n"
-            "- For open, run, read, list, inspect, check, or verify requests, a successful non-mutating tool can be sufficient evidence.\n"
-            "- Choose declined_or_blocked only when the reply transparently reports a real limitation supported by the evidence, such as a policy-blocked tool, unavailable tooling, or an explicit statement that no successful project tool actually ran.\n"
-            "- Choose needs_clarification when the assistant is explicitly asking the user for information needed before acting.\n"
-            "- Choose not_completed for drafts that hand the requested action back to the user, unsupported success claims, or deflections/refusals that are not supported by the evidence.\n"
-            "Do not explain."
-        )
-        user_lines = [
-            f"Current user input:\n{current_user_input}",
-            f"Assistant draft:\n{assistant_reply}",
-            f"Tool evidence:\n{json.dumps(evidence, ensure_ascii=False, default=str)}",
-        ]
-        if recent_routing_hint:
-            user_lines.insert(1, f"Immediate prior exchange:\n{recent_routing_hint}")
-        parsed = self._structured_classification(
-            prompt,
-            user_lines,
-            max_tokens=min(self.llm_client.max_classifier_tokens, 120),
-            pass_id=f"{pass_id}_project_action_outcome",
-            failure_event="project_action_outcome_classification_failed",
-            stop_event=stop_event,
-        )
-        outcome = str(parsed.get("outcome", "")).strip().lower()
-        if outcome in {"completed_with_evidence", "declined_or_blocked", "needs_clarification", "not_completed"}:
-            if (
-                outcome == "completed_with_evidence"
-                and self._request_requires_project_mutation(current_user_input, recent_routing_hint)
-                and not bool(evidence.get("has_successful_mutation"))
-            ):
-                return "not_completed"
-            if (
-                outcome == "completed_with_evidence"
-                and not bool(evidence.get("has_successful_mutation"))
-                and not self._evidence_supports_non_mutating_completion(
-                    current_user_input=current_user_input,
-                    assistant_reply=assistant_reply,
-                    evidence=evidence,
-                )
-            ):
-                return "not_completed"
-            return outcome
-        return rules_outcome
-
-    @staticmethod
-    def _rule_based_project_action_outcome(
-        assistant_reply: str,
-        evidence: JsonObject,
-        *,
-        current_user_input: str = "",
-        recent_routing_hint: str = "",
-    ) -> str:
-        if bool(evidence.get("has_successful_mutation")):
-            return "completed_with_evidence"
-        lowered = TurnClassifier._normalized_text(assistant_reply)
-        if not lowered:
-            return "not_completed"
-        if TurnClassifier._draft_requests_clarification(assistant_reply):
-            return "needs_clarification"
-        if TurnClassifier._draft_defers_project_action_to_user(assistant_reply):
-            return "not_completed"
-        if (
-            not TurnClassifier._request_requires_project_mutation(current_user_input, recent_routing_hint)
-            and bool(evidence.get("successful_tools"))
-            and TurnClassifier._words(lowered) & _NON_MUTATING_DONE_WORDS
-            and TurnClassifier._evidence_supports_non_mutating_completion(
-                current_user_input=current_user_input,
-                assistant_reply=assistant_reply,
-                evidence=evidence,
-            )
-        ):
-            return "completed_with_evidence"
-        if TurnClassifier._draft_claims_project_completion_without_evidence(assistant_reply):
-            return "not_completed"
-        if TurnClassifier._evidence_shows_blocked_or_unavailable_tool(evidence) and TurnClassifier._draft_reports_supported_limitation(
-            assistant_reply
-        ):
-            return "declined_or_blocked"
-        return "not_completed"
 
     def classify(self, ctx: SkillContext, stop_event=None) -> TurnClassification:
         explicit_external_path = self._explicit_path_outside_project(ctx.user_input)

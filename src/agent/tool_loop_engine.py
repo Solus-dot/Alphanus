@@ -13,7 +13,6 @@ from core.types import AgentTurnResult, ApprovalRequestFn, TurnState, UserInputR
 
 class ToolLoopEngine:
     INSPECTION_LOOP_TOOLS = {"read_file", "read_files", "list_files", "project_tree", "find_files", "search_code"}
-    MUTATION_INTENT_TERMS = frozenset("add capitalize change create delete edit fix modify move remove rename replace save update write".split())  # fmt: skip
 
     def __init__(self, orchestrator) -> None:
         self.orchestrator = orchestrator
@@ -40,12 +39,6 @@ class ToolLoopEngine:
         reg = self.orchestrator.skill_runtime.tool_registration(tool_name)
         capability = str(getattr(reg, "capability", "") or "").strip().lower()
         return capability in {"project_read", "project_tree"} and not self.orchestrator.skill_runtime.tool_is_mutating(tool_name)
-
-    def _requires_project_mutation(self, state: TurnState) -> bool:
-        if not state.classification.requires_project_action or self.orchestrator.evidence_guard.project_mutation_count(state) > 0:
-            return False
-        user_text = str(getattr(state.ctx, "user_input", "") or "").lower()
-        return any(term in user_text for term in self.MUTATION_INTENT_TERMS)
 
     def _loop_block_tool(
         self,
@@ -117,64 +110,84 @@ class ToolLoopEngine:
         self._loop_block_tool(state=state, call=call, pass_id=pass_id, code="E_REPEATED_TOOL_CALL", message=message, on_event=on_event)
         return True, None
 
-    def _maybe_block_stalled_project_action(
-        self,
-        *,
-        state: TurnState,
-        call,
-        pass_id: str,
-        on_event: Callable[[JsonObject], None] | None,
-    ) -> tuple[bool, AgentTurnResult | None]:
-        if not self._requires_project_mutation(state) or not state.project_target_inspected:
-            return False, None
-        if not self._is_non_mutating_project_inspection(state, call.name):
-            return False, None
-        if state.post_target_inspection_calls < 2:
-            return False, None
-        state.project_action_stall_blocks += 1
-        if state.project_action_stall_blocks >= 2:
-            message = (
-                "The requested project mutation has enough inspection evidence, but the model kept requesting "
-                "non-mutating project inspection tools. The turn is stopped to avoid an inspection loop."
-            )
-            self._loop_block_tool(state=state, call=call, pass_id=pass_id, code="E_TOOL_LOOP_STUCK", message=message, on_event=on_event)
-            return (
-                True,
-                AgentTurnResult(
-                    status="error",
-                    content=f"[agent error] {message}",
-                    reasoning=state.full_reasoning,
-                    skill_exchanges=state.skill_exchanges,
-                    error="project_action_stuck",
-                    error_code="E_TOOL",
-                ),
-            )
-        message = (
-            "The requested project mutation has enough inspection evidence. Do not inspect again; call the "
-            "appropriate mutating project tool now, or explain the exact blocker."
+    @staticmethod
+    def _inspection_paths(call) -> set[str]:
+        if call.name == "read_file":
+            path = str(call.arguments.get("filepath", "")).strip()
+            return {path} if path else set()
+        if call.name == "read_files":
+            return {str(path).strip() for path in call.arguments.get("paths", []) if str(path).strip()}
+        return set()
+
+    @staticmethod
+    def _merge_range(ranges: list[tuple[int, int]], start: int, end: int) -> list[tuple[int, int]]:
+        merged: list[tuple[int, int]] = []
+        for current_start, current_end in sorted([*ranges, (start, end)]):
+            if merged and current_start <= merged[-1][1] + 1:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], current_end))
+            else:
+                merged.append((current_start, current_end))
+        return merged
+
+    @staticmethod
+    def _requested_read_range(state: TurnState, call) -> tuple[str, int, int] | None:
+        if call.name != "read_file":
+            return None
+        path = str(call.arguments.get("filepath", "")).strip()
+        if not path:
+            return None
+        start = max(1, int(call.arguments.get("start_line") or 1))
+        end = int(call.arguments.get("end_line") or state.read_total_lines.get(path) or 2**63 - 1)
+        return path, start, max(start, end)
+
+    def _covered_read_reason(self, state: TurnState, call) -> str:
+        requested = self._requested_read_range(state, call)
+        if requested is None:
+            return ""
+        path, start, end = requested
+        if not any(covered_start <= start and covered_end >= end for covered_start, covered_end in state.read_line_ranges.get(path, [])):
+            return ""
+        covered = ", ".join(f"{a}–{b}" for a, b in state.read_line_ranges[path])
+        total = state.read_total_lines.get(path)
+        unread = "none" if total and covered == f"1–{total}" else "request a range outside the covered intervals"
+        return f"{path} lines {start}–{end} were already read. Covered: {covered}. Unread: {unread}. Use prior results."
+
+    def _maybe_finalize_verified_write_readback(self, state: TurnState, call) -> str:
+        paths = self._inspection_paths(call)
+        if not paths or not paths <= state.verified_write_paths:
+            return ""
+        if not paths <= state.verified_write_readbacks:
+            return ""
+        return (
+            "The requested file write already succeeded and was verified, and the written file has already been "
+            "read back once. Finish now using that evidence. Do not inspect or rewrite the file again."
         )
-        self._loop_block_tool(state=state, call=call, pass_id=pass_id, code="E_PROJECT_ACTION_STALLED", message=message, on_event=on_event)
-        return True, None
 
     def _record_loop_progress_after_result(self, state: TurnState, call, result: dict[str, object]) -> None:
         if not bool(result.get("ok")):
             return
-        if self.orchestrator.evidence_guard.project_mutation_count(state) > 0:
-            state.project_target_inspected = False
-            state.post_target_inspection_calls = 0
-            state.project_action_stall_blocks = 0
+        data = result.get("data")
+        payload = data if isinstance(data, dict) else {}
+        if call.name in {"create_file", "edit_file"} and bool(payload.get("write_verified")):
+            path = str(payload.get("filepath", "")).strip()
+            if path:
+                state.verified_write_paths.add(path)
             return
         if not self._is_non_mutating_project_inspection(state, call.name):
             return
         state.successful_inspection_tool_signatures.add(self._tool_signature(call))
-        if not self._requires_project_mutation(state):
-            return
-        if state.project_target_inspected:
-            state.post_target_inspection_calls += 1
-            return
-        if call.name in {"read_file", "read_files", "find_files", "project_tree"}:
-            state.project_target_inspected = True
-            state.post_target_inspection_calls = 0
+        paths = self._inspection_paths(call)
+        state.verified_write_readbacks.update(paths & state.verified_write_paths)
+        requested = self._requested_read_range(state, call)
+        if requested is not None:
+            path, requested_start, requested_end = requested
+            start = max(1, int(payload.get("resolved_start_line") or requested_start))
+            end = max(start, int(payload.get("resolved_end_line") or requested_end))
+            total = int(payload.get("total_line_count") or 0)
+            if total:
+                state.read_total_lines[path] = total
+                end = min(end, total)
+            state.read_line_ranges[path] = self._merge_range(state.read_line_ranges.get(path, []), start, end)
 
     def execute_tool_calls(
         self,
@@ -215,39 +228,7 @@ class ToolLoopEngine:
         state.dynamic_history.append(assistant_chat_message)
         state.skill_exchanges.append(assistant_chat_message)
 
-        force_finalize_reason = ""
-        if state.action_depth >= self.orchestrator.max_action_depth:
-            for call in stream_result.tool_calls:
-                self.orchestrator.emit(
-                    on_event,
-                    {"type": "tool_call", "stream_id": call.stream_id, "name": call.name, "arguments": call.arguments, "id": call.id},
-                )
-                self._loop_block_tool(
-                    state=state,
-                    call=call,
-                    pass_id=pass_id,
-                    code="E_TOOL_LOOP_BUDGET",
-                    message=f"Max skill action depth ({self.orchestrator.max_action_depth}) exceeded before executing {call.name}.",
-                    on_event=on_event,
-                )
-            if state.classification.time_sensitive and state.search_tools_enabled and state.completion.search_has_success:
-                return (
-                    "finalized",
-                    self.orchestrator.finalization_engine.finalize_turn(
-                        system_content,
-                        state,
-                        stop_event,
-                        on_event,
-                        pass_id,
-                        search_rule(
-                            "The search loop budget is exhausted.",
-                            "Answer using the successful search or fetch results already in the conversation.",
-                            "Do not search again.",
-                        ),
-                    ),
-                )
-            return self._error_result(state, f"Max skill action depth ({self.orchestrator.max_action_depth}) exceeded")
-        state.action_depth += 1
+        force_continue_reason = ""
 
         for call in stream_result.tool_calls:
             call_trace = {
@@ -267,6 +248,30 @@ class ToolLoopEngine:
                 on_event, {"type": "tool_call", "stream_id": call.stream_id, "name": call.name, "arguments": call.arguments, "id": call.id}
             )
 
+            covered_read_reason = self._covered_read_reason(state, call)
+            if covered_read_reason:
+                self._loop_block_tool(
+                    state=state,
+                    call=call,
+                    pass_id=pass_id,
+                    code="E_READ_RANGE_COVERED",
+                    message=covered_read_reason,
+                    on_event=on_event,
+                )
+                continue
+
+            verified_write_reason = self._maybe_finalize_verified_write_readback(state, call)
+            if verified_write_reason:
+                self._loop_block_tool(
+                    state=state,
+                    call=call,
+                    pass_id=pass_id,
+                    code="E_VERIFIED_WRITE_READBACK_COMPLETE",
+                    message=verified_write_reason,
+                    on_event=on_event,
+                )
+                continue
+
             blocked_current_call, blocked_result = self._maybe_block_repeated_inspection(
                 state=state,
                 call=call,
@@ -283,32 +288,16 @@ class ToolLoopEngine:
                     )
                 continue
 
-            stalled_current_call, stalled_result = self._maybe_block_stalled_project_action(
-                state=state,
-                call=call,
-                pass_id=pass_id,
-                on_event=on_event,
-            )
-            if stalled_result is not None:
-                return "result", stalled_result
-            if stalled_current_call:
-                if self.orchestrator._is_stop_requested(stop_event):
-                    return (
-                        "result",
-                        cancelled_turn_result(state),
-                    )
-                continue
-
-            force_finalize_reason = self.orchestrator.policy_engine.tool_budget_reason(state, call) or ""
-            if force_finalize_reason:
+            force_continue_reason = self.orchestrator.policy_engine.tool_budget_reason(state, call) or ""
+            if force_continue_reason:
                 if call.name not in {"web_search", "fetch_url"} or not state.search_tools_enabled:
-                    return self._error_result(state, force_finalize_reason)
+                    return self._error_result(state, force_continue_reason)
                 self._loop_block_tool(
                     state=state,
                     call=call,
                     pass_id=pass_id,
                     code="E_TOOL_LOOP_BUDGET",
-                    message=force_finalize_reason,
+                    message=force_continue_reason,
                     on_event=on_event,
                 )
                 break
@@ -353,14 +342,14 @@ class ToolLoopEngine:
                 if raw_url:
                     host = urllib.parse.urlparse(raw_url).netloc.lower()
                     if raw_url in state.completion.fetched_urls:
-                        force_finalize_reason = search_rule(
+                        force_continue_reason = search_rule(
                             "This URL was already fetched in this turn.",
                             "Do not retry the same page.",
                             "Answer from the evidence already gathered.",
                         )
                         break
                     if host and host in state.completion.blocked_fetch_domains:
-                        force_finalize_reason = search_rule(
+                        force_continue_reason = search_rule(
                             "This source domain already blocked a fetch attempt in this turn.",
                             "Do not retry the same blocked domain.",
                             "Answer from the remaining evidence.",
@@ -405,15 +394,12 @@ class ToolLoopEngine:
                 return cancelled
             if approval_denied:
                 return (
-                    "finalized",
-                    self.orchestrator.finalization_engine.finalize_turn(
-                        system_content,
-                        state,
-                        stop_event,
-                        on_event,
-                        pass_id,
-                        "The user denied the requested approval. Stop the action loop immediately, say plainly that "
-                        "the action was not performed, and do not attempt the same intent through another tool.",
+                    "result",
+                    AgentTurnResult(
+                        status="done",
+                        content="The requested action was not performed because approval was denied.",
+                        reasoning=state.full_reasoning,
+                        skill_exchanges=state.skill_exchanges,
                     ),
                 )
             if call.name == "skill_view" and result.get("ok"):
@@ -446,14 +432,14 @@ class ToolLoopEngine:
             if not (state.classification.time_sensitive and state.search_tools_enabled):
                 continue
             if call.name == "fetch_url" and state.completion.search_failure_count >= 2:
-                force_finalize_reason = search_rule(
+                force_continue_reason = search_rule(
                     "The search provider has already failed repeatedly.",
                     "Do not use memory or prior knowledge to fill gaps.",
                     "If the fetched page does not explicitly answer the question, say you could not verify it.",
                 )
                 break
             if call.name not in {"web_search", "fetch_url"} and state.completion.search_failure_count >= 2:
-                force_finalize_reason = search_rule(
+                force_continue_reason = search_rule(
                     "Search has failed repeatedly.",
                     "Do not switch to memory recall or unrelated tools.",
                     "Answer only with verified evidence, or say verification failed.",
@@ -465,21 +451,14 @@ class ToolLoopEngine:
                 and state.completion.search_failure_count >= 2
                 and not state.completion.search_has_success
             ):
-                finalized = self.orchestrator.finalization_engine.finalize_turn(
-                    system_content,
-                    state,
-                    stop_event,
-                    on_event,
-                    pass_id,
-                    search_rule(
-                        "Search failed repeatedly and no successful results were gathered.",
-                        "State plainly that you could not verify the answer from reliable web results in this turn.",
-                        "Do not speculate or answer from prior knowledge.",
-                    ),
+                force_continue_reason = search_rule(
+                    "Search failed repeatedly and no successful results were gathered.",
+                    "State plainly that you could not verify the answer from reliable web results in this turn.",
+                    "Do not speculate or answer from prior knowledge.",
                 )
-                return "finalized", finalized
+                break
             if call.name == "fetch_url" and not result.get("ok") and state.completion.search_has_success:
-                force_finalize_reason = search_rule(
+                force_continue_reason = search_rule(
                     "A page fetch failed.",
                     "Continue with the successful search results and any successful fetches already gathered.",
                     "Do not keep retrying searches indefinitely.",
@@ -490,7 +469,7 @@ class ToolLoopEngine:
                 and state.completion.tool_counts.get("web_search", 0) >= state.tool_budgets.get("web_search", 0)
                 and state.completion.search_has_success
             ):
-                force_finalize_reason = search_rule(
+                force_continue_reason = search_rule(
                     "Enough search attempts have already been made.",
                     "Summarize from the best available results now.",
                     "Do not issue more search calls.",
@@ -501,18 +480,13 @@ class ToolLoopEngine:
                 and state.completion.tool_counts.get("fetch_url", 0) >= state.tool_budgets.get("fetch_url", 0)
                 and state.completion.search_has_fetch_content
             ):
-                force_finalize_reason = search_rule(
+                force_continue_reason = search_rule(
                     "Enough pages have been fetched.",
                     "Answer from the gathered evidence now.",
                     "Do not fetch additional pages.",
                 )
                 break
 
-        if force_finalize_reason:
-            return (
-                "finalized",
-                self.orchestrator.finalization_engine.finalize_turn(
-                    system_content, state, stop_event, on_event, pass_id, force_finalize_reason
-                ),
-            )
+        if force_continue_reason:
+            state.dynamic_history.append(cast(ChatMessage, {"role": "system", "content": force_continue_reason}))
         return "continue", None

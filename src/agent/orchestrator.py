@@ -8,7 +8,6 @@ from typing import Any, cast
 from agent import tool_execution_engine, turn_journal
 from agent.classifier import TurnClassifier
 from agent.evidence_guard import EvidenceGuard
-from agent.finalization_engine import FinalizationEngine
 from agent.policies import OutputSanitizer, PromptPolicyRenderer
 from agent.provider import LLMClient
 from agent.telemetry import TelemetryEmitter
@@ -51,7 +50,8 @@ class TurnOrchestrator:
     def reload_config(self, config: ConfigSchema | Mapping[str, Any]) -> None:
         self.config = config_schema(config)
         agent_cfg = self.config.agent
-        self.max_action_depth = agent_cfg.max_action_depth
+        self.max_iterations = agent_cfg.max_iterations
+        self.turn_timeout_s = agent_cfg.turn_timeout_s
         self.max_reasoning_chars = agent_cfg.max_reasoning_chars
         self.history = ToolHistoryCompactor(agent_cfg)
         self.context_budget_max_tokens = agent_cfg.context_budget_max_tokens
@@ -64,7 +64,6 @@ class TurnOrchestrator:
         self.tool_execution_engine = tool_execution_engine
         self.tool_loop = ToolLoopEngine(self)
         self.turn_journal = turn_journal
-        self.finalization_engine = FinalizationEngine(self)
 
     def inject_policy_retrieval_context(self, state: TurnState, on_event: Callable[[JsonObject], None] | None = None) -> None:
         retrieval_cfg = self.config.retrieval
@@ -267,43 +266,6 @@ class TurnOrchestrator:
     def record_tool_effects(self, state: TurnState, call: ToolCall, result: dict[str, object], *, policy_blocked: bool = False) -> None:
         self.tool_execution_engine.record_tool_effects(state, call, result, policy_blocked=policy_blocked)
 
-    def project_action_outcome(self, state: TurnState, text: str, *, stop_event, pass_id: str) -> str:
-        if self.evidence_guard.project_mutation_count(state) > 0:
-            return "completed_with_evidence"
-        cleaned = self.sanitizer.sanitize_final_content(text)
-        return self.classifier.classify_project_action_outcome(
-            current_user_input=state.ctx.user_input,
-            recent_routing_hint=getattr(state.ctx, "recent_routing_hint", ""),
-            assistant_reply=cleaned,
-            evidence=self.evidence_guard.project_action_evidence(state),
-            pass_id=pass_id,
-            stop_event=stop_event,
-        )
-
-    def coerce_project_action_failure(self, state: TurnState, result: AgentTurnResult, *, stop_event, pass_id: str) -> AgentTurnResult:
-        if self._is_plan_mode(state):
-            return result
-        if (
-            result.status != "done"
-            or not state.classification.requires_project_action
-            or self.evidence_guard.project_mutation_count(state) > 0
-        ):
-            return result
-        outcome = self.project_action_outcome(state, result.content, stop_event=stop_event, pass_id=pass_id)
-        if outcome in {"completed_with_evidence", "declined_or_blocked", "needs_clarification"}:
-            return result
-        return AgentTurnResult(
-            status="error",
-            content=(
-                "[agent error] Project action was not completed: no successful mutating project tool ran. The assistant draft was rejected."
-            ),
-            reasoning=result.reasoning,
-            skill_exchanges=result.skill_exchanges,
-            error="project_action_not_completed",
-            error_code="E_TOOL",
-            journal=result.journal,
-        )
-
     def build_turn_journal(self, state: TurnState, result: AgentTurnResult) -> JsonObject:
         return self.turn_journal.build(
             state,
@@ -327,9 +289,6 @@ class TurnOrchestrator:
             collaboration_mode=self._normalize_collaboration_mode(getattr(state, "collaboration_mode", "execute")),
             content_chars=len(result.content),
             reasoning_chars=len(result.reasoning),
-            finalization_attempts=state.telemetry.finalization_attempts,
-            finalization_repairs=state.telemetry.finalization_repairs,
-            finalization_repair_failed=state.telemetry.finalization_repair_failed,
         )
 
     def prepare_turn(
@@ -352,12 +311,16 @@ class TurnOrchestrator:
         selected = self.skill_runtime.select_skills(ctx)
         ctx.context_summary = str(context_summary or "").strip()
         relevant_skill_ids = [getattr(skill, "id", "") for skill in selected if getattr(skill, "id", "")]
+        project_skill = self.skill_runtime.get_skill("project-ops")
         if (
             (classification.requires_project_action or classification.prefer_local_project_tools)
-            and self.skill_runtime.get_skill("project-ops") is not None
+            and project_skill is not None
+            and project_skill.enabled
+            and project_skill.available
             and "project-ops" not in relevant_skill_ids
         ):
             relevant_skill_ids.append("project-ops")
+            selected.append(project_skill)
         ctx.relevant_skill_ids = relevant_skill_ids
         state = self.policy_engine.build_turn_state(
             ctx,
@@ -416,37 +379,6 @@ class TurnOrchestrator:
         tool_schema_tokens = self.context_mgr.estimate_json_tokens(tools)
         return self.context_mgr.estimate_tokens(system_messages) + tool_schema_tokens + self.context_budget_max_tokens > budget
 
-    def _summarize_history_with_model(self, prior_summary: str, messages: list[ChatMessage], stop_event) -> str:
-        if not messages or self._is_stop_requested(stop_event):
-            return ""
-        system = (
-            "Summarize earlier conversation context for a coding/desktop agent. "
-            "Preserve user goals, decisions, files touched, tool outcomes, loaded skills, unresolved errors, and next steps. "
-            "Be concise and factual. Do not invent details."
-        )
-        lines = []
-        prior = str(prior_summary or "").strip()
-        if prior:
-            lines.append("Existing summary:\n" + prior)
-        lines.append("Messages to summarize:")
-        for message in messages:
-            lines.append(self.context_mgr._message_label(message))
-        payload = self.llm_client.build_payload(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": "\n".join(lines)},
-            ],
-            thinking=False,
-            tools=None,
-        )
-        result = self.llm_client.call_with_retry(payload, stop_event, None, pass_id="context_summary")
-        if result is None:
-            return ""
-        if result.finish_reason == "cancelled":
-            return ""
-        text = (result.content or "").strip()
-        return self.history.truncate(text, 2400)
-
     def _maybe_summarize_history(
         self, state: TurnState, system_messages: list[ChatMessage], tools: list[dict[str, Any]], stop_event
     ) -> str:
@@ -456,16 +388,8 @@ class TurnOrchestrator:
         if not summarize:
             return "not_possible"
         previous_summary = str(state.context_summary or "").strip()
-        try:
-            summary = self._summarize_history_with_model(previous_summary, summarize, stop_event)
-            status = "model"
-        except Exception as exc:
-            logging.debug("Context model summary failed: %s", exc)
-            summary = ""
-            status = "fallback"
-        if not summary:
-            summary = self.context_mgr.deterministic_summary(previous_summary, summarize)
-            status = "fallback"
+        summary = self.context_mgr.deterministic_summary(previous_summary, summarize)
+        status = "deterministic"
         state.context_summary = summary
         state.ctx.context_summary = summary
         state.dynamic_history = retained
@@ -505,7 +429,7 @@ class TurnOrchestrator:
         system_content, policy_rules = self._system_content(state)
         system_messages: list[ChatMessage] = [cast(ChatMessage, {"role": "system", "content": system_content})]
         summary_status = self._maybe_summarize_history(state, system_messages, tools, stop_event)
-        if summary_status in {"model", "fallback"}:
+        if summary_status == "deterministic":
             system_content, policy_rules = self._system_content(state)
             system_messages = [cast(ChatMessage, {"role": "system", "content": system_content})]
         messages_before = system_messages + state.dynamic_history
@@ -618,6 +542,7 @@ class TurnOrchestrator:
         on_event: Callable[[JsonObject], None] | None = None,
         request_approval: ApprovalRequestFn | None = None,
         request_user_input: UserInputRequestFn | None = None,
+        get_steering_messages: Callable[[], list[str]] | None = None,
     ) -> AgentTurnResult:
         state = self.prepare_turn(
             history_messages,
@@ -637,12 +562,24 @@ class TurnOrchestrator:
             self.log_turn_summary(state, result)
             return result
 
-        def finish_finalized(result: AgentTurnResult) -> AgentTurnResult:
-            return finish(result)
-
         while True:
+            if state.pass_index >= self.max_iterations or time.time() - state.telemetry.started_at >= self.turn_timeout_s:
+                return finish(
+                    AgentTurnResult(
+                        status="error",
+                        content="The task stopped after reaching its configured iteration or time limit.",
+                        reasoning=state.full_reasoning,
+                        skill_exchanges=state.skill_exchanges,
+                        error="turn_budget_exhausted",
+                        error_code="E_TOOL",
+                    )
+                )
             if self._is_stop_requested(stop_event):
                 return finish(cancelled_turn_result(state))
+            if get_steering_messages:
+                for message in get_steering_messages():
+                    state.dynamic_history.append(cast(ChatMessage, {"role": "user", "content": message}))
+                    self.emit(on_event, {"type": "info", "text": "Applied queued steering message."})
             model_phase = self.run_model_pass(state, thinking, stop_event=stop_event, on_event=on_event)
             if isinstance(model_phase, AgentTurnResult):
                 return finish(model_phase)
@@ -664,25 +601,16 @@ class TurnOrchestrator:
                     continue
                 if tool_phase_result is None:
                     continue
-                if action == "finalized":
-                    return finish_finalized(tool_phase_result)
                 return finish(tool_phase_result)
 
-            action, final_phase_result = self.finalization_engine.finalize_response(
-                system_content=system_content,
-                state=state,
-                pass_id=pass_id,
-                stream_result=stream_result,
-                stop_event=stop_event,
-                on_event=on_event,
+            return finish(
+                AgentTurnResult(
+                    status="done",
+                    content=self.sanitizer.sanitize_final_content(stream_result.content),
+                    reasoning=state.full_reasoning,
+                    skill_exchanges=state.skill_exchanges,
+                )
             )
-            if action == "continue":
-                continue
-            if final_phase_result is None:
-                continue
-            if action == "finalized":
-                return finish_finalized(final_phase_result)
-            return finish(final_phase_result)
 
 
 def request_user_input_passthrough(args: JsonObject) -> JsonObject:
