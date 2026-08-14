@@ -216,17 +216,13 @@ def _create_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, ob
             },
         )
     path_str = env.project.create_file(filepath, content, approved=approved)
-    preview, preview_truncated, preview_omitted = _bounded_write_preview(content)
     data = _path_info(path_str)
     data.update(
         {
             "created": True,
             "write_verified": True,
+            "write_receipt": "Complete content written and verified; no content sample returned.",
             "sha256": _sha256_text(content),
-            "content_preview": preview,
-            "content_preview_truncated": preview_truncated,
-            "preview_chars": len(preview),
-            "preview_omitted_chars": preview_omitted,
             "bytes_written": len(content.encode("utf-8")),
             "chars_written": len(content),
             "line_count": _line_count_from_text(content),
@@ -360,17 +356,14 @@ def _edit_file(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, obje
         )
     )
     diff_out, diff_truncated, diff_omitted = _bounded_diff(diff_text)
-    preview, preview_truncated, preview_omitted = _bounded_write_preview(after)
     data = _path_info(path_str)
     data.update(
         {
             "edited": True,
             "changed": before != after,
+            "write_verified": True,
+            "write_receipt": "Complete edited content written and verified; no content sample returned.",
             "sha256": _sha256_text(after),
-            "content_preview": preview,
-            "content_preview_truncated": preview_truncated,
-            "preview_chars": len(preview),
-            "preview_omitted_chars": preview_omitted,
             "bytes_before": len(before.encode("utf-8")),
             "bytes_after": len(after.encode("utf-8")),
             "line_count_before": _line_count_from_text(before),

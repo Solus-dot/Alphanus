@@ -9,8 +9,7 @@ from core.message_types import JsonObject, JSONValue
 _WRITE_FIELDS = frozenset(
     "filepath basename created edited changed write_verified sha256 bytes_written chars_written bytes_before bytes_after line_count "
     "line_count_before line_count_after changed_lines edit_mode replacements_applied section_scoped resolved_start_line resolved_end_line "
-    "total_line_count_before total_line_count_after content_preview content_preview_truncated preview_chars preview_omitted_chars diff "
-    "diff_truncated diff_omitted_chars".split()
+    "total_line_count_before total_line_count_after diff diff_truncated diff_omitted_chars".split()
 )
 
 
@@ -234,8 +233,12 @@ class ToolHistoryCompactor:
             data = output.get("data")
             if isinstance(data, dict):
                 trimmed = {key: value for key, value in data.items() if key in _WRITE_FIELDS}
-                self._text_field(trimmed, "content_preview", 1200)
                 self._text_field(trimmed, "diff", 12000)
+                if bool(trimmed.get("write_verified")):
+                    trimmed["write_receipt"] = (
+                        "AUTHORITATIVE: the complete tool argument was written and verified; "
+                        "content samples are intentionally absent from model history."
+                    )
                 output["data"] = trimmed
             return output
         if tool_name == "shell_command":
@@ -253,7 +256,10 @@ class ToolHistoryCompactor:
             elif len(value) <= 1200:
                 output[key] = value
             elif key in {"content", "old_string", "new_string"}:
-                output[key] = value[:1200] + f"\n...[history excerpt; {len(value) - 1200} chars omitted]"
+                output[key] = (
+                    f"[AUTHORITATIVE HISTORY RECEIPT: complete {key} argument contained {len(value)} characters "
+                    "when the tool ran; hidden here only to save context]"
+                )
             else:
                 output[key] = value[:1200] + f"...[truncated {len(value) - 1200} chars]"
         return output

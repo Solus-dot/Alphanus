@@ -50,8 +50,8 @@ def test_project_ops_returns_rich_file_metadata(tmp_path: Path):
     assert created["ok"] is True
     assert created["data"]["created"] is True
     assert created["data"]["write_verified"] is True
-    assert created["data"]["content_preview_truncated"] is False
-    assert created["data"]["content_preview"] == "alpha\nbeta\n"
+    assert created["data"]["write_receipt"].startswith("Complete content written")
+    assert "content_preview" not in created["data"]
     assert created["data"]["sha256"] == hashlib.sha256(b"alpha\nbeta\n").hexdigest()
     assert created["data"]["bytes_written"] > 0
     assert created["data"]["chars_written"] == len("alpha\nbeta\n")
@@ -132,10 +132,9 @@ def test_project_ops_long_write_and_edit_return_bounded_evidence(tmp_path: Path)
 
     assert created["ok"] is True
     assert created["data"]["sha256"] == hashlib.sha256(content.encode("utf-8")).hexdigest()
-    assert created["data"]["content_preview_truncated"] is True
-    assert len(created["data"]["content_preview"]) < len(content)
-    assert created["data"]["content_preview"].startswith("start\n")
-    assert created["data"]["content_preview"].endswith("\nend\n")
+    assert created["data"]["write_verified"] is True
+    assert "content_preview" not in created["data"]
+    assert created["data"]["write_receipt"].startswith("Complete content written")
 
     edited = runtime.execute_tool_call(
         "edit_file",
@@ -146,7 +145,8 @@ def test_project_ops_long_write_and_edit_return_bounded_evidence(tmp_path: Path)
 
     assert edited["ok"] is True
     assert edited["data"]["sha256"] == hashlib.sha256(content.replace("end", "finish").encode("utf-8")).hexdigest()
-    assert edited["data"]["content_preview_truncated"] is True
+    assert edited["data"]["write_verified"] is True
+    assert "content_preview" not in edited["data"]
     assert edited["data"]["diff_truncated"] is False
     assert "+finish" in edited["data"]["diff"]
 

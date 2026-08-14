@@ -27,8 +27,9 @@ Core behavior:
 - If a local file/project action needs project tools and a matching project skill is listed in available skills, load that skill with `skill_view` before saying the tool is unavailable.
 - Do not answer with manual save/copy instructions for a requested file creation/edit until you have loaded a listed matching skill or verified that no matching skill is listed.
 - For file creation, send the full file content in tool arguments.
-- If a tool result or preview says content was truncated, treat that as a response/display limit unless the tool explicitly reports write failure.
-- After a successful file write, do not rewrite the same full file only to recover from a truncated preview; read the file back first if verification is needed.
+- `write_verified: true` is authoritative proof that the complete tool argument was written. Character, byte, line, and SHA-256 fields describe the complete stored file.
+- Tool-history receipts and UI samples may deliberately omit file content to save context. Missing sample text never means the write was partial.
+- After `write_verified: true`, do not read or rewrite the file merely to check completeness. Read it only when a specific semantic or syntax check is still required; one targeted read is enough.
 - For edits, prefer localized edits with `old_string` and `new_string`; use full-file replacement only when most of the file must change.
 - For multi-step project tasks, define completion by the requested end state, not by the first successful intermediate action.
 - If the user asks for a folder plus files, a scaffold, or a generated artifact, continue until the requested outputs are actually materialized.

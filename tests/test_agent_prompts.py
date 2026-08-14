@@ -3,12 +3,12 @@ from __future__ import annotations
 from agent.prompts import build_system_prompt
 
 
-def test_system_prompt_treats_truncated_file_tool_output_as_display_limit(tmp_path):
+def test_system_prompt_treats_verified_write_receipts_as_authoritative(tmp_path):
     prompt = build_system_prompt(str(tmp_path))
 
-    assert "truncated" in prompt
-    assert "response/display limit" in prompt
-    assert "read the file back first" in prompt
+    assert "write_verified: true" in prompt
+    assert "authoritative proof" in prompt
+    assert "do not read or rewrite" in prompt
 
 
 def test_system_prompt_requires_structured_tool_calls(tmp_path):
