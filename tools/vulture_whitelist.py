@@ -8,21 +8,17 @@
 TOOL_SPECS
 
 # Provider/search dataclass fields are serialized through asdict().
-freshness_intent
-source_preference
 latency_ms
 result_count
 
 # Config/schema fields are consumed by runtime normalization and user config.
 recall_min_score_default
 replace_min_score_default
-auto_capture
 cache_first
 min_usable_results
 fetch_min_chars
 store_path
 web_ttl_hours
-embeddings_enabled
 
 # TypedDict optional message fields are populated by provider payloads.
 video_url

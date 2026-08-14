@@ -16,10 +16,36 @@ _TESSERACT_TIMEOUT_S = 60
 _DEFAULT_SCREENSHOT_FILENAME = "screenshot.png"
 
 TOOL_SPEC_ROWS = {  # fmt: skip
-    "capture_screenshot": ("screen_capture", True, ("read", "check"), "Capture a full-screen screenshot. Requires confirm_capture=true.", {"output_path": {"type": "string"}, "confirm_capture": {"type": "boolean"}}, (), False),
-    "ocr_image": ("ocr_read", False, ("read", "check"), "Run OCR on an explicit image file path. Requires optional OCR tooling.", {"path": {"type": "string"}, "max_chars": {"type": "integer"}}, ("path",), False),
-    "capture_and_ocr": ("screen_capture", True, ("read", "check"), "Capture a full-screen screenshot and OCR it. Requires confirm_capture=true and OCR tooling.", {"max_chars": {"type": "integer"}, "confirm_capture": {"type": "boolean"}}, (), False),
+    "capture_screenshot": (
+        "screen_capture",
+        True,
+        ("read", "check"),
+        "Capture a full-screen screenshot. Requires confirm_capture=true.",
+        {"output_path": {"type": "string"}, "confirm_capture": {"type": "boolean"}},
+        (),
+        False,
+    ),
+    "ocr_image": (
+        "ocr_read",
+        False,
+        ("read", "check"),
+        "Run OCR on an explicit image file path. Requires optional OCR tooling.",
+        {"path": {"type": "string"}, "max_chars": {"type": "integer"}},
+        ("path",),
+        False,
+    ),
+    "capture_and_ocr": (
+        "screen_capture",
+        True,
+        ("read", "check"),
+        "Capture a full-screen screenshot and OCR it. Requires confirm_capture=true and OCR tooling.",
+        {"max_chars": {"type": "integer"}, "confirm_capture": {"type": "boolean"}},
+        (),
+        False,
+    ),
 }
+
+
 def _ok(data: dict[str, object]) -> dict[str, object]:
     return {"ok": True, "data": data, "error": None, "meta": {}}
 
@@ -85,18 +111,9 @@ def _capture(args: dict[str, object], env: ToolExecutionEnv) -> dict[str, object
 
 def _ocr_file(path: Path, max_chars: int) -> dict[str, object]:
     limit = max(1, min(_MAX_OCR_CHARS_LIMIT, int(max_chars or _DEFAULT_OCR_MAX_CHARS)))
-    try:
-        import pytesseract  # type: ignore[import-not-found]
-        from PIL import Image  # type: ignore[import-not-found]
-    except ImportError:
-        pytesseract = None
-        Image = None
-    if pytesseract is not None and Image is not None:
-        text = str(pytesseract.image_to_string(Image.open(path)))
-        return _ok({"path": str(path), "text": text[:limit], "truncated": len(text) > limit, "engine": "pytesseract"})
     binary = shutil.which("tesseract")
     if binary is None:
-        return _err("E_DEPENDENCY", "OCR requires pytesseract+Pillow or the tesseract binary", {"path": str(path)})
+        return _err("E_DEPENDENCY", "OCR requires the tesseract binary", {"path": str(path)})
     with tempfile.TemporaryDirectory() as tmp:
         out_base = Path(tmp) / "ocr"
         proc = subprocess.run([binary, str(path), str(out_base)], capture_output=True, text=True, timeout=_TESSERACT_TIMEOUT_S)

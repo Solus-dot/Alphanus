@@ -33,7 +33,6 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 insta = "1"
-pretty_assertions = "1"
 
 [profile.release]
 lto = "thin"

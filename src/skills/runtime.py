@@ -4,7 +4,6 @@ import ast
 import importlib.util
 import logging
 import os
-import re
 import shutil
 import sys
 from collections.abc import Mapping
@@ -12,6 +11,9 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
+import skills.skill_executor as skill_executor
+import skills.skill_selector as skill_selector
+import skills.skill_tool_policy as skill_tool_policy
 from core.config_model import ConfigSchema, config_schema
 from core.memory import LexicalMemory
 from core.message_types import ApprovalRequestFn, JSONValue, UserInputRequestFn
@@ -19,10 +21,7 @@ from core.project import ProjectRuntime
 from core.skill_types import SkillContext, SkillManifest
 from core.tool_results import ToolResult, error_result, ok_result
 from skills.skill_discovery import discover_skill_dirs, discover_skill_roots
-from skills.skill_executor import SkillExecutor
 from skills.skill_parser import SKILL_DOC, extract_skill_doc, parse_agentskill_manifest
-from skills.skill_selector import SkillSelector
-from skills.skill_tool_policy import SkillToolPolicy
 
 _CORE_TOOL_NAMES = frozenset(
     {
@@ -102,7 +101,12 @@ class SkillRuntime:
         self.memory = memory
         self.debug = debug
         self.ToolExecutionEnv = ToolExecutionEnv
+        self.ToolProtocolError = ToolProtocolError
+        self.core_tool_names = _CORE_TOOL_NAMES
         self.always_available_tool_names = _ALWAYS_AVAILABLE_TOOL_NAMES
+        self.skills_list_tool_name = _SKILLS_LIST_TOOL_NAME
+        self.skill_view_tool_name = _SKILL_VIEW_TOOL_NAME
+        self.request_user_input_tool_name = _REQUEST_USER_INPUT_TOOL_NAME
         self.reload_config(config or {})
         self.generation = 0
 
@@ -112,31 +116,10 @@ class SkillRuntime:
         self._tool_registry: dict[str, RegisteredTool] = {}
         self._skill_alias_index: dict[str, str] = {}
         self._skill_alias_collisions: dict[str, tuple[str, ...]] = {}
-        self._skill_prefix_index: dict[str, str] = {}
-        self._skill_fuzzy_index: dict[str, str] = {}
-        self._skill_fuzzy_collisions: dict[str, tuple[str, ...]] = {}
         self._list_skills_cache: tuple[SkillManifest, ...] | None = None
         self._enabled_skills_cache: tuple[SkillManifest, ...] | None = None
         self._skill_catalog_cache: dict[int, str] = {}
         self._tools_schema_cache: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
-        self._skill_executor = SkillExecutor(
-            self,
-            skills_list_tool_name=_SKILLS_LIST_TOOL_NAME,
-            skill_view_tool_name=_SKILL_VIEW_TOOL_NAME,
-            request_user_input_tool_name=_REQUEST_USER_INPUT_TOOL_NAME,
-            ok_fn=_ok,
-            err_fn=_err,
-            protocol_error_cls=ToolProtocolError,
-        )
-        self._tool_policy = SkillToolPolicy(
-            self,
-            core_tool_names=_CORE_TOOL_NAMES,
-            always_available_tool_names=_ALWAYS_AVAILABLE_TOOL_NAMES,
-            skills_list_tool_name=_SKILLS_LIST_TOOL_NAME,
-            skill_view_tool_name=_SKILL_VIEW_TOOL_NAME,
-            request_user_input_tool_name=_REQUEST_USER_INPUT_TOOL_NAME,
-        )
-        self.selector = SkillSelector(self)
         self.load_skills()
 
     def reload_config(self, config: ConfigSchema | Mapping[str, Any] | None) -> None:
@@ -281,8 +264,6 @@ class SkillRuntime:
 
     def _rebuild_skill_alias_index(self) -> None:
         alias_map: dict[str, list[str]] = {}
-        prefix_map: dict[str, list[str]] = {}
-        fuzzy_map: dict[str, list[str]] = {}
         for skill in self.list_skills():
             aliases = {
                 str(skill.id).strip(),
@@ -293,11 +274,6 @@ class SkillRuntime:
                 if not key:
                     continue
                 alias_map.setdefault(key, []).append(skill.id)
-                for idx in range(1, len(key) + 1):
-                    prefix_map.setdefault(key[:idx], []).append(skill.id)
-                normalized = re.sub(r"[^a-z0-9]+", "", key)
-                if normalized:
-                    fuzzy_map.setdefault(normalized, []).append(skill.id)
         self._skill_alias_index = {}
         self._skill_alias_collisions = {}
         for key, ids in alias_map.items():
@@ -306,17 +282,6 @@ class SkillRuntime:
                 self._skill_alias_index[key] = unique_ids[0]
             elif len(unique_ids) > 1:
                 self._skill_alias_collisions[key] = unique_ids
-        self._skill_prefix_index = {
-            key: unique_ids[0] for key, ids in prefix_map.items() if len(unique_ids := tuple(sorted(dict.fromkeys(ids)))) == 1
-        }
-        self._skill_fuzzy_index = {}
-        self._skill_fuzzy_collisions = {}
-        for key, ids in fuzzy_map.items():
-            unique_ids = tuple(sorted(dict.fromkeys(ids)))
-            if len(unique_ids) == 1:
-                self._skill_fuzzy_index[key] = unique_ids[0]
-            elif len(unique_ids) > 1:
-                self._skill_fuzzy_collisions[key] = unique_ids
 
     def _register_tool(
         self,
@@ -731,20 +696,6 @@ class SkillRuntime:
             resolved = self.get_skill(alias_hit)
             if resolved is not None:
                 return resolved
-        prefix_hit = self._skill_prefix_index.get(lowered)
-        if prefix_hit:
-            resolved = self.get_skill(prefix_hit)
-            if resolved is not None:
-                return resolved
-        normalized = re.sub(r"[^a-z0-9]+", "", lowered)
-        if normalized:
-            if normalized in self._skill_fuzzy_collisions:
-                return None
-            fuzzy_hit = self._skill_fuzzy_index.get(normalized)
-            if fuzzy_hit:
-                resolved = self.get_skill(fuzzy_hit)
-                if resolved is not None:
-                    return resolved
         return None
 
     def _reported_skill_tools(self, skill: SkillManifest) -> list[str]:
@@ -753,16 +704,16 @@ class SkillRuntime:
         return sorted(reg.name for reg in self._tool_registry.values() if reg.skill_id == skill.id)
 
     def select_skills(self, ctx: SkillContext, top_n: int = 3) -> list[SkillManifest]:
-        return self.selector.select_skills(ctx, top_n=top_n)
+        return skill_selector.select_skills(self, ctx, top_n=top_n)
 
     def tool_registration(self, tool_name: str) -> RegisteredTool | None:
         return self._tool_registry.get(str(tool_name).strip())
 
     def tool_is_mutating(self, tool_name: str) -> bool:
-        return self._tool_policy.is_mutating(tool_name)
+        return skill_tool_policy.is_mutating(self, tool_name)
 
     def tool_is_blocked_for_local_project(self, tool_name: str) -> bool:
-        return self._tool_policy.is_blocked_for_local_project(tool_name)
+        return skill_tool_policy.is_blocked_for_local_project(self, tool_name)
 
     def compose_skill_block(
         self,
@@ -906,17 +857,17 @@ class SkillRuntime:
         selected: list[SkillManifest],
         ctx: SkillContext | None = None,
     ) -> list[str]:
-        return self._tool_policy.core_names(selected, ctx=ctx)
+        return skill_tool_policy.core_names(self, selected, ctx=ctx)
 
     def optional_tool_names(self, selected: list[SkillManifest], ctx: SkillContext | None = None) -> list[str]:
-        return self._tool_policy.optional_names(selected, ctx=ctx)
+        return skill_tool_policy.optional_names(self, selected, ctx=ctx)
 
     def allowed_tool_names(
         self,
         selected: list[SkillManifest],
         ctx: SkillContext | None = None,
     ) -> list[str]:
-        return self._tool_policy.allowed_names(selected, ctx=ctx)
+        return skill_tool_policy.allowed_names(self, selected, ctx=ctx)
 
     def tools_for_turn(
         self,
@@ -947,7 +898,8 @@ class SkillRuntime:
         request_user_input: UserInputRequestFn | None = None,
         stop_event: Any = None,
     ) -> dict[str, Any]:
-        return self._skill_executor.execute_tool_call(
+        return skill_executor.execute_tool_call(
+            self,
             tool_name,
             args,
             selected,

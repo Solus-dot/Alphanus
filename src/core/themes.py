@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from alphanus.paths import APP_ROOT_ENV_VAR, DEFAULT_APP_DIRNAME
-from core.theme_catalog import BUILTIN_THEME_IDS, DEFAULT_THEME_ID, normalize_theme_id
+from core.theme_catalog import DEFAULT_THEME_ID, normalize_theme_id
 
 _THEME_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 _BORDER_SETS = {"plain", "rounded", "double", "thick"}
@@ -105,9 +105,10 @@ def _read(text: str, *, source: str) -> dict[str, Any]:
 def theme_payloads() -> dict[str, dict[str, Any]]:
     payloads: dict[str, dict[str, Any]] = {}
     root = resources.files("core") / "theme_specs"
-    for theme_id in BUILTIN_THEME_IDS:
-        payload = _read((root / f"{theme_id}.json").read_text(encoding="utf-8"), source=f"builtin:{theme_id}")
-        payloads[theme_id] = payload
+    for path in sorted(root.iterdir(), key=lambda item: item.name):
+        if path.name.endswith(".json"):
+            payload = _read(path.read_text(encoding="utf-8"), source=f"builtin:{path.name}")
+            payloads[payload["id"]] = payload
     for directory in _user_theme_dirs():
         if not directory.is_dir():
             continue
@@ -125,9 +126,7 @@ def reload_themes() -> None:
 
 
 def available_theme_ids() -> list[str]:
-    payloads = theme_payloads()
-    builtins = [theme_id for theme_id in BUILTIN_THEME_IDS if theme_id in payloads]
-    return [*builtins, *sorted(theme_id for theme_id in payloads if theme_id not in BUILTIN_THEME_IDS)]
+    return sorted(theme_payloads())
 
 
 def theme_payload(theme_id: str) -> dict[str, Any]:
