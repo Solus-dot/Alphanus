@@ -333,7 +333,6 @@ uv run alphanus init search --non-interactive \
 Runtime safety knobs:
 
 - `permissions.mode`: `read-only`, `project-write`, or `danger-full-access`
-- `permissions.approvals`: `on-boundary`
 - `permissions.network`: `false` by default
 - `sandbox.backend`: `auto`, with fail-closed setup checks by default
 - project root detection uses the enclosing git repository, falling back to launch `cwd`; pass `--project-root` for an explicit per-run override
@@ -477,9 +476,6 @@ Trimmed config example:
     "readiness_timeout_s": 30,
     "allow_cross_host_endpoints": false,
     "max_tokens": null
-  },
-  "project": {
-    "root_strategy": "git-or-cwd"
   },
   "permissions": {
     "mode": "project-write",

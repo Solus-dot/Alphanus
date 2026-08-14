@@ -910,7 +910,6 @@ def test_search_ops_skill_loads_and_executes_from_repo(tmp_path: Path, mocker):
         branch_labels=[],
         attachments=[],
         project_root=str(ws),
-        memory_hits=[],
     )
     out = runtime.execute_tool_call("web_search", {"query": "example"}, selected=[skill], ctx=ctx)
     assert out["ok"] is True

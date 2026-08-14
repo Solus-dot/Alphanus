@@ -40,9 +40,7 @@ _SECRET_KEYS = {
     "secret",
 }
 _SECRET_SUFFIXES = ("_api_key", "_apikey", "_token", "_secret", "_password")
-PROJECT_ROOT_STRATEGIES = {"git-or-cwd"}
 PERMISSION_MODES = {"read-only", "project-write", "danger-full-access"}
-APPROVAL_MODES = {"on-boundary"}
 SANDBOX_BACKENDS = {"auto", "macos-seatbelt", "linux-bubblewrap", "windows-native"}
 _VALID_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -174,8 +172,8 @@ def _normalize_model(
     values: dict[str, Any], model_type: Any, prefix: str, warnings: list[str], *, exclude: Iterable[str] = ()
 ) -> dict[str, Any]:
     defaults = model_type().model_dump()
-    normalized = dict(values) if model_type.model_config.get("extra") == "allow" else {}
     excluded = set(exclude)
+    normalized = {key: value for key, value in values.items() if key in model_type.model_fields and key not in excluded}
     for key, field in model_type.model_fields.items():
         if key in excluded or key not in defaults:
             continue
@@ -305,7 +303,6 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         LoggingConfig,
         MemoryConfig,
         PermissionsConfig,
-        ProjectConfig,
         RetrievalConfig,
         RuntimeConfig,
         SandboxConfig,
@@ -326,13 +323,7 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
 
     default_agent = DEFAULT_CONFIG["agent"]
     agent_cfg = merged.get("agent", {}) if isinstance(merged.get("agent"), dict) else {}
-    agent_cfg["provider"] = _coerce_string(
-        agent_cfg.get("provider"),
-        str(default_agent["provider"]),
-        path="agent.provider",
-        warnings=warnings,
-        allow_empty=False,
-    )
+    merged.pop("project", None)
     base_url_input = input_agent_cfg.get("base_url")
     inferred_base_url = ""
     if base_url_input in (None, ""):
@@ -474,12 +465,11 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
     merged["agent"] = agent_cfg
 
     simple_sections = {
-        "project": (ProjectConfig, (("root_strategy", PROJECT_ROOT_STRATEGIES, False),)),
         "memory": (MemoryConfig, ()),
         "context": (ContextConfig, ()),
         "skills": (SkillsConfig, ()),
         "runtime": (RuntimeConfig, ()),
-        "permissions": (PermissionsConfig, (("mode", PERMISSION_MODES, False), ("approvals", APPROVAL_MODES, False))),
+        "permissions": (PermissionsConfig, (("mode", PERMISSION_MODES, False),)),
         "sandbox": (SandboxConfig, (("backend", SANDBOX_BACKENDS, False),)),
         "logging": (
             LoggingConfig,
@@ -608,9 +598,9 @@ def normalize_config(raw_config: dict[str, Any]) -> tuple[dict[str, Any], list[s
         else:
             _warn(warnings, f"tui.theme: empty value, using {resolved_theme!r}")
     tui_cfg["theme"] = resolved_theme
+    timing_cfg = tui_cfg.get("timing", {})
     tui_cfg = _normalize_model(tui_cfg, UiConfig, "tui", warnings, exclude=("theme", "timing"))
     tui_cfg["theme"] = resolved_theme
-    timing_cfg = tui_cfg.get("timing", {})
     if not isinstance(timing_cfg, dict):
         _warn(warnings, "tui.timing: expected object, using defaults")
         timing_cfg = {}

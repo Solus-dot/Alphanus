@@ -227,7 +227,6 @@ def test_validate_endpoint_policy_rejects_cross_host_when_disallowed() -> None:
 def test_normalize_config_preserves_new_runtime_boundary_fields() -> None:
     raw = {
         "agent": {
-            "provider": "openai-compatible",
             "connect_timeout_s": "2.5",
             "per_turn_retries": "2",
             "retry_backoff_s": "0.75",
@@ -238,7 +237,6 @@ def test_normalize_config_preserves_new_runtime_boundary_fields() -> None:
 
     normalized, _warnings = normalize_config(raw)
 
-    assert normalized["agent"]["provider"] == "openai-compatible"
     assert normalized["agent"]["connect_timeout_s"] == 2.5
     assert normalized["agent"]["per_turn_retries"] == 2
     assert normalized["agent"]["retry_backoff_s"] == 0.75
@@ -252,7 +250,6 @@ def test_normalize_config_clamps_memory_fields() -> None:
             "min_score_default": 2.0,
             "recall_min_score_default": "-1",
             "replace_min_score_default": "bad",
-            "backup_revisions": -4,
         },
     }
 
@@ -261,7 +258,6 @@ def test_normalize_config_clamps_memory_fields() -> None:
     assert normalized["memory"]["min_score_default"] == 1.0
     assert normalized["memory"]["recall_min_score_default"] == 0.0
     assert normalized["memory"]["replace_min_score_default"] == DEFAULT_CONFIG["memory"]["replace_min_score_default"]
-    assert normalized["memory"]["backup_revisions"] == 0
 
 
 def test_normalize_config_does_not_accept_old_section_aliases() -> None:

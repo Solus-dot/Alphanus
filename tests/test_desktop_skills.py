@@ -31,7 +31,6 @@ def _ctx(runtime: SkillRuntime, text: str = "desktop task") -> SkillContext:
         branch_labels=[],
         attachments=[],
         project_root=str(runtime.project.project_root),
-        memory_hits=[],
     )
 
 
@@ -170,7 +169,6 @@ def test_app_control_focus_uses_open_without_shell_interpolation(mocker, tmp_pat
 
     assert out["ok"] is True
     assert commands[-1] == ["open", "-a", name]
-
 
 
 def test_browser_open_and_search_require_confirmation_before_launching(tmp_path: Path) -> None:

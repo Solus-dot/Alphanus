@@ -18,8 +18,7 @@ class ClosedConfigSection(ConfigSection):
     model_config = ConfigDict(extra="ignore", frozen=True, populate_by_name=True)
 
 
-class AgentConfig(ConfigSection):
-    provider: str = "openai-compatible"
+class AgentConfig(ClosedConfigSection):
     base_url: str = "http://127.0.0.1:8080"
     model_endpoint: str = "http://127.0.0.1:8080/v1/chat/completions"
     responses_endpoint: str = "http://127.0.0.1:8080/v1/responses"
@@ -49,9 +48,6 @@ class AgentConfig(ConfigSection):
     turn_timeout_s: float = Field(default=1800, ge=30, le=86400)
     max_tool_result_chars: int = Field(default=12000, ge=500, le=200000)
     max_reasoning_chars: int = Field(default=20000, ge=0, le=200000)
-    recent_tool_detail_limit: int = Field(default=12, ge=1, le=100)
-    compact_tool_results_in_history: bool = True
-    compact_tool_result_tools: list[str] = Field(default_factory=list)
     classifier_model: str = ""
     classifier_use_primary_model: bool = True
     enable_structured_classification: bool = True
@@ -60,15 +56,10 @@ class AgentConfig(ConfigSection):
     auth_header: str | None = Field(default=None, exclude=True)
 
 
-class ProjectConfig(ClosedConfigSection):
-    root_strategy: str = "git-or-cwd"
-
-
 class MemoryConfig(ClosedConfigSection):
     min_score_default: float = Field(default=0.3, ge=0, le=1)
     recall_min_score_default: float = Field(default=0.18, ge=0, le=1)
     replace_min_score_default: float = Field(default=0.72, ge=0, le=1)
-    backup_revisions: int = Field(default=2, ge=0, le=20)
 
 
 class ContextConfig(ConfigSection):
@@ -79,7 +70,6 @@ class ContextConfig(ConfigSection):
 
 class PermissionsConfig(ClosedConfigSection):
     mode: str = "project-write"
-    approvals: str = "on-boundary"
     network: bool = False
 
 
@@ -137,7 +127,6 @@ class UiConfig(ConfigSection):
 class ConfigSchema(ConfigSection):
     config_version: int = 1
     agent: AgentConfig = Field(default_factory=lambda: AgentConfig())
-    project: ProjectConfig = Field(default_factory=ProjectConfig)
     memory: MemoryConfig = Field(default_factory=lambda: MemoryConfig())
     context: ContextConfig = Field(default_factory=lambda: ContextConfig())
     permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)

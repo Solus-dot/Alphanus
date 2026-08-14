@@ -16,6 +16,7 @@ def _tool_names(runtime: SkillRuntime, selected, ctx: SkillContext | None = None
 def _always_available_tool_names() -> set[str]:
     return {"request_user_input", "skill_view", "skills_list"}
 
+
 def test_tool_is_blocked_for_local_project_uses_capability_metadata(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
@@ -431,7 +432,6 @@ Beta
         branch_labels=[],
         attachments=[],
         project_root=str(ws),
-        memory_hits=[],
     )
     with pytest.raises(FileNotFoundError):
         runtime.skill_view("alpha", "", ctx)
@@ -817,7 +817,6 @@ Ask for clarification when needed.
         branch_labels=[],
         attachments=[],
         project_root=str(ws),
-        memory_hits=[],
         explicit_skill_id="asker",
     )
 
@@ -873,7 +872,6 @@ Read the bundled README when needed.
         branch_labels=[],
         attachments=[],
         project_root=str(ws),
-        memory_hits=[],
     )
 
     out = runtime.execute_tool_call(
@@ -925,7 +923,6 @@ echo {skill_id}
         branch_labels=[],
         attachments=[],
         project_root=str(ws),
-        memory_hits=[],
     )
 
     single_tools = runtime.tools_for_turn([alpha], ctx=ctx)
@@ -976,14 +973,12 @@ Use the bundled helper script when available.
         branch_labels=[],
         attachments=[],
         project_root=str(ws),
-        memory_hits=[],
     )
     png_ctx = SkillContext(
         user_input="create image.png",
         branch_labels=[],
         attachments=[],
         project_root=str(ws),
-        memory_hits=[],
     )
 
     docx_tools = runtime.tools_for_turn([skill], ctx=docx_ctx)
@@ -1041,7 +1036,6 @@ def execute(tool_name, args, env):
         branch_labels=[],
         attachments=[],
         project_root=str(ws),
-        memory_hits=[],
     )
 
     out = runtime.execute_tool_call("explode_tool", {}, selected=[skill], ctx=ctx)

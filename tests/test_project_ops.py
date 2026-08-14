@@ -31,7 +31,6 @@ def _ctx(project_root: str) -> SkillContext:
         branch_labels=[],
         attachments=[],
         project_root=project_root,
-        memory_hits=[],
     )
 
 

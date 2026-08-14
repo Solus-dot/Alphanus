@@ -32,12 +32,11 @@ def _ctx(project_root: str) -> SkillContext:
         branch_labels=[],
         attachments=[],
         project_root=project_root,
-        memory_hits=[],
     )
 
 
 def test_shell_command_requires_approval_callback_for_high_risk_command(tmp_path: Path):
-    runtime = _runtime(tmp_path, {"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": False}})
+    runtime = _runtime(tmp_path, {"permissions": {"mode": "project-write", "network": False}})
     shell_skill = runtime.get_skill("shell-ops")
     assert shell_skill is not None
 
@@ -54,7 +53,7 @@ def test_shell_command_requires_approval_callback_for_high_risk_command(tmp_path
 
 
 def test_shell_command_rejected_by_user(tmp_path: Path):
-    runtime = _runtime(tmp_path, {"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": False}})
+    runtime = _runtime(tmp_path, {"permissions": {"mode": "project-write", "network": False}})
     shell_skill = runtime.get_skill("shell-ops")
     assert shell_skill is not None
 
@@ -73,7 +72,7 @@ def test_shell_command_rejected_by_user(tmp_path: Path):
 def test_shell_command_skips_confirmation_when_dangerous_mode_enabled(tmp_path: Path):
     runtime = _runtime(
         tmp_path,
-        {"permissions": {"mode": "danger-full-access", "approvals": "on-boundary", "network": False}},
+        {"permissions": {"mode": "danger-full-access", "network": False}},
     )
     shell_skill = runtime.get_skill("shell-ops")
     assert shell_skill is not None
@@ -96,7 +95,7 @@ def test_shell_command_skips_confirmation_when_dangerous_mode_enabled(tmp_path: 
 def test_shell_command_executes_with_selected_shell_skill(tmp_path: Path):
     runtime = _runtime(
         tmp_path,
-        {"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": False}},
+        {"permissions": {"mode": "project-write", "network": False}},
     )
 
     shell_skill = runtime.get_skill("shell-ops")
@@ -118,7 +117,7 @@ def test_shell_command_executes_with_selected_shell_skill(tmp_path: Path):
 def test_shell_command_uses_longer_default_timeout(mocker, tmp_path: Path):
     runtime = _runtime(
         tmp_path,
-        {"permissions": {"mode": "danger-full-access", "approvals": "on-boundary", "network": False}},
+        {"permissions": {"mode": "danger-full-access", "network": False}},
     )
     shell_skill = runtime.get_skill("shell-ops")
     assert shell_skill is not None
@@ -144,7 +143,7 @@ def test_shell_command_uses_longer_default_timeout(mocker, tmp_path: Path):
 def test_shell_command_allows_explicit_timeout_and_caps_it(mocker, tmp_path: Path):
     runtime = _runtime(
         tmp_path,
-        {"permissions": {"mode": "danger-full-access", "approvals": "on-boundary", "network": False}},
+        {"permissions": {"mode": "danger-full-access", "network": False}},
     )
     shell_skill = runtime.get_skill("shell-ops")
     assert shell_skill is not None
@@ -188,7 +187,7 @@ def test_shell_command_allows_explicit_timeout_and_caps_it(mocker, tmp_path: Pat
 def test_shell_command_external_cwd_requests_approval_and_forwards_cwd(mocker, tmp_path: Path):
     runtime = _runtime(
         tmp_path,
-        {"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": False}},
+        {"permissions": {"mode": "project-write", "network": False}},
     )
     shell_skill = runtime.get_skill("shell-ops")
     assert shell_skill is not None
@@ -224,7 +223,7 @@ def test_shell_command_external_cwd_requests_approval_and_forwards_cwd(mocker, t
 def test_shell_command_external_argument_requests_path_approval(mocker, tmp_path: Path):
     runtime = _runtime(
         tmp_path,
-        {"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": False}},
+        {"permissions": {"mode": "project-write", "network": False}},
     )
     shell_skill = runtime.get_skill("shell-ops")
     assert shell_skill is not None
@@ -254,7 +253,7 @@ def test_shell_command_external_argument_requests_path_approval(mocker, tmp_path
 def test_shell_command_nonzero_exit_bubbles_up_as_tool_failure(tmp_path: Path):
     runtime = _runtime(
         tmp_path,
-        {"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": False}},
+        {"permissions": {"mode": "project-write", "network": False}},
     )
 
     shell_skill = runtime.get_skill("shell-ops")
@@ -281,7 +280,6 @@ def test_runtime_select_skills_returns_loaded_shell_and_memory_skills(tmp_path: 
         branch_labels=[],
         attachments=[],
         project_root=str(runtime.project.project_root),
-        memory_hits=[],
         loaded_skill_ids=["shell-ops", "memory-rag"],
     )
 
@@ -304,8 +302,8 @@ def test_action_approvalation_reuses_recent_assistant_action_context(mocker, tmp
     history_messages = cast(
         list[ChatMessage],
         [
-        {"role": "user", "content": "how do i check my go version"},
-        {"role": "assistant", "content": "I can run `go version` in the project if you want."},
+            {"role": "user", "content": "how do i check my go version"},
+            {"role": "assistant", "content": "I can run `go version` in the project if you want."},
         ],
     )
 

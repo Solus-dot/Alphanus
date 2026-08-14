@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,30 @@ def _tool_names(runtime: SkillRuntime, selected, ctx: SkillContext | None = None
 
 def _always_available_tool_names() -> set[str]:
     return {"request_user_input", "skill_view", "skills_list"}
+
+
+def test_tool_deadline_returns_without_waiting_for_a_stuck_handler(mocker, tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime = SkillRuntime(
+        skills_dir=str(tmp_path / "skills"),
+        project=ProjectRuntime(str(workspace)),
+        memory=LexicalMemory(storage_path=str(tmp_path / "memory.sqlite")),
+        config={},
+    )
+    stop_event = threading.Event()
+    ctx = SkillContext(user_input="list skills", branch_labels=[], attachments=[], project_root=str(workspace))
+
+    def hang(*_args, **_kwargs):
+        time.sleep(1)
+
+    mocker.patch("skills.skill_executor.execute_registered_tool", side_effect=hang)
+    started = time.monotonic()
+    result = runtime.execute_tool_call("skills_list", {}, selected=[], ctx=ctx, stop_event=stop_event, timeout_s=0.05)
+
+    assert result["error"]["code"] == "E_TIMEOUT"
+    assert stop_event.is_set()
+    assert time.monotonic() - started < 0.5
 
 
 def test_bundled_skill_allowed_tools_match_registered_tool_specs(tmp_path: Path) -> None:
@@ -71,7 +97,7 @@ def test_project_write_mode_exposes_selected_tools(tmp_path: Path):
         skills_dir="bundled-skills",
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": True}},
+        config={"permissions": {"mode": "project-write", "network": True}},
         debug=True,
     )
     ctx = SkillContext(
@@ -79,7 +105,6 @@ def test_project_write_mode_exposes_selected_tools(tmp_path: Path):
         branch_labels=[],
         attachments=[],
         project_root=str(ws),
-        memory_hits=[],
     )
     runtime.skill_view("search-ops", "", ctx)
     runtime.skill_view("project-ops", "", ctx)
@@ -105,7 +130,7 @@ def test_read_only_mode_allows_read_only_project_tools(tmp_path: Path):
         skills_dir="bundled-skills",
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"permissions": {"mode": "read-only", "approvals": "on-boundary", "network": False}},
+        config={"permissions": {"mode": "read-only", "network": False}},
         debug=True,
     )
     selected = runtime.skills_by_ids(["project-ops", "search-ops", "shell-ops"])
@@ -130,7 +155,7 @@ def test_project_write_mode_enforces_network_independently(tmp_path: Path):
         skills_dir="bundled-skills",
         project=ProjectRuntime(str(ws)),
         memory=LexicalMemory(storage_path=str(tmp_path / "mem.pkl")),
-        config={"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": False}},
+        config={"permissions": {"mode": "project-write", "network": False}},
         debug=True,
     )
     selected = runtime.skills_by_ids(["project-ops", "search-ops", "shell-ops"])
@@ -148,7 +173,7 @@ def test_project_write_mode_enforces_network_independently(tmp_path: Path):
     names = set(runtime.allowed_tool_names(selected))
     assert "web_search" not in names
 
-    runtime.reload_config({"permissions": {"mode": "project-write", "approvals": "on-boundary", "network": True}})
+    runtime.reload_config({"permissions": {"mode": "project-write", "network": True}})
     names = set(runtime.allowed_tool_names(selected))
     assert "web_search" in names
     assert "fetch_url" in names
@@ -230,7 +255,6 @@ def execute(tool_name, args, env):
         branch_labels=[],
         attachments=["main.py"],
         project_root=str(ws),
-        memory_hits=[],
         explicit_skill_id="s1",
     )
 
@@ -319,7 +343,6 @@ def execute(tool_name, args, env):
         branch_labels=[],
         attachments=[],
         project_root=str(ws),
-        memory_hits=[],
     )
     selected = runtime.select_skills(ctx)
     out = runtime.execute_tool_call("read_blob", {"filepath": "a.txt"}, selected=selected, ctx=ctx)
@@ -500,7 +523,6 @@ def execute(tool_name, args, env):
         branch_labels=[],
         attachments=["image.png"],
         project_root=str(ws),
-        memory_hits=[],
     )
 
     monkeypatch.setattr(
@@ -568,7 +590,6 @@ def execute(tool_name, args, env):
         branch_labels=[],
         attachments=[],
         project_root=str(ws),
-        memory_hits=[],
     )
 
     loaded = runtime.skill_view("project-ops", "", ctx)
@@ -643,7 +664,6 @@ def execute(tool_name, args, env):
         branch_labels=[],
         attachments=[],
         project_root=str(ws),
-        memory_hits=[],
     )
     out = runtime.execute_tool_call("lazy_tool", {}, selected=[skill], ctx=ctx)
     assert out["ok"] is False
@@ -709,7 +729,6 @@ def execute(tool_name, args, env):
         branch_labels=[],
         attachments=[],
         project_root=str(ws),
-        memory_hits=[],
     )
     out = runtime.execute_tool_call("faulty_tool", {}, selected=[skill], ctx=ctx)
 
@@ -791,7 +810,6 @@ def execute(tool_name, args, env):
         branch_labels=[],
         attachments=[],
         project_root=str(ws),
-        memory_hits=[],
     )
 
     assert runtime.select_skills(ctx) == []
@@ -844,7 +862,6 @@ Search the internet.
         branch_labels=[],
         attachments=[],
         project_root=str(ws),
-        memory_hits=[],
     )
 
     assert runtime.select_skills(ctx) == []
@@ -897,13 +914,12 @@ Design well.
         branch_labels=[],
         attachments=[],
         project_root=str(ws),
-        memory_hits=[],
     )
 
     assert runtime.select_skills(ctx) == []
 
 
-def test_select_skills_ranks_loaded_skills_and_honors_top_n(tmp_path: Path):
+def test_select_skills_keeps_load_order_and_honors_top_n(tmp_path: Path):
     home = tmp_path / "home"
     ws = home / "ws"
     skills = tmp_path / "skills"
@@ -949,11 +965,10 @@ Design well.
         branch_labels=[],
         attachments=[],
         project_root=str(ws),
-        memory_hits=[],
     )
     runtime.skill_view("frontend-design", "", ctx)
     runtime.skill_view("search-ops", "", ctx)
 
     selected = runtime.select_skills(ctx, top_n=1)
 
-    assert [skill.id for skill in selected] == ["search-ops"]
+    assert [skill.id for skill in selected] == ["frontend-design"]

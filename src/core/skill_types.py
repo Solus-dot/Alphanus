@@ -13,13 +13,11 @@ class SkillContext:
     branch_labels: list[str]
     attachments: list[str]
     project_root: str
-    memory_hits: list[dict[str, JSONValue]]
     retrieval_hits: list[dict[str, JSONValue]] = field(default_factory=list)
     loaded_skill_ids: list[str] = field(default_factory=list)
     recent_routing_hint: str = ""
     sticky_skill_ids: list[str] = field(default_factory=list)
     explicit_skill_id: str = ""
-    explicit_skill_args: str = ""
     context_summary: str = ""
     relevant_skill_ids: list[str] = field(default_factory=list)
 
