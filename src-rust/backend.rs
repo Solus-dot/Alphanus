@@ -1,11 +1,9 @@
-use std::mem;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{bounded, Receiver, Sender};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -19,13 +17,15 @@ const DIAGNOSTIC_MAX_BYTES: usize = 4096;
 
 pub struct Backend {
     commands: mpsc::Sender<Request>,
-    pub events: Receiver<BackendEvent>,
+    pub events: mpsc::Receiver<BackendEvent>,
     join: Option<thread::JoinHandle<()>>,
     child_pid: Arc<AtomicI32>,
 }
 
-fn send_event(sender: &Sender<BackendEvent>, event: BackendEvent) -> bool {
-    sender.send_timeout(event, EVENT_SEND_TIMEOUT).is_ok()
+async fn send_event(sender: &mpsc::Sender<BackendEvent>, event: BackendEvent) -> bool {
+    tokio::time::timeout(EVENT_SEND_TIMEOUT, sender.send(event))
+        .await
+        .is_ok_and(|result| result.is_ok())
 }
 
 fn clip_diagnostic(mut line: String) -> String {
@@ -121,7 +121,7 @@ fn signal_process_group(_pid: i32, _signal: i32) {}
 impl Backend {
     pub fn start(python: &str, project_root: Option<&str>, debug: bool) -> Result<Self, String> {
         let (command_tx, mut command_rx) = mpsc::channel::<Request>(COMMAND_CAPACITY);
-        let (event_tx, event_rx) = bounded::<BackendEvent>(EVENT_CAPACITY);
+        let (event_tx, event_rx) = mpsc::channel::<BackendEvent>(EVENT_CAPACITY);
         let python = python.to_owned();
         let project_root = project_root.map(str::to_owned);
         let child_pid = Arc::new(AtomicI32::new(0));
@@ -134,7 +134,7 @@ impl Backend {
                     .enable_all()
                     .build();
                 let Ok(runtime) = runtime else {
-                    let _ = send_event(&event_tx, BackendEvent::ProtocolError("failed to create Tokio runtime".into()));
+                    let _ = event_tx.blocking_send(BackendEvent::ProtocolError("failed to create Tokio runtime".into()));
                     return;
                 };
                 runtime.block_on(async move {
@@ -152,21 +152,21 @@ impl Backend {
                     let mut child = match command.spawn() {
                         Ok(child) => child,
                         Err(error) => {
-                            let _ = send_event(&event_tx, BackendEvent::ProtocolError(format!("failed to start runtime: {error}")));
+                            let _ = send_event(&event_tx, BackendEvent::ProtocolError(format!("failed to start runtime: {error}"))).await;
                             return;
                         }
                     };
                     runtime_child_pid.store(child.id().unwrap_or(0) as i32, Ordering::Release);
                     let Some(mut stdin) = child.stdin.take() else {
-                        let _ = send_event(&event_tx, BackendEvent::ProtocolError("runtime stdin unavailable".into()));
+                        let _ = send_event(&event_tx, BackendEvent::ProtocolError("runtime stdin unavailable".into())).await;
                         return;
                     };
                     let Some(stdout) = child.stdout.take() else {
-                        let _ = send_event(&event_tx, BackendEvent::ProtocolError("runtime stdout unavailable".into()));
+                        let _ = send_event(&event_tx, BackendEvent::ProtocolError("runtime stdout unavailable".into())).await;
                         return;
                     };
                     let Some(stderr) = child.stderr.take() else {
-                        let _ = send_event(&event_tx, BackendEvent::ProtocolError("runtime stderr unavailable".into()));
+                        let _ = send_event(&event_tx, BackendEvent::ProtocolError("runtime stderr unavailable".into())).await;
                         return;
                     };
 
@@ -186,7 +186,7 @@ impl Backend {
                             command = command_rx.recv() => {
                                 let Some(command) = command else { break; };
                                 if let Err(error) = write_request(&mut stdin, &command).await {
-                                    let _ = send_event(&event_tx, BackendEvent::ProtocolError(error));
+                                    let _ = send_event(&event_tx, BackendEvent::ProtocolError(error)).await;
                                     break;
                                 }
                             }
@@ -195,21 +195,21 @@ impl Backend {
                                     Ok(Some(line)) => match EventFrame::decode(&line) {
                                         Ok(frame) => {
                                             last_frame = Instant::now();
-                                            if !send_event(&event_tx, BackendEvent::Frame(frame)) { break; }
+                                            if !send_event(&event_tx, BackendEvent::Frame(frame)).await { break; }
                                         }
                                         Err(error) => {
-                                            if !send_event(&event_tx, BackendEvent::ProtocolError(error)) { break; }
+                                            if !send_event(&event_tx, BackendEvent::ProtocolError(error)).await { break; }
                                         }
                                     },
                                     Ok(None) => break,
                                     Err(error) => {
-                                        if !send_event(&event_tx, BackendEvent::ProtocolError(error)) { break; }
+                                        if !send_event(&event_tx, BackendEvent::ProtocolError(error)).await { break; }
                                     }
                                 }
                             }
                             _ = heartbeat.tick() => {
                                 if last_frame.elapsed() >= Duration::from_secs(15) {
-                                    let _ = send_event(&event_tx, BackendEvent::ProtocolError("runtime heartbeat timed out".into()));
+                                    let _ = send_event(&event_tx, BackendEvent::ProtocolError("runtime heartbeat timed out".into())).await;
                                     break;
                                 }
                                 let request = Request::new("heartbeat", serde_json::json!({}));
@@ -235,7 +235,7 @@ impl Backend {
                         }
                     };
                     runtime_child_pid.store(0, Ordering::Release);
-                    let _ = send_event(&event_tx, BackendEvent::Exited(status.and_then(|value| value.code())));
+                    let _ = send_event(&event_tx, BackendEvent::Exited(status.and_then(|value| value.code()))).await;
                 });
             })
             .map_err(|error| format!("failed to create runtime thread: {error}"))?;
@@ -259,10 +259,8 @@ impl Backend {
         let _ = self.send(Request::new("shutdown", serde_json::json!({})));
         let (replacement, _receiver) = mpsc::channel(1);
         self.commands = replacement;
-        let (replacement_sender, replacement_events) = bounded(1);
-        let previous_events = mem::replace(&mut self.events, replacement_events);
-        drop(previous_events);
-        drop(replacement_sender);
+        let (_replacement_sender, replacement_events) = mpsc::channel(1);
+        self.events = replacement_events;
         if let Some(join) = self.join.take() {
             let deadline = Instant::now() + Duration::from_secs(7);
             while !join.is_finished() && Instant::now() < deadline {
