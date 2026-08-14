@@ -6,11 +6,7 @@ from core.types import ModelStatus, StreamPassResult
 
 def test_strict_local_backend_rejects_model_mismatch(mocker) -> None:
     llm_client = LLMClient({"agent": {"backend_profile": "llamacpp"}})
-    mocker.patch.object(
-        llm_client,
-        "_status_allows_immediate_send",
-        return_value=ModelStatus(state="online", model_name="qwen-3"),
-    )
+    llm_client._store_model_status(ModelStatus(state="online", model_name="qwen-3"))
     mocker.patch.object(llm_client, "stream_completion")
 
     try:
@@ -29,11 +25,7 @@ def test_non_strict_local_backends_allow_model_switch(mocker) -> None:
     for profile in ("ollama", "vllm", "lmstudio"):
         llm_client = LLMClient({"agent": {"backend_profile": profile}})
         expected = StreamPassResult(finish_reason="stop", content="ok")
-        mocker.patch.object(
-            llm_client,
-            "_status_allows_immediate_send",
-            return_value=ModelStatus(state="online", model_name="qwen-3"),
-        )
+        llm_client._store_model_status(ModelStatus(state="online", model_name="qwen-3"))
         stream = mocker.patch.object(llm_client, "stream_completion", return_value=expected)
 
         result = llm_client.call_with_retry(
@@ -50,11 +42,7 @@ def test_non_strict_local_backends_allow_model_switch(mocker) -> None:
 def test_non_strict_model_switch_sets_integrity_state_ok(mocker) -> None:
     llm_client = LLMClient({"agent": {"backend_profile": "ollama"}})
     expected = StreamPassResult(finish_reason="stop", content="ok")
-    mocker.patch.object(
-        llm_client,
-        "_status_allows_immediate_send",
-        return_value=ModelStatus(state="online", model_name="qwen-3"),
-    )
+    llm_client._store_model_status(ModelStatus(state="online", model_name="qwen-3"))
     mocker.patch.object(llm_client, "stream_completion", return_value=expected)
 
     llm_client.call_with_retry(

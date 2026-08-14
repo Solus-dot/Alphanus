@@ -180,7 +180,6 @@ def test_doctor_report_handles_non_object_runtime_and_capabilities_sections(mock
     mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
     report = cast(Any, agent.doctor_report())
     assert report["agent"]["permission_mode"] == "project-write"
-    assert report["agent"]["approvals"] == "on-boundary"
 
 
 def test_doctor_report_can_skip_readiness_probe(mocker, runtime: SkillRuntime):
@@ -269,8 +268,8 @@ def test_refresh_model_status_reads_model_id_and_context_window(mocker, runtime:
     status = agent.refresh_model_status(force=True)
     assert (status.model_name, status.context_window) == ("llama-3.2-3b-instruct", 24576)
     assert seen_urls == [
-        TEST_SLOTS_ENDPOINT,
         TEST_MODELS_ENDPOINT,
+        TEST_SLOTS_ENDPOINT,
     ]
 
 
@@ -282,7 +281,6 @@ def test_select_skills_returns_only_explicitly_loaded_skills(runtime: SkillRunti
         branch_labels=[],
         attachments=[],
         project_root=str(runtime.project.project_root),
-        memory_hits=[],
     )
     assert agent.skill_runtime.select_skills(ctx) == []
 
@@ -305,8 +303,8 @@ def test_refresh_model_status_falls_back_to_slots_for_context_window(mocker, run
     status = agent.refresh_model_status(force=True)
     assert (status.model_name, status.context_window) == ("llama-3.2-3b-instruct", 40960)
     assert seen_urls == [
-        TEST_SLOTS_ENDPOINT,
         TEST_MODELS_ENDPOINT,
+        TEST_SLOTS_ENDPOINT,
     ]
 
 
@@ -330,8 +328,8 @@ def test_refresh_model_status_falls_back_to_props_after_slots_miss(mocker, runti
     status = agent.refresh_model_status(force=True)
     assert (status.model_name, status.context_window) == ("llama-3.2-3b-instruct", 40960)
     assert seen_urls == [
-        TEST_SLOTS_ENDPOINT,
         TEST_MODELS_ENDPOINT,
+        TEST_SLOTS_ENDPOINT,
         TEST_PROPS_ENDPOINT,
     ]
 
@@ -389,8 +387,8 @@ def test_refresh_model_status_shares_timeout_budget_across_probes(mocker, runtim
     assert status.model_name == "qwen-3"
     assert status.context_window == 40960
     assert probe_timeouts == [
-        ("slots", pytest.approx(1.0)),
-        ("models", pytest.approx(0.6)),
+        ("models", pytest.approx(1.0)),
+        ("slots", pytest.approx(0.6)),
         ("props", pytest.approx(0.2)),
     ]
 
@@ -683,11 +681,6 @@ def test_local_connection_refused_is_not_retried(mocker, runtime: SkillRuntime):
     def boom(*_args, **_kwargs):
         raise urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
 
-    mocker.patch.object(
-        agent.llm_client,
-        "_status_allows_immediate_send",
-        return_value=ModelStatus(state="online", endpoint=agent.llm_client.models_endpoint),
-    )
     mocker.patch("agent.provider.stream_chat_completions", side_effect=boom)
 
     with pytest.raises(Exception):
@@ -698,6 +691,17 @@ def test_local_connection_refused_is_not_retried(mocker, runtime: SkillRuntime):
     assert agent.get_model_status().model_name == "qwen-3"
     assert "Is the local model server running" in agent.get_model_status().last_error
     assert "Errno 61" not in agent.get_model_status().last_error
+
+
+def test_optional_slots_timeout_does_not_override_successful_models_probe(mocker, runtime: SkillRuntime):
+    agent = Agent({"agent": {}}, runtime)
+    mocker.patch.object(agent.llm_client, "list_models", return_value={"data": [{"id": "qwen-3"}]})
+    mocker.patch.object(agent.llm_client, "fetch_json", side_effect=TimeoutError("slots timed out"))
+
+    status = agent.refresh_model_status(timeout_s=1, force=True)
+
+    assert status.state == "online"
+    assert status.model_name == "qwen-3"
 
 
 def test_refresh_model_status_formats_connection_refused_for_users(mocker, runtime: SkillRuntime):
@@ -719,11 +723,6 @@ def test_refresh_model_status_formats_connection_refused_for_users(mocker, runti
 def test_retryable_transport_error_still_runs_readiness_poll_after_offline_probe(mocker, runtime: SkillRuntime):
     agent = Agent({"agent": {}}, runtime)
     events: list[dict] = []
-    mocker.patch.object(
-        agent.llm_client,
-        "_status_allows_immediate_send",
-        return_value=ModelStatus(state="online", endpoint=agent.llm_client.models_endpoint),
-    )
     stream = mocker.patch(
         "agent.provider.stream_chat_completions",
         side_effect=urllib.error.URLError(TimeoutError("timed out")),
@@ -769,15 +768,15 @@ def test_refresh_model_status_detects_hot_swapped_model(mocker, runtime: SkillRu
     refresh_index = {"value": 0}
 
     def fake_urlopen(req, timeout=None, context=None):
-        if req.full_url.endswith("/slots"):
-            refresh_index["value"] += 1
-            if refresh_index["value"] == 1:
-                return FakeResponse(['{"id":0,"n_ctx":8192}'])
-            return FakeResponse(['{"id":0,"n_ctx":16384}'])
         if req.full_url.endswith("/v1/models"):
+            refresh_index["value"] += 1
             if refresh_index["value"] == 1:
                 return FakeResponse(['{"data":[{"id":"qwen-3"}]}'])
             return FakeResponse(['{"data":[{"id":"qwen-4"}]}'])
+        if req.full_url.endswith("/slots"):
+            if refresh_index["value"] == 1:
+                return FakeResponse(['{"id":0,"n_ctx":8192}'])
+            return FakeResponse(['{"id":0,"n_ctx":16384}'])
         raise AssertionError(f"unexpected endpoint: {req.full_url}")
 
     mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import urllib.request
 
 import pytest
@@ -65,6 +66,41 @@ def test_stream_chat_completions_cancels_during_stalled_read(mocker):
     assert chunks == []
     assert select_calls["count"] >= 1
     assert response.readline_calls == 0
+
+
+def test_stream_chat_completions_cancels_without_a_selectable_socket(mocker) -> None:
+    stop_event = threading.Event()
+    release = threading.Event()
+    reading = threading.Event()
+
+    class Response:
+        status = 200
+        reason = "OK"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            release.set()
+            return False
+
+        def readline(self, _size: int = -1):
+            reading.set()
+            release.wait(2)
+            return b""
+
+    mocker.patch.object(urllib.request, "urlopen", return_value=Response())
+
+    def cancel() -> None:
+        reading.wait(1)
+        stop_event.set()
+
+    threading.Thread(target=cancel, daemon=True).start()
+    started = time.monotonic()
+    chunks = list(stream_chat_completions("http://localhost/v1/chat/completions", {"stream": True}, timeout_s=5, stop_event=stop_event))
+
+    assert chunks == []
+    assert time.monotonic() - started < 1
 
 
 def test_stream_chat_completions_rejects_oversized_lines(mocker) -> None:

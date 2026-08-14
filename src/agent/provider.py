@@ -399,16 +399,6 @@ class OpenAICompatibleProvider:
             return remaining
 
         context_window = current.context_window
-        loaded_model_name: str | None = None
-        slots_endpoint = provider_metadata.slots_endpoint_from_models_endpoint(self.models_endpoint)
-        try:
-            slots_payload = self.fetch_json(slots_endpoint, timeout_s=remaining_timeout())
-        except Exception as exc:
-            self.telemetry.emit("model_slots_fetch_failed", endpoint=slots_endpoint, error=str(exc))
-        else:
-            context_window = provider_metadata.extract_model_context_window(slots_payload) or context_window
-            loaded_model_name = provider_metadata.extract_model_name(slots_payload) or loaded_model_name
-
         try:
             payload = self.list_models(timeout_s=remaining_timeout())
         except Exception as exc:
@@ -427,9 +417,16 @@ class OpenAICompatibleProvider:
             )
         self._refresh_backend_profile(payload)
 
-        model_name = loaded_model_name or provider_metadata.extract_model_name(payload) or current.model_name
-        if context_window is None:
-            context_window = provider_metadata.extract_model_context_window(payload)
+        model_name = provider_metadata.extract_model_name(payload) or current.model_name
+        context_window = provider_metadata.extract_model_context_window(payload) or context_window
+        slots_endpoint = provider_metadata.slots_endpoint_from_models_endpoint(self.models_endpoint)
+        try:
+            slots_payload = self.fetch_json(slots_endpoint, timeout_s=remaining_timeout())
+        except Exception as exc:
+            self.telemetry.emit("model_slots_fetch_failed", endpoint=slots_endpoint, error=str(exc))
+        else:
+            context_window = provider_metadata.extract_model_context_window(slots_payload) or context_window
+            model_name = provider_metadata.extract_model_name(slots_payload) or model_name
         if context_window is None:
             props_endpoint = provider_metadata.props_endpoint_from_models_endpoint(self.models_endpoint)
             try:
@@ -500,12 +497,6 @@ class OpenAICompatibleProvider:
 
     def _status_probe_timeout_s(self) -> float:
         return min(self.connect_timeout_s, 1.0)
-
-    def _status_allows_immediate_send(self) -> ModelStatus:
-        status = self.get_model_status()
-        if self.is_model_status_fresh(status):
-            return status
-        return self.refresh_model_status(timeout_s=self._status_probe_timeout_s(), force=True)
 
     def should_fail_fast_on_offline_status(self, status: ModelStatus) -> bool:
         if status.state != "offline":
@@ -688,14 +679,7 @@ class OpenAICompatibleProvider:
             if self.stop_requested(stop_event):
                 return StreamPassResult(finish_reason="cancelled")
             try:
-                status = self._status_allows_immediate_send()
-                if status.state == "offline":
-                    message = (
-                        self._friendly_endpoint_error(status.last_error)
-                        if status.last_error
-                        else f"Model endpoint offline: {self.models_endpoint}"
-                    )
-                    raise RuntimeError(f"Model endpoint offline: {message}")
+                status = self.get_model_status()
                 normalized_payload = self._normalize_payload_for_backend(payload, mode=mode, pass_id=pass_id)
                 if not str(normalized_payload.get("model", "")).strip():
                     model_name = str(status.model_name or "").strip()

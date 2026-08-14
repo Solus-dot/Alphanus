@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import select
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -105,6 +107,24 @@ def stream_chat_completions(
                     except Exception as exc:
                         logging.debug("Socket fileno() check failed for %s: %s", type(candidate).__name__, exc)
             if callable(readline):
+                read_queue: queue.Queue[tuple[object | None, BaseException | None]] | None = None
+                if stream_sock is None:
+                    read_queue = queue.Queue(maxsize=100)
+
+                    def read_lines() -> None:
+                        try:
+                            while True:
+                                try:
+                                    item = readline(MAX_SSE_LINE_BYTES + 1)
+                                except TypeError:
+                                    item = readline()
+                                read_queue.put((item, None))
+                                if not item:
+                                    return
+                        except BaseException as exc:
+                            read_queue.put((None, exc))
+
+                    threading.Thread(target=read_lines, daemon=True, name="alphanus-stream-reader").start()
                 while True:
                     if stop_event is not None and stop_event.is_set():
                         return
@@ -117,15 +137,21 @@ def stream_chat_completions(
                         ready, _, _ = select.select([stream_sock], [], [], STREAM_POLL_TIMEOUT_S)
                         if not ready:
                             continue
-                    try:
                         try:
-                            raw = readline(MAX_SSE_LINE_BYTES + 1)
-                        except TypeError:
-                            # File-like test doubles and some third-party response
-                            # wrappers do not accept the standard size argument.
-                            raw = readline()
-                    except TimeoutError:
-                        continue
+                            try:
+                                raw = readline(MAX_SSE_LINE_BYTES + 1)
+                            except TypeError:
+                                raw = readline()
+                        except TimeoutError:
+                            continue
+                    else:
+                        assert read_queue is not None
+                        try:
+                            raw, read_error = read_queue.get(timeout=STREAM_POLL_TIMEOUT_S)
+                        except queue.Empty:
+                            continue
+                        if read_error is not None:
+                            raise read_error
                     if not raw:
                         return
                     idle_deadline = time.monotonic() + idle_timeout_s
