@@ -274,7 +274,7 @@ class ContextWindowManager:
             if not isinstance(fn, dict):
                 return False
             current_args = str(fn.get("arguments", ""))
-            fn["arguments"] = cls._truncate_text(current_args, next_len)
+            fn["arguments"] = json.dumps({"_history_truncated": True, "original_chars": len(current_args)}, separators=(",", ":"))
             previous = estimates[best_msg_idx]
             estimates[best_msg_idx] = cls._estimate_message_chars(out[best_msg_idx])
             total_estimated += estimates[best_msg_idx] - previous
@@ -338,13 +338,18 @@ class ContextWindowManager:
                         assistant_idx = msg_idx
                         break
 
-            total_estimated -= estimates.pop(tool_idx)
-            out.pop(tool_idx)
+            bundle = {tool_idx}
             if assistant_idx is not None:
-                if assistant_idx > tool_idx:
-                    assistant_idx -= 1
-                total_estimated -= estimates.pop(assistant_idx)
-                out.pop(assistant_idx)
+                bundle.add(assistant_idx)
+                call_ids = cls._tool_call_ids(out[assistant_idx])
+                bundle.update(
+                    idx
+                    for idx, message in enumerate(out)
+                    if message.get("role") == "tool" and str(message.get("tool_call_id") or "").strip() in call_ids
+                )
+            for idx in sorted(bundle, reverse=True):
+                total_estimated -= estimates.pop(idx)
+                out.pop(idx)
 
         if cls._chars_to_tokens(total_estimated) > max_prompt_tokens and out:
             sys_content = out[0].get("content")
@@ -371,18 +376,16 @@ class ContextWindowManager:
         return out
 
     def prune(self, messages: list[ChatMessage], max_tokens: int) -> list[ChatMessage]:
-        if len(messages) <= 2:
-            return messages
-
         budget = self.context_limit - self.safety_margin
         message_estimates = [self._estimate_message_chars(message) for message in messages]
         estimated = self._chars_to_tokens(sum(message_estimates))
         if estimated + max_tokens <= budget:
             return messages
 
+        max_prompt_tokens = max(1, budget - max_tokens)
         keep_tail = self.keep_last_n
         if len(messages) <= keep_tail + 1:
-            return messages
+            return self._compress_messages_to_budget(messages, max_prompt_tokens)
 
         head = messages[:1]
         body = messages[1:]
@@ -433,7 +436,6 @@ class ContextWindowManager:
             del mutable[drop_cursor]
 
         candidate = head if not mutable else head + [body[idx] for idx in mutable]
-        max_prompt_tokens = max(1, budget - max_tokens)
         candidate_total = head_estimate + sum(body_estimates[idx] for idx in mutable) if mutable else head_estimate
         if self._chars_to_tokens(candidate_total) <= max_prompt_tokens and self.estimate_tokens(candidate) <= max_prompt_tokens:
             return candidate

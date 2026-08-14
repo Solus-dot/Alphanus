@@ -315,7 +315,6 @@ def execute(tool_name, args, env):
         branch_labels=[],
         attachments=[],
         project_root=str(runtime.project.project_root),
-        memory_hits=[],
     )
     selected = agent.skill_runtime.select_skills(ctx)
     system_content = agent.prompt_renderer.compose_system_content(selected, ctx)
@@ -342,7 +341,6 @@ def test_prompt_policy_renderer_uses_configured_context_limit_for_skill_budget(m
         branch_labels=[],
         attachments=[],
         project_root=str(runtime.project.project_root),
-        memory_hits=[],
     )
 
     rendered = renderer.compose_system_content(selected, ctx)
@@ -391,16 +389,23 @@ def test_tool_result_compaction_middle_truncates_long_strings(runtime: SkillRunt
     agent = Agent({"agent": {"max_tool_result_chars": 120}}, runtime)
     value = "BEGIN-" + ("x" * 500) + "-END"
 
-    compacted = cast(
-        Any,
-        agent.orchestrator.history.compact_result({"ok": True, "data": {"content": value}, "error": None, "meta": {}}),
-    )
+    content = agent.orchestrator.history.compact_json(value, string_limit=120)
 
-    content = compacted["data"]["content"]
+    assert isinstance(content, str)
     assert content.startswith("BEGIN-")
     assert content.endswith("-END")
     assert "chars truncated" in content
     assert len(content) < len(value)
+
+
+def test_tool_result_compaction_bounds_the_whole_payload(runtime: SkillRuntime):
+    agent = Agent({"agent": {"max_tool_result_chars": 300}}, runtime)
+    result = {"ok": True, "data": {f"field_{index}": "x" * 200 for index in range(20)}, "error": None, "meta": {}}
+
+    compacted = agent.orchestrator.history.compact_result(cast(Any, result))
+
+    assert len(agent.orchestrator.history.dumps(compacted)) <= agent.orchestrator.history.max_chars
+    assert cast(Any, compacted)["data"]["history_truncated"] is True
 
 
 def test_memory_tool_history_compaction_keeps_recalled_text(runtime: SkillRuntime):
@@ -428,97 +433,8 @@ def test_memory_tool_history_compaction_keeps_recalled_text(runtime: SkillRuntim
     hit = compacted["data"]["hits"][0]
     assert hit["id"] == 42
     assert hit["text"] == "The user's name is Sohom."
-    assert hit["text_truncated"] is False
     assert hit["score"] == 0.91
     assert hit["metadata"]["nested"]["kept"] == "simple"
-
-
-def test_memory_tool_history_compaction_uses_memory_cap_before_generic_cap(runtime: SkillRuntime):
-    agent = Agent({"agent": {"max_tool_result_chars": 100}}, runtime)
-    memory_text = "name: " + ("Sohom " * 200) + "done"
-    result = {
-        "ok": True,
-        "data": {"hits": [{"id": 7, "text": memory_text, "type": "fact", "timestamp": 123.0}]},
-        "error": None,
-        "meta": {},
-    }
-
-    compacted = cast(Any, agent.orchestrator.history.result("recall_memory", result))
-
-    text = compacted["data"]["hits"][0]["text"]
-    assert text.startswith("name: ")
-    assert text.endswith("done")
-    assert len(text) > 100
-
-
-def test_memory_tool_history_compaction_clips_long_memory_text(runtime: SkillRuntime):
-    agent = Agent({"agent": {}}, runtime)
-    long_text = "name: " + ("Sohom " * 1000) + "done"
-    result = {
-        "ok": True,
-        "data": {"memories": [{"id": 1, "text": long_text, "type": "conversation", "timestamp": 123.0}]},
-        "error": None,
-        "meta": {},
-    }
-
-    compacted = cast(Any, agent.orchestrator.history.result("list_memories", result))
-
-    memory = compacted["data"]["memories"][0]
-    assert memory["id"] == 1
-    assert memory["text"].startswith("name: ")
-    assert memory["text"].endswith("done")
-    assert memory["text_truncated"] is True
-    assert len(memory["text"]) < len(long_text)
-
-
-def test_read_tool_history_compaction_keeps_large_bounded_content(runtime: SkillRuntime):
-    agent = Agent({"agent": {}}, runtime)
-    content = "BEGIN\n" + ("x" * 70000) + "\nEND"
-    result = {
-        "ok": True,
-        "data": {"content": content, "line_count": 3, "content_truncated": False},
-        "error": None,
-        "meta": {},
-    }
-
-    compacted = cast(Any, agent.orchestrator.history.result("read_file", result))
-
-    compacted_content = compacted["data"]["content"]
-    assert compacted_content.startswith("BEGIN\n")
-    assert compacted_content.endswith("\nEND")
-    assert "chars truncated" in compacted_content
-    assert compacted["data"]["content_truncated"] is True
-    assert compacted["data"]["content_omitted_chars"] > 0
-    assert result["data"]["content"] == content
-    assert "content_omitted_chars" not in result["data"]
-
-
-def test_read_files_history_compaction_uses_read_cap_before_generic_cap(runtime: SkillRuntime):
-    agent = Agent({"agent": {}}, runtime)
-    content = "BEGIN\n" + ("x" * 30000) + "\nEND"
-    result = {
-        "ok": True,
-        "data": {
-            "files": [
-                {
-                    "filepath": "large.txt",
-                    "content": content,
-                    "content_truncated": False,
-                    "line_count": 3,
-                }
-            ],
-            "count": 1,
-        },
-        "error": None,
-        "meta": {},
-    }
-
-    compacted = cast(Any, agent.orchestrator.history.result("read_files", result))
-
-    file_result = compacted["data"]["files"][0]
-    assert file_result["content"] == content
-    assert file_result["content_truncated"] is False
-    assert result["data"]["files"][0]["content"] == content
 
 
 def test_write_tool_history_compaction_keeps_evidence_not_full_content(runtime: SkillRuntime):
@@ -614,6 +530,38 @@ def test_agent_infers_tool_calls_when_finish_reason_missing(mocker, runtime: Ski
     assert any(msg.get("role") == "tool" for msg in result.skill_exchanges)
 
 
+def test_denied_multi_tool_batch_records_every_tool_result(mocker, runtime: SkillRuntime):
+    agent = Agent(agent_config(), runtime)
+
+    def fake_urlopen(req, timeout=None, context=None):
+        if req.full_url.endswith("/v1/models"):
+            return FakeResponse([])
+        if req.full_url.endswith("/slots"):
+            return FakeResponse(['{"id":0,"n_ctx":40960}'])
+        return FakeResponse(
+            [
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\":\\"a.txt\\",\\"content\\":\\"a\\"}"}},{"index":1,"id":"call_2","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\":\\"b.txt\\",\\"content\\":\\"b\\"}"}}]}}]}',
+                'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+                "data: [DONE]",
+            ]
+        )
+
+    denied = {"ok": False, "data": None, "error": {"code": "E_POLICY", "message": "Rejected by user"}, "meta": {}}
+    mocker.patch.object(runtime, "execute_tool_call", return_value=denied)
+    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
+
+    result = agent.run_turn(
+        history_messages=[{"role": "user", "content": "write files"}],
+        user_input="write files",
+        thinking=True,
+    )
+
+    exchanges = cast(Any, result.skill_exchanges)
+    requested = [call["id"] for message in exchanges if message.get("role") == "assistant" for call in message["tool_calls"]]
+    completed = [message["tool_call_id"] for message in exchanges if message.get("role") == "tool"]
+    assert requested == completed == ["call_1", "call_2"]
+
+
 def test_agent_emits_unique_tool_stream_ids_per_pass(mocker, runtime: SkillRuntime):
     cfg = agent_config()
     agent = Agent(cfg, runtime)
@@ -672,122 +620,6 @@ def test_tool_result_history_compacted_by_default(mocker, runtime: SkillRuntime)
     cfg = agent_config()
     agent = Agent(cfg, runtime)
     huge_text = "x" * 24000
-
-    chat_reqs = []
-
-    def fake_execute_tool_call(tool_name, args, selected, ctx, request_approval=None, **_kwargs):
-        return {"ok": True, "data": {"blob": huge_text}, "error": None, "meta": {}}
-
-    def fake_urlopen(req, timeout=None, context=None):
-        if req.full_url.endswith("/v1/models"):
-            return FakeResponse([])
-        if req.full_url.endswith("/slots"):
-            return FakeResponse(['{"id":0,"n_ctx":40960}'])
-        chat_reqs.append(req)
-        if len(chat_reqs) == 1:
-            return FakeResponse(
-                [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\"a.txt\\", \\"content\\": \\"hello\\"}"}}]}}]}',
-                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
-                    "data: [DONE]",
-                ]
-            )
-        if len(chat_reqs) == 2:
-            return FakeResponse(
-                [
-                    'data: {"choices":[{"delta":{"content":"Done"}}]}',
-                    'data: {"choices":[{"finish_reason":"stop"}]}',
-                    "data: [DONE]",
-                ]
-            )
-        raise AssertionError("Unexpected extra completion call")
-
-    mocker.patch.object(runtime, "execute_tool_call", side_effect=fake_execute_tool_call)
-    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
-
-    result = agent.run_turn(
-        history_messages=[{"role": "user", "content": "write"}],
-        user_input="write",
-        thinking=True,
-    )
-
-    assert result.status == "done"
-    second_payload = json.loads(chat_reqs[1].data.decode("utf-8"))
-    tool_msgs = [msg for msg in second_payload["messages"] if msg.get("role") == "tool"]
-    assert tool_msgs
-    tool_content = tool_msgs[-1]["content"]
-    assert huge_text not in tool_content
-    assert "blob" not in tool_content
-
-
-def test_tool_result_history_compaction_can_be_disabled(mocker, runtime: SkillRuntime):
-    cfg = agent_config(compact_tool_results_in_history=False)
-    agent = Agent(cfg, runtime)
-    huge_text = "x" * 24000
-
-    chat_reqs = []
-
-    def fake_execute_tool_call(tool_name, args, selected, ctx, request_approval=None, **_kwargs):
-        return {"ok": True, "data": {"blob": huge_text}, "error": None, "meta": {}}
-
-    def fake_urlopen(req, timeout=None, context=None):
-        if req.full_url.endswith("/v1/models"):
-            return FakeResponse([])
-        if req.full_url.endswith("/slots"):
-            return FakeResponse(['{"id":0,"n_ctx":40960}'])
-        chat_reqs.append(req)
-        if len(chat_reqs) == 1:
-            return FakeResponse(
-                [
-                    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"create_file","arguments":"{\\"filepath\\": \\"a.txt\\", \\"content\\": \\"hello\\"}"}}]}}]}',
-                    'data: {"choices":[{"finish_reason":"tool_calls"}]}',
-                    "data: [DONE]",
-                ]
-            )
-        if len(chat_reqs) == 2:
-            return FakeResponse(
-                [
-                    'data: {"choices":[{"delta":{"content":"Done"}}]}',
-                    'data: {"choices":[{"finish_reason":"stop"}]}',
-                    "data: [DONE]",
-                ]
-            )
-        raise AssertionError("Unexpected extra completion call")
-
-    mocker.patch.object(runtime, "execute_tool_call", side_effect=fake_execute_tool_call)
-    mocker.patch.object(urllib.request, "urlopen", side_effect=fake_urlopen)
-
-    result = agent.run_turn(
-        history_messages=[{"role": "user", "content": "write"}],
-        user_input="write",
-        thinking=True,
-    )
-
-    assert result.status == "done"
-    second_payload = json.loads(chat_reqs[1].data.decode("utf-8"))
-    tool_msgs = [msg for msg in second_payload["messages"] if msg.get("role") == "tool"]
-    assert tool_msgs
-    assert huge_text in tool_msgs[-1]["content"]
-
-
-def test_tool_result_history_compaction_can_be_gated_by_tool_name(mocker, runtime: SkillRuntime):
-    cfg = {
-        "agent": {
-            "model_endpoint": TEST_MODEL_ENDPOINT,
-            "models_endpoint": TEST_MODELS_ENDPOINT,
-            "request_timeout_s": 5,
-            "readiness_timeout_s": 1,
-            "readiness_poll_s": 0.01,
-            "enable_thinking": True,
-            "tls_verify": True,
-            "max_tokens": 256,
-            "compact_tool_results_in_history": True,
-            "compact_tool_result_tools": ["create_file"],
-            "max_tool_result_chars": 200,
-        }
-    }
-    agent = Agent(cfg, runtime)
-    huge_text = "y" * 6000
 
     chat_reqs = []
 

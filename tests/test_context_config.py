@@ -21,6 +21,19 @@ def test_prune_keeps_single_leading_system_message():
     assert sum(1 for msg in pruned if msg.get("role") == "system") == 1
 
 
+def test_prune_bounds_an_oversized_first_turn():
+    mgr = ContextWindowManager(context_limit=100, keep_last_n=10, safety_margin=0)
+    messages: Any = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "x" * 5000},
+    ]
+
+    pruned = cast(Any, mgr.prune(messages, max_tokens=40))
+
+    assert mgr.estimate_tokens(pruned) + 40 <= mgr.context_limit
+    assert pruned[-1]["role"] == "user"
+
+
 def test_estimate_tokens_floors_after_aggregating_whole_prompt():
     mgr = ContextWindowManager()
     messages: Any = [
@@ -96,6 +109,30 @@ def test_prune_hard_fallback_enforces_budget():
 
     pruned = cast(Any, mgr.prune(messages, max_tokens=40))
     assert mgr.estimate_tokens(pruned) + 40 <= mgr.context_limit - mgr.safety_margin
+
+
+def test_hard_pruning_drops_complete_multi_tool_bundles():
+    mgr = ContextWindowManager(context_limit=100, keep_last_n=10, safety_margin=0)
+    messages: Any = [
+        {"role": "system", "content": "base"},
+        {"role": "user", "content": "run both"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "a", "type": "function", "function": {"name": "one", "arguments": "{}"}},
+                {"id": "b", "type": "function", "function": {"name": "two", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "a", "name": "one", "content": "x" * 2000},
+        {"role": "tool", "tool_call_id": "b", "name": "two", "content": "y" * 2000},
+    ]
+
+    pruned = cast(Any, mgr.prune(messages, max_tokens=40))
+    calls = {call["id"] for message in pruned for call in message.get("tool_calls", [])}
+    results = {message["tool_call_id"] for message in pruned if message.get("role") == "tool"}
+
+    assert calls == results
 
 
 def test_prune_keeps_at_least_one_user_message_when_tool_bundle_is_large():

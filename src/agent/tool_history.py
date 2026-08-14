@@ -14,12 +14,10 @@ _WRITE_FIELDS = frozenset(
 
 
 class ToolHistoryCompactor:
-    # Bounds model-history payloads without changing live results.
+    """Bound model-history payloads without changing live tool results."""
 
     def __init__(self, config: AgentConfig) -> None:
         self.max_chars = config.max_tool_result_chars
-        self.enabled = config.compact_tool_results_in_history
-        self.included_tools = {name.strip() for name in config.compact_tool_result_tools if name.strip()}
 
     @staticmethod
     def dumps(value: object) -> str:
@@ -35,20 +33,18 @@ class ToolHistoryCompactor:
     def truncate_middle(text: str, limit: int) -> tuple[str, bool, int]:
         if limit <= 0 or len(text) <= limit:
             return text, False, 0
-        if limit <= 32:
-            return text[:limit], True, len(text) - limit
-        text_budget = max(2, limit - 32)
-        head_len = max(1, text_budget // 2)
-        tail_len = max(1, text_budget - head_len)
-        omitted = len(text) - head_len - tail_len
+        budget = max(2, limit - 32)
+        head = max(1, budget // 2)
+        tail = max(1, budget - head)
+        omitted = len(text) - head - tail
         marker = f"\n...[{omitted} chars truncated]...\n"
-        if len(marker) + head_len + tail_len > limit:
-            text_budget = max(2, limit - len(marker))
-            head_len = max(1, text_budget // 2)
-            tail_len = max(1, text_budget - head_len)
-            omitted = len(text) - head_len - tail_len
+        if len(marker) + head + tail > limit:
+            budget = max(2, limit - len(marker))
+            head = max(1, budget // 2)
+            tail = max(1, budget - head)
+            omitted = len(text) - head - tail
             marker = f"\n...[{omitted} chars truncated]...\n"
-        return text[:head_len] + marker + text[-tail_len:], True, omitted
+        return text[:head] + marker + text[-tail:], True, omitted
 
     def compact_json(self, value: object, depth: int = 0, *, string_limit: int | None = None) -> JSONValue:
         limit = self.max_chars if string_limit is None else max(0, int(string_limit))
@@ -57,195 +53,67 @@ class ToolHistoryCompactor:
         if value is None or isinstance(value, (bool, int, float)):
             return value
         if depth >= 8:
-            if isinstance(value, list):
-                return {"__omitted_nested__": True, "type": "list", "item_count": len(value)}
-            if isinstance(value, dict):
-                return {"__omitted_nested__": True, "type": "dict", "key_count": len(value), "keys": [str(key) for key in list(value)[:20]]}
-            return str(value)
+            return "[nested value omitted]"
         if isinstance(value, list):
-            list_output = [self.compact_json(item, depth + 1, string_limit=string_limit) for item in value[:80]]
+            items = [self.compact_json(item, depth + 1, string_limit=limit) for item in value[:80]]
             if len(value) > 80:
-                list_output.append(f"... [{len(value) - 80} more items truncated]")
-            return list_output
+                items.append(f"... [{len(value) - 80} more items truncated]")
+            return items
         if isinstance(value, dict):
-            dict_output: JsonObject = {
-                str(key): self.compact_json(item, depth + 1, string_limit=string_limit) for key, item in list(value.items())[:120]
+            output: JsonObject = {
+                str(key): self.compact_json(item, depth + 1, string_limit=limit) for key, item in list(value.items())[:120]
             }
             if len(value) > 120:
-                dict_output["__truncated_keys__"] = len(value) - 120
-            return dict_output
+                output["__truncated_keys__"] = len(value) - 120
+            return output
         return str(value)
 
-    def clone_json(self, value: object) -> JSONValue:
-        if isinstance(value, list):
-            return [self.clone_json(item) for item in value]
-        if isinstance(value, dict):
-            return {str(key): self.clone_json(item) for key, item in value.items()}
-        return value if value is None or isinstance(value, (str, bool, int, float)) else str(value)
-
-    def _metadata(self, value: object) -> JSONValue:
-        if not isinstance(value, dict):
-            return self.compact_json(value, string_limit=1000)
-        output: JsonObject = {}
-        for key, item in list(value.items())[:40]:
-            if isinstance(item, (str, int, float, bool)) or item is None:
-                output[str(key)] = self.compact_json(item, string_limit=1000)
-            elif isinstance(item, list):
-                children = [
-                    self.compact_json(child, string_limit=1000)
-                    for child in item[:20]
-                    if isinstance(child, (str, int, float, bool)) or child is None
-                ]
-                if len(item) > 20:
-                    children.append(f"... [{len(item) - 20} more items truncated]")
-                output[str(key)] = children
-            elif isinstance(item, dict):
-                output[str(key)] = {
-                    str(child_key): self.compact_json(child, string_limit=1000)
-                    for child_key, child in list(item.items())[:20]
-                    if isinstance(child, (str, int, float, bool)) or child is None
-                }
-        if len(value) > 40:
-            output["__truncated_keys__"] = len(value) - 40
-        return output
-
-    def _memory_item(self, item: object) -> JSONValue:
-        if not isinstance(item, dict):
-            return self.compact_json(item, string_limit=4000)
-        keep = {
-            "id",
-            "text",
-            "type",
-            "memory_type",
-            "score",
-            "importance",
-            "timestamp",
-            "created_at",
-            "last_accessed",
-            "access_count",
-            "metadata",
+    def _bound_result(self, result: JsonObject) -> JsonObject:
+        encoded = self.dumps(result)
+        if self.max_chars <= 0 or len(encoded) <= self.max_chars:
+            return result
+        raw_error = result.get("error")
+        error: JsonObject | None = (
+            {
+                "code": str(raw_error.get("code") or "")[:80],
+                "message": self.truncate_middle(str(raw_error.get("message") or ""), 200)[0],
+            }
+            if isinstance(raw_error, dict)
+            else None
+        )
+        bounded: JsonObject = {
+            "ok": bool(result.get("ok")),
+            "data": {"history_truncated": True},
+            "error": error,
+            "meta": {"original_chars": len(encoded)},
         }
-        output: JsonObject = {}
-        for key in keep & item.keys():
-            value = item[key]
-            if key == "text" and isinstance(value, str):
-                text, truncated, omitted = self.truncate_middle(value, 4000)
-                output.update({key: text, "text_truncated": truncated})
-                if truncated:
-                    output["text_omitted_chars"] = omitted
-            elif key == "metadata":
-                output[key] = self._metadata(value)
-            else:
-                output[key] = self.compact_json(value, string_limit=1000)
-        return output
-
-    def _envelope(self, result: JsonObject, *, compact_data: bool = True) -> JsonObject:
-        return {
-            key: cast(
-                JSONValue,
-                self.compact_json(value)
-                if key == "data" and compact_data
-                else self.clone_json(value)
-                if key == "data"
-                else self.compact_json(value, string_limit=12000),
-            )
-            for key, value in result.items()
-        }
-
-    def _memory_result(self, result: JsonObject) -> JsonObject:
-        output = self._envelope(result, compact_data=False)
-        data = output.get("data")
-        if not isinstance(data, dict):
-            return output
-        for key, value in list(data.items()):
-            if key not in {"hits", "memories"}:
-                data[key] = self.compact_json(value)
-        for key in ("hits", "memories"):
-            items = data.get(key)
-            if isinstance(items, list):
-                compacted = [self._memory_item(item) for item in items[:20]]
-                if len(items) > 20:
-                    compacted.append(f"... [{len(items) - 20} more {'memory hits' if key == 'hits' else 'memories'} truncated]")
-                data[key] = compacted
-        return output
-
-    def _text_field(self, data: JsonObject, key: str, limit: int) -> None:
-        value = data.get(key)
-        if not isinstance(value, str):
-            return
-        text, truncated, omitted = self.truncate_middle(value, limit)
-        data[key] = text
-        data[f"{key}_truncated"] = bool(data.get(f"{key}_truncated", False) or truncated)
-        if truncated:
-            data[f"{key}_omitted_chars"] = omitted
-
-    def _data_result(
-        self,
-        result: JsonObject,
-        text_limits: dict[str, int],
-        list_fields: dict[str, tuple[int, tuple[str, ...]]] | None = None,
-    ) -> JsonObject:
-        output = self._envelope(result, compact_data=False)
-        data = output.get("data")
-        if not isinstance(data, dict):
-            return output
-        lists = list_fields or {}
-        for key, value in list(data.items()):
-            if key not in text_limits and key not in lists:
-                data[key] = self.compact_json(value)
-        for key, limit in text_limits.items():
-            self._text_field(data, key, limit)
-        for key, (limit, text_fields) in lists.items():
-            items = data.get(key)
-            if not isinstance(items, list):
-                continue
-            compacted: list[JSONValue] = []
-            for item in items[:limit]:
-                row = (
-                    {str(name): value if name in text_fields else self.compact_json(value) for name, value in item.items()}
-                    if isinstance(item, dict)
-                    else self.compact_json(item)
-                )
-                if isinstance(row, dict):
-                    for field in text_fields:
-                        self._text_field(row, field, text_limits.get(field, max(text_limits.values())))
-                compacted.append(row)
-            if len(items) > limit:
-                compacted.append(f"... [{len(items) - limit} more {key} truncated]")
-            data[key] = compacted
-        return output
+        overhead = len(self.dumps(bounded))
+        excerpt = self.truncate_middle(encoded, max(0, self.max_chars - overhead - 24))[0]
+        data = cast(dict[str, JSONValue], bounded["data"])
+        data["result_excerpt"] = excerpt
+        while excerpt and len(self.dumps(bounded)) > self.max_chars:
+            excerpt = excerpt[: max(0, len(excerpt) - (len(self.dumps(bounded)) - self.max_chars))]
+            data["result_excerpt"] = excerpt
+        return bounded
 
     def compact_result(self, result: JsonObject) -> JsonObject:
-        if self.max_chars <= 0:
-            return result
         compacted = self.compact_json(result)
-        return cast(JsonObject, compacted) if isinstance(compacted, dict) else {"value": compacted}
+        output: JsonObject = cast(JsonObject, compacted) if isinstance(compacted, dict) else {"value": compacted}
+        return self._bound_result(output)
 
     def result(self, tool_name: str, result: JsonObject) -> JsonObject:
-        if not self.enabled or self.included_tools and tool_name not in self.included_tools or self.max_chars <= 0:
-            return result
-        if tool_name in {"recall_memory", "list_memories"}:
-            return self._memory_result(result)
-        if tool_name in {"read_file", "read_files"}:
-            return self._data_result(result, {"content": 64000}, {"files": (40, ("content",))})
         if tool_name in {"create_file", "edit_file"}:
-            output = self._envelope(result, compact_data=False)
-            data = output.get("data")
+            output = cast(JsonObject, self.compact_json(result))
+            data = result.get("data")
             if isinstance(data, dict):
-                trimmed = {key: value for key, value in data.items() if key in _WRITE_FIELDS}
-                self._text_field(trimmed, "diff", 12000)
-                if bool(trimmed.get("write_verified")):
-                    trimmed["write_receipt"] = (
+                receipt = {key: self.compact_json(value) for key, value in data.items() if key in _WRITE_FIELDS}
+                if receipt.get("write_verified"):
+                    receipt["write_receipt"] = (
                         "AUTHORITATIVE: the complete tool argument was written and verified; "
                         "content samples are intentionally absent from model history."
                     )
-                output["data"] = trimmed
-            return output
-        if tool_name == "shell_command":
-            return self._data_result(result, {key: 12000 for key in ("stdout", "stderr", "aggregated_output", "output")})
-        if tool_name in {"find_files", "search_code", "web_search", "fetch_url", "retrieve_knowledge"}:
-            fields = ("content", "text", "snippet", "summary", "line")
-            return self._data_result(result, {key: 4000 for key in fields}, {"results": (40, fields)})
+                output["data"] = receipt
+            return self._bound_result(output)
         return self.compact_result(result)
 
     def arguments(self, args: JsonObject) -> JsonObject:
@@ -262,4 +130,6 @@ class ToolHistoryCompactor:
                 )
             else:
                 output[key] = value[:1200] + f"...[truncated {len(value) - 1200} chars]"
+        if self.max_chars > 0 and len(self.dumps(output)) > self.max_chars:
+            return {"_history_truncated": True, "original_chars": len(self.dumps(output))}
         return output
