@@ -359,17 +359,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         top[0],
     );
 
-    let notice = app
-        .clipboard_notice
-        .as_ref()
-        .filter(|(_, at)| at.elapsed() < Duration::from_secs(3))
-        .map(|(text, _)| text.as_str());
-    let mut hint_spans = if let Some(notice) = notice {
-        vec![Span::styled(
-            notice.to_owned(),
-            Style::default().fg(app.theme.secondary),
-        )]
-    } else if app.approval.is_some() {
+    let mut hint_spans = if app.approval.is_some() {
         vec![
             Span::styled(
                 "Y",
@@ -414,7 +404,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             ),
         }
     };
-    if notice.is_none() && !matches!(app.status.as_str(), "" | "Ready") && !app.streaming {
+    if !matches!(app.status.as_str(), "" | "Ready") && !app.streaming {
         hint_spans.insert(0, Span::styled("    ", Style::default()));
         hint_spans.insert(
             0,

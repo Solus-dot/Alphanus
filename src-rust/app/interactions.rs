@@ -62,6 +62,18 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        if matches!(key.code, KeyCode::Char('c' | 'C'))
+            && (key.modifiers.contains(KeyModifiers::SUPER)
+                || key.modifiers.contains(KeyModifiers::CONTROL))
+        {
+            let selected_text = self.selected_transcript_text();
+            if transcript_copy_shortcut(&key, selected_text.is_some()) {
+                if let Some(text) = selected_text {
+                    self.copy_to_clipboard(text);
+                }
+                return;
+            }
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('d'))
         {
@@ -658,11 +670,6 @@ impl App {
             }
             MouseEventKind::Up(MouseButton::Left) if self.transcript_selection_anchor.is_some() => {
                 self.transcript_selection_focus = Some(transcript_point());
-                if let Some(text) = self.selected_transcript_text() {
-                    self.copy_to_clipboard(text);
-                }
-                self.transcript_selection_anchor = None;
-                self.transcript_selection_focus = None;
             }
             MouseEventKind::ScrollUp => {
                 if self
@@ -896,14 +903,6 @@ end run"#;
 
     fn copy_to_clipboard(&mut self, content: String) {
         let payload = BASE64.encode(content.as_bytes());
-        let result = write!(stdout(), "\x1b]52;c;{payload}\x07").and_then(|_| stdout().flush());
-        self.clipboard_notice = Some((
-            if result.is_ok() {
-                "Copied with OSC 52".into()
-            } else {
-                "Clipboard unavailable; use Shift-drag".into()
-            },
-            Instant::now(),
-        ));
+        let _ = write!(stdout(), "\x1b]52;c;{payload}\x07").and_then(|_| stdout().flush());
     }
 }

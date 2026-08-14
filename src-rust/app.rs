@@ -261,7 +261,6 @@ struct App {
     dirty: bool,
     animation_frame: u16,
     active_turn_id: String,
-    clipboard_notice: Option<(String, Instant)>,
     transcript_selection_anchor: Option<(usize, usize)>,
     transcript_selection_focus: Option<(usize, usize)>,
     transcript_copy_lines: Vec<String>,
@@ -381,13 +380,8 @@ pub fn run(python: &str, project_root: Option<&str>, debug: bool) -> Result<i32,
             forced_repaints = 4;
             app.last_frame = Instant::now() - Duration::from_millis(16);
         }
-        let notice_visible = app
-            .clipboard_notice
-            .as_ref()
-            .is_some_and(|(_, at)| at.elapsed() < Duration::from_secs(3));
         let animation_due = app.streaming && app.last_frame.elapsed() >= Duration::from_millis(120);
-        let notice_due = notice_visible && app.last_frame.elapsed() >= Duration::from_millis(250);
-        if (app.dirty || animation_due || notice_due || forced_repaints > 0)
+        if (app.dirty || animation_due || forced_repaints > 0)
             && app.last_frame.elapsed() >= Duration::from_millis(16)
         {
             if forced_repaints > 0 {
@@ -432,6 +426,13 @@ pub fn run(python: &str, project_root: Option<&str>, debug: bool) -> Result<i32,
     }
     app.backend.shutdown();
     Ok(0)
+}
+
+fn transcript_copy_shortcut(key: &KeyEvent, has_selection: bool) -> bool {
+    matches!(key.code, KeyCode::Char('c' | 'C'))
+        && (key.modifiers.contains(KeyModifiers::SUPER)
+            || (key.modifiers.contains(KeyModifiers::CONTROL)
+                && (key.modifiers.contains(KeyModifiers::SHIFT) || has_selection)))
 }
 
 fn terminal_repaint_shortcut(event: &Event) -> bool {
@@ -942,6 +943,21 @@ mod tests {
             text: "x".repeat(200),
         };
         assert_eq!(marker.replace(&chunk.marker, &chunk.text).len(), 200);
+    }
+
+    #[test]
+    fn transcript_copy_shortcuts_cover_mac_and_other_platforms() {
+        let key = |modifiers| KeyEvent::new(KeyCode::Char('c'), modifiers);
+        assert!(transcript_copy_shortcut(&key(KeyModifiers::SUPER), true));
+        assert!(transcript_copy_shortcut(
+            &key(KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            true
+        ));
+        assert!(transcript_copy_shortcut(&key(KeyModifiers::CONTROL), true));
+        assert!(!transcript_copy_shortcut(
+            &key(KeyModifiers::CONTROL),
+            false
+        ));
     }
 
     #[test]

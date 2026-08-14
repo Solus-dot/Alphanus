@@ -62,7 +62,6 @@ impl App {
             dirty: true,
             animation_frame: 0,
             active_turn_id: String::new(),
-            clipboard_notice: None,
             transcript_selection_anchor: None,
             transcript_selection_focus: None,
             transcript_copy_lines: Vec::new(),
@@ -109,8 +108,8 @@ impl App {
         for _ in 0..MAX_EVENTS_PER_FRAME {
             let event = match self.backend.events.try_recv() {
                 Ok(event) => event,
-                Err(crossbeam_channel::TryRecvError::Empty) => break,
-                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                     if !self.should_quit && self.connected {
                         self.connected = false;
                         self.streaming = false;

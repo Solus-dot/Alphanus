@@ -76,10 +76,16 @@ SHORTCUT_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("Ctrl+G / Ctrl+H / Ctrl+L", "Focus composer, transcript, or tree"),
             ("Tab / Shift+Tab", "Cycle active panels"),
             ("F2 / F3", "Toggle tool details or thinking mode"),
-            ("Ctrl+C / Ctrl+D", "Quit Alphanus"),
+            ("Ctrl+C / Ctrl+D", "Quit Alphanus when no text is selected"),
         ),
     ),
-    ("TRANSCRIPT", (("PgUp / PgDn / wheel", "Scroll transcript"),)),
+    (
+        "TRANSCRIPT",
+        (
+            ("PgUp / PgDn / wheel", "Scroll transcript"),
+            ("Cmd+C / Ctrl+Shift+C", "Copy selected transcript text"),
+        ),
+    ),
     (
         "TREE",
         (
@@ -113,9 +119,7 @@ def command_catalog() -> list[dict[str, str]]:
 
 def shortcut_catalog() -> list[dict[str, str]]:
     return [
-        {"section": section, "key": key, "description": description}
-        for section, rows in SHORTCUT_SECTIONS
-        for key, description in rows
+        {"section": section, "key": key, "description": description} for section, rows in SHORTCUT_SECTIONS for key, description in rows
     ]
 
 
