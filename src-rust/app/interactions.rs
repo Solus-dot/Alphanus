@@ -29,10 +29,11 @@ impl App {
         if value.is_empty() || !self.connected {
             return;
         }
-        if self.streaming && !value.starts_with('/') {
-            self.status = "A turn is already running · draft retained".into();
-            return;
+        if self.input_history.last() != Some(&value) {
+            self.input_history.push(value.clone());
         }
+        self.history_index = None;
+        self.history_draft.clear();
         self.input.clear();
         self.cursor = 0;
         self.command_suggestions = false;
@@ -40,6 +41,9 @@ impl App {
         self.paste_chunks.clear();
         if value.starts_with('/') {
             self.send("command.execute", json!({"command":value}));
+        } else if self.streaming {
+            self.send("turn.steer", json!({"prompt":value}));
+            self.status = "Steering message queued…".into();
         } else {
             self.send(
                 "turn.start",
@@ -124,6 +128,7 @@ impl App {
                 }
                 KeyCode::Char('a') if self.focus == Focus::Input => self.cursor = 0,
                 KeyCode::Char('e') if self.focus == Focus::Input => self.cursor = self.input.len(),
+                KeyCode::Char('v') if self.focus == Focus::Input => self.paste_clipboard_image(),
                 KeyCode::Char('y') if self.focus == Focus::Transcript => {
                     let content = self
                         .transcript
@@ -148,7 +153,10 @@ impl App {
             return;
         }
         match key.code {
-            KeyCode::F(2) => self.show_details = !self.show_details,
+            KeyCode::F(2) => {
+                self.show_details = !self.show_details;
+                self.transcript_revision = self.transcript_revision.wrapping_add(1);
+            }
             KeyCode::F(3) => self.thinking = !self.thinking,
             KeyCode::Tab if self.focus == Focus::Input && self.command_suggestions => {
                 self.complete_selected_command();
@@ -203,6 +211,8 @@ impl App {
             KeyCode::Up if self.focus == Focus::Input && self.command_suggestions => {
                 self.command_selected = self.command_selected.saturating_sub(1);
             }
+            KeyCode::Up if self.focus == Focus::Input => self.navigate_input_history(-1),
+            KeyCode::Down if self.focus == Focus::Input => self.navigate_input_history(1),
             KeyCode::Enter if self.focus == Focus::Input && self.command_suggestions => {
                 self.complete_selected_command();
                 self.submit();
@@ -244,6 +254,7 @@ impl App {
 
     pub(super) fn append_notice(&mut self, text: String) {
         self.transcript.push(TurnView::notice(text));
+        self.transcript_revision = self.transcript_revision.wrapping_add(1);
         trim_vec(&mut self.transcript, MAX_TRANSCRIPT_ITEMS);
         self.transcript_auto_follow = true;
     }
@@ -287,16 +298,42 @@ impl App {
         self.command_selected = 0;
     }
 
+    fn navigate_input_history(&mut self, direction: isize) {
+        if self.input_history.is_empty() {
+            return;
+        }
+        if self.history_index.is_none() && direction == -1 {
+            self.history_draft.clone_from(&self.input);
+        }
+        let Some(index) = history_target(self.input_history.len(), self.history_index, direction)
+        else {
+            return;
+        };
+        if index == self.input_history.len() {
+            self.history_index = None;
+            self.input.clone_from(&self.history_draft);
+            self.cursor = self.input.len();
+            return;
+        }
+        self.history_index = Some(index);
+        self.input.clone_from(&self.input_history[index]);
+        self.cursor = self.input.len();
+        self.refresh_command_suggestions();
+    }
+
     fn edit_input(&mut self, key: KeyEvent) {
         if !input::edit(&mut self.input, &mut self.cursor, key, false)
             && key.code == KeyCode::Backspace
             && self.input.is_empty()
         {
             self.send("attachment.remove", json!({"index":"last"}));
+        } else {
+            self.history_index = None;
         }
     }
 
     fn insert_paste(&mut self, text: String) {
+        self.history_index = None;
         if text.len() < PASTE_THRESHOLD {
             self.input.insert_str(self.cursor, &text);
             self.cursor += text.len();
@@ -329,6 +366,8 @@ impl App {
             self.command_suggestions = false;
             self.command_selected = 0;
             self.paste_chunks.clear();
+            self.history_index = None;
+            self.history_draft.clear();
         }
     }
 
@@ -597,7 +636,34 @@ impl App {
             }
             return;
         }
+        let position = Position::new(mouse.column, mouse.row);
+        let transcript_point = || {
+            (
+                usize::from(self.transcript_scroll)
+                    + usize::from(mouse.row.saturating_sub(self.areas.transcript.y + 1)),
+                usize::from(mouse.column.saturating_sub(self.areas.transcript.x + 1)),
+            )
+        };
         match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) if self.areas.transcript.contains(position) => {
+                let point = transcript_point();
+                self.transcript_selection_anchor = Some(point);
+                self.transcript_selection_focus = Some(point);
+                self.focus = Focus::Transcript;
+            }
+            MouseEventKind::Drag(MouseButton::Left)
+                if self.transcript_selection_anchor.is_some() =>
+            {
+                self.transcript_selection_focus = Some(transcript_point());
+            }
+            MouseEventKind::Up(MouseButton::Left) if self.transcript_selection_anchor.is_some() => {
+                self.transcript_selection_focus = Some(transcript_point());
+                if let Some(text) = self.selected_transcript_text() {
+                    self.copy_to_clipboard(text);
+                }
+                self.transcript_selection_anchor = None;
+                self.transcript_selection_focus = None;
+            }
             MouseEventKind::ScrollUp => {
                 if self
                     .areas
@@ -628,7 +694,6 @@ impl App {
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                let position = Position::new(mouse.column, mouse.row);
                 if self.areas.file_button.contains(position) {
                     self.open_file_picker();
                 } else if self.areas.input.contains(position) {
@@ -781,6 +846,52 @@ impl App {
         if let Some(index) = siblings.get(target) {
             self.tree_selected = *index;
         }
+    }
+
+    fn paste_clipboard_image(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            let path = std::env::temp_dir()
+                .join(format!("alphanus-clipboard-{}.png", uuid::Uuid::new_v4()));
+            let script = r#"on run argv
+try
+set imageData to the clipboard as «class PNGf»
+set outputFile to open for access POSIX file (item 1 of argv) with write permission
+set eof outputFile to 0
+write imageData to outputFile
+close access outputFile
+on error
+try
+close access outputFile
+end try
+error number -128
+end try
+end run"#;
+            if std::process::Command::new("osascript")
+                .args(["-e", script, "--"])
+                .arg(&path)
+                .status()
+                .is_ok_and(|status| status.success())
+            {
+                self.send("attachment.add", json!({"path":path}));
+                self.status = "Attached clipboard image".into();
+            } else {
+                let _ = std::fs::remove_file(path);
+                self.status = "Clipboard does not contain a PNG image".into();
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.status = "Clipboard image paste is currently available on macOS".into();
+        }
+    }
+
+    fn selected_transcript_text(&self) -> Option<String> {
+        selected_text(
+            &self.transcript_copy_lines,
+            self.transcript_selection_anchor?,
+            self.transcript_selection_focus?,
+        )
     }
 
     fn copy_to_clipboard(&mut self, content: String) {

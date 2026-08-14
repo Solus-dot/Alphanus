@@ -244,6 +244,60 @@ pub(in crate::app) fn append_notice_lines(
     lines.push(Line::default());
 }
 
+fn highlight_transcript_selection(
+    lines: &mut [Line<'static>],
+    row_offset: usize,
+    anchor: Option<(usize, usize)>,
+    focus: Option<(usize, usize)>,
+) {
+    let (Some(mut start), Some(mut end)) = (anchor, focus) else {
+        return;
+    };
+    if start > end {
+        std::mem::swap(&mut start, &mut end);
+    }
+    if start == end {
+        return;
+    }
+    for (relative_row, line) in lines.iter_mut().enumerate() {
+        let row = row_offset + relative_row;
+        if row < start.0 || row > end.0 {
+            continue;
+        }
+        let from = if row == start.0 { start.1 } else { 0 };
+        let to = if row == end.0 {
+            end.1.saturating_add(1)
+        } else {
+            usize::MAX
+        };
+        let mut column = 0;
+        let mut highlighted = Line::default();
+        for span in std::mem::take(&mut line.spans) {
+            for character in span.content.chars() {
+                let width = UnicodeWidthChar::width(character).unwrap_or(0);
+                let selected = column < to && column.saturating_add(width.max(1)) > from;
+                let style = if selected {
+                    span.style.add_modifier(Modifier::REVERSED)
+                } else {
+                    span.style
+                };
+                push_styled_character(&mut highlighted, character, style);
+                column += width;
+            }
+        }
+        line.spans = highlighted.spans;
+    }
+}
+
+pub(in crate::app) fn transcript_cache_needs_rebuild(
+    rendered_revision: u64,
+    revision: u64,
+    rendered_width: u16,
+    width: u16,
+) -> bool {
+    rendered_revision != revision || rendered_width != width
+}
+
 pub(in crate::app) fn draw_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
     let border = if app.focus == Focus::Transcript {
         app.theme.secondary
@@ -251,136 +305,179 @@ pub(in crate::app) fn draw_transcript(frame: &mut Frame, app: &mut App, area: Re
         app.theme.border
     };
     let content_width = area.width.saturating_sub(2).max(1);
-    let mut lines = Vec::<Line<'static>>::new();
-    for turn in &app.transcript {
-        if turn.local {
-            append_notice_lines(&mut lines, &turn.assistant, app, content_width);
-            continue;
-        }
-        let mut user_lines = Vec::new();
-        if !turn.attachments.is_empty() {
-            user_lines.push(Line::from(Span::styled(
-                format!("Attachments: {}", turn.attachments),
-                Style::default().fg(app.theme.muted),
+    if transcript_cache_needs_rebuild(
+        app.transcript_render_revision,
+        app.transcript_revision,
+        app.transcript_render_width,
+        content_width,
+    ) {
+        let mut lines = Vec::<Line<'static>>::new();
+        for turn in &app.transcript {
+            if turn.local {
+                append_notice_lines(&mut lines, &turn.assistant, app, content_width);
+                continue;
+            }
+            let mut user_lines = Vec::new();
+            if !turn.attachments.is_empty() {
+                user_lines.push(Line::from(Span::styled(
+                    format!("Attachments: {}", turn.attachments),
+                    Style::default().fg(app.theme.muted),
+                )));
+            }
+            user_lines.extend(trim_message_lines(markdown_lines(
+                &turn.user,
+                app.theme.text,
+                app.theme.accent,
+                &app.theme.syntax_theme,
             )));
-        }
-        user_lines.extend(trim_message_lines(markdown_lines(
-            &turn.user,
-            app.theme.text,
-            app.theme.accent,
-            &app.theme.syntax_theme,
-        )));
-        lines.extend(message_rail_lines(
-            user_lines,
-            content_width,
-            app.theme.success,
-        ));
-        lines.push(Line::default());
-        let mut assistant_lines = Vec::new();
-        for activity in &turn.activity {
-            if let ActivityItem::Reasoning(text) = activity {
-                if app.show_details && !text.trim().is_empty() {
+            lines.extend(message_rail_lines(
+                user_lines,
+                content_width,
+                app.theme.success,
+            ));
+            lines.push(Line::default());
+            let mut assistant_lines = Vec::new();
+            for activity in &turn.activity {
+                if let ActivityItem::Reasoning(text) = activity {
+                    if app.show_details && !text.trim().is_empty() {
+                        push_spaced_message_block(
+                            &mut assistant_lines,
+                            dim_message_lines(markdown_lines(
+                                text,
+                                app.theme.muted,
+                                app.theme.subtle,
+                                &app.theme.syntax_theme,
+                            )),
+                        );
+                    }
+                } else if let ActivityItem::Assistant(text) = activity {
                     push_spaced_message_block(
                         &mut assistant_lines,
-                        dim_message_lines(markdown_lines(
+                        markdown_lines(
                             text,
-                            app.theme.muted,
-                            app.theme.subtle,
-                            &app.theme.syntax_theme,
-                        )),
-                    );
-                }
-            } else if let ActivityItem::Tool(tool) = activity {
-                let mut tool_lines = Vec::new();
-                let (marker, color) = if tool.failed {
-                    ("✗", app.theme.error)
-                } else if tool.completed {
-                    ("✓", app.theme.success)
-                } else {
-                    ("▶", app.theme.warning)
-                };
-                tool_lines.push(Line::from(vec![
-                    Span::styled(format!("{marker} "), Style::default().fg(color)),
-                    Span::styled(tool.name.clone(), Style::default().fg(app.theme.muted)),
-                ]));
-                if app.show_details && !tool.preview.is_empty() {
-                    let preview_label = if tool.filepath.is_empty() {
-                        "file preview".to_owned()
-                    } else if tool.language == "diff" {
-                        format!("edit diff: {}", tool.filepath)
-                    } else {
-                        format!("file draft: {}", tool.filepath)
-                    };
-                    tool_lines.push(Line::from(Span::styled(
-                        format!("  · {preview_label}"),
-                        Style::default().fg(app.theme.subtle),
-                    )));
-                    let language = if tool.language.is_empty() {
-                        tool_preview::language_for_filepath(&tool.filepath)
-                    } else {
-                        tool.language.as_str()
-                    };
-                    tool_lines.extend(preview_box_lines(
-                        highlighted_code_lines(
-                            &tool.preview,
-                            language,
-                            &app.theme.syntax_theme,
                             app.theme.text,
+                            app.theme.accent,
+                            &app.theme.syntax_theme,
                         ),
-                        usize::from(content_width.saturating_sub(2)),
-                        app.theme.border,
-                        app.theme.panel,
-                    ));
-                    if tool.preview_truncated {
+                    );
+                } else if let ActivityItem::Tool(tool) = activity {
+                    let mut tool_lines = Vec::new();
+                    let (marker, color) = if tool.failed {
+                        ("✗", app.theme.error)
+                    } else if tool.completed {
+                        ("✓", app.theme.success)
+                    } else {
+                        ("▶", app.theme.warning)
+                    };
+                    tool_lines.push(Line::from(vec![
+                        Span::styled(format!("{marker} "), Style::default().fg(color)),
+                        Span::styled(tool.name.clone(), Style::default().fg(app.theme.muted)),
+                    ]));
+                    if !tool.filepath.is_empty() {
+                        let location = if tool.detail.is_empty() {
+                            tool.filepath.clone()
+                        } else {
+                            format!("{} · {}", tool.filepath, tool.detail)
+                        };
                         tool_lines.push(Line::from(Span::styled(
-                            "    … preview clipped; the complete content was still written",
-                            Style::default()
-                                .fg(app.theme.subtle)
-                                .add_modifier(Modifier::DIM),
+                            format!("  · {location}"),
+                            Style::default().fg(app.theme.subtle),
                         )));
                     }
+                    if app.show_details && !tool.preview.is_empty() {
+                        let preview_label = if tool.language == "diff" {
+                            "edit diff"
+                        } else {
+                            "file draft"
+                        };
+                        if tool.filepath.is_empty() {
+                            tool_lines.push(Line::from(Span::styled(
+                                format!("  · {preview_label}"),
+                                Style::default().fg(app.theme.subtle),
+                            )));
+                        }
+                        let language = if tool.language.is_empty() {
+                            tool_preview::language_for_filepath(&tool.filepath)
+                        } else {
+                            tool.language.as_str()
+                        };
+                        tool_lines.extend(preview_box_lines(
+                            highlighted_code_lines(
+                                &tool.preview,
+                                language,
+                                &app.theme.syntax_theme,
+                                app.theme.text,
+                            ),
+                            usize::from(content_width.saturating_sub(2)),
+                            app.theme.border,
+                            app.theme.panel,
+                        ));
+                        if tool.preview_truncated {
+                            tool_lines.push(Line::from(Span::styled(
+                                "    Display sample only · complete write verified",
+                                Style::default()
+                                    .fg(app.theme.subtle)
+                                    .add_modifier(Modifier::DIM),
+                            )));
+                        }
+                    }
+                    push_spaced_message_block(&mut assistant_lines, tool_lines);
                 }
-                push_spaced_message_block(&mut assistant_lines, tool_lines);
             }
-        }
-        if !turn.assistant.is_empty() {
-            push_spaced_message_block(
-                &mut assistant_lines,
-                markdown_lines(
-                    &turn.assistant,
-                    app.theme.text,
+            if !turn.assistant.is_empty()
+                && !turn
+                    .activity
+                    .iter()
+                    .any(|activity| matches!(activity, ActivityItem::Assistant(_)))
+            {
+                push_spaced_message_block(
+                    &mut assistant_lines,
+                    markdown_lines(
+                        &turn.assistant,
+                        app.theme.text,
+                        app.theme.accent,
+                        &app.theme.syntax_theme,
+                    ),
+                );
+            }
+            if turn.state == "cancelled" && !turn.assistant.trim_end().ends_with("[interrupted]") {
+                assistant_lines.push(Line::from(Span::styled(
+                    "[interrupted]",
+                    Style::default().fg(app.theme.warning),
+                )));
+            } else if turn.state == "error" {
+                assistant_lines.push(Line::from(Span::styled(
+                    "[failed]",
+                    Style::default().fg(app.theme.error),
+                )));
+            }
+            if !assistant_lines.is_empty() {
+                lines.extend(message_rail_lines(
+                    assistant_lines,
+                    content_width,
                     app.theme.accent,
-                    &app.theme.syntax_theme,
-                ),
-            );
+                ));
+            }
+            lines.push(Line::default());
         }
-        if turn.state == "cancelled" && !turn.assistant.trim_end().ends_with("[interrupted]") {
-            assistant_lines.push(Line::from(Span::styled(
-                "[interrupted]",
-                Style::default().fg(app.theme.warning),
-            )));
-        } else if turn.state == "error" {
-            assistant_lines.push(Line::from(Span::styled(
-                "[failed]",
-                Style::default().fg(app.theme.error),
-            )));
-        }
-        if !assistant_lines.is_empty() {
-            lines.extend(message_rail_lines(
-                assistant_lines,
-                content_width,
-                app.theme.accent,
-            ));
-        }
-        lines.push(Line::default());
+        app.transcript_copy_lines = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+        app.transcript_render_lines = lines;
+        app.transcript_render_revision = app.transcript_revision;
+        app.transcript_render_width = content_width;
     }
     let title = " Alphanus ";
     let viewport_height = usize::from(area.height.saturating_sub(2));
-    let transcript_text = Text::from(lines);
-    let visual_line_count = Paragraph::new(transcript_text.clone())
-        .wrap(Wrap { trim: false })
-        .line_count(content_width);
-    let max_scroll = visual_line_count
+    let max_scroll = app
+        .transcript_render_lines
+        .len()
         .saturating_sub(viewport_height)
         .min(usize::from(u16::MAX)) as u16;
     app.transcript_max_scroll = max_scroll;
@@ -389,17 +486,23 @@ pub(in crate::app) fn draw_transcript(frame: &mut Frame, app: &mut App, area: Re
         max_scroll,
         app.transcript_auto_follow,
     );
-    let paragraph = Paragraph::new(transcript_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(app.theme.border_type())
-                .border_style(Style::default().fg(border))
-                .title(title)
-                .style(app.theme.base()),
-        )
-        .wrap(Wrap { trim: false })
-        .scroll((app.transcript_scroll, 0));
+    let start = usize::from(app.transcript_scroll);
+    let end = (start + viewport_height).min(app.transcript_render_lines.len());
+    let mut visible_lines = app.transcript_render_lines[start..end].to_vec();
+    highlight_transcript_selection(
+        &mut visible_lines,
+        start,
+        app.transcript_selection_anchor,
+        app.transcript_selection_focus,
+    );
+    let paragraph = Paragraph::new(Text::from(visible_lines)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(app.theme.border_type())
+            .border_style(Style::default().fg(border))
+            .title(title)
+            .style(app.theme.base()),
+    );
     frame.render_widget(paragraph, area);
     let mut scrollbar = transcript_scrollbar_state(
         app.transcript_scroll,

@@ -5,6 +5,7 @@ const LIMITS: (usize, usize) = (8_000, 140);
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ToolPreview {
     pub(crate) filepath: String,
+    pub(crate) detail: String,
     pub(crate) content: String,
     pub(crate) language: String,
     pub(crate) truncated: bool,
@@ -58,7 +59,8 @@ pub(crate) fn bounded(content: &str) -> (String, bool) {
 }
 
 pub(crate) fn from_request(name: &str, data: &Value) -> ToolPreview {
-    if !matches!(canonical_name(name), "create_file" | "edit_file") {
+    let canonical = canonical_name(name);
+    if !matches!(canonical, "create_file" | "edit_file" | "read_file") {
         return ToolPreview::default();
     }
     let Some(arguments) = data.get("arguments").and_then(Value::as_object) else {
@@ -69,6 +71,24 @@ pub(crate) fn from_request(name: &str, data: &Value) -> ToolPreview {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
+    if canonical == "read_file" {
+        let start = arguments
+            .get("start_line")
+            .and_then(Value::as_u64)
+            .unwrap_or(1);
+        let detail = arguments
+            .get("end_line")
+            .and_then(Value::as_u64)
+            .map_or_else(
+                || format!("lines {start}–end"),
+                |end| format!("lines {start}–{end}"),
+            );
+        return ToolPreview {
+            filepath,
+            detail,
+            ..ToolPreview::default()
+        };
+    }
     let Some(content) = arguments.get("content").and_then(Value::as_str) else {
         return ToolPreview {
             filepath,
@@ -78,6 +98,7 @@ pub(crate) fn from_request(name: &str, data: &Value) -> ToolPreview {
     let (content, truncated) = bounded(content);
     ToolPreview {
         filepath,
+        detail: String::new(),
         content,
         language: String::new(),
         truncated,
@@ -86,7 +107,7 @@ pub(crate) fn from_request(name: &str, data: &Value) -> ToolPreview {
 
 pub(crate) fn from_result(name: &str, data: &Value) -> ToolPreview {
     let canonical = canonical_name(name);
-    if !matches!(canonical, "create_file" | "edit_file") {
+    if !matches!(canonical, "create_file" | "edit_file" | "read_file") {
         return ToolPreview::default();
     }
     let Some(result_data) = data
@@ -101,6 +122,21 @@ pub(crate) fn from_result(name: &str, data: &Value) -> ToolPreview {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
+    if canonical == "read_file" {
+        let start = result_data
+            .get("resolved_start_line")
+            .and_then(Value::as_u64)
+            .unwrap_or(1);
+        let end = result_data
+            .get("resolved_end_line")
+            .and_then(Value::as_u64)
+            .unwrap_or(start);
+        return ToolPreview {
+            filepath,
+            detail: format!("lines {start}–{end}"),
+            ..ToolPreview::default()
+        };
+    }
     let (field_name, language) = if canonical == "edit_file" {
         ("diff", "diff")
     } else {
@@ -123,6 +159,7 @@ pub(crate) fn from_result(name: &str, data: &Value) -> ToolPreview {
         .unwrap_or(false);
     ToolPreview {
         filepath,
+        detail: String::new(),
         content,
         language: language.into(),
         truncated: locally_truncated || result_truncated,

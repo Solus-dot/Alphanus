@@ -22,6 +22,9 @@ impl App {
             focus: Focus::Input,
             input: String::new(),
             cursor: 0,
+            input_history: Vec::new(),
+            history_index: None,
+            history_draft: String::new(),
             paste_chunks: Vec::new(),
             transcript: Vec::new(),
             tree: Vec::new(),
@@ -60,6 +63,13 @@ impl App {
             animation_frame: 0,
             active_turn_id: String::new(),
             clipboard_notice: None,
+            transcript_selection_anchor: None,
+            transcript_selection_focus: None,
+            transcript_copy_lines: Vec::new(),
+            transcript_render_lines: Vec::new(),
+            transcript_revision: 0,
+            transcript_render_revision: u64::MAX,
+            transcript_render_width: 0,
             session_delete_armed: None,
             show_session_manager_on_ready: true,
             transcript_offset: None,
@@ -141,6 +151,7 @@ impl App {
             return;
         }
         self.last_sequence = frame.sequence;
+        self.transcript_revision = self.transcript_revision.wrapping_add(1);
         match frame.kind.as_str() {
             "runtime.ready" => {
                 self.connected = true;
@@ -182,17 +193,19 @@ impl App {
                 self.status = "Thinking…".into();
             }
             "assistant.delta" => {
+                let chunk = frame.data.get("text").and_then(Value::as_str).unwrap_or("");
+                append_assistant_activity(&mut self.transcript, &self.active_turn_id, chunk);
                 if let Some(turn) = self
                     .transcript
                     .iter_mut()
                     .find(|turn| turn.id == self.active_turn_id)
                 {
-                    append_bounded(
-                        &mut turn.assistant,
-                        frame.data.get("text").and_then(Value::as_str).unwrap_or(""),
-                        MAX_STREAM_CHARS,
-                    );
+                    append_bounded(&mut turn.assistant, chunk, MAX_STREAM_CHARS);
                 }
+            }
+            "assistant.retract" => {
+                let text = frame.data.get("text").and_then(Value::as_str).unwrap_or("");
+                retract_assistant(&mut self.transcript, &self.active_turn_id, text);
             }
             "reasoning.delta" => {
                 let chunk = frame.data.get("text").and_then(Value::as_str).unwrap_or("");
@@ -305,6 +318,7 @@ impl App {
                 }
                 self.active_turn_id.clear();
             }
+            "turn.steering_queued" => self.status = "Steering message queued".into(),
             "turn.cancellation_acknowledged" => self.status = "Stopping current turn…".into(),
             "session.list" | "session.search" => {
                 let items = values(&frame.data, "items");
@@ -384,6 +398,9 @@ impl App {
         if session_changed {
             self.context_tokens = None;
             self.transcript_auto_follow = true;
+            self.input_history.clear();
+            self.history_index = None;
+            self.history_draft.clear();
         }
         if let Some(session) = value.get("session") {
             self.session_id = field(session, "id");
@@ -429,6 +446,12 @@ impl App {
                 .get("transcript_previous")
                 .and_then(Value::as_u64)
                 .map(|item| item as usize);
+            self.input_history = self
+                .transcript
+                .iter()
+                .filter(|turn| !turn.local && !turn.user.trim().is_empty())
+                .map(|turn| turn.user.clone())
+                .collect();
         }
         if let Some(items) = value.get("tree").and_then(Value::as_array) {
             let incoming: Vec<TurnView> = items.iter().map(TurnView::from_value).collect();

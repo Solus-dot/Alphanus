@@ -112,6 +112,7 @@ struct ToolActivity {
     completed: bool,
     failed: bool,
     filepath: String,
+    detail: String,
     preview: String,
     language: String,
     preview_truncated: bool,
@@ -120,12 +121,17 @@ struct ToolActivity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ActivityItem {
     Reasoning(String),
+    Assistant(String),
     Tool(ToolActivity),
 }
 
 impl ActivityItem {
     fn reasoning(text: String) -> Self {
         Self::Reasoning(text)
+    }
+
+    fn assistant(text: String) -> Self {
+        Self::Assistant(text)
     }
 
     fn tool(tool: ToolActivity) -> Self {
@@ -135,6 +141,7 @@ impl ActivityItem {
     fn from_value(value: &Value) -> Option<Self> {
         match field(value, "kind").as_str() {
             "reasoning" => Some(Self::reasoning(field(value, "text"))),
+            "assistant" => Some(Self::assistant(field(value, "text"))),
             "tool" => serde_json::from_value(value.clone()).ok().map(Self::tool),
             _ => None,
         }
@@ -218,6 +225,9 @@ struct App {
     focus: Focus,
     input: String,
     cursor: usize,
+    input_history: Vec<String>,
+    history_index: Option<usize>,
+    history_draft: String,
     paste_chunks: Vec<PasteChunk>,
     transcript: Vec<TurnView>,
     tree: Vec<TurnView>,
@@ -252,6 +262,13 @@ struct App {
     animation_frame: u16,
     active_turn_id: String,
     clipboard_notice: Option<(String, Instant)>,
+    transcript_selection_anchor: Option<(usize, usize)>,
+    transcript_selection_focus: Option<(usize, usize)>,
+    transcript_copy_lines: Vec<String>,
+    transcript_render_lines: Vec<Line<'static>>,
+    transcript_revision: u64,
+    transcript_render_revision: u64,
+    transcript_render_width: u16,
     session_delete_armed: Option<String>,
     show_session_manager_on_ready: bool,
     transcript_offset: Option<usize>,
@@ -368,7 +385,9 @@ pub fn run(python: &str, project_root: Option<&str>, debug: bool) -> Result<i32,
             .clipboard_notice
             .as_ref()
             .is_some_and(|(_, at)| at.elapsed() < Duration::from_secs(3));
-        if (app.dirty || app.streaming || notice_visible || forced_repaints > 0)
+        let animation_due = app.streaming && app.last_frame.elapsed() >= Duration::from_millis(120);
+        let notice_due = notice_visible && app.last_frame.elapsed() >= Duration::from_millis(250);
+        if (app.dirty || animation_due || notice_due || forced_repaints > 0)
             && app.last_frame.elapsed() >= Duration::from_millis(16)
         {
             if forced_repaints > 0 {
@@ -387,7 +406,15 @@ pub fn run(python: &str, project_root: Option<&str>, debug: bool) -> Result<i32,
             app.last_frame = Instant::now();
             app.dirty = false;
         }
-        if event::poll(Duration::from_millis(8)).map_err(|error| error.to_string())? {
+        for index in 0..MAX_EVENTS_PER_FRAME {
+            let timeout = if index == 0 {
+                Duration::from_millis(8)
+            } else {
+                Duration::ZERO
+            };
+            if !event::poll(timeout).map_err(|error| error.to_string())? {
+                break;
+            }
             let next = event::read().map_err(|error| error.to_string())?;
             let terminal_needs_repaint = terminal_repaint_shortcut(&next);
             app.handle_event(next);
@@ -416,6 +443,57 @@ fn terminal_repaint_shortcut(event: &Event) -> bool {
             ..
         }) if modifiers.contains(KeyModifiers::CONTROL)
     )
+}
+
+fn selected_text(
+    lines: &[String],
+    mut start: (usize, usize),
+    mut end: (usize, usize),
+) -> Option<String> {
+    if start > end {
+        std::mem::swap(&mut start, &mut end);
+    }
+    if start == end {
+        return None;
+    }
+    let mut selected = Vec::new();
+    for row in start.0..=end.0 {
+        let line = lines.get(row)?;
+        let from = if row == start.0 { start.1 } else { 0 };
+        let to = if row == end.0 {
+            end.1.saturating_add(1)
+        } else {
+            usize::MAX
+        };
+        let mut column = 0;
+        let text = line
+            .chars()
+            .filter(|character| {
+                let width = UnicodeWidthChar::width(*character).unwrap_or(0);
+                let included = column < to && column.saturating_add(width.max(1)) > from;
+                column += width;
+                included
+            })
+            .collect::<String>();
+        selected.push(
+            text.strip_prefix("┃ ")
+                .unwrap_or(&text)
+                .trim_end()
+                .to_owned(),
+        );
+    }
+    let text = selected.join("\n");
+    (!text.is_empty()).then_some(text)
+}
+
+fn history_target(len: usize, current: Option<usize>, direction: isize) -> Option<usize> {
+    match (len, current, direction) {
+        (0, _, _) => None,
+        (len, None, -1) => Some(len - 1),
+        (_, Some(index), -1) => Some(index.saturating_sub(1)),
+        (len, Some(index), 1) => Some((index + 1).min(len)),
+        _ => None,
+    }
 }
 
 fn push_bounded<T>(queue: &mut VecDeque<T>, item: T, limit: usize) {
@@ -461,6 +539,32 @@ fn append_reasoning(turns: &mut [TurnView], turn_id: &str, reasoning: &str) {
     }
 }
 
+fn retract_assistant(turns: &mut [TurnView], turn_id: &str, text: &str) {
+    if let Some(turn) = turns.iter_mut().find(|turn| turn.id == turn_id) {
+        turn.assistant
+            .truncate(turn.assistant.len().saturating_sub(text.len()));
+        if let Some(ActivityItem::Assistant(existing)) = turn.activity.last_mut() {
+            existing.truncate(existing.len().saturating_sub(text.len()));
+            if existing.is_empty() {
+                turn.activity.pop();
+            }
+        }
+    }
+}
+
+fn append_assistant_activity(turns: &mut [TurnView], turn_id: &str, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(turn) = turns.iter_mut().find(|turn| turn.id == turn_id) {
+        if let Some(ActivityItem::Assistant(existing)) = turn.activity.last_mut() {
+            append_bounded(existing, text, MAX_STREAM_CHARS);
+        } else {
+            push_activity(turn, ActivityItem::assistant(text.to_owned()));
+        }
+    }
+}
+
 fn push_activity(turn: &mut TurnView, activity: ActivityItem) {
     if turn.activity.len() >= MAX_ACTIVITY_ITEMS {
         turn.activity.remove(0);
@@ -478,6 +582,9 @@ fn set_assistant(turns: &mut [TurnView], turn_id: &str, assistant: &str) {
 fn merge_tool_preview(tool: &mut ToolActivity, preview: &ToolPreview) {
     if !preview.filepath.is_empty() {
         tool.filepath.clone_from(&preview.filepath);
+    }
+    if !preview.detail.is_empty() {
+        tool.detail.clone_from(&preview.detail);
     }
     if !preview.content.is_empty() {
         tool.preview.clone_from(&preview.content);
@@ -554,6 +661,7 @@ fn complete_tool_activity(
                 completed: true,
                 failed,
                 filepath: preview.filepath,
+                detail: preview.detail,
                 preview: preview.content,
                 language: preview.language,
                 preview_truncated: preview.truncated,
@@ -584,6 +692,7 @@ fn update_tool_preview_delta(turns: &mut [TurnView], turn_id: &str, data: &Value
         &name,
         ToolPreview {
             filepath,
+            detail: String::new(),
             content,
             language: String::new(),
             truncated,
@@ -836,6 +945,27 @@ mod tests {
     }
 
     #[test]
+    fn transcript_selection_extracts_across_lines_without_rails() {
+        let lines = vec!["┃ alpha beta".into(), "┃ gamma delta".into()];
+        assert_eq!(
+            selected_text(&lines, (0, 0), (1, 6)).as_deref(),
+            Some("alpha beta\ngamma")
+        );
+        assert_eq!(
+            selected_text(&lines, (1, 6), (0, 0)).as_deref(),
+            Some("alpha beta\ngamma")
+        );
+    }
+
+    #[test]
+    fn input_history_steps_back_and_returns_to_draft() {
+        assert_eq!(history_target(3, None, -1), Some(2));
+        assert_eq!(history_target(3, Some(2), -1), Some(1));
+        assert_eq!(history_target(3, Some(2), 1), Some(3));
+        assert_eq!(history_target(0, None, -1), None);
+    }
+
+    #[test]
     fn command_filter_matches_descriptions() {
         let catalog = command_fixture();
         assert_eq!(
@@ -884,11 +1014,16 @@ mod tests {
     }
 
     #[test]
-    fn active_turn_submission_keeps_the_composer_draft() {
-        let retains = |streaming: bool, value: &str| streaming && !value.starts_with('/');
-        assert!(retains(true, "next prompt"));
-        assert!(!retains(false, "next prompt"));
-        assert!(!retains(true, "/details"));
+    fn active_turn_submission_can_steer() {
+        let request = |streaming: bool| {
+            if streaming {
+                "turn.steer"
+            } else {
+                "turn.start"
+            }
+        };
+        assert_eq!(request(true), "turn.steer");
+        assert_eq!(request(false), "turn.start");
     }
 
     #[test]
@@ -1283,6 +1418,7 @@ mod tests {
                 .iter()
                 .map(|item| match item {
                     ActivityItem::Reasoning(text) => ("reasoning", text.as_str(), ""),
+                    ActivityItem::Assistant(text) => ("assistant", text.as_str(), ""),
                     ActivityItem::Tool(tool) => ("tool", "", tool.name.as_str()),
                 })
                 .collect::<Vec<_>>(),
@@ -1299,7 +1435,7 @@ mod tests {
             .iter()
             .filter_map(|item| match item {
                 ActivityItem::Tool(tool) => Some(tool),
-                ActivityItem::Reasoning(_) => None,
+                ActivityItem::Reasoning(_) | ActivityItem::Assistant(_) => None,
             })
             .all(|tool| tool.completed));
     }
@@ -1308,17 +1444,20 @@ mod tests {
     fn snapshot_turn_restores_ordered_activity() {
         let turn = TurnView::from_value(&json!({
             "id":"turn-1",
-            "assistant":"complete response",
+            "assistant":"firstfinal",
             "activity":[
                 {"kind":"reasoning","text":"before"},
+                {"kind":"assistant","text":"first"},
                 {"kind":"tool","id":"call-1","name":"create_file","completed":true},
-                {"kind":"reasoning","text":"after"}
+                {"kind":"reasoning","text":"after"},
+                {"kind":"assistant","text":"final"}
             ]
         }));
 
-        assert_eq!(turn.assistant, "complete response");
-        assert_eq!(turn.activity.len(), 3);
-        assert_eq!(reasoning(&turn.activity[2]), "after");
+        assert_eq!(turn.assistant, "firstfinal");
+        assert_eq!(turn.activity.len(), 5);
+        assert_eq!(reasoning(&turn.activity[3]), "after");
+        assert!(matches!(&turn.activity[4], ActivityItem::Assistant(text) if text == "final"));
     }
 
     #[test]
@@ -1334,6 +1473,13 @@ mod tests {
 
         assert_eq!(incoming[1].assistant, "Help");
         assert!(incoming[1].local);
+    }
+
+    #[test]
+    fn transcript_render_cache_only_rebuilds_for_content_or_width_changes() {
+        assert!(!transcript_cache_needs_rebuild(4, 4, 80, 80));
+        assert!(transcript_cache_needs_rebuild(4, 5, 80, 80));
+        assert!(transcript_cache_needs_rebuild(4, 4, 80, 100));
     }
 
     #[test]
