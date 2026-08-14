@@ -131,7 +131,7 @@ def _activity_trace(turn: Turn, *, field_limit: int | None = TRANSCRIPT_FIELD_CH
         activity = [dict(item) for item in turn.activity_trace]
         if field_limit is not None:
             for item in activity:
-                if item.get("kind") == "reasoning":
+                if item.get("kind") in {"reasoning", "assistant"}:
                     item["text"] = _clip(item.get("text"), field_limit)
         return activity
     # Older sessions did not record event chronology. Preserve their content in
@@ -155,7 +155,7 @@ def _bounded_tool_preview(content: str) -> tuple[str, bool]:
 
 def _tool_preview_fields(name: str, payload: dict[str, Any], *, completed: bool = False) -> dict[str, JSONValue]:
     canonical = name.split(":")[-1].split(".")[-1]
-    if canonical not in {"create_file", "edit_file"}:
+    if canonical not in {"create_file", "edit_file", "read_file"}:
         return {}
     source = payload.get("result") if completed else payload.get("arguments")
     if not isinstance(source, dict):
@@ -168,12 +168,27 @@ def _tool_preview_fields(name: str, payload: dict[str, Any], *, completed: bool 
         content = data.get("diff") if canonical == "edit_file" else data.get("content_preview")
         language = "diff" if canonical == "edit_file" and isinstance(content, str) else ""
         already_truncated = bool(data.get("diff_truncated") or data.get("content_preview_truncated"))
+        detail = (
+            f"lines {int(data.get('resolved_start_line') or 1)}–{int(data.get('resolved_end_line') or 1)}"
+            if canonical == "read_file"
+            else ""
+        )
     else:
         filepath = str(source.get("filepath") or "")
         content = source.get("content")
         language = ""
         already_truncated = False
+        start = int(source.get("start_line") or 1)
+        detail = (
+            f"lines {start}–{int(source['end_line'])}"
+            if canonical == "read_file" and source.get("end_line")
+            else f"lines {start}–end"
+            if canonical == "read_file"
+            else ""
+        )
     fields: dict[str, JSONValue] = {"filepath": filepath}
+    if detail:
+        fields["detail"] = detail
     if isinstance(content, str) and content:
         preview, truncated = _bounded_tool_preview(content)
         fields.update(
@@ -221,7 +236,7 @@ def _bounded_activity_view(turn: Turn, byte_limit: int) -> tuple[list[dict[str, 
     truncated = False
     for raw_item in _activity_trace(turn, field_limit=None):
         item = dict(raw_item)
-        if item.get("kind") == "reasoning":
+        if item.get("kind") in {"reasoning", "assistant"}:
             item["text"] = _clip_utf8(item.get("text"), 16 * 1024)
         elif item.get("kind") == "tool" and "preview" in item:
             item["preview"] = _clip_utf8(item.get("preview"), TOOL_PREVIEW_CHARS)

@@ -83,6 +83,27 @@ class _RecordingRuntimeAgent(_RuntimeAgent):
         )
 
 
+def test_runtime_queues_and_drains_steering(tmp_path: Path) -> None:
+    from core.runtime_server import RuntimeServer
+
+    server = RuntimeServer(
+        agent=_RuntimeAgent(tmp_path),
+        memory=_RuntimeMemory(),
+        state_root=tmp_path / "state",
+        config_path=tmp_path / "config.toml",
+        input_stream=io.StringIO(),
+        output_stream=io.StringIO(),
+    )
+    try:
+        server.turn_request_id = "active"
+        server._turn_steer("steer", {"prompt": "focus on tests"})
+        assert server._drain_steering_messages() == ["focus on tests"]
+        assert server._drain_steering_messages() == []
+    finally:
+        server.turn_request_id = ""
+        server.close()
+
+
 def test_golden_runtime_requests_are_valid() -> None:
     fixture = Path(__file__).parent / "fixtures" / "runtime_protocol_v1.jsonl"
     frames = [decode_runtime_frame(line) for line in fixture.read_text(encoding="utf-8").splitlines()]
@@ -349,14 +370,15 @@ def test_runtime_persists_reasoning_and_tools_in_event_order(tmp_path: Path) -> 
             on_event({"type": "reasoning_token", "text": "inspect first"})
             on_event({"type": "tool_call", "id": "one", "name": "inspect", "arguments": {}})
             on_event({"type": "tool_result", "id": "one", "name": "inspect", "result": {}})
+            on_event({"type": "content_token", "text": "first answer"})
             on_event({"type": "reasoning_token", "text": "edit next"})
             on_event({"type": "tool_call", "id": "two", "name": "edit", "arguments": {}})
             on_event({"type": "tool_result", "id": "two", "name": "edit", "result": {}})
             on_event({"type": "reasoning_token", "text": "verify last"})
-            on_event({"type": "content_token", "text": "done"})
+            on_event({"type": "content_token", "text": "final answer"})
             return SimpleNamespace(
                 status="done",
-                content="done",
+                content="first answerfinal answer",
                 reasoning="inspect firstedit nextverify last",
                 error="",
                 skill_exchanges=[],
@@ -378,9 +400,11 @@ def test_runtime_persists_reasoning_and_tools_in_event_order(tmp_path: Path) -> 
         assert server._snapshot()["transcript"][-1]["activity"] == [
             {"kind": "reasoning", "text": "inspect first"},
             {"kind": "tool", "id": "one", "name": "inspect", "completed": True},
+            {"kind": "assistant", "text": "first answer"},
             {"kind": "reasoning", "text": "edit next"},
             {"kind": "tool", "id": "two", "name": "edit", "completed": True},
             {"kind": "reasoning", "text": "verify last"},
+            {"kind": "assistant", "text": "final answer"},
         ]
     finally:
         server.close()

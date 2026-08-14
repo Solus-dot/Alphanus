@@ -224,6 +224,7 @@ def test_dict_roundtrip_preserves_ordered_activity_trace():
             "language": "",
             "preview_truncated": False,
         },
+        {"kind": "assistant", "text": "partial answer"},
         {"kind": "reasoning", "text": "second"},
         {"kind": "tool", "id": "two", "name": "edit", "completed": True},
         {"kind": "reasoning", "text": "third"},

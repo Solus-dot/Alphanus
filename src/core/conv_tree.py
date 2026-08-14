@@ -128,7 +128,7 @@ class Turn:
                 if not isinstance(item, dict):
                     continue
                 kind = str(item.get("kind") or "")
-                if kind == "reasoning":
+                if kind in {"reasoning", "assistant"}:
                     activity_trace.append({"kind": kind, "text": str(item.get("text") or "")})
                 elif kind == "tool":
                     tool_activity: JsonObject = {
@@ -140,7 +140,7 @@ class Turn:
                     stream_id = str(item.get("stream_id") or "")
                     if stream_id:
                         tool_activity["stream_id"] = stream_id
-                    for key in ("filepath", "preview", "language"):
+                    for key in ("filepath", "detail", "preview", "language"):
                         if key in item:
                             tool_activity[key] = str(item.get(key) or "")
                     if "preview_truncated" in item:

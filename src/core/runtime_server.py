@@ -38,7 +38,7 @@ from core.sessions import ChatSession, SessionStore
 from core.themes import available_theme_ids, reload_themes, theme_payload
 
 _REQUEST_TYPES = frozenset(
-    "hello heartbeat state.get turn.start turn.cancel approval.resolve session.list session.search session.create session.load session.rename session.delete branch.arm branch.unbranch branch.switch branch.open attachment.add attachment.remove status.refresh config.get config.apply command.execute theme.list theme.apply palette.get skill.toggle shutdown".split()
+    "hello heartbeat state.get turn.start turn.steer turn.cancel approval.resolve session.list session.search session.create session.load session.rename session.delete branch.arm branch.unbranch branch.switch branch.open attachment.add attachment.remove status.refresh config.get config.apply command.execute theme.list theme.apply palette.get skill.toggle shutdown".split()
 )
 
 
@@ -67,6 +67,7 @@ class RuntimeServer:
         self.turn_thread: threading.Thread | None = None
         self.turn_request_id = ""
         self.turn_id = ""
+        self.steering_messages: list[str] = []
         self.approvals: dict[str, tuple[threading.Event, dict[str, bool]]] = {}
         self._state_lock = threading.RLock()
         self._closed = False
@@ -277,6 +278,7 @@ class RuntimeServer:
                         "config",
                         "palette",
                         "sessions",
+                        "steering",
                         "streaming",
                     ]
                 ),
@@ -326,6 +328,21 @@ class RuntimeServer:
             )
             self.turn_thread.start()
 
+    def _turn_steer(self, request_id: str, data: dict[str, Any]) -> None:
+        prompt = str(data.get("prompt") or "").strip()
+        if not self.turn_request_id:
+            raise ValueError("no turn is active")
+        if not prompt:
+            raise ValueError("turn.steer requires a prompt")
+        with self._state_lock:
+            self.steering_messages.append(prompt)
+        self._respond("turn.steering_queued", request_id, {"prompt": prompt})
+
+    def _drain_steering_messages(self) -> list[str]:
+        with self._state_lock:
+            messages, self.steering_messages = self.steering_messages, []
+            return messages
+
     def _finish_turn_request(self, request_id: str) -> None:
         # Release protocol-visible state without clobbering a newer turn.
         with self._state_lock:
@@ -354,6 +371,41 @@ class RuntimeServer:
         current_reasoning_item: dict[str, JSONValue] | None = None
         current_reasoning_chunks: list[str] = []
         current_reasoning_truncated = False
+        current_assistant_item: dict[str, JSONValue] | None = None
+
+        def flush_assistant_activity() -> None:
+            nonlocal current_assistant_item
+            current_assistant_item = None
+
+        def retract_assistant_activity(text: str) -> None:
+            nonlocal current_assistant_item
+            remaining = len(text)
+            while remaining and reply_parts:
+                chunk = reply_parts[-1]
+                if len(chunk) <= remaining:
+                    remaining -= len(chunk)
+                    reply_parts.pop()
+                else:
+                    reply_parts[-1] = chunk[:-remaining]
+                    remaining = 0
+            if current_assistant_item is not None:
+                content = str(current_assistant_item.get("text") or "")
+                current_assistant_item["text"] = content[: max(0, len(content) - len(text))]
+                if not current_assistant_item["text"]:
+                    activity_trace.remove(current_assistant_item)
+                    current_assistant_item = None
+
+        def append_assistant_activity(text: str) -> None:
+            nonlocal current_assistant_item
+            if not text:
+                return
+            flush_reasoning_activity()
+            if current_assistant_item is None:
+                if len(activity_trace) >= MAX_ACTIVITY_ITEMS:
+                    activity_trace.pop(0)
+                current_assistant_item = {"kind": "assistant", "text": ""}
+                activity_trace.append(current_assistant_item)
+            current_assistant_item["text"] = str(current_assistant_item["text"]) + text
 
         def flush_reasoning_activity() -> None:
             nonlocal current_reasoning_item, current_reasoning_chunks, current_reasoning_truncated
@@ -369,6 +421,7 @@ class RuntimeServer:
             nonlocal current_reasoning_item, current_reasoning_truncated
             if not text:
                 return
+            flush_assistant_activity()
             accepted = reasoning_parts.append(text)
             if current_reasoning_item is None:
                 if len(activity_trace) >= MAX_ACTIVITY_ITEMS:
@@ -381,6 +434,7 @@ class RuntimeServer:
                 current_reasoning_truncated = True
 
         def append_tool_activity(payload: dict[str, Any]) -> None:
+            flush_assistant_activity()
             flush_reasoning_activity()
             if len(activity_trace) >= MAX_ACTIVITY_ITEMS:
                 activity_trace.pop(0)
@@ -430,8 +484,14 @@ class RuntimeServer:
             event_type = str(event.get("type") or "agent.event")
             payload = {str(key): value for key, value in event.items() if key != "type"}
             if event_type == "content_token":
-                reply_parts.append(str(payload.get("text") or ""))
+                content_text = str(payload.get("text") or "")
+                reply_parts.append(content_text)
+                append_assistant_activity(content_text)
                 event_type = "assistant.delta"
+            elif event_type == "content_retract":
+                content_text = str(payload.get("text") or "")
+                retract_assistant_activity(content_text)
+                event_type = "assistant.retract"
             elif event_type == "reasoning_token":
                 reasoning_text = str(payload.get("text") or "")
                 append_reasoning_activity(reasoning_text)
@@ -478,6 +538,7 @@ class RuntimeServer:
                 stop_event=self.stop_event,
                 on_event=on_event,
                 request_approval=request_approval,
+                get_steering_messages=self._drain_steering_messages,
             )
             reply = str(result.content or "") or "".join(reply_parts)
             flush_reasoning_activity()
@@ -498,6 +559,10 @@ class RuntimeServer:
                 status = "success"
             for exchange in list(result.skill_exchanges or []):
                 self.session.tree.append_skill_exchange(turn.id, exchange)
+            journal = result.journal if isinstance(getattr(result, "journal", None), dict) else {}
+            summary = str(journal.get("context_summary") or "").strip()
+            if summary:
+                self.session.tree.set_context_summary(summary, turn.id)
             self._save()
             self._emit_turn_completion(
                 request_id,
