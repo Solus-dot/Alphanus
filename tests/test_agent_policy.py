@@ -642,7 +642,6 @@ def test_explicit_external_path_disables_local_project_routing(runtime: SkillRun
         branch_labels=[],
         attachments=[],
         project_root=str(runtime.project.project_root),
-        memory_hits=[],
     )
 
     assert agent.classifier._explicit_path_outside_project(ctx.user_input) == other_path
@@ -720,7 +719,6 @@ def test_explicit_external_path_supports_quoted_paths_with_spaces(runtime: Skill
         branch_labels=[],
         attachments=[],
         project_root=str(runtime.project.project_root),
-        memory_hits=[],
     )
 
     assert agent.classifier._explicit_path_outside_project(ctx.user_input) == other_path

@@ -897,6 +897,7 @@ class SkillRuntime:
         request_approval: ApprovalRequestFn | None = None,
         request_user_input: UserInputRequestFn | None = None,
         stop_event: Any = None,
+        timeout_s: float | None = None,
     ) -> dict[str, Any]:
         return skill_executor.execute_tool_call(
             self,
@@ -907,4 +908,5 @@ class SkillRuntime:
             request_approval=request_approval,
             request_user_input=request_user_input,
             stop_event=stop_event,
+            timeout_s=timeout_s,
         )

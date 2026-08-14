@@ -17,9 +17,6 @@ _EXPLICIT_PATH_PATTERN = re.compile(
     r"|(?P<plain>(?<![:/\w])(?P<plain_path>(?:~/|/)[^\s\"'`]+))"
 )
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
-_CLARIFICATION_WORDS = frozenset("which what where when who clarify confirm".split())
-_CLARIFICATION_PHRASES = ("should i", "do you want", "would you like", "can you tell me")
-_COMPLETION_WORDS = frozenset("deleted removed created updated edited modified renamed moved wrote saved".split())
 _NON_MUTATING_DONE_WORDS = frozenset(
     "opened ran running executed launched read listed shown showed displayed inspected checked verified".split()
 )
@@ -31,24 +28,6 @@ _NON_MUTATING_ACTION_PATTERNS = {
     "list": re.compile(r"\b(?:list|listed)\b"),
     "check": re.compile(r"\b(?:inspect|inspected|check|checked|verify|verified)\b"),
 }
-_LIMITATION_PHRASES = (
-    "could not",
-    "couldn't",
-    "cannot",
-    "can't",
-    "unable",
-    "not allowed",
-    "blocked",
-    "rejected",
-    "declined",
-    "denied",
-    "timed out",
-    "timeout",
-    "permission",
-    "unsupported",
-    "unavailable",
-    "disabled",
-)
 _PROJECT_FILE_TOKEN_RE = re.compile(r"(?<![\w/.-])(?:[\w.-]+/)*[\w.-]+\.[a-z0-9]{1,16}\b", re.IGNORECASE)
 _PROJECT_ABS_PATH_RE = re.compile(r"(?<![:/\w])(?:~/|/)[^\s\"'`]+")
 _WELL_KNOWN_DIRECTORY_RE = re.compile(
@@ -136,14 +115,12 @@ class TurnClassifier:
         history_messages: list[ChatMessage] | None = None,
         loaded_skill_ids: list[str] | None = None,
     ) -> SkillContext:
-        hits = self.skill_runtime.memory.search(user_input, top_k=3, min_score=0.45)
         recent_hint, sticky_skill_ids = self.recent_routing_context(history_messages or [])
         return SkillContext(
             user_input=user_input,
             branch_labels=branch_labels,
             attachments=attachments,
             project_root=str(self.skill_runtime.project.project_root),
-            memory_hits=hits,
             loaded_skill_ids=loaded_skill_ids if loaded_skill_ids is not None else [],
             recent_routing_hint=recent_hint,
             sticky_skill_ids=sticky_skill_ids,
@@ -202,58 +179,6 @@ class TurnClassifier:
         return set(re.findall(r"[a-z]+", text))
 
     @classmethod
-    def _draft_requests_clarification(cls, assistant_reply: str) -> bool:
-        lowered = cls._normalized_text(assistant_reply)
-        return bool(
-            lowered
-            and (
-                "?" in assistant_reply
-                or cls._words(lowered) & _CLARIFICATION_WORDS
-                or any(phrase in lowered for phrase in _CLARIFICATION_PHRASES)
-            )
-        )
-
-    @classmethod
-    def _draft_defers_project_action_to_user(cls, assistant_reply: str) -> bool:
-        lowered = cls._normalized_text(assistant_reply)
-        asks_user = any(phrase in lowered for phrase in ("you can", "please", "you should"))
-        return bool(lowered and ("yourself" in lowered or "manually" in lowered or asks_user and cls._words(lowered) & _MUTATING_WORDS))
-
-    @classmethod
-    def _draft_claims_project_completion_without_evidence(cls, assistant_reply: str) -> bool:
-        lowered = cls._normalized_text(assistant_reply)
-        actor_claim = lowered.startswith(("i ", "we ")) or " i " in lowered or " we " in lowered
-        return bool(lowered and (actor_claim and cls._words(lowered) & _COMPLETION_WORDS or "project is now empty" in lowered))
-
-    @classmethod
-    def _draft_reports_supported_limitation(cls, assistant_reply: str) -> bool:
-        lowered = cls._normalized_text(assistant_reply)
-        return bool(lowered and ("no project tool actually ran" in lowered or any(phrase in lowered for phrase in _LIMITATION_PHRASES)))
-
-    @staticmethod
-    def _recent_tool_rows(evidence: dict[str, JSONValue]) -> list[dict[str, JSONValue]]:
-        rows = evidence.get("recent_tool_details")
-        return [item for item in rows if isinstance(item, dict)] if isinstance(rows, list) else []
-
-    @staticmethod
-    def _evidence_shows_blocked_or_unavailable_tool(evidence: dict[str, JSONValue]) -> bool:
-        for item in TurnClassifier._recent_tool_rows(evidence):
-            if bool(item.get("policy_blocked")):
-                return True
-            error_code = str(item.get("error_code", "")).strip().upper()
-            if error_code in {
-                "E_POLICY",
-                "E_PERMISSION",
-                "E_PERMISSIONS",
-                "E_TIMEOUT",
-                "E_UNSUPPORTED",
-                "E_DISABLED",
-                "E_UNAVAILABLE",
-            }:
-                return True
-        return False
-
-    @classmethod
     def _request_requires_project_mutation(cls, current_user_input: str, recent_routing_hint: str = "") -> bool:
         text = cls._normalized_text(current_user_input)
         if text and cls._words(text) & _MUTATING_WORDS and "make sure" not in text:
@@ -269,47 +194,6 @@ class TurnClassifier:
         if not lowered:
             return set()
         return {action for action, pattern in _NON_MUTATING_ACTION_PATTERNS.items() if pattern.search(lowered)}
-
-    @staticmethod
-    def _evidence_has_successful_non_mutating_tool(evidence: dict[str, JSONValue]) -> bool:
-        if bool(evidence.get("has_successful_non_mutating_tool")):
-            return True
-        return any(
-            bool(item.get("ok")) and not bool(item.get("policy_blocked")) and not bool(item.get("mutating"))
-            for item in TurnClassifier._recent_tool_rows(evidence)
-        )
-
-    @staticmethod
-    def _successful_action_labels(evidence: dict[str, JSONValue]) -> set[str]:
-        labels: set[str] = set()
-        raw_labels = evidence.get("successful_action_labels")
-        if isinstance(raw_labels, list):
-            labels.update(str(item).strip().lower() for item in raw_labels if str(item).strip())
-        for item in TurnClassifier._recent_tool_rows(evidence):
-            if not bool(item.get("ok")) or bool(item.get("policy_blocked")):
-                continue
-            actions = item.get("actions")
-            if isinstance(actions, list):
-                labels.update(str(action).strip().lower() for action in actions if str(action).strip())
-        return labels
-
-    @classmethod
-    def _evidence_supports_non_mutating_completion(
-        cls,
-        *,
-        current_user_input: str,
-        assistant_reply: str,
-        evidence: dict[str, JSONValue],
-    ) -> bool:
-        requested_actions = cls._non_mutating_actions_in_text(current_user_input)
-        claimed_actions = cls._non_mutating_actions_in_text(assistant_reply)
-        required_actions = requested_actions | claimed_actions
-        if not cls._evidence_has_successful_non_mutating_tool(evidence):
-            return False
-        if not required_actions:
-            return cls._evidence_has_successful_non_mutating_tool(evidence)
-        successful_actions = cls._successful_action_labels(evidence)
-        return bool(successful_actions and required_actions.issubset(successful_actions))
 
     @classmethod
     def _text_targets_project_artifacts(cls, text: str) -> bool:

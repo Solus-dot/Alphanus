@@ -133,6 +133,7 @@ class CompletionEvidence:
 class TurnTelemetry:
     turn_id: str
     started_at: float = field(default_factory=time.time)
+    started_monotonic: float = field(default_factory=time.monotonic)
     pass_index: int = 0
     model_usage: dict[str, int] = field(default_factory=dict)
 

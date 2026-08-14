@@ -175,7 +175,6 @@ class Agent:
                 "compatibility_profile": self.llm_client.compatibility_profile(),
                 "fallback_events": self.llm_client.fallback_events(),
                 "permission_mode": permissions_cfg.mode,
-                "approvals": permissions_cfg.approvals,
                 "network": permissions_cfg.network,
                 "sandbox_backend": sandbox_cfg.backend,
             },
@@ -190,8 +189,6 @@ class Agent:
                 "mode": memory_stats.get("mode_label"),
                 "min_score_default": memory_stats.get("min_score_default"),
                 "count": memory_stats.get("count"),
-                "load_recovery_count": memory_stats.get("load_recovery_count"),
-                "backup_revisions": memory_stats.get("backup_revisions"),
             },
             "search": {
                 "provider": provider,

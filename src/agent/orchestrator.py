@@ -5,15 +5,16 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any, cast
 
-from agent import tool_execution_engine, turn_journal
 from agent.classifier import TurnClassifier
-from agent.evidence_guard import EvidenceGuard
 from agent.policies import OutputSanitizer, PromptPolicyRenderer
 from agent.provider import LLMClient
 from agent.telemetry import TelemetryEmitter
+from agent.tool_execution_engine import record_tool_effects
 from agent.tool_history import ToolHistoryCompactor
 from agent.tool_loop_engine import ToolLoopEngine
-from agent.turn_policy_engine import TurnPolicyEngine
+from agent.turn_journal import build as build_turn_journal
+from agent.turn_journal import trace_add
+from agent.turn_policy_engine import build_policy_snapshot, build_turn_state, refresh_search_tools_enabled
 from core.config_model import ConfigSchema, config_schema
 from core.message_types import ChatMessage, JSONValue
 from core.retrieval import SQLiteRetrievalStore, configured_store_path
@@ -59,11 +60,7 @@ class TurnOrchestrator:
         for key, value in (agent_cfg.tool_budgets or {}).items():
             self.default_tool_budgets[str(key)] = int(value)
         self.sanitizer = OutputSanitizer(self.max_reasoning_chars)
-        self.policy_engine = TurnPolicyEngine(self.skill_runtime, self.default_tool_budgets)
-        self.evidence_guard = EvidenceGuard(self.skill_runtime, agent_cfg.recent_tool_detail_limit)
-        self.tool_execution_engine = tool_execution_engine
         self.tool_loop = ToolLoopEngine(self)
-        self.turn_journal = turn_journal
 
     def inject_policy_retrieval_context(self, state: TurnState, on_event: Callable[[JsonObject], None] | None = None) -> None:
         retrieval_cfg = self.config.retrieval
@@ -99,7 +96,7 @@ class TurnOrchestrator:
             return
 
     def _trace_add(self, state: TurnState, key: str, row: dict[str, object]) -> None:
-        self.turn_journal.trace_add(state, key, row)
+        trace_add(state, key, row)
 
     def _is_stop_requested(self, stop_event) -> bool:
         return self.llm_client.stop_requested(stop_event)
@@ -264,10 +261,10 @@ class TurnOrchestrator:
         )
 
     def record_tool_effects(self, state: TurnState, call: ToolCall, result: dict[str, object], *, policy_blocked: bool = False) -> None:
-        self.tool_execution_engine.record_tool_effects(state, call, result, policy_blocked=policy_blocked)
+        record_tool_effects(state, call, result, policy_blocked=policy_blocked)
 
     def build_turn_journal(self, state: TurnState, result: AgentTurnResult) -> JsonObject:
-        return self.turn_journal.build(
+        return build_turn_journal(
             state,
             result,
             collaboration_mode=self._normalize_collaboration_mode(getattr(state, "collaboration_mode", "execute")),
@@ -322,7 +319,9 @@ class TurnOrchestrator:
             relevant_skill_ids.append("project-ops")
             selected.append(project_skill)
         ctx.relevant_skill_ids = relevant_skill_ids
-        state = self.policy_engine.build_turn_state(
+        state = build_turn_state(
+            self.skill_runtime,
+            self.default_tool_budgets,
             ctx,
             selected,
             history_messages,
@@ -396,7 +395,7 @@ class TurnOrchestrator:
         return status
 
     def _system_content(self, state: TurnState) -> tuple[str, str]:
-        snapshot = self.policy_engine.build_policy_snapshot(state)
+        snapshot = build_policy_snapshot(self.skill_runtime, state)
         content = self.prompt_renderer.compose_system_content(state.selected, state.ctx)
         rules = self.prompt_renderer.render_policy_rules(snapshot)
         return content + ("\n\n" + rules if rules else ""), rules
@@ -409,7 +408,7 @@ class TurnOrchestrator:
         stop_event=None,
         on_event: Callable[[JsonObject], None] | None = None,
     ) -> AgentTurnResult | tuple[str, str, Any]:
-        self.policy_engine.refresh_search_tools_enabled(state)
+        refresh_search_tools_enabled(self.skill_runtime, state)
         state.pass_index += 1
         state.telemetry.pass_index = state.pass_index
         pass_id = f"pass_{state.pass_index}"
@@ -563,7 +562,7 @@ class TurnOrchestrator:
             return result
 
         while True:
-            if state.pass_index >= self.max_iterations or time.time() - state.telemetry.started_at >= self.turn_timeout_s:
+            if state.pass_index >= self.max_iterations or time.monotonic() - state.telemetry.started_monotonic >= self.turn_timeout_s:
                 return finish(
                     AgentTurnResult(
                         status="error",

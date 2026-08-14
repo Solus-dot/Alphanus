@@ -26,10 +26,5 @@ video_url
 # sqlite3.Connection row_factory is assigned for row access by name.
 _.row_factory
 
-# SkillContext fields are populated by turn construction and consumed across
-# process/module boundaries.
-memory_hits
-explicit_skill_args
-
 # urllib calls HTTPRedirectHandler.redirect_request by name.
 _.redirect_request

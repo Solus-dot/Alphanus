@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import queue
 import subprocess
+import threading
 import time
 from typing import Any, cast
 
@@ -122,6 +124,36 @@ def execute_registered_tool(runtime, reg, args: dict[str, Any], env, ctx) -> Any
     return reg.module.execute(reg.name, args, env)
 
 
+def _execute_with_timeout(runtime, reg, args, env, ctx, timeout_s: float | None, stop_event) -> Any:
+    if timeout_s is None:
+        return execute_registered_tool(runtime, reg, args, env, ctx)
+    outcome: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+    def run() -> None:
+        try:
+            outcome.put((True, execute_registered_tool(runtime, reg, args, env, ctx)))
+        except BaseException as exc:
+            outcome.put((False, exc))
+
+    # ponytail: timed-out handlers must cooperate with stop_event; move tools to subprocesses if late mutations appear.
+    worker = threading.Thread(target=run, daemon=True, name=f"alphanus-tool-{reg.name}")
+    worker.start()
+    deadline = time.monotonic() + max(0.1, float(timeout_s))
+    while worker.is_alive():
+        if stop_event is not None and stop_event.is_set():
+            raise OperationCancelled(f"Tool '{reg.name}' cancelled")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if stop_event is not None:
+                stop_event.set()
+            raise TimeoutError(f"Tool '{reg.name}' exceeded its turn deadline")
+        worker.join(min(0.05, remaining))
+    ok, value = outcome.get_nowait()
+    if ok:
+        return value
+    raise value
+
+
 def execute_tool_call(
     runtime,
     tool_name: str,
@@ -131,6 +163,7 @@ def execute_tool_call(
     request_approval=None,
     request_user_input=None,
     stop_event=None,
+    timeout_s: float | None = None,
 ) -> dict[str, Any]:
     start = time.perf_counter()
     try:
@@ -145,7 +178,7 @@ def execute_tool_call(
             request_user_input=request_user_input,
             stop_event=stop_event,
         )
-        result = execute_registered_tool(runtime, reg, normalized_args, env, ctx)
+        result = _execute_with_timeout(runtime, reg, normalized_args, env, ctx, timeout_s, stop_event)
         duration = int((time.perf_counter() - start) * 1000)
         return normalize_result(runtime, result, duration)
     except LookupError as exc:

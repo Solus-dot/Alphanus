@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import cast
 
 from agent.policies import search_rule
+from agent.turn_policy_engine import refresh_search_tools_enabled, tool_budget_reason
 from core.message_types import ChatMessage, JsonObject
 from core.types import AgentTurnResult, ApprovalRequestFn, TurnState, UserInputRequestFn, cancelled_turn_result
 
@@ -62,6 +63,10 @@ class ToolLoopEngine:
             error=error,
             error_code="E_TOOL",
         )
+
+    def _close_unexecuted_calls(self, state: TurnState, calls, pass_id: str, message: str, code: str, on_event) -> None:
+        for call in calls:
+            self._loop_block_tool(state=state, call=call, pass_id=pass_id, code=code, message=message, on_event=on_event)
 
     def _cancelled_after_tool(self, state: TurnState, call, stop_event, on_event) -> tuple[str, AgentTurnResult] | None:
         if not self.orchestrator._is_stop_requested(stop_event):
@@ -230,7 +235,8 @@ class ToolLoopEngine:
 
         force_continue_reason = ""
 
-        for call in stream_result.tool_calls:
+        for call_index, call in enumerate(stream_result.tool_calls):
+            remaining_calls = stream_result.tool_calls[call_index + 1 :]
             call_trace = {
                 "pass_id": pass_id,
                 "id": call.id,
@@ -240,6 +246,9 @@ class ToolLoopEngine:
             }
             self.orchestrator._trace_add(state, "tool_calls", call_trace)
             if self.orchestrator._is_stop_requested(stop_event):
+                self._close_unexecuted_calls(
+                    state, stream_result.tool_calls[call_index:], pass_id, "Turn cancelled before execution.", "E_CANCELLED", on_event
+                )
                 return (
                     "result",
                     cancelled_turn_result(state),
@@ -279,6 +288,9 @@ class ToolLoopEngine:
                 on_event=on_event,
             )
             if blocked_result is not None:
+                self._close_unexecuted_calls(
+                    state, remaining_calls, pass_id, "Skipped because the tool loop was stopped.", "E_TOOL_LOOP_STUCK", on_event
+                )
                 return "result", blocked_result
             if blocked_current_call:
                 if self.orchestrator._is_stop_requested(stop_event):
@@ -288,9 +300,17 @@ class ToolLoopEngine:
                     )
                 continue
 
-            force_continue_reason = self.orchestrator.policy_engine.tool_budget_reason(state, call) or ""
+            force_continue_reason = tool_budget_reason(state, call) or ""
             if force_continue_reason:
                 if call.name not in {"web_search", "fetch_url"} or not state.search_tools_enabled:
+                    self._close_unexecuted_calls(
+                        state,
+                        stream_result.tool_calls[call_index:],
+                        pass_id,
+                        force_continue_reason,
+                        "E_TOOL_LOOP_BUDGET",
+                        on_event,
+                    )
                     return self._error_result(state, force_continue_reason)
                 self._loop_block_tool(
                     state=state,
@@ -300,6 +320,7 @@ class ToolLoopEngine:
                     message=force_continue_reason,
                     on_event=on_event,
                 )
+                self._close_unexecuted_calls(state, remaining_calls, pass_id, force_continue_reason, "E_TOOL_LOOP_BUDGET", on_event)
                 break
 
             if self.orchestrator._normalize_collaboration_mode(
@@ -313,6 +334,9 @@ class ToolLoopEngine:
                     on_event=on_event,
                 )
                 if cancelled := self._cancelled_after_tool(state, call, stop_event, on_event):
+                    self._close_unexecuted_calls(
+                        state, remaining_calls, pass_id, "Turn cancelled before execution.", "E_CANCELLED", on_event
+                    )
                     return cancelled
                 continue
 
@@ -334,6 +358,9 @@ class ToolLoopEngine:
                     on_event=on_event,
                 )
                 if cancelled := self._cancelled_after_tool(state, call, stop_event, on_event):
+                    self._close_unexecuted_calls(
+                        state, remaining_calls, pass_id, "Turn cancelled before execution.", "E_CANCELLED", on_event
+                    )
                     return cancelled
                 continue
 
@@ -347,12 +374,20 @@ class ToolLoopEngine:
                             "Do not retry the same page.",
                             "Answer from the evidence already gathered.",
                         )
-                        break
-                    if host and host in state.completion.blocked_fetch_domains:
+                    elif host and host in state.completion.blocked_fetch_domains:
                         force_continue_reason = search_rule(
                             "This source domain already blocked a fetch attempt in this turn.",
                             "Do not retry the same blocked domain.",
                             "Answer from the remaining evidence.",
+                        )
+                    if force_continue_reason:
+                        self._close_unexecuted_calls(
+                            state,
+                            stream_result.tool_calls[call_index:],
+                            pass_id,
+                            force_continue_reason,
+                            "E_REPEATED_TOOL_CALL",
+                            on_event,
                         )
                         break
 
@@ -364,6 +399,10 @@ class ToolLoopEngine:
                 request_approval=request_approval,
                 request_user_input=request_user_input,
                 stop_event=stop_event,
+                timeout_s=max(
+                    0.1,
+                    self.orchestrator.turn_timeout_s - (time.monotonic() - state.telemetry.started_monotonic),
+                ),
             )
             self.orchestrator.emit(on_event, {"type": "tool_result", "name": call.name, "id": call.id, "result": result})
             tool_message = {
@@ -391,8 +430,10 @@ class ToolLoopEngine:
                 },
             )
             if cancelled := self._cancelled_after_tool(state, call, stop_event, on_event):
+                self._close_unexecuted_calls(state, remaining_calls, pass_id, "Turn cancelled before execution.", "E_CANCELLED", on_event)
                 return cancelled
             if approval_denied:
+                self._close_unexecuted_calls(state, remaining_calls, pass_id, "Skipped because approval was denied.", "E_POLICY", on_event)
                 return (
                     "result",
                     AgentTurnResult(
@@ -404,7 +445,7 @@ class ToolLoopEngine:
                 )
             if call.name == "skill_view" and result.get("ok"):
                 state.selected = self.orchestrator.skill_runtime.select_skills(state.ctx)
-                self.orchestrator.policy_engine.refresh_search_tools_enabled(state)
+                refresh_search_tools_enabled(self.orchestrator.skill_runtime, state)
 
             if (
                 call.name == "request_user_input"
@@ -419,6 +460,9 @@ class ToolLoopEngine:
                 if isinstance(options, list) and options:
                     lines.append("Options: " + " | ".join(str(item) for item in options[:6]))
                 prompt_text = "\n".join(lines)
+                self._close_unexecuted_calls(
+                    state, remaining_calls, pass_id, "Skipped while awaiting user input.", "E_AWAITING_USER_INPUT", on_event
+                )
                 return (
                     "result",
                     AgentTurnResult(
@@ -437,15 +481,13 @@ class ToolLoopEngine:
                     "Do not use memory or prior knowledge to fill gaps.",
                     "If the fetched page does not explicitly answer the question, say you could not verify it.",
                 )
-                break
-            if call.name not in {"web_search", "fetch_url"} and state.completion.search_failure_count >= 2:
+            elif call.name not in {"web_search", "fetch_url"} and state.completion.search_failure_count >= 2:
                 force_continue_reason = search_rule(
                     "Search has failed repeatedly.",
                     "Do not switch to memory recall or unrelated tools.",
                     "Answer only with verified evidence, or say verification failed.",
                 )
-                break
-            if (
+            elif (
                 call.name == "web_search"
                 and not result.get("ok")
                 and state.completion.search_failure_count >= 2
@@ -456,15 +498,13 @@ class ToolLoopEngine:
                     "State plainly that you could not verify the answer from reliable web results in this turn.",
                     "Do not speculate or answer from prior knowledge.",
                 )
-                break
-            if call.name == "fetch_url" and not result.get("ok") and state.completion.search_has_success:
+            elif call.name == "fetch_url" and not result.get("ok") and state.completion.search_has_success:
                 force_continue_reason = search_rule(
                     "A page fetch failed.",
                     "Continue with the successful search results and any successful fetches already gathered.",
                     "Do not keep retrying searches indefinitely.",
                 )
-                break
-            if (
+            elif (
                 call.name == "web_search"
                 and state.completion.tool_counts.get("web_search", 0) >= state.tool_budgets.get("web_search", 0)
                 and state.completion.search_has_success
@@ -474,8 +514,7 @@ class ToolLoopEngine:
                     "Summarize from the best available results now.",
                     "Do not issue more search calls.",
                 )
-                break
-            if (
+            elif (
                 call.name == "fetch_url"
                 and state.completion.tool_counts.get("fetch_url", 0) >= state.tool_budgets.get("fetch_url", 0)
                 and state.completion.search_has_fetch_content
@@ -485,6 +524,8 @@ class ToolLoopEngine:
                     "Answer from the gathered evidence now.",
                     "Do not fetch additional pages.",
                 )
+            if force_continue_reason:
+                self._close_unexecuted_calls(state, remaining_calls, pass_id, force_continue_reason, "E_TOOL_LOOP_BUDGET", on_event)
                 break
 
         if force_continue_reason:

@@ -24,10 +24,6 @@ _FUNCTION_OPEN_RE = re.compile(r"<function=[^>]+>", flags=re.IGNORECASE)
 _FUNCTION_CLOSE_RE = re.compile(r"</function>", flags=re.IGNORECASE)
 _PARAMETER_OPEN_RE = re.compile(r"<parameter=[^>]+>", flags=re.IGNORECASE)
 _PARAMETER_CLOSE_RE = re.compile(r"</parameter>", flags=re.IGNORECASE)
-_TOOL_MARKUP_RE = re.compile(
-    r"<tool_call\b|</tool_call>|<function=[^>]+>|</function>|<parameter=[^>]+>|</parameter>",
-    flags=re.IGNORECASE,
-)
 
 
 class OutputSanitizer:
@@ -91,12 +87,6 @@ class OutputSanitizer:
             deduped.append(line)
             previous = stripped if stripped else previous
         return "\n".join(deduped).strip()
-
-    @staticmethod
-    def contains_tool_markup(text: str) -> bool:
-        if not text:
-            return False
-        return bool(_TOOL_MARKUP_RE.search(text))
 
 
 class PromptPolicyRenderer:

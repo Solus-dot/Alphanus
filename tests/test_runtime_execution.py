@@ -10,8 +10,9 @@ from agent.context import ContextWindowManager
 from agent.orchestrator import TurnOrchestrator
 from agent.policies import PromptPolicyRenderer
 from agent.provider import LLMClient
+from agent.turn_policy_engine import build_turn_state, tool_budget_reason
 from core.config_model import default_config
-from core.types import ToolCall, ToolExecutionRecord, TurnClassification
+from core.types import ToolCall, TurnClassification
 from skills.runtime import SkillRuntime
 from tests.support import build_skill_runtime
 
@@ -74,7 +75,7 @@ def _turn_state(tmp_path: Path, *, user_input: str, time_sensitive: bool, projec
         prefer_local_project_tools=project_action,
         source="rules",
     )
-    state = orchestrator.policy_engine.build_turn_state(ctx, [], [], classification)
+    state = build_turn_state(runtime, orchestrator.default_tool_budgets, ctx, [], [], classification)
     return runtime, orchestrator, state
 
 
@@ -177,38 +178,9 @@ def test_orchestrator_records_project_evidence_and_policy_blocks(tmp_path: Path)
         policy_blocked=True,
     )
 
-    evidence = cast(Any, orchestrator.evidence_guard.project_action_evidence(state))
-
     assert state.completion.tool_counts["shell_command"] == 2
-    assert evidence["has_successful_tool"] is True
-    assert "shell_command" in evidence["successful_tools"]
-    assert evidence["has_successful_mutation"] is True
-    assert "shell_command" in evidence["successful_mutating_tools"]
-    assert "shell_command" in evidence["policy_blocked_tools"]
-
-
-def test_evidence_aggregates_the_whole_turn_but_bounds_recent_details(tmp_path: Path) -> None:
-    _runtime, orchestrator, state = _turn_state(
-        tmp_path,
-        user_input="create a file",
-        time_sensitive=False,
-        project_action=True,
-    )
-    state.evidence.append(
-        ToolExecutionRecord(
-            name="shell_command",
-            args={"command": "touch notes.txt"},
-            result={"ok": True, "data": {}, "error": None, "meta": {"project_changed": True}},
-        )
-    )
-    state.evidence.extend(
-        ToolExecutionRecord(name="skill_view", args={}, result={"ok": True, "data": {}, "error": None, "meta": {}}) for _ in range(12)
-    )
-
-    evidence = cast(Any, orchestrator.evidence_guard.project_action_evidence(state))
-
-    assert evidence["successful_mutating_tools"] == ["shell_command"]
-    assert len(evidence["recent_tool_details"]) == 12
+    assert [record.result["ok"] for record in state.evidence] == [True, False]
+    assert state.evidence[-1].policy_blocked is True
 
 
 def test_tool_loop_repeated_successful_read_is_blocked_then_stopped(mocker, tmp_path: Path) -> None:
@@ -316,7 +288,7 @@ def test_orchestrator_search_budget_reason_is_explicit_for_time_sensitive_turns(
         arguments={"query": "latest status"},
     )
 
-    reason = orchestrator.policy_engine.tool_budget_reason(state, web_search_call)
+    reason = tool_budget_reason(state, web_search_call)
 
     assert reason is not None
     assert "search-attempt budget is exhausted" in reason
